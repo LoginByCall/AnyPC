@@ -229,7 +229,7 @@ const sendIn = o => dc?.readyState === 'open' && dc.send(JSON.stringify(o));
 // ---------- Выбор TURN: пинг до каждого ретранслятора; «Авто» выбирает хост по сумме плеч «клиент + хост» ----------
 let turns = [], rttMe = {}, rttHost = {}, turnCur = '', turnSel = store.get('turn', 'auto');
 const region = (() => { try { return new Intl.DisplayNames([lang], { type: 'region' }); } catch { return null; } })();
-const turnName = h => { const c = (h.match(/^(?:any-)?([a-z]{2})\./) || [])[1]; return (c && region?.of(c.toUpperCase())?.replace(/\s*\(.*\)$/, '')) || h; }; // страна из имени: hk.anypc.org, any-hk.turboseller.xyz
+const turnName = h => { const c = (h.match(/^(?:any-)?([a-z]{2})\./) || [])[1]; return (c && region?.of(c.toUpperCase())?.replace(/\s*\(.*\)$/, '')) || h; }; // страна из имени: hk.anypc.org (и прежние any-hk.…)
 // Пинг из браузера — время до srflx-кандидата: один STUN Binding до сервера (ICMP браузеру недоступен).
 const stunRtt = h => new Promise(ok => {
   const p = new RTCPeerConnection({ iceServers: [{ urls: 'stun:' + h + ':3478' }] });

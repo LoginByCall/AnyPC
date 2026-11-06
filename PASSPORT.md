@@ -17,9 +17,10 @@
 - Сигнализация §7 (`hub.Msg`) — внутренний, `v: 1`.
 
 ## Состояние
-- VPS-HK any-hk.turboseller.xyz (170.168.24.45): anypc-server (сигнализация, веб-клиент, лендинг www) + coturn.
-- VPS-RU any-ru.turboseller.xyz (170.168.5.86, Москва): coturn (второй TURN, общий секрет). Вход на оба — только по ключу.
-- Программа: `bin/AnyPC.exe` (хост + клиент, WebView2, ffmpeg вшит). Веб-клиент: https://any-hk.turboseller.xyz
+- VPS-HK hk.anypc.org (170.168.24.45): anypc-server (хаб, веб-клиент, лендинг anypc.org/www) + coturn.
+- VPS-RU ru.anypc.org (170.168.5.86, Москва): anypc-server (второй хаб, зеркало загрузок) + coturn.
+- VPS-US us.anypc.org (netcup 159.195.14.69, почтовый сервер): только coturn. Вход root на HK/RU — по ключу; netcup — через прыжок (см. память).
+- Программа: `bin/AnyPC.exe` (хост + клиент, WebView2, ffmpeg вшит). Веб-клиент: https://hk.anypc.org, https://ru.anypc.org. Старые имена turboseller.xyz серверы ещё принимают (совместимость), нигде не объявляют.
 
 ## Лог решений
 - см. `TZ.md` §16.
