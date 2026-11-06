@@ -1,0 +1,52 @@
+# Тексты лендинга — en: перевод Claude с texts.ru.md (2026-11-06); надписи программы — точно как в ui/index.html. Правьте texts.ru.md и переводите заново.
+
+- `title`: Control your computer from anywhere in the world
+- `badge`: Beta · free
+- `lead`: AnyPC shows your computer’s screen and lets you control it from another one — even when both are behind routers or on a mobile network. No port forwarding, no sign-up.
+- `dl`: Download
+- `web`: Open web client
+- `req`: Windows 10/11 · Linux (X11, Wayland)
+- `whyT`: Why AnyPC
+- `f1t`: Gets through any NAT
+- `f1d`: Connects directly; when that isn’t possible, it goes through a relay server. No router setup needed.
+- `f2t`: End-to-end encryption
+- `f2d`: Screen and input travel over DTLS-SRTP. The relay server forwards only ciphertext.
+- `f3t`: A single executable
+- `f3d`: One program shows your ID and password and connects to other PCs. Nothing to install.
+- `f4t`: Smooth and responsive
+- `f4d`: H.264 video up to 1080p at 30 fps; quality adapts to your connection, with live connection statistics.
+- `getT`: Download AnyPC
+- `tab_win`: Windows
+- `tab_lin`: Linux
+- `dl_win`: Download for Windows
+- `dl_lin`: Download for Linux
+- `sys_win`: Windows 10 or 11, 64-bit
+- `sys_lin`: 64-bit (x86-64), X11 or Wayland · beta
+- `sha`: SHA-256 checksum
+- `w1`: Run the downloaded AnyPC.exe — there is nothing to install, and the program shows this computer’s ID right away.
+- `w2`: If you see “Windows protected your PC”, click “More info” → “Run anyway”: the program is not code-signed yet.
+- `w3`: If Windows Firewall asks about network access, allow it; otherwise a direct connection may fail and traffic will go through the relay server.
+- `w4`: To allow connections to this computer, set a password in the “This computer” section.
+- `wchk`: Verify the file (PowerShell) — the checksum must match the one above:
+- `l1`: Install the dependencies — which ones depends on your graphical session:
+- `l2`: Make the file executable and run it — the AnyPC window opens in a browser tab:
+- `l3`: On Wayland, the first connection makes the system ask which screen to share and whether to allow control. Your choice is remembered, so you won’t be asked again.
+- `l4`: To quit the program, click “Quit AnyPC” in the tab or press Ctrl+C in the terminal.
+- `lchk`: Verify the file — the checksum must match the one above:
+- `howT`: Get started in 3 steps
+- `s1`: Download AnyPC to the computer you want to control (or to both) and run it.
+- `s2`: On the computer you want to control, set a password (at least 8 characters) and note its 9-digit ID.
+- `s3`: In a browser window or on the other computer, enter that ID and password and click “Connect”. If confirmation is turned on for the controlled PC, someone there has to click “Allow”.
+- `secT`: Security
+- `sec1`: Every connection requires the password set on the controlled PC; the password itself is never sent over the network.
+- `secAsk`: You can turn on confirmation: the controlled PC then asks “Allow / Deny” for every connection, and no answer within 30 seconds means deny.
+- `sec2`: During a session, the controlled PC always shows a notice with a disconnect button.
+- `sec3`: After 5 wrong passwords, access is temporarily blocked.
+- `sec4`: Use AnyPC only on your own computers or with the owner’s consent.
+- `sec5`: Never give your ID and password to someone who calls you out of the blue — it’s a common scam.
+- `limT`: Beta limitations
+- `lim1`: Ctrl+Alt+Del, UAC prompts and the lock screen are not available yet.
+- `lim2`: Clipboard: text only; files are sent with the toolbar buttons.
+- `lim3`: You can switch monitors on the toolbar; on Wayland, the monitor is chosen in the system dialog when you connect.
+- `lim4`: The Linux version is in beta and has been tested less than the Windows version.
+- `foot`: AnyPC beta. Includes FFmpeg (GPLv3); source code at ffmpeg.org. Provided “as is”, without warranty.

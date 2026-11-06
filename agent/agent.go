@@ -11,6 +11,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"strconv"
@@ -203,9 +206,28 @@ func (a *Agent) send(ctx context.Context, c *websocket.Conn, typ, to string, v a
 	_ = wsjson.Write(ctx, c, hub.Msg{V: 1, Type: typ, To: to, Data: d})
 }
 
+// proxy — прокси из окружения (HTTPS_PROXY…); переменная — для теста.
+var proxy = http.ProxyFromEnvironment
+
+// dial — сигнализация через прокси из окружения, а если он не отвечает — напрямую:
+// забытый мёртвый HTTPS_PROXY не должен отрезать ПК от сети (так было на ПК владельца, 2026-11-06).
+func dial(ctx context.Context, u string) (*websocket.Conn, error) {
+	via := func(p func(*http.Request) (*url.URL, error)) *websocket.DialOptions {
+		t := http.DefaultTransport.(*http.Transport).Clone()
+		t.Proxy = p
+		return &websocket.DialOptions{HTTPClient: &http.Client{Transport: t}}
+	}
+	c, _, err := websocket.Dial(ctx, u, via(proxy))
+	if op := (*net.OpError)(nil); errors.As(err, &op) && op.Op == "proxyconnect" {
+		log.Printf("прокси из окружения не отвечает (%v) — подключаюсь напрямую", op.Err)
+		c, _, err = websocket.Dial(ctx, u, via(nil))
+	}
+	return c, err
+}
+
 func (a *Agent) run(ctx context.Context) error {
 	pub := base64.RawURLEncoding.EncodeToString(a.Key.Public().(ed25519.PublicKey))
-	c, _, err := websocket.Dial(ctx, a.Server+"?host="+a.ID+"&key="+pub, nil)
+	c, err := dial(ctx, a.Server+"?host="+a.ID+"&key="+pub)
 	if err != nil {
 		return err
 	}
