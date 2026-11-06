@@ -24,7 +24,7 @@ func TestRouting(t *testing.T) {
 	dl := t.TempDir()
 	os.WriteFile(filepath.Join(dl, "AnyPC.exe"), []byte("MZ-test"), 0o644)
 	ws := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "WS") })
-	h := newMux(ws, "www.example.com", dl)
+	h := newMux(ws, "www.example.com", dl, []string{"t1.example", "t2.example"})
 
 	if _, b := get(t, h, "WWW.example.com:443", "/"); !strings.Contains(b, `id="get"`) {
 		t.Error("www → лендинг")
@@ -34,6 +34,9 @@ func TestRouting(t *testing.T) {
 	}
 	if c, _ := get(t, h, "www.example.com", "/download/../site.go"); c == 200 {
 		t.Error("выход за каталог загрузок")
+	}
+	if c, b := get(t, h, "any.example.com", "/turns"); c != 200 || strings.TrimSpace(b) != `["t1.example","t2.example"]` {
+		t.Errorf("/turns: %d %q", c, b)
 	}
 	if c, _ := get(t, h, "www.example.com", "/ws"); c != 404 {
 		t.Errorf("/ws на лендинге: %d", c)

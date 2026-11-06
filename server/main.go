@@ -2,6 +2,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"log"
 	"net"
@@ -19,9 +20,15 @@ import (
 )
 
 // newMux: хост siteHost → лендинг и /download/ (каталог dlDir); любой другой → веб-клиент и /ws.
-func newMux(h http.Handler, siteHost, dlDir string) http.Handler {
+func newMux(h http.Handler, siteHost, dlDir string, turns []string) http.Handler {
 	app := http.NewServeMux()
 	app.Handle("/ws", h)
+	// Список TURN без учёток — клиент мерит до них пинг до подключения; окну программы (Origin 127.0.0.1) тоже.
+	app.HandleFunc("GET /turns", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(append([]string{}, turns...))
+	})
 	app.Handle("/", http.FileServer(http.FS(ui.FS)))
 	www := http.NewServeMux()
 	www.Handle("/", http.FileServer(http.FS(site.FS)))
@@ -51,7 +58,7 @@ func main() {
 	flag.Parse()
 
 	h := &hub.Hub{TurnHosts: list(*turn), TurnSecret: os.Getenv("ANYPC_TURN_SECRET"), Keys: filepath.Join(filepath.Dir(*certs), "hosts.json")}
-	mux := newMux(h, *siteHost, *dl)
+	mux := newMux(h, *siteHost, *dl, h.TurnHosts)
 	if *domain == "" {
 		log.Println("HTTP", *addr)
 		log.Fatal(http.ListenAndServe(*addr, mux))

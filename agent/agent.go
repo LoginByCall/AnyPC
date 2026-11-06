@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -52,6 +53,7 @@ type Agent struct {
 	mu        sync.Mutex
 	conn      *websocket.Conn
 	ice       []webrtc.ICEServer
+	rtt       map[string]int // мс от хоста до каждого TURN (замер при каждом hello)
 	sess      *session
 	fails     int
 	lockUntil time.Time
@@ -258,6 +260,7 @@ func (a *Agent) run(ctx context.Context) error {
 			a.mu.Lock()
 			a.ice = d.ICE
 			a.mu.Unlock()
+			go func(hs []string) { r := measureTURN(hs); a.mu.Lock(); a.rtt = r; a.mu.Unlock() }(turnHosts(d.ICE))
 			log.Printf("зарегистрирован как %s, ICE-серверов: %d", a.ID, len(d.ICE))
 			a.setOnline(true)
 		case "error":
@@ -319,7 +322,13 @@ func (a *Agent) onConnect(ctx context.Context, c *websocket.Conn, m hub.Msg) {
 		a.send(ctx, c, "error", m.From, "nopass")
 		return
 	}
-	s, err := a.newSession(ctx, c, m.From)
+	var req connectReq
+	json.Unmarshal(m.Data, &req) // старый клиент шлёт {} — выбора нет, ICE получает все серверы
+	turn := pickTURN(req, a.rtt, turnHosts(a.ice))
+	if turn != "" {
+		log.Printf("сессия %s: TURN %s (выбор клиента %q; клиент %v, хост %v мс)", m.From, turn, req.TURN, req.RTT, a.rtt)
+	}
+	s, err := a.newSession(ctx, c, m.From, onlyTURN(a.ice, turn), offerMsg{TURN: turn, RTT: maps.Clone(a.rtt)})
 	if err != nil {
 		log.Printf("сессия: %v", err)
 		a.send(ctx, c, "error", m.From, "internal")
@@ -343,8 +352,8 @@ func (a *Agent) authResult(cid string, ok bool) {
 	log.Printf("неверный пароль от %s (%d)", cid, a.fails)
 }
 
-func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string) (*session, error) {
-	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{ICEServers: a.ice})
+func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, ice []webrtc.ICEServer, om offerMsg) (*session, error) {
+	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{ICEServers: ice})
 	if err != nil {
 		return nil, err
 	}
@@ -506,7 +515,8 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string) (
 	if err != nil {
 		return fail(err)
 	}
-	a.send(ctx, c, "offer", cid, offer)
+	om.SessionDescription = offer
+	a.send(ctx, c, "offer", cid, om)
 	cmu.Lock()
 	offerSent = true
 	early := pending
