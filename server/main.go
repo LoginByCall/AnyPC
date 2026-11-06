@@ -20,8 +20,8 @@ import (
 	"golang.org/x/crypto/acme/autocert"
 )
 
-// newMux: хост siteHost → лендинг и /download/ (каталог dlDir); любой другой → веб-клиент и /ws.
-func newMux(h http.Handler, siteHost, dlDir string, turns, hubs []string) http.Handler {
+// newMux: хосты siteHosts → лендинг и /download/ (каталог dlDir); любой другой → веб-клиент и /ws.
+func newMux(h http.Handler, siteHosts []string, dlDir string, turns, hubs []string) http.Handler {
 	app := http.NewServeMux()
 	app.Handle("/ws", h)
 	// Список TURN без учёток — клиент мерит до них пинг до подключения; окну программы (Origin 127.0.0.1) тоже.
@@ -47,7 +47,7 @@ func newMux(h http.Handler, siteHost, dlDir string, turns, hubs []string) http.H
 		if hp, _, err := net.SplitHostPort(host); err == nil {
 			host = hp
 		}
-		if siteHost != "" && strings.EqualFold(host, siteHost) {
+		if slices.ContainsFunc(siteHosts, func(s string) bool { return strings.EqualFold(host, s) }) {
 			www.ServeHTTP(w, r)
 			return
 		}
@@ -57,7 +57,7 @@ func newMux(h http.Handler, siteHost, dlDir string, turns, hubs []string) http.H
 
 func main() {
 	domain := flag.String("domain", "", "домены клиента/сигнализации для TLS через запятую; пусто — HTTP на -addr (отладка)")
-	siteHost := flag.String("site", "", "домен лендинга (www…)")
+	siteHost := flag.String("site", "", "домены лендинга через запятую (anypc.org,www.anypc.org)")
 	dl := flag.String("dl", "", "каталог файлов для /download/ на лендинге")
 	addr := flag.String("addr", ":8080", "адрес HTTP без TLS")
 	turn := flag.String("turn", "", "хосты STUN/TURN через запятую")
@@ -66,15 +66,13 @@ func main() {
 	flag.Parse()
 
 	h := &hub.Hub{TurnHosts: list(*turn), TurnSecret: os.Getenv("ANYPC_TURN_SECRET"), Keys: filepath.Join(filepath.Dir(*certs), "hosts.json")}
-	mux := newMux(h, *siteHost, *dl, h.TurnHosts, list(*hubs))
+	mux := newMux(h, list(*siteHost), *dl, h.TurnHosts, list(*hubs))
 	if *domain == "" {
 		log.Println("HTTP", *addr)
 		log.Fatal(http.ListenAndServe(*addr, mux))
 	}
 	hosts := list(*domain)
-	if *siteHost != "" {
-		hosts = append(hosts, *siteHost)
-	}
+	hosts = append(hosts, list(*siteHost)...)
 	m := &autocert.Manager{Prompt: autocert.AcceptTOS, HostPolicy: autocert.HostWhitelist(hosts...), Cache: autocert.DirCache(*certs)}
 	go func() { log.Fatal(http.ListenAndServe(":80", m.HTTPHandler(nil))) }()
 	srv := &http.Server{Addr: ":443", Handler: mux, TLSConfig: m.TLSConfig(), ReadHeaderTimeout: 10 * time.Second}
