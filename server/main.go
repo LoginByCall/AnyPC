@@ -22,26 +22,33 @@ import (
 
 // newMux: хосты siteHosts → лендинг и /download/ (каталог dlDir); любой другой → веб-клиент и /ws.
 func newMux(h http.Handler, siteHosts []string, dlDir string, turns, hubs []string) http.Handler {
-	app := http.NewServeMux()
-	app.Handle("/ws", h)
-	// Список TURN без учёток — клиент мерит до них пинг до подключения; окну программы (Origin 127.0.0.1) тоже.
-	app.HandleFunc("GET /turns", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(append([]string{}, turns...))
-	})
-	// Все хабы сигнализации (wss://…/ws), включая этот: веб-клиент стучится во все и идёт через первый ответивший.
-	app.HandleFunc("GET /hubs", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(append([]string{}, hubs...))
-	})
-	app.Handle("/", http.FileServer(http.FS(ui.FS)))
-	www := http.NewServeMux()
-	www.Handle("/", http.FileServer(http.FS(site.FS)))
-	if dlDir != "" {
-		www.Handle("/download/", http.StripPrefix("/download/", http.FileServer(http.Dir(dlDir))))
+	jsonList := func(l []string) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(append([]string{}, l...))
+		}
 	}
+	app, www := http.NewServeMux(), http.NewServeMux()
+	for _, m := range []*http.ServeMux{app, www} {
+		// TURN без учёток — клиент мерит до них пинг до подключения; хабы (wss://…/ws) — веб-клиент стучится во все,
+		// лендинг берёт с них зеркала загрузок. CORS: окно программы (127.0.0.1) и страницы соседних узлов.
+		m.HandleFunc("GET /turns", jsonList(turns))
+		m.HandleFunc("GET /hubs", jsonList(hubs))
+		if dlDir != "" { // загрузки на каждом узле: лендинг качает с ответившего первым
+			fs := http.StripPrefix("/download/", http.FileServer(http.Dir(dlDir)))
+			m.Handle("/download/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+				if !strings.HasSuffix(r.URL.Path, "SHA256SUMS") {
+					w.Header().Set("Content-Disposition", "attachment") // ссылка с чужого узла: атрибут download там не действует
+				}
+				fs.ServeHTTP(w, r)
+			}))
+		}
+	}
+	app.Handle("/ws", h)
+	app.Handle("/", http.FileServer(http.FS(ui.FS)))
+	www.Handle("/", http.FileServer(http.FS(site.FS)))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := r.Host
 		if hp, _, err := net.SplitHostPort(host); err == nil {
