@@ -1,7 +1,7 @@
 #!/bin/sh
 # Развёртывание сервера AnyPC на Ubuntu (root). Повторный запуск безопасен.
 # Использование: sh setup.sh <домен клиента> [домен лендинга]   (рядом — бинарник anypc-server)
-# Второй TURN без сигнализации: TURN_ONLY=1 sh setup.sh <домен TURN> — нужен /etc/anypc/turn-secret,
+# Второй TURN без сигнализации: TURN_ONLY=1 [TURN_MIN=50000 TURN_MAX=50999] sh setup.sh <домен TURN> — нужен /etc/anypc/turn-secret,
 # скопированный с основного сервера (учётки TURN выдаёт его хаб).
 # Файлы для скачивания с лендинга кладутся в /srv/anypc/dl (AnyPC.exe, SHA256SUMS).
 set -eu
@@ -23,15 +23,16 @@ SECRET=$(cat /etc/anypc/turn-secret)
 printf 'ANYPC_TURN_SECRET=%s\n' "$SECRET" > /etc/anypc/env
 chmod 600 /etc/anypc/env
 
-# TURN: временные учётки (use-auth-secret), запрет ретрансляции во внутренние сети VPS
+# TURN: временные учётки (use-auth-secret), запрет ретрансляции во внутренние сети VPS и на собственные адреса машины:
+# учётку выдаёт хаб любому клиенту, а relay на свой IP достал бы до соседних служб сервера (почта и т.п.) «изнутри»
 cat > /etc/turnserver.conf <<EOF
 listening-port=3478
 fingerprint
 use-auth-secret
 static-auth-secret=$SECRET
 realm=$DOMAIN
-min-port=49152
-max-port=65535
+min-port=${TURN_MIN:-49152}
+max-port=${TURN_MAX:-65535}
 no-tls
 no-dtls
 no-cli
@@ -45,6 +46,9 @@ denied-peer-ip=127.0.0.0-127.255.255.255
 denied-peer-ip=169.254.0.0-169.254.255.255
 denied-peer-ip=172.16.0.0-172.31.255.255
 denied-peer-ip=192.168.0.0-192.168.255.255
+denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+$(for ip in $(hostname -I); do echo "denied-peer-ip=$ip"; done)
 EOF
 chmod 640 /etc/turnserver.conf
 chgrp turnserver /etc/turnserver.conf 2>/dev/null || true
