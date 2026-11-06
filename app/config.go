@@ -35,6 +35,9 @@ const (
 	DefaultServer = "wss://hk.anypc.org/ws,wss://ru.anypc.org/ws"
 )
 
+// version — из git-тега при сборке (build.sh: -ldflags -X main.version=…).
+var version = "dev"
+
 // oldServers — прежние адреса по умолчанию: переводятся на DefaultServer (свой адрес пользователя не трогается).
 var oldServers = []string{"wss://any.turboseller.xyz/ws", "wss://any-hk.turboseller.xyz/ws", "wss://any-hk.turboseller.xyz/ws,wss://any-ru.turboseller.xyz/ws"}
 

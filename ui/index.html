@@ -34,6 +34,7 @@
     <div><span class="mut" data-t="myid_l"></span><div class="big" id="myid">—</div>
       <div class="mut mono" style="font-size:12px"><span data-t="fp_l"></span> <span id="myfp"></span></div></div>
     <div id="mystate" class="mut">—</div>
+    <div id="myver" class="mut mono" style="font-size:12px"></div>
     <div class="row">
       <input id="newpw" type="password" data-tp="newpw_p" autocomplete="new-password">
       <button id="setpw" data-t="setpw"></button>
@@ -191,6 +192,7 @@ window.onHostState = s => {
   $('myid').textContent = s.id.replace(/(\d{3})(?=\d)/g, '$1 ');
   $('myfp').textContent = s.fp || '';
   $('mystate').textContent = t(s.online ? 'online' : 'offline');
+  $('myver').textContent = s.version ? 'AnyPC ' + s.version : '';
   $('mystate').style.color = s.online ? 'var(--ok)' : 'var(--acc)';
   $('pwstate').textContent = t(s.hasPass ? 'pw_set' : 'pw_none');
   $('incoming').classList.toggle('hidden', !s.session);

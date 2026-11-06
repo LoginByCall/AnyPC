@@ -62,6 +62,9 @@ func newMux(h http.Handler, siteHosts []string, dlDir string, turns, hubs []stri
 	})
 }
 
+// version — из git-тега при сборке (build.sh).
+var version = "dev"
+
 func main() {
 	domain := flag.String("domain", "", "домены клиента/сигнализации для TLS через запятую; пусто — HTTP на -addr (отладка)")
 	siteHost := flag.String("site", "", "домены лендинга через запятую (anypc.org,www.anypc.org)")
@@ -83,7 +86,7 @@ func main() {
 	m := &autocert.Manager{Prompt: autocert.AcceptTOS, HostPolicy: autocert.HostWhitelist(hosts...), Cache: autocert.DirCache(*certs)}
 	go func() { log.Fatal(http.ListenAndServe(":80", m.HTTPHandler(nil))) }()
 	srv := &http.Server{Addr: ":443", Handler: mux, TLSConfig: m.TLSConfig(), ReadHeaderTimeout: 10 * time.Second}
-	log.Println("HTTPS", hosts)
+	log.Println("AnyPC server", version, "HTTPS", hosts)
 	log.Fatal(srv.ListenAndServeTLS("", ""))
 }
 
