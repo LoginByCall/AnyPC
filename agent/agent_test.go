@@ -66,6 +66,9 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 	defer cancel()
 	sessions := make(chan string, 10)
 	a := newAgent(url, id, ff)
+	if e2eAgent != nil {
+		e2eAgent(a)
+	}
 	a.OnState = func(_ bool, s string) { sessions <- s }
 	go a.Run(ctx)
 
@@ -108,8 +111,18 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 	got := make(chan string, 1)
 	authed := make(chan bool, 1)
 	dcOpen := make(chan *webrtc.DataChannel, 1)
+	ctlOpen := make(chan *webrtc.DataChannel, 1)
+	ctlMsgs := make(chan ctlMsg, 8)
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
 		switch dc.Label() {
+		case "ctl":
+			dc.OnOpen(func() { ctlOpen <- dc })
+			dc.OnMessage(func(m webrtc.DataChannelMessage) {
+				var cm ctlMsg
+				if json.Unmarshal(m.Data, &cm) == nil {
+					ctlMsgs <- cm
+				}
+			})
 		case "input":
 			dc.OnOpen(func() { dcOpen <- dc })
 		case "auth": // как клиент в ui/index.html + app: CPace с отпечатками из своих SDP
@@ -208,6 +221,14 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 		}
 	case <-ctx.Done():
 		t.Fatal("канал input не открылся")
+	}
+	if e2eCtl != nil {
+		select {
+		case c := <-ctlOpen:
+			e2eCtl(t, c, ctlMsgs)
+		case <-ctx.Done():
+			t.Fatal("канал ctl не открылся")
+		}
 	}
 	if relay {
 		if p, err := pc.SCTP().Transport().ICETransport().GetSelectedCandidatePair(); err == nil && p != nil {
@@ -308,5 +329,70 @@ func TestClipEcho(t *testing.T) {
 	big := strings.Repeat("я", ClipMax) // 2 байта на символ — больше предела
 	if c.toRemote("") || c.toRemote(big) || c.fromRemote(big) {
 		t.Fatal("пустой или слишком большой текст принят")
+	}
+}
+
+// Крючки e2e для отдельных тестов (по умолчанию nil).
+var (
+	e2eAgent func(*Agent)
+	e2eCtl   func(*testing.T, *webrtc.DataChannel, chan ctlMsg)
+)
+
+// TestMonitorSwitch — REQ-F-09: хост присылает список мониторов, выбор второго перезапускает захват на нём.
+func TestMonitorSwitch(t *testing.T) {
+	two := []Monitor{{Name: "A", W: 1920, H: 1080, Primary: true}, {Name: "B", X: 1920, W: 1280, H: 720}}
+	listMonitors = func() []Monitor { return two }
+	calls := make(chan int, 10)
+	e2eAgent = func(a *Agent) {
+		a.Capture = func(ctx context.Context, mon int) (*exec.Cmd, error) {
+			calls <- mon
+			return exec.CommandContext(ctx, "ffmpeg", FFArgs("test", "libx264", 30, "1M")...), nil
+		}
+	}
+	e2eCtl = func(t *testing.T, ctl *webrtc.DataChannel, msgs chan ctlMsg) {
+		select {
+		case m := <-msgs:
+			if m.T != "monitors" || len(m.List) != 2 || m.Cur != 0 {
+				t.Fatalf("список мониторов: %+v", m)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("нет списка мониторов")
+		}
+		if first := <-calls; first != 0 {
+			t.Fatalf("первый захват монитора %d, ждали основной 0", first)
+		}
+		ctl.SendText(`{"t":"monitor","i":1}`)
+		select {
+		case mon := <-calls:
+			if mon != 1 {
+				t.Fatalf("после выбора захват монитора %d", mon)
+			}
+		case <-time.After(2 * time.Second): // REQ-F-09: ≤ 1 с; с запасом на тест
+			t.Fatal("захват не перезапустился на втором мониторе")
+		}
+	}
+	defer func() { listMonitors, e2eAgent, e2eCtl = monitors, nil, nil }()
+	e2e(t, local(t), "123456789", false, nil, "secret123")
+}
+
+func TestMonitorHelpers(t *testing.T) {
+	m := &Monitor{X: 1920, Y: -200, W: 1280, H: 720}
+	if x, y := monPoint(m, 0, 65535); x != 1920 || y != 519 {
+		t.Errorf("monPoint: %d,%d", x, y)
+	}
+	join := func(a []string) string { return strings.Join(a, " ") }
+	if a := join(FFArgs("desktop:2", "libx264", 30, "1M")); !strings.Contains(a, "ddagrab=output_idx=2:framerate=30") {
+		t.Errorf("ddagrab: %s", a)
+	}
+	if a := join(FFArgs("x11:1280x720@:0+1920,0", "libx264", 30, "1M")); !strings.Contains(a, "-video_size 1280x720 -i :0+1920,0") {
+		t.Errorf("x11grab: %s", a)
+	}
+	cancelled := false
+	s := &session{mons: []Monitor{{}, {}}, capCancel: func() { cancelled = true }}
+	if !s.selectMonitor(1) || !cancelled || s.mon != 1 || !s.switched.Load() {
+		t.Error("переключение на 1")
+	}
+	if s.selectMonitor(1) || s.selectMonitor(5) || s.selectMonitor(-1) {
+		t.Error("тот же или несуществующий монитор принят")
 	}
 }

@@ -182,7 +182,7 @@ func (p *portal) parseStream(v any) error {
 
 func (p *portal) alive() bool { return !p.closed.Load() }
 
-func (p *portal) capture(ctx context.Context, fps int, bitrate, _ string) (*exec.Cmd, error) {
+func (p *portal) capture(ctx context.Context, fps int, bitrate, _ string, _ *Monitor) (*exec.Cmd, error) {
 	dup, err := syscall.Dup(p.fd) // свой экземпляр fd на каждый запуск захвата
 	if err != nil {
 		return nil, err
@@ -202,7 +202,7 @@ func (p *portal) notify(method string, args ...any) error {
 	return p.obj.Call(pRD+"."+method, dbus.FlagNoReplyExpected, append([]any{p.session, vmap{}}, args...)...).Err
 }
 
-func (p *portal) input(e event) error {
+func (p *portal) input(e event, _ *Monitor) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if e.key {

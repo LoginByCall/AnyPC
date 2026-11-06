@@ -43,7 +43,11 @@ type keyInput struct {
 	_     [8]byte
 }
 
-func sendInput(e event) error {
+func sendInput(e event, mon *Monitor) error {
+	if !e.key && e.flags&mAbs != 0 && mon != nil { // выбранный монитор → координаты виртуального экрана
+		e.x, e.y = virtualDesk(monPoint(mon, e.x, e.y))
+		e.flags |= 0x4000 // MOUSEEVENTF_VIRTUALDESK
+	}
 	var p unsafe.Pointer
 	if e.key {
 		k := keyInput{typ: 1, scan: e.scan, flags: e.flags}

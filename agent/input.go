@@ -190,3 +190,31 @@ func evdevCode(e event) uint16 {
 	}
 	return e.scan
 }
+
+// Monitor — монитор хоста; X, Y — левый верхний угол в пикселях виртуального экрана.
+type Monitor struct {
+	Name    string `json:"name"`
+	X       int    `json:"x"`
+	Y       int    `json:"y"`
+	W       int    `json:"w"`
+	H       int    `json:"h"`
+	Primary bool   `json:"primary"`
+}
+
+// monPoint — точка 0..65535 внутри монитора → пиксель виртуального экрана.
+func monPoint(m *Monitor, x, y int32) (int, int) {
+	return m.X + int(x)*(m.W-1)/65535, m.Y + int(y)*(m.H-1)/65535
+}
+
+// listMonitors — мониторы хоста; переменная, чтобы тесты подставляли свой список.
+var listMonitors = monitors
+
+// primaryIndex — индекс основного монитора (0, если не отмечен).
+func primaryIndex(ms []Monitor) int {
+	for i, m := range ms {
+		if m.Primary {
+			return i
+		}
+	}
+	return 0
+}
