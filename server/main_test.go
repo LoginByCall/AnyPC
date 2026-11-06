@@ -26,7 +26,7 @@ func TestRouting(t *testing.T) {
 	ws := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "WS") })
 	h := newMux(ws, "www.example.com", dl)
 
-	if _, b := get(t, h, "WWW.example.com:443", "/"); !strings.Contains(b, `id="download"`) {
+	if _, b := get(t, h, "WWW.example.com:443", "/"); !strings.Contains(b, `id="get"`) {
 		t.Error("www → лендинг")
 	}
 	if c, b := get(t, h, "www.example.com", "/download/AnyPC.exe"); c != 200 || b != "MZ-test" {
