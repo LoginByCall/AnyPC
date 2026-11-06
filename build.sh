@@ -28,5 +28,6 @@ mkdir -p bin
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags='-s -w' -o bin/anypc-server ./server
 GOOS=windows GOARCH=amd64 go vet ./app ./agent
 GOOS=windows GOARCH=amd64 go build -ldflags='-s -w -H windowsgui' -o bin/AnyPC.exe ./app
-(cd bin && sha256sum AnyPC.exe > SHA256SUMS)
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags='-s -w' -o bin/AnyPC-linux-amd64 ./app
+(cd bin && sha256sum AnyPC.exe AnyPC-linux-amd64 > SHA256SUMS)
 ls -la bin

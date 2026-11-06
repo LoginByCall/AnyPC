@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !linux
 
 package agent
 
@@ -10,9 +10,9 @@ import (
 // STUB: вне Windows ввод только логируется — для тестов на Linux.
 func sendInput(e event) error { return nil }
 
-func showIndicator(cid string, _ func()) func() {
+func showIndicator(cid string, _ func()) (func(), error) {
 	log.Printf("плашка: идёт удалённая сессия %s", cid)
-	return func() {}
+	return func() {}, nil
 }
 
 func hideWindow(*exec.Cmd) {}

@@ -11,6 +11,7 @@ Both PCs keep a WebSocket connection to the signaling server (`anypc-server`), w
 - **Transport:** WebRTC (ICE/STUN/TURN, DTLS-SRTP). Video and input never pass through the signaling server in clear.
 - **Controlled side** (`agent/`): screen capture via FFmpeg `ddagrab` (DXGI) → H.264 → Pion WebRTC; input via `SendInput` scancodes; text clipboard sync; file transfer both ways (one data channel per file; to the host's Downloads, or picked on the host via a file dialog).
 - **Window** (`app/`): WebView2 + `ui/index.html` (7 languages). FFmpeg is embedded and extracted to `%LOCALAPPDATA%\AnyPC`. The browser web client (also for Linux/macOS controllers) runs the same CPace code compiled to WebAssembly (`wasm/`).
+- **Linux** (`app/main_linux.go`, `agent/*_linux.go`, beta): `AnyPC-linux-amd64` runs the host and opens the same UI in the browser on `127.0.0.1` (token-protected local API). X11: FFmpeg `x11grab` + XTest; Wayland: xdg-desktop-portal RemoteDesktop/ScreenCast (one-time consent, restore token) + GStreamer `pipewiresrc`. Needs `zenity` (session notice), `ffmpeg` + `xclip` on X11, or `gstreamer1.0-pipewire` + `gstreamer1.0-plugins-ugly` + `wl-clipboard` on Wayland.
 - **Server** (`server/`, `hub/`): signaling, time-limited TURN credentials, landing page (`site/`), downloads.
 
 ## Build

@@ -157,3 +157,36 @@ var scancodes = map[string]uint16{
 	"ArrowRight": 0xE04D, "End": 0xE04F, "ArrowDown": 0xE050, "PageDown": 0xE051, "Insert": 0xE052,
 	"Delete": 0xE053, "MetaLeft": 0xE05B, "MetaRight": 0xE05C, "ContextMenu": 0xE05D,
 }
+
+// plaques — плашка сессии (REQ-F-15): заголовок, текст, подсказка; ключ — язык интерфейса ОС.
+var plaques = map[string][3]string{
+	"en": {"remote session", "A remote session is in progress.", "Click “OK” to disconnect."},
+	"ru": {"удалённая сессия", "Идёт удалённая сессия.", "Нажмите «ОК», чтобы разорвать."},
+	"zh": {"远程会话", "正在进行远程会话。", "点击“确定”断开连接。"},
+	"es": {"sesión remota", "Hay una sesión remota en curso.", "Pulse «Aceptar» para desconectar."},
+	"de": {"Fernsitzung", "Eine Fernsitzung ist aktiv.", "Klicken Sie auf „OK“, um zu trennen."},
+	"fr": {"session à distance", "Une session à distance est en cours.", "Cliquez sur « OK » pour déconnecter."},
+	"it": {"sessione remota", "È in corso una sessione remota.", "Fai clic su «OK» per disconnettere."},
+}
+
+func plaqueText(lang, cid string) (title, text string) {
+	pl, ok := plaques[lang]
+	if !ok {
+		pl = plaques["en"]
+	}
+	return "AnyPC — " + pl[0] + " " + cid, pl[1] + "\n" + cid + "\n\n" + pl[2]
+}
+
+// evdevExt — коды evdev (linux/input-event-codes.h) для extended-клавиш set 1; у остальных evdev = скан-код.
+var evdevExt = map[uint16]uint16{
+	0x1C: 96, 0x1D: 97, 0x35: 98, 0x37: 99, 0x38: 100, 0x45: 69, 0x47: 102, 0x48: 103, 0x49: 104,
+	0x4B: 105, 0x4D: 106, 0x4F: 107, 0x50: 108, 0x51: 109, 0x52: 110, 0x53: 111, 0x5B: 125, 0x5C: 126, 0x5D: 127,
+}
+
+// evdevCode — код клавиши для Linux (X11: +8, Wayland-портал: как есть).
+func evdevCode(e event) uint16 {
+	if e.flags&kExtended != 0 {
+		return evdevExt[e.scan]
+	}
+	return e.scan
+}

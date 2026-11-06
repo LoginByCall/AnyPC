@@ -1,7 +1,7 @@
-//go:build !windows
+//go:build !windows && !linux
 
 package main
 
 import "log"
 
-func main() { log.Fatal("AnyPC.exe — только Windows; сервер — ./server") }
+func main() { log.Fatal("AnyPC — Windows и Linux; сервер — ./server") }
