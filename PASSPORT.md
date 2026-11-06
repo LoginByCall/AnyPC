@@ -28,12 +28,15 @@
 - V1 ✓ `go test ./...`: хаб; e2e (пароль, ICE, DTLS, H.264, канал input, bye); перезапуск захвата; блокировка перебора; декодирование ввода и скан-коды; отпускание зажатого; конфиг (ID, Argon2id). `TestLive` через боевой TURN ✓.
 - V3 — AnyPC.exe на Windows не запускался: окно, ввод, полный экран, плашка — НЕ ПОДТВЕРЖДЕНЫ.
 
-## СЛЕДУЮЩИЙ ШАГ
-- Э2: буфер обмена (текст) сделан, V3 не проверен.
-- Затем: передача файлов (REQ-F-12), несколько мониторов (REQ-F-09). PAKE (REQ-S-02) и ключ ID (REQ-F-01) — после ответа на ASK #10.
-
-## Публично
-- Лендинг https://www.turboseller.xyz (6 языков), загрузка /download/AnyPC.exe + SHA256SUMS (/srv/anypc/dl на VPS).
+## СЛЕДУЮЩИЙ ШАГ — Linux-хост (решение владельца 2026-11-06: «нужно и вэйленд» → X11 + Wayland)
+План (по порядку, каждый шаг — коммит + push в GitHub):
+1. Платформенный слой agent: захват (аргументы процесса), ввод, буфер, выбор файла, плашка — за функциями sendInput/showIndicator/Clip*/pickFile/capture; выбор бэкенда по XDG_SESSION_TYPE.
+2. AnyPC для Linux (app/main_linux.go): агент + локальный HTTP-интерфейс 127.0.0.1 (тот же ui/index.html) + API привязок (hostInfo, setPassword, hostDisconnect, getClip, setClip, pakeRespond); защита: случайный токен + проверка Host (DNS rebinding); открытие через xdg-open.
+3. X11: захват ffmpeg x11grab; ввод XTest (github.com/jezek/xgb, чистый Go); код клавиш = evdev + 8 (таблица code→evdev); буфер xclip; выбор файла и плашка — zenity.
+4. Wayland: xdg-desktop-portal RemoteDesktop+ScreenCast по D-Bus (github.com/godbus/dbus/v5), restore_token (persist_mode=2) — согласие один раз; захват gst-launch pipewiresrc fd → x264enc → stdout; ввод через Notify* портала (evdev-коды); буфер wl-paste/wl-copy.
+Зависимости у пользователя: ffmpeg, xclip, zenity; Wayland — gstreamer1.0-pipewire, gstreamer1.0-plugins-ugly (x264enc), wl-clipboard.
+Проверка: X11 — Xvfb (нет на машине, попросить `sudo apt install xvfb`); Wayland — V3 владельцем (сессия «Ubuntu» вместо «на Xorg»).
+После Linux: выбор монитора (REQ-F-09), привязка ID к ключу (REQ-F-01).
 
 ## Ожидает человека
 - V3 AnyPC.exe. Смена root-пароля VPS, вход по ключу. Замер Томск↔Шэньчжэнь.
