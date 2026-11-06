@@ -28,15 +28,15 @@
 - V1 ✓ `go test ./...`: хаб; e2e (пароль, ICE, DTLS, H.264, канал input, bye); перезапуск захвата; блокировка перебора; декодирование ввода и скан-коды; отпускание зажатого; конфиг (ID, Argon2id). `TestLive` через боевой TURN ✓.
 - V3 — AnyPC.exe на Windows не запускался: окно, ввод, полный экран, плашка — НЕ ПОДТВЕРЖДЕНЫ.
 
-## СЛЕДУЮЩИЙ ШАГ — Linux-хост (решение владельца 2026-11-06: «нужно и вэйленд» → X11 + Wayland)
-План (по порядку, каждый шаг — коммит + push в GitHub):
-1. Платформенный слой agent: захват (аргументы процесса), ввод, буфер, выбор файла, плашка — за функциями sendInput/showIndicator/Clip*/pickFile/capture; выбор бэкенда по XDG_SESSION_TYPE.
-2. AnyPC для Linux (app/main_linux.go): агент + локальный HTTP-интерфейс 127.0.0.1 (тот же ui/index.html) + API привязок (hostInfo, setPassword, hostDisconnect, getClip, setClip, pakeRespond); защита: случайный токен + проверка Host (DNS rebinding); открытие через xdg-open.
-3. X11: захват ffmpeg x11grab; ввод XTest (github.com/jezek/xgb, чистый Go); код клавиш = evdev + 8 (таблица code→evdev); буфер xclip; выбор файла и плашка — zenity.
-4. Wayland: xdg-desktop-portal RemoteDesktop+ScreenCast по D-Bus (github.com/godbus/dbus/v5), restore_token (persist_mode=2) — согласие один раз; захват gst-launch pipewiresrc fd → x264enc → stdout; ввод через Notify* портала (evdev-коды); буфер wl-paste/wl-copy.
-Зависимости у пользователя: ffmpeg, xclip, zenity; Wayland — gstreamer1.0-pipewire, gstreamer1.0-plugins-ugly (x264enc), wl-clipboard.
-Проверка: X11 — Xvfb (нет на машине, попросить `sudo apt install xvfb`); Wayland — V3 владельцем (сессия «Ubuntu» вместо «на Xorg»).
-После Linux: выбор монитора (REQ-F-09), привязка ID к ключу (REQ-F-01).
+## СЛЕДУЮЩИЙ ШАГ — выбор монитора (REQ-F-09), затем ключ ID (REQ-F-01)
+Сделано до этого: Linux-хост X11+Wayland, докачка, приём на диск, лендинг под Linux (см. TZ.md §16).
+Монитор:
+- agent: type Monitor{Name,X,Y,W,H,Primary}; monitors() по платформе (Windows — DXGI EnumOutputs адаптера 0 = индексы ddagrab output_idx; X11 — RandR GetMonitors; Wayland/прочие — nil: монитор выбирается в диалоге портала).
+- Agent.Capture(ctx, mon) — захват выбранного монитора; Windows ddagrab output_idx=N, X11 x11grab -video_size WxH -i :0+X,Y.
+- sendInput(e, *Monitor): Windows — MOUSEEVENTF_VIRTUALDESK с пересчётом в координаты виртуального экрана; X11 — смещение в root.
+- ctl: хост → {"t":"monitors","list":[...],"cur":i}; клиент → {"t":"monitor","i":N}; хост перезапускает захват (отмена ctx захвата, без паузы).
+- ui: выпадающий список мониторов на панели (скрыт при одном), i18n.
+Выкладка — только deploy/publish.sh.
 
 ## Ожидает человека
 - V3 AnyPC.exe. Смена root-пароля VPS, вход по ключу. Замер Томск↔Шэньчжэнь.
