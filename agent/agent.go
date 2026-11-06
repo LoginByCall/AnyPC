@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,9 +36,10 @@ type Agent struct {
 	FFmpeg  string                       // путь к ffmpeg
 	FF      []string                     // аргументы ffmpeg, см. FFArgs
 	FPS     int
-	Stderr  io.Writer                         // вывод ffmpeg; nil — os.Stderr
-	OnState func(online bool, session string) // session "" — сессии нет
-	FileDir string                            // куда принимать файлы; "" — %USERPROFILE%\Downloads
+	Stderr  io.Writer                                    // вывод ffmpeg; nil — os.Stderr
+	OnState func(online bool, session string)            // session "" — сессии нет
+	FileDir string                                       // куда принимать файлы; "" — %USERPROFILE%\Downloads
+	Capture func(ctx context.Context) (*exec.Cmd, error) // свой процесс захвата (H.264 Annex-B в stdout); nil — FFmpeg + FF
 
 	mu        sync.Mutex
 	conn      *websocket.Conn
@@ -80,6 +82,8 @@ func FFArgs(src, enc string, fps int, br string) []string {
 	a := []string{"-hide_banner", "-loglevel", "warning"}
 	if src == "test" {
 		a = append(a, "-re", "-f", "lavfi", "-i", fmt.Sprintf("testsrc2=size=1280x720:rate=%d", fps))
+	} else if disp, ok := strings.CutPrefix(src, "x11:"); ok { // Linux X11: весь экран, с курсором
+		a = append(a, "-f", "x11grab", "-framerate", strconv.Itoa(fps), "-draw_mouse", "1", "-i", disp)
 	} else { // Windows 8+, ffmpeg ≥ 6.0; курсор рисуется
 		a = append(a, "-f", "lavfi", "-i", fmt.Sprintf("ddagrab=framerate=%d", fps), "-vf", "hwdownload,format=bgra")
 	}
@@ -448,8 +452,14 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		s.authed.Store(true)
 		send(authMsg{T: "ok", Conf: conf})
 		log.Printf("сессия %s: вход выполнен", s.cid)
+		closeInd, err := showIndicator(s.cid, a.Disconnect) // REQ-F-15
+		if err != nil {                                     // REQ-S-08: без видимой плашки сессии нет
+			log.Printf("плашка сессии: %v — сессия закрыта", err)
+			s.pc.Close()
+			return
+		}
 		s.mu.Lock()
-		s.closeInd = showIndicator(s.cid, a.Disconnect) // REQ-F-15
+		s.closeInd = closeInd
 		s.mu.Unlock()
 		a.notify()
 		go a.stream(ctx, track)
@@ -501,11 +511,20 @@ func (a *Agent) stream(ctx context.Context, track *webrtc.TrackLocalStaticSample
 // ponytail: h264reader отдаёт NAL только по старт-коду следующего → +1 кадр задержки (33 мс при 30 к/с);
 // убрать — читать пакеты из контейнера (nut/mkv) или кодировать в процессе.
 func (a *Agent) streamOnce(ctx context.Context, track *webrtc.TrackLocalStaticSample) {
-	bin := a.FFmpeg
-	if bin == "" {
-		bin = "ffmpeg"
+	var cmd *exec.Cmd
+	if a.Capture != nil {
+		var err error
+		if cmd, err = a.Capture(ctx); err != nil {
+			log.Printf("захват: %v", err)
+			return
+		}
+	} else {
+		bin := a.FFmpeg
+		if bin == "" {
+			bin = "ffmpeg"
+		}
+		cmd = exec.CommandContext(ctx, bin, a.FF...)
 	}
-	cmd := exec.CommandContext(ctx, bin, a.FF...)
 	hideWindow(cmd)
 	cmd.Stderr = a.Stderr
 	if cmd.Stderr == nil {
