@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -74,11 +75,11 @@ func main() {
 	log.Fatal(srv.ListenAndServeTLS("", ""))
 }
 
-// list — "a, b,,c" → [a b c].
+// list — "a, b,,c,a" → [a b c]: пустые и повторы отбрасываются (повторный запуск sed по флагам дал дубль, 2026-11-06).
 func list(s string) []string {
 	var r []string
 	for _, x := range strings.Split(s, ",") {
-		if x = strings.TrimSpace(x); x != "" {
+		if x = strings.TrimSpace(x); x != "" && !slices.Contains(r, x) {
 			r = append(r, x)
 		}
 	}
