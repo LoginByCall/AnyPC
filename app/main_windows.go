@@ -86,8 +86,10 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	a := &agent.Agent{
 		Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, Key: cfg.key(), FPS: 30, Stderr: logf,
-		Capture: func(ctx context.Context, mon int) (*exec.Cmd, error) { // выход DXGI mon
-			return exec.CommandContext(ctx, ff, agent.FFArgs(fmt.Sprintf("desktop:%d", max(mon, 0)), cfg.Enc, 30, cfg.Bitrate)...), nil
+		Bitrate: agent.Kbps(cfg.Bitrate),
+		Confirm: func(cid, peer string) bool { return !cfg.confirm() || agent.AskAccept(cid, peer) },
+		Capture: func(ctx context.Context, mon, kbps int) (*exec.Cmd, error) { // выход DXGI mon
+			return exec.CommandContext(ctx, ff, agent.FFArgs(fmt.Sprintf("desktop:%d", max(mon, 0)), cfg.Enc, 30, fmt.Sprintf("%dk", kbps))...), nil
 		},
 	}
 	var mu sync.Mutex
@@ -95,7 +97,7 @@ func main() {
 	info := func() map[string]any {
 		mu.Lock()
 		defer mu.Unlock()
-		return map[string]any{"id": cfg.ID, "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass()}
+		return map[string]any{"id": cfg.ID, "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm()}
 	}
 	a.OnState = func(on bool, s string) {
 		mu.Lock()
@@ -106,6 +108,7 @@ func main() {
 	}
 	w.Bind("hostInfo", info)
 	w.Bind("setPassword", cfg.setPassword)
+	w.Bind("setConfirm", cfg.setConfirm)
 	w.Bind("hostDisconnect", a.Disconnect)
 	w.Bind("fullscreen", func(on bool) { setFullscreen(uintptr(w.Window()), on) })
 	w.Bind("minimize", func() { user32.NewProc("ShowWindowAsync").Call(uintptr(w.Window()), 6) }) // SW_MINIMIZE

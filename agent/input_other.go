@@ -26,3 +26,5 @@ func SetClipText(string) error  { return nil }
 
 // STUB: окна выбора файла вне Windows нет.
 func pickFile() (string, bool) { return "", false }
+
+func AskAccept(string, string) bool { return false }

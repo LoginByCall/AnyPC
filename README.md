@@ -37,7 +37,7 @@ Open ports: 80, 443/tcp, 3478/udp+tcp, 49152–65535/udp. The client's default s
 - **Known gaps:** the stored hash is password-equivalent (OPAQUE would fix it); the CPace implementation follows draft-haase-cpace-01 and has no independent audit; binaries are not code-signed. Review welcome.
 
 ## Limitations
-No Ctrl+Alt+Del / UAC / lock screen yet (needs service mode); monitor switching works on Windows (GPU 0 outputs) and X11, on Wayland the monitor is chosen in the portal dialog; clipboard is text ≤ 60 KB; the browser web client keeps files received from the remote PC in memory and does not resume them (the app writes to disk and resumes).
+No Ctrl+Alt+Del / UAC / lock screen yet (needs service mode); bitrate adapts to packet loss only (RTCP receiver reports; each step restarts the encoder, ~0.5 s pause); monitor switching works on Windows (GPU 0 outputs) and X11, on Wayland the monitor is chosen in the portal dialog; clipboard is text ≤ 60 KB; the browser web client keeps files received from the remote PC in memory and does not resume them (the app writes to disk and resumes).
 
 ## License
 MIT — see `LICENSE`. Bundled FFmpeg is GPLv3 (separate program).

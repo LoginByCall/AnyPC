@@ -42,3 +42,24 @@ func TestConfig(t *testing.T) {
 		t.Fatalf("перезагрузка: %v %+v", err, c2)
 	}
 }
+
+// TestConfirmSetting — REQ-F-03: новая установка спрашивает; старая с паролем (без поля) — нет, чтобы не запереть
+// ПК без человека рядом после обновления; выбор сохраняется.
+func TestConfirmSetting(t *testing.T) {
+	dir := t.TempDir()
+	c, _ := loadConfig(filepath.Join(dir, "new.json"))
+	if !c.confirm() {
+		t.Fatal("новая установка должна спрашивать")
+	}
+	old := filepath.Join(dir, "old.json")
+	os.WriteFile(old, []byte(`{"id":"123456789","salt":"AAAA","hash":"AAAA"}`), 0o600)
+	if c, _ = loadConfig(old); c.confirm() {
+		t.Fatal("старая установка с паролем стала спрашивать — удалённый ПК без человека будет недоступен")
+	}
+	if err := c.setConfirm(true); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ = loadConfig(old); !c.confirm() {
+		t.Fatal("выбор не сохранился")
+	}
+}

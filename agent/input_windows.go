@@ -102,3 +102,19 @@ func showIndicator(cid string, onUserClose func()) (closeFn func(), err error) {
 func hideWindow(c *exec.Cmd) {
 	c.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
 }
+
+// AskAccept — окно «Разрешить / Отклонить» (REQ-F-03) поверх всех окон; без ответа AskTimeout → отказ.
+// MessageBoxTimeoutW — недокументированная, но стабильная с Windows XP функция user32; нет её — отказ.
+func AskAccept(cid, peer string) bool {
+	p := user32.NewProc("MessageBoxTimeoutW")
+	if p.Find() != nil {
+		log.Printf("нет MessageBoxTimeoutW — подключение %s отклонено", cid)
+		return false
+	}
+	title, text, _, _ := askText(uiLang(), cid, peer)
+	t, _ := syscall.UTF16PtrFromString(title)
+	m, _ := syscall.UTF16PtrFromString(text)
+	const flags = 0x4 | 0x20 | 0x1000 | 0x10000 | 0x40000 // YESNO | ICONQUESTION | SYSTEMMODAL | SETFOREGROUND | TOPMOST
+	r, _, _ := p.Call(0, uintptr(unsafe.Pointer(m)), uintptr(unsafe.Pointer(t)), flags, 0, uintptr(AskTimeout/time.Millisecond))
+	return r == 6 // IDYES; 32000 — истекло время
+}
