@@ -108,6 +108,7 @@ func main() {
 	w.Bind("setPassword", cfg.setPassword)
 	w.Bind("hostDisconnect", a.Disconnect)
 	w.Bind("fullscreen", func(on bool) { setFullscreen(uintptr(w.Window()), on) })
+	w.Bind("minimize", func() { user32.NewProc("ShowWindowAsync").Call(uintptr(w.Window()), 6) }) // SW_MINIMIZE
 	w.Bind("pakeRespond", pake.ClientRespondB64)
 	w.Bind("hostVerify", pake.HostVerifyB64)
 	w.Bind("knownGet", cfg.knownGet)

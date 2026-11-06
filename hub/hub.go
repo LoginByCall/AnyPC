@@ -229,6 +229,10 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			send(ctx, c, errMsg("not_found"))
 			continue
 		}
+		if m.Type == "connect" { // пароль TURN живёт TurnTTL, а хост в сети неделями — свежий перед каждой сессией
+			fresh, _ := json.Marshal(map[string]any{"id": m.To, "ice": h.ICEServers(m.To)})
+			send(ctx, dst, Msg{V: 1, Type: "hello", Data: fresh})
+		}
 		m.V, m.From = 1, id
 		send(ctx, dst, m)
 	}

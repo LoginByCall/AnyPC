@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -46,6 +47,10 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   let x = '';
   for (let i = 0; i < 75 && !/[✓✗]/.test(x); i++) { await sleep(200); x = await ev("document.getElementById('xfers').textContent"); }
   console.log('file=' + x);
+  // регрессия: обрыв через relay завершал сессию насовсем → автопереподключение, хост не отвечает «занят»
+  await ev("const p = pc; Object.defineProperty(p, 'connectionState', { get: () => 'failed' }); p.onconnectionstatechange(); 1");
+  console.log('dropped=' + await state());
+  console.log('redial=' + await until(s => s.endsWith('|true')));
   process.exit(0);
 })();`
 
@@ -105,6 +110,10 @@ func TestBrowserClient(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "|true") || !strings.Contains(string(out), "right=") {
 		t.Error("верный пароль после неверного: сессия не открылась")
+	}
+	if !strings.Contains(string(out), "dropped=|false") || !strings.Contains(string(out), "redial=") || strings.Contains(string(out), "redial=Error") ||
+		!regexp.MustCompile(`redial=[^\n]*\|true`).MatchString(string(out)) {
+		t.Error("после обрыва сессия не восстановилась сама")
 	}
 	got, err := os.ReadFile(filepath.Join(a.FileDir, "browser.bin")) // отправка файла из браузера (докачка-протокол)
 	if err != nil || len(got) != 300000 || got[251] != 0 || got[252] != 1 {

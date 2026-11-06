@@ -260,6 +260,11 @@ func (a *Agent) run(ctx context.Context) error {
 				}
 			case "bye":
 				log.Printf("клиент %s завершил сессию", s.cid)
+				a.mu.Lock() // свободен сразу: колбэк pion о закрытии асинхронный, а следующий connect уже в пути
+				if a.sess == s {
+					a.sess = nil
+				}
+				a.mu.Unlock()
 				s.pc.Close()
 			}
 			if err != nil {

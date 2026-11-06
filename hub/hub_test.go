@@ -70,7 +70,7 @@ func read(t *testing.T, ctx context.Context, c *websocket.Conn) Msg {
 func TestRelay(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	srv := httptest.NewServer(&Hub{})
+	srv := httptest.NewServer(&Hub{TurnHost: "t.example", TurnSecret: "sec"})
 	defer srv.Close()
 	url := "ws" + strings.TrimPrefix(srv.URL, "http")
 
@@ -83,6 +83,10 @@ func TestRelay(t *testing.T) {
 
 	// happy path: клиент → хост, From проставлен сервером, подмена игнорируется
 	wsjson.Write(ctx, cli, Msg{Type: "connect", To: "123456789", From: "999999999", Data: json.RawMessage(`{"pass":"x"}`)})
+	// регрессия: хост в сети дольше TurnTTL получал протухший пароль TURN — перед connect приходит свежий hello
+	if m := read(t, ctx, host); m.Type != "hello" || !strings.Contains(string(m.Data), `"credential"`) {
+		t.Fatalf("нет свежего hello с TURN перед connect: %+v", m)
+	}
 	if m := read(t, ctx, host); m.Type != "connect" || m.From != cid {
 		t.Fatalf("relay: %+v", m)
 	}
