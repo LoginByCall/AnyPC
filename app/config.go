@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -14,12 +15,14 @@ import (
 
 // config — %APPDATA%\AnyPC\config.json. Enc/Bitrate/Server правятся вручную при необходимости.
 type config struct {
-	ID      string `json:"id"`
-	Server  string `json:"server"`
-	Enc     string `json:"enc"`     // libx264 | h264_nvenc | h264_qsv | h264_amf | h264_mf
-	Bitrate string `json:"bitrate"` // ffmpeg: 4M, 1500k…
-	Salt    []byte `json:"salt,omitempty"`
-	Hash    []byte `json:"hash,omitempty"` // Argon2id (REQ-S-03); сам пароль не хранится
+	ID      string            `json:"id"`
+	Server  string            `json:"server"`
+	Enc     string            `json:"enc"`     // libx264 | h264_nvenc | h264_qsv | h264_amf | h264_mf
+	Bitrate string            `json:"bitrate"` // ffmpeg: 4M, 1500k…
+	Salt    []byte            `json:"salt,omitempty"`
+	Hash    []byte            `json:"hash,omitempty"`  // Argon2id (REQ-S-03); сам пароль не хранится
+	Key     []byte            `json:"key"`             // Ed25519 ключ хоста (REQ-F-01); не покидает ПК
+	Known   map[string]string `json:"known,omitempty"` // ID удалённого ПК → отпечаток его ключа (TOFU, REQ-S-05)
 
 	mu   sync.Mutex
 	path string
@@ -36,8 +39,15 @@ func loadConfig(path string) (*config, error) {
 	if err != nil {
 		return nil, err
 	}
+	changed := false
 	if !hub.IsHostID(c.ID) {
-		c.ID = hub.RandDigits(9)
+		c.ID, changed = hub.RandDigits(9), true
+	}
+	if len(c.Key) != ed25519.PrivateKeySize {
+		_, k, _ := ed25519.GenerateKey(nil)
+		c.Key, changed = k, true
+	}
+	if changed {
 		return c, c.save()
 	}
 	return c, nil
@@ -71,6 +81,31 @@ func (c *config) hasPass() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.Hash) > 0
+}
+
+func (c *config) key() ed25519.PrivateKey { return ed25519.PrivateKey(c.Key) }
+
+func (c *config) fingerprint() string {
+	return pake.KeyFingerprint(c.key().Public().(ed25519.PublicKey))
+}
+
+func (c *config) knownGet(id string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Known[id]
+}
+
+func (c *config) knownSet(id, fp string) error {
+	if !hub.IsHostID(id) || len(fp) > 64 {
+		return errors.New("неверный ID или отпечаток")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.Known == nil {
+		c.Known = map[string]string{}
+	}
+	c.Known[id] = fp
+	return c.save()
 }
 
 // secret — соль и KDF(пароль, соль) для CPace (agent.Agent.Secret).

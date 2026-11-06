@@ -2,14 +2,19 @@ package hub
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"anypc/pake"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -30,6 +35,29 @@ func dial(t *testing.T, ctx context.Context, url string) (*websocket.Conn, strin
 	return c, d.ID
 }
 
+// dialHost — хост: подключение с ключом, подпись вызова сервера (sign=false — подписать мусор).
+func dialHost(t *testing.T, ctx context.Context, url, id string, priv ed25519.PrivateKey, sign bool) (*websocket.Conn, Msg) {
+	t.Helper()
+	pub := priv.Public().(ed25519.PublicKey)
+	c, _, err := websocket.Dial(ctx, url+"?host="+id+"&key="+base64.RawURLEncoding.EncodeToString(pub), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch := read(t, ctx, c)
+	var nonce string
+	json.Unmarshal(ch.Data, &nonce)
+	if ch.Type != "challenge" || nonce == "" {
+		t.Fatalf("ждали challenge: %+v", ch)
+	}
+	sig := ed25519.Sign(priv, pake.RegisterMsg(id, nonce))
+	if !sign {
+		sig = ed25519.Sign(priv, []byte("не то"))
+	}
+	d, _ := json.Marshal(map[string][]byte{"sig": sig})
+	wsjson.Write(ctx, c, Msg{Type: "register", Data: d})
+	return c, read(t, ctx, c)
+}
+
 func read(t *testing.T, ctx context.Context, c *websocket.Conn) Msg {
 	t.Helper()
 	var m Msg
@@ -46,7 +74,11 @@ func TestRelay(t *testing.T) {
 	defer srv.Close()
 	url := "ws" + strings.TrimPrefix(srv.URL, "http")
 
-	host, _ := dial(t, ctx, url+"?host=123456789")
+	_, priv, _ := ed25519.GenerateKey(nil)
+	host, hello := dialHost(t, ctx, url, "123456789", priv, true)
+	if hello.Type != "hello" {
+		t.Fatalf("регистрация: %+v", hello)
+	}
 	cli, cid := dial(t, ctx, url)
 
 	// happy path: клиент → хост, From проставлен сервером, подмена игнорируется
@@ -63,9 +95,47 @@ func TestRelay(t *testing.T) {
 	if m := read(t, ctx, cli); string(m.Data) != `"forbidden"` {
 		t.Fatalf("forbidden: %+v", m)
 	}
-	dup, _, _ := websocket.Dial(ctx, url+"?host=123456789", nil)
-	if m := read(t, ctx, dup); string(m.Data) != `"id_taken"` {
+	if _, m := dialHost(t, ctx, url, "123456789", priv, true); string(m.Data) != `"id_taken"` { // уже в сети
 		t.Fatalf("id_taken: %+v", m)
+	}
+}
+
+// TestHostKeys — REQ-F-01: ID закреплён за ключом; подпись обязательна; привязка переживает перезапуск.
+func TestHostKeys(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	file := filepath.Join(t.TempDir(), "hosts.json")
+	srv := httptest.NewServer(&Hub{Keys: file})
+	url := "ws" + strings.TrimPrefix(srv.URL, "http")
+	_, mine, _ := ed25519.GenerateKey(nil)
+	_, evil, _ := ed25519.GenerateKey(nil)
+
+	if _, m := dialHost(t, ctx, url, "555555555", mine, false); string(m.Data) != `"bad_sig"` {
+		t.Fatalf("подпись не проверяется: %+v", m)
+	}
+	c, m := dialHost(t, ctx, url, "555555555", mine, true)
+	if m.Type != "hello" {
+		t.Fatalf("регистрация: %+v", m)
+	}
+	c.Close(websocket.StatusNormalClosure, "")
+	time.Sleep(100 * time.Millisecond)
+	if _, m := dialHost(t, ctx, url, "555555555", evil, true); string(m.Data) != `"id_taken"` { // чужой ключ, хост не в сети
+		t.Fatalf("ID перехвачен чужим ключом: %+v", m)
+	}
+	srv.Close()
+
+	srv = httptest.NewServer(&Hub{Keys: file}) // перезапуск сервера
+	defer srv.Close()
+	url = "ws" + strings.TrimPrefix(srv.URL, "http")
+	if _, m := dialHost(t, ctx, url, "555555555", evil, true); string(m.Data) != `"id_taken"` {
+		t.Fatalf("привязка не пережила перезапуск: %+v", m)
+	}
+	if _, m := dialHost(t, ctx, url, "555555555", mine, true); m.Type != "hello" {
+		t.Fatalf("владелец не вошёл после перезапуска: %+v", m)
+	}
+	r, _ := http.Get(srv.URL + "?host=555555555") // без ключа
+	if r != nil && r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("хост без ключа: %d", r.StatusCode)
 	}
 }
 

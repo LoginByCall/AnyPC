@@ -4,6 +4,7 @@ package hub
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha1"
@@ -12,8 +13,11 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"os"
 	"sync"
 	"time"
+
+	"anypc/pake"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -40,9 +44,56 @@ const TurnTTL = 24 * time.Hour
 type Hub struct {
 	TurnHost   string // "" — без STUN/TURN (локальная отладка)
 	TurnSecret string // static-auth-secret coturn; "" — только STUN
+	Keys       string // файл привязок ID → ключ хоста (JSON); "" — только в памяти
 
 	mu    sync.Mutex
 	peers map[string]*websocket.Conn
+	keys  map[string]string // ID → публичный ключ (base64url)
+}
+
+// bind закрепляет ID за ключом при первой регистрации (REQ-F-01); чужой ключ для занятого ID — отказ.
+func (h *Hub) bind(id, key string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.keys == nil {
+		h.keys = map[string]string{}
+		if b, err := os.ReadFile(h.Keys); err == nil {
+			json.Unmarshal(b, &h.keys)
+		}
+	}
+	if k, ok := h.keys[id]; ok {
+		return k == key
+	}
+	h.keys[id] = key
+	if h.Keys != "" {
+		b, _ := json.Marshal(h.keys)
+		tmp := h.Keys + ".tmp"
+		if os.WriteFile(tmp, b, 0o600) == nil {
+			os.Rename(tmp, h.Keys)
+		}
+	}
+	return true
+}
+
+// register: вызов → подпись ключом хоста (proof of possession), затем привязка ID.
+func (h *Hub) register(ctx context.Context, c *websocket.Conn, id string, pub ed25519.PublicKey) string {
+	nb := make([]byte, 32)
+	rand.Read(nb)
+	nonce := base64.RawURLEncoding.EncodeToString(nb)
+	d, _ := json.Marshal(nonce)
+	send(ctx, c, Msg{V: 1, Type: "challenge", Data: d})
+	rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	var m Msg
+	var reg struct{ Sig []byte }
+	if wsjson.Read(rctx, c, &m) != nil || m.Type != "register" || json.Unmarshal(m.Data, &reg) != nil ||
+		!ed25519.Verify(pub, pake.RegisterMsg(id, nonce), reg.Sig) {
+		return "bad_sig"
+	}
+	if !h.bind(id, base64.RawURLEncoding.EncodeToString(pub)) {
+		return "id_taken"
+	}
+	return ""
 }
 
 // IsHostID: ID хоста — 9 цифр, первая ненулевая. Клиенты получают "c…".
@@ -126,13 +177,17 @@ func (h *Hub) get(id string) *websocket.Conn {
 	return h.peers[id]
 }
 
-// ServeHTTP: /ws?host=<ID> — регистрация хоста, /ws — клиент.
-// ponytail: ID хоста не привязан к ключу (squatting возможен) — Э1, REQ-F-01.
+// ServeHTTP: /ws?host=<ID>&key=<ed25519, base64url> — хост, /ws — клиент.
 func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("host")
-	if id != "" && !IsHostID(id) {
-		http.Error(w, "bad host id", http.StatusBadRequest)
-		return
+	var pub ed25519.PublicKey
+	if id != "" {
+		k, err := base64.RawURLEncoding.DecodeString(r.URL.Query().Get("key"))
+		if !IsHostID(id) || err != nil || len(k) != ed25519.PublicKeySize {
+			http.Error(w, "bad host id or key", http.StatusBadRequest)
+			return
+		}
+		pub = k
 	}
 	// Origin: свой сайт, окно AnyPC.exe (страница с 127.0.0.1) и агент (без Origin).
 	// У сигнализации нет cookie/полномочий, поэтому проверка Origin здесь не защита, а гигиена.
@@ -145,6 +200,9 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if id == "" {
 		id = "c" + RandDigits(12)
+	} else if e := h.register(ctx, c, id, pub); e != "" {
+		send(ctx, c, errMsg(e))
+		return
 	}
 	if !h.add(id, c) {
 		send(ctx, c, errMsg("id_taken"))
