@@ -1,24 +1,22 @@
 // AnyPC.exe — одна программа на оба ПК: «это рабочее место» (хост) + подключение к удалённому.
-// Окно — WebView2 (есть в Windows 11), интерфейс — ui/index.html, ffmpeg вшит в exe.
+// Окно — WebView2 (есть в Windows 11), интерфейс — ui/index.html; ffmpeg скачивается при первом запуске (ffmpeg.go).
 package main
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
-	"crypto/sha256"
-	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"anypc/agent"
@@ -27,9 +25,6 @@ import (
 
 	webview2 "github.com/jchv/go-webview2"
 )
-
-//go:embed ffmpeg.exe.gz
-var ffmpegGz []byte // собирается build.sh (gyan.dev essentials, GPL — только для своих ПК)
 
 var (
 	user32     = syscall.NewLazyDLL("user32.dll")
@@ -63,10 +58,24 @@ func main() {
 	if err != nil {
 		fatal("Настройки: " + err.Error())
 	}
-	ff, err := extractFFmpeg(dir)
-	if err != nil {
-		fatal("Распаковка ffmpeg: " + err.Error())
-	}
+	// FFmpeg — в фоне: окно и сигнализация работают сразу, захват — когда загрузится (повтор раз в 30 с без сети).
+	var ffMu sync.Mutex
+	ff, ffState := "", "0" // путь к ffmpeg.exe; ffState — проценты загрузки, "err" или "" (готов)
+	go func() {
+		for {
+			p, err := ensureFFmpeg(dir, func(d, t int64) { ffMu.Lock(); ffState = strconv.Itoa(int(d * 100 / max(t, 1))); ffMu.Unlock() })
+			ffMu.Lock()
+			if err == nil {
+				ff, ffState = p, ""
+				ffMu.Unlock()
+				return
+			}
+			ffState = "err"
+			ffMu.Unlock()
+			log.Printf("FFmpeg: %v — повтор через 30 с", err)
+			time.Sleep(30 * time.Second)
+		}
+	}()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		fatal("Локальный порт интерфейса: " + err.Error())
@@ -89,6 +98,12 @@ func main() {
 		Bitrate: agent.Kbps(cfg.Bitrate),
 		Confirm: func(cid, peer string) bool { return !cfg.confirm() || agent.AskAccept(cid, peer) },
 		Capture: func(ctx context.Context, mon, kbps int) (*exec.Cmd, error) { // выход DXGI mon
+			ffMu.Lock()
+			ff := ff
+			ffMu.Unlock()
+			if ff == "" {
+				return nil, errors.New("FFmpeg ещё загружается")
+			}
 			return exec.CommandContext(ctx, ff, agent.FFArgs(fmt.Sprintf("desktop:%d", max(mon, 0)), cfg.Enc, 30, fmt.Sprintf("%dk", kbps))...), nil
 		},
 	}
@@ -97,7 +112,7 @@ func main() {
 	info := func() map[string]any {
 		mu.Lock()
 		defer mu.Unlock()
-		return map[string]any{"id": cfg.ID, "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "version": version}
+		return map[string]any{"id": cfg.ID, "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "version": version, "ffmpeg": ffSnap(&ffMu, &ffState)}
 	}
 	a.OnState = func(on bool, s string) {
 		mu.Lock()
@@ -134,31 +149,11 @@ func main() {
 	a.Disconnect()
 }
 
-// extractFFmpeg распаковывает вшитый ffmpeg один раз; имя с хэшем — новая сборка не путается со старой.
-func extractFFmpeg(dir string) (string, error) {
-	sum := sha256.Sum256(ffmpegGz)
-	p := filepath.Join(dir, fmt.Sprintf("ffmpeg-%x.exe", sum[:6]))
-	if _, err := os.Stat(p); err == nil {
-		return p, nil
-	}
-	zr, err := gzip.NewReader(bytes.NewReader(ffmpegGz))
-	if err != nil {
-		return "", err
-	}
-	tmp := p + ".tmp"
-	f, err := os.Create(tmp)
-	if err != nil {
-		return "", err
-	}
-	_, err = io.Copy(f, zr)
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		os.Remove(tmp)
-		return "", err
-	}
-	return p, os.Rename(tmp, p)
+// ffSnap — состояние загрузки FFmpeg для окна.
+func ffSnap(mu *sync.Mutex, st *string) string {
+	mu.Lock()
+	defer mu.Unlock()
+	return *st
 }
 
 type rect struct{ L, T, R, B int32 }
