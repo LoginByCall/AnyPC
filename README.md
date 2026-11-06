@@ -2,7 +2,7 @@
 
 AnyPC lets you see and control your computer from another one — even when both are behind routers or mobile networks. No port forwarding, no accounts.
 Remote desktop for Windows that works through any NAT — one `AnyPC.exe` for both computers.
-Landing page and download: https://www.turboseller.xyz · Описание на русском — `TZ.md`.
+Landing page and download: https://www.anypc.org · Описание на русском — `TZ.md`.
 
 **Status: beta.** See *Security* and *Limitations* before relying on it.
 
