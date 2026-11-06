@@ -48,3 +48,10 @@ func TestRouting(t *testing.T) {
 		t.Error("any → /ws")
 	}
 }
+
+// TestList — регрессия: повтор в -turn (sed запустили дважды) не даёт дубля в /turns и в выдаче ICE.
+func TestList(t *testing.T) {
+	if got := strings.Join(list(" a,b,,a , c,b"), "|"); got != "a|b|c" {
+		t.Fatalf("list: %q", got)
+	}
+}
