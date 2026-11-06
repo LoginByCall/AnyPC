@@ -84,7 +84,7 @@
         <a class="btn primary" href="#get">
           <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 19h16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <span data-t="dl"></span></a>
-        <a class="btn ghost" href="https://hk.anypc.org/" target="_blank" rel="noopener" data-t="web"></a>
+        <a class="btn ghost" id="webapp" href="https://hk.anypc.org/" target="_blank" rel="noopener" data-t="web"></a>
       </div>
       <div class="meta" data-t="req"></div>
     </div>
@@ -226,9 +226,11 @@ for (const k in T) {
 }
 apply(pick());
 
-// Скачивание — с ближнего узла: зеркала /download/ на каждом хабе (/hubs), берём ответившее первым;
-// размеры и контрольные суммы — с того же зеркала, чтобы совпадали со скачанным файлом.
+// Ближний узел: гонка хабов из /hubs по их /download/SHA256SUMS. С победителя — скачивание (размер и сумма — с того же
+// зеркала, чтобы совпадали со скачанным файлом) и ссылка на веб-клиент. Свой /download/ — только запасной:
+// соединение с ним уже открыто, и в гонке он выигрывал бы нечестно, даже будучи дальним.
 const useMirror = (m, sums) => {
+  if (/^https?:/.test(m)) document.getElementById('webapp').href = m.replace(/download\/$/, '');
   for (const a of document.querySelectorAll('a[data-file]')) a.href = m + a.dataset.file;
   for (const [, h, f] of sums.matchAll(/^([0-9a-f]{64})\s+\*?(\S+)$/gm))
     document.querySelectorAll(`.sum[data-f="${f}"]`).forEach(e => e.textContent = h);
@@ -239,7 +241,8 @@ const useMirror = (m, sums) => {
 };
 const sums = m => fetch(m + 'SHA256SUMS', { cache: 'no-store' }).then(r => r.ok ? r.text().then(t => [m, t]) : Promise.reject());
 fetch('/hubs').then(r => r.json()).catch(() => [])
-  .then(l => Promise.any(['/download/', ...l.map(u => u.replace(/^ws/, 'http').replace(/\/ws$/, '/download/'))].map(sums)))
+  .then(l => Promise.any(l.map(u => u.replace(/^ws/, 'http').replace(/\/ws$/, '/download/')).map(sums)))
+  .catch(() => sums('/download/'))
   .then(([m, t]) => useMirror(m, t), () => {});
 </script>
 </body>
