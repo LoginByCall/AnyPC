@@ -55,7 +55,7 @@ func TestCaptureRestart(t *testing.T) {
 	e2e(t, local(t), "123456789", false, ff, "secret123")
 }
 
-// TestLive: то же через боевой сервер, только TURN. ANYPC_LIVE=wss://any-hk.turboseller.xyz/ws
+// TestLive: то же через боевой сервер, только TURN. ANYPC_LIVE=wss://hk.anypc.org/ws,wss://ru.anypc.org/ws
 func TestLive(t *testing.T) {
 	url := os.Getenv("ANYPC_LIVE")
 	if url == "" {

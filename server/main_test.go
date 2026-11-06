@@ -24,10 +24,13 @@ func TestRouting(t *testing.T) {
 	dl := t.TempDir()
 	os.WriteFile(filepath.Join(dl, "AnyPC.exe"), []byte("MZ-test"), 0o644)
 	ws := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "WS") })
-	h := newMux(ws, "www.example.com", dl, []string{"t1.example", "t2.example"}, []string{"wss://a.example/ws", "wss://b.example/ws"})
+	h := newMux(ws, []string{"www.example.com", "example.com"}, dl, []string{"t1.example", "t2.example"}, []string{"wss://a.example/ws", "wss://b.example/ws"})
 
 	if _, b := get(t, h, "WWW.example.com:443", "/"); !strings.Contains(b, `id="get"`) {
 		t.Error("www → лендинг")
+	}
+	if _, b := get(t, h, "example.com", "/"); !strings.Contains(b, `id="get"`) {
+		t.Error("голый домен (второй в списке -site) → лендинг")
 	}
 	if c, b := get(t, h, "www.example.com", "/download/AnyPC.exe"); c != 200 || b != "MZ-test" {
 		t.Errorf("скачивание: %d %q", c, b)

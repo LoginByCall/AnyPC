@@ -1,10 +1,10 @@
 #!/bin/sh
 # Сборка и выкладка на VPS — только если build.sh (vet, тесты, сборка) прошёл целиком.
-# Серверы: ANYPC_VPS — один или несколько через пробел (по умолчанию root@any-hk.turboseller.xyz); вход по ключу.
+# Серверы: ANYPC_VPS — один или несколько через пробел (по умолчанию root@hk.anypc.org); вход по ключу.
 set -eu
 cd "$(dirname "$0")/.."
 ./build.sh
-for H in ${ANYPC_VPS:-root@any-hk.turboseller.xyz}; do
+for H in ${ANYPC_VPS:-root@hk.anypc.org}; do
   echo "== $H"
   ssh "$H" 'mkdir -p /root/anypc-deploy /srv/anypc/dl'
   scp bin/anypc-server "$H:/root/anypc-deploy/"
