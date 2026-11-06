@@ -85,8 +85,11 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const WS = window.ANYPC?.ws || (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
+// Хабы сигнализации: в программе — из настроек (через запятую), в браузере — свой и соседние из /hubs.
+const HUBS = (window.ANYPC?.ws || (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws').split(',').map(u => u.trim()).filter(Boolean);
+const httpOf = u => u.replace(/^ws/, 'http').replace(/\/ws$/, '');
 const APP = typeof window.hostInfo === 'function'; // открыто в AnyPC.exe
+if (!APP) fetch(httpOf(HUBS[0]) + '/hubs').then(r => r.json()).then(l => { for (const u of l) if (!HUBS.includes(u)) HUBS.push(u); }).catch(() => {});
 // ---------- Языки: по языку Windows/браузера, по умолчанию английский ----------
 const L = {
   en: { turn_l: "Relay server", turn_t: "Used only when a direct connection is impossible. Ping: from this PC + from the remote PC (known after connecting).", auto: "Auto", ms: "ms",
@@ -216,7 +219,7 @@ function renderRecent() {
 renderRecent();
 
 // ---------- Сессия ----------
-let ws, pc, dc, ctl, host, timer, last, samples = [], lastClip = '';
+let ws, pc, dc, ctl, host, timer, last, samples = [], lastClip = '', socks = [], cur = null; // ws — хаб-победитель, socks — все попытки
 const held = new Set();
 const v = $('v');
 const show = sess => { $('home').classList.toggle('hidden', sess); $('sess').classList.toggle('hidden', !sess); };
@@ -257,18 +260,20 @@ for (const s of [$('turn'), $('turn2')]) s.onchange = () => {
   turnSel = s.value; store.set('turn', turnSel); renderTurn();
   if (pc && again) redial(); // в сессии — переподключиться через выбранный сервер (пароль ещё в памяти)
 };
-fetch(WS.replace(/^ws/, 'http').replace(/\/ws$/, '/turns')).then(r => r.json()).then(l => {
-  turns = l; renderTurn(); measureTurns(); setInterval(measureTurns, 120000);
-}).catch(() => {});
+(async () => { // список TURN — с первого ответившего хаба
+  for (const u of HUBS) try { turns = await (await fetch(httpOf(u) + '/turns')).json(); break; } catch {}
+  if (turns.length) { renderTurn(); measureTurns(); setInterval(measureTurns, 120000); }
+})();
 
 function end(reason, keep) {
   if (!keep) again = null;
-  if (!ws && !pc) return;
+  if (!socks.length && !pc) return;
   releaseAll();
   clearInterval(timer);
   rttHost = {}; turnCur = ''; if (turns.length) renderTurn();
   if (pc) sig('bye', 'client'); // хост освобождается сразу — повторное «Подключиться» не получит «занят»
-  pc?.close(); ws?.close();
+  pc?.close(); for (const w of socks) w.close();
+  socks = []; cur = null;
   pc = ws = dc = ctl = null;
   $('mon').classList.add('hidden');
   setFs(false);
@@ -287,22 +292,35 @@ $('go').onclick = async () => {
   $('msg').textContent = t('connecting');
   if (!APP && !(await loadPake())) { $('msg').textContent = t('need_app'); return; }
   last = null;
-  // Обработчики привязаны к своей попытке: закрытие старого ws/pc не должно рвать новую (регрессия «повтор не подключается»).
-  const my = ws = new WebSocket(WS);
-  let ice = [];
-  my.onmessage = async e => {
-    if (my !== ws) return;
-    const m = JSON.parse(e.data);
-    if (m.type === 'hello') {
-      ice = m.data.ice || [];
-      sig('connect', { turn: turnSel, rtt: Object.fromEntries(Object.entries(rttMe).filter(([, v]) => v != null)) });
-      $('msg').textContent = t('waiting');
-    }
-    else if (m.type === 'error') end(t('err') + (L[lang]['e_' + m.data] || m.data));
-    else if (m.type === 'bye') end(t('host_bye'));
-    else if (m.type === 'offer') {
-      if (m.data.turn) { turnCur = m.data.turn; ice = ice.filter(s => [].concat(s.urls).every(u => u.split(':')[1] === turnCur)); }
-      rttHost = m.data.rtt || {}; renderTurn();
+  // Резервная сигнализация: WS ко всем хабам сразу, сессия — через тот, чей offer пришёл первым.
+  // Обработчики привязаны к своей попытке (att): закрытие старых ws/pc не должно рвать новую (регрессия «повтор не подключается»).
+  const att = cur = {}, errs = [];
+  const weak = [t('no_server'), t('err') + (L[lang].e_not_found || 'not_found')]; // «этот хаб не знает хост» — не главная причина
+  const lose = msg => { // хаб отказал до offer; конец — только когда отказали все
+    errs.push(msg);
+    if (!ws && cur === att && errs.length === HUBS.length) end(errs.find(e => !weak.includes(e)) || errs[0]);
+  };
+  for (const u of HUBS) {
+    const w = new WebSocket(u);
+    socks.push(w);
+    let ice = [], out = false;
+    const fail = msg => { if (!out) { out = true; lose(msg); } };
+    w.onmessage = async e => {
+      if (cur !== att || (ws && ws !== w)) return;
+      const m = JSON.parse(e.data);
+      if (m.type === 'hello') {
+        ice = m.data.ice || [];
+        w.send(JSON.stringify({ v: 1, type: 'connect', to: host, data: { turn: turnSel, rtt: Object.fromEntries(Object.entries(rttMe).filter(([, v]) => v != null)) } }));
+        $('msg').textContent = t('waiting');
+      }
+      else if (m.type === 'error') { const msg = t('err') + (L[lang]['e_' + m.data] || m.data); ws === w ? end(msg) : fail(msg); }
+      else if (m.type === 'bye') { if (ws === w) end(t('host_bye')); }
+      else if (m.type === 'offer') {
+        if (ws) return;
+        ws = w; // победитель; остальные хабы больше не нужны
+        for (const o of socks) if (o !== w) o.close();
+        if (m.data.turn) { turnCur = m.data.turn; ice = ice.filter(s => [].concat(s.urls).every(u => u.split(':')[1] === turnCur)); }
+        rttHost = m.data.rtt || {}; renderTurn();
       const mine = pc = new RTCPeerConnection({ iceServers: ice, iceTransportPolicy: $('relay').checked ? 'relay' : 'all' });
       pc.ontrack = ev => {
         v.srcObject = ev.streams[0] || new MediaStream([ev.track]);
@@ -322,10 +340,15 @@ $('go').onclick = async () => {
       await pc.setRemoteDescription({ type: m.data.type, sdp: m.data.sdp });
       await pc.setLocalDescription();
       sig('answer', pc.localDescription);
-      timer = setInterval(stats, 1000);
-    } else if (m.type === 'ice') pc?.addIceCandidate(m.data);
-  };
-  my.onclose = () => { if (my === ws && pc?.connectionState !== 'connected') end(t('no_server')); };
+        timer = setInterval(stats, 1000);
+      } else if (m.type === 'ice') { if (ws === w) pc?.addIceCandidate(m.data); }
+    };
+    w.onclose = () => {
+      if (cur !== att) return;
+      if (ws === w) { if (pc?.connectionState !== 'connected') end(t('no_server')); }
+      else if (!ws) fail(t('no_server'));
+    };
+  }
 };
 $('pw').onkeydown = e => { if (e.key === 'Enter') $('go').click(); };
 $('bye').onclick = () => end(t('ended'));

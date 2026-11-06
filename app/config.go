@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 
 	"anypc/hub"
@@ -30,9 +31,12 @@ type config struct {
 }
 
 const (
-	DefaultServer = "wss://any-hk.turboseller.xyz/ws"
-	oldServer     = "wss://any.turboseller.xyz/ws"
+	// Хабы сигнализации через запятую: хост в сети на всех, клиент идёт через первый ответивший.
+	DefaultServer = "wss://any-hk.turboseller.xyz/ws,wss://any-ru.turboseller.xyz/ws"
 )
+
+// oldServers — прежние адреса по умолчанию: переводятся на DefaultServer (свой адрес пользователя не трогается).
+var oldServers = []string{"wss://any.turboseller.xyz/ws", "wss://any-hk.turboseller.xyz/ws"}
 
 func loadConfig(path string) (*config, error) {
 	c := &config{path: path, Server: DefaultServer, Enc: "libx264", Bitrate: "4M"}
@@ -46,7 +50,7 @@ func loadConfig(path string) (*config, error) {
 		return nil, err
 	}
 	changed := false
-	if c.Server == oldServer { // домен any. переименован 2026-11-06
+	if slices.Contains(oldServers, c.Server) { // any. переименован, затем добавлен резервный хаб (2026-11-06)
 		c.Server, changed = DefaultServer, true
 	}
 	if !hub.IsHostID(c.ID) {

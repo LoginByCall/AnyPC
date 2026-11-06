@@ -21,7 +21,7 @@ import (
 )
 
 // newMux: хост siteHost → лендинг и /download/ (каталог dlDir); любой другой → веб-клиент и /ws.
-func newMux(h http.Handler, siteHost, dlDir string, turns []string) http.Handler {
+func newMux(h http.Handler, siteHost, dlDir string, turns, hubs []string) http.Handler {
 	app := http.NewServeMux()
 	app.Handle("/ws", h)
 	// Список TURN без учёток — клиент мерит до них пинг до подключения; окну программы (Origin 127.0.0.1) тоже.
@@ -29,6 +29,12 @@ func newMux(h http.Handler, siteHost, dlDir string, turns []string) http.Handler
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(append([]string{}, turns...))
+	})
+	// Все хабы сигнализации (wss://…/ws), включая этот: веб-клиент стучится во все и идёт через первый ответивший.
+	app.HandleFunc("GET /hubs", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(append([]string{}, hubs...))
 	})
 	app.Handle("/", http.FileServer(http.FS(ui.FS)))
 	www := http.NewServeMux()
@@ -54,12 +60,13 @@ func main() {
 	siteHost := flag.String("site", "", "домен лендинга (www…)")
 	dl := flag.String("dl", "", "каталог файлов для /download/ на лендинге")
 	addr := flag.String("addr", ":8080", "адрес HTTP без TLS")
-	turn := flag.String("turn", "", "хосты STUN/TURN через запятую, по порядку предпочтения")
+	turn := flag.String("turn", "", "хосты STUN/TURN через запятую")
+	hubs := flag.String("hubs", "", "все хабы сигнализации через запятую (wss://…/ws), для веб-клиента; пусто — только этот")
 	certs := flag.String("certs", "certs", "каталог кэша сертификатов")
 	flag.Parse()
 
 	h := &hub.Hub{TurnHosts: list(*turn), TurnSecret: os.Getenv("ANYPC_TURN_SECRET"), Keys: filepath.Join(filepath.Dir(*certs), "hosts.json")}
-	mux := newMux(h, *siteHost, *dl, h.TurnHosts)
+	mux := newMux(h, *siteHost, *dl, h.TurnHosts, list(*hubs))
 	if *domain == "" {
 		log.Println("HTTP", *addr)
 		log.Fatal(http.ListenAndServe(*addr, mux))
