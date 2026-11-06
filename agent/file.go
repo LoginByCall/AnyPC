@@ -2,32 +2,41 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pion/webrtc/v4"
 )
 
-// Передача файлов (REQ-F-12): отдельный канал "file" на каждый файл, в любую сторону.
+// Передача файлов (REQ-F-12): отдельный канал "file" на каждый файл, в любую сторону, с докачкой.
 //
-//	отправитель → {"t":"meta","name","size"}, двоичные куски ≤ 16 КБ, {"t":"end"}
+//	отправитель → {"t":"meta","name","size","id"}         id — хэш имени/размера/времени изменения
+//	получатель  → {"t":"resume","offset"}                 сколько уже есть от прошлой попытки
+//	отправитель → двоичные куски ≤ 16 КБ с offset, {"t":"end"}
 //	получатель  → {"t":"done","sha256"} | {"t":"err","msg"}, затем закрывает канал.
 //
-// Закрытие канала до "done" = отмена: получатель удаляет недокачанный файл.
+// {"t":"cancel"} от любой стороны — отмена: часть удаляется. Закрытие канала без "done"/"cancel" —
+// обрыв: часть остаётся до повторной отправки того же файла (или 7 дней).
 // Целостность кусков обеспечивает DTLS; SHA-256 всего файла — для журнала и проверки человеком.
 type fileMsg struct {
 	T      string `json:"t"`
 	Name   string `json:"name,omitempty"`
 	Size   int64  `json:"size,omitempty"`
+	ID     string `json:"id,omitempty"`
+	Offset int64  `json:"offset,omitempty"`
 	SHA256 string `json:"sha256,omitempty"`
 	Msg    string `json:"msg,omitempty"`
 }
@@ -85,79 +94,181 @@ func sendJSON(dc *webrtc.DataChannel, m fileMsg) {
 	dc.SendText(string(b))
 }
 
+// Receiver — приём файла на диск с докачкой. Общий для хоста (канал "file") и программы
+// (окно получает файл с удалённого ПК и передаёт куски сюда через привязки).
+type Receiver struct {
+	dir       string
+	f         *os.File
+	part, dst string
+	name      string
+	size, got int64
+	h         hash.Hash
+}
+
+var idRe = regexp.MustCompile(`^[0-9a-f]{16,64}$`)
+
+func NewReceiver(dir string) *Receiver { return &Receiver{dir: dir} }
+
+// Open начинает приём; offset — сколько байт уже есть от прерванной попытки с тем же id.
+func (r *Receiver) Open(name string, size int64, id string) (offset int64, err error) {
+	if r.f != nil || size < 0 {
+		return 0, errors.New("неверное начало приёма")
+	}
+	if err := os.MkdirAll(r.dir, 0o755); err != nil {
+		return 0, err
+	}
+	cleanParts(r.dir)
+	if !idRe.MatchString(id) { // без id — без докачки
+		id = hex.EncodeToString(randBytes(16))
+	}
+	r.name, r.size, r.h = safeName(name), size, sha256.New()
+	r.part = filepath.Join(r.dir, ".anypc-"+id+".part")
+	if r.f, err = os.OpenFile(r.part, os.O_RDWR|os.O_CREATE, 0o644); err != nil {
+		return 0, err
+	}
+	n, err := io.Copy(r.h, r.f) // хэш уже принятого; позиция — в конце
+	if err != nil || n > size {
+		r.f.Truncate(0)
+		r.f.Seek(0, io.SeekStart)
+		r.h.Reset()
+		n = 0
+	}
+	r.got = n
+	return n, nil
+}
+
+func (r *Receiver) Write(b []byte) error {
+	if r.f == nil || r.got+int64(len(b)) > r.size {
+		return errors.New("лишние данные")
+	}
+	if _, err := r.f.Write(b); err != nil {
+		return err // например, нет места на диске
+	}
+	r.h.Write(b)
+	r.got += int64(len(b))
+	return nil
+}
+
+// Finish проверяет размер и даёт файлу настоящее имя (свободное: «name (1).ext»…).
+func (r *Receiver) Finish() (dst, sum string, err error) {
+	if r.f == nil {
+		return "", "", errors.New("приём не начат")
+	}
+	err = r.f.Close()
+	r.f = nil
+	if err == nil && r.got != r.size {
+		err = fmt.Errorf("получено %d из %d байт", r.got, r.size)
+	}
+	if err == nil {
+		r.dst = freePath(r.dir, r.name)
+		err = os.Rename(r.part, r.dst)
+	}
+	if err != nil {
+		os.Remove(r.part)
+		return "", "", err
+	}
+	return r.dst, hex.EncodeToString(r.h.Sum(nil)), nil
+}
+
+// Abort: keep — оставить часть для докачки (обрыв), иначе удалить (отмена).
+func (r *Receiver) Abort(keep bool) {
+	if r.f == nil {
+		return
+	}
+	r.f.Close()
+	r.f = nil
+	if !keep {
+		os.Remove(r.part)
+	}
+}
+
+// cleanParts удаляет брошенные части старше 7 дней.
+func cleanParts(dir string) {
+	old, _ := filepath.Glob(filepath.Join(dir, ".anypc-*.part"))
+	for _, p := range old {
+		if st, err := os.Stat(p); err == nil && time.Since(st.ModTime()) > 7*24*time.Hour {
+			os.Remove(p)
+		}
+	}
+}
+
+func randBytes(n int) []byte {
+	b := make([]byte, n)
+	rand.Read(b)
+	return b
+}
+
+// fileID — id для докачки: тот же файл (путь, размер, время изменения) → тот же id.
+func fileID(path string, st os.FileInfo) string {
+	h := sha256.Sum256([]byte(fmt.Sprintf("%s|%d|%d", path, st.Size(), st.ModTime().UnixNano())))
+	return hex.EncodeToString(h[:16])
+}
+
 // receiveFile принимает файл от клиента в папку загрузок хоста.
 func (a *Agent) receiveFile(dc *webrtc.DataChannel) {
-	var (
-		f         *os.File
-		part, dst string
-		size, got int64
-		h         = sha256.New()
-		done      bool
-	)
+	r := NewReceiver(a.fileDir())
+	var mu sync.Mutex
+	state := "new" // new → open → finished
 	fail := func(msg string) {
-		log.Printf("файл %q: %s", dst, msg)
+		log.Printf("файл %q: %s", r.name, msg)
+		r.Abort(false)
+		state = "finished"
 		sendJSON(dc, fileMsg{T: "err", Msg: msg})
-		done = true
 		dc.Close()
 	}
 	dc.OnMessage(func(m webrtc.DataChannelMessage) {
-		if done {
+		mu.Lock()
+		defer mu.Unlock()
+		if state == "finished" {
 			return
 		}
 		if !m.IsString {
-			if f == nil || got+int64(len(m.Data)) > size {
-				fail("лишние данные")
-				return
+			if state != "open" {
+				fail("данные до meta")
+			} else if err := r.Write(m.Data); err != nil {
+				fail(err.Error())
 			}
-			if _, err := f.Write(m.Data); err != nil {
-				fail(err.Error()) // например, нет места на диске
-				return
-			}
-			h.Write(m.Data)
-			got += int64(len(m.Data))
 			return
 		}
 		var fm fileMsg
 		json.Unmarshal(m.Data, &fm)
 		switch {
-		case fm.T == "meta" && f == nil && fm.Size >= 0:
-			dir := a.fileDir()
-			os.MkdirAll(dir, 0o755)
-			dst = freePath(dir, safeName(fm.Name))
-			part, size = dst+".anypc-part", fm.Size
-			var err error
-			if f, err = os.Create(part); err != nil {
-				fail(err.Error())
-			}
-		case fm.T == "end" && f != nil:
-			err := f.Close()
-			f = nil
-			if err == nil && got != size {
-				err = fmt.Errorf("получено %d из %d байт", got, size)
-			}
-			if err == nil {
-				dst = freePath(filepath.Dir(dst), filepath.Base(dst)) // имя могли занять за время передачи
-				err = os.Rename(part, dst)
-			}
+		case fm.T == "meta" && state == "new":
+			off, err := r.Open(fm.Name, fm.Size, fm.ID)
 			if err != nil {
-				os.Remove(part)
 				fail(err.Error())
 				return
 			}
-			sum := hex.EncodeToString(h.Sum(nil))
-			log.Printf("файл принят: %s (%d байт, SHA-256 %s)", dst, size, sum)
-			done = true
+			state = "open"
+			if off > 0 {
+				log.Printf("файл %q: докачка с %d байт", r.name, off)
+			}
+			sendJSON(dc, fileMsg{T: "resume", Offset: off})
+		case fm.T == "end" && state == "open":
+			dst, sum, err := r.Finish()
+			if err != nil {
+				fail(err.Error())
+				return
+			}
+			state = "finished"
+			log.Printf("файл принят: %s (%d байт, SHA-256 %s)", dst, r.size, sum)
 			sendJSON(dc, fileMsg{T: "done", SHA256: sum})
+		case fm.T == "cancel":
+			r.Abort(false)
+			state = "finished"
+			dc.Close()
 		default:
 			fail("неожиданное сообщение")
 		}
 	})
-	dc.OnClose(func() { // отмена или обрыв: не оставлять недокачанное
-		if f != nil {
-			f.Close()
-			os.Remove(part)
-			log.Printf("файл %q: передача прервана", dst)
+	dc.OnClose(func() { // обрыв без done/cancel: часть остаётся для докачки
+		mu.Lock()
+		defer mu.Unlock()
+		if state == "open" {
+			r.Abort(true)
+			log.Printf("файл %q: передача прервана, принято %d из %d байт — докачается при повторной отправке", r.name, r.got, r.size)
 		}
+		state = "finished"
 	})
 }
 
@@ -178,7 +289,7 @@ func sendFile(ctx context.Context, pc *webrtc.PeerConnection, path string) error
 	}
 	defer dc.Close()
 	open, closed, low := make(chan struct{}), make(chan struct{}), make(chan struct{}, 1)
-	result := make(chan fileMsg, 1)
+	result := make(chan fileMsg, 4)
 	dc.OnOpen(func() { close(open) })
 	dc.OnClose(func() { close(closed) })
 	dc.SetBufferedAmountLowThreshold(fileHigh / 4)
@@ -204,7 +315,27 @@ func sendFile(ctx context.Context, pc *webrtc.PeerConnection, path string) error
 	case <-time.After(10 * time.Second):
 		return errors.New("канал не открылся")
 	}
-	sendJSON(dc, fileMsg{T: "meta", Name: filepath.Base(path), Size: st.Size()})
+	sendJSON(dc, fileMsg{T: "meta", Name: filepath.Base(path), Size: st.Size(), ID: fileID(path, st)})
+	var off int64
+	select {
+	case r := <-result:
+		if r.T != "resume" || r.Offset < 0 || r.Offset > st.Size() {
+			return fmt.Errorf("получатель: %s %s", r.T, r.Msg)
+		}
+		off = r.Offset
+	case <-closed:
+		return errors.New("отменено получателем")
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(30 * time.Second):
+		return errors.New("получатель не ответил")
+	}
+	if off > 0 {
+		log.Printf("отправка %s: докачка с %d байт", path, off)
+		if _, err := src.Seek(off, io.SeekStart); err != nil {
+			return err
+		}
+	}
 	buf := make([]byte, fileChunk)
 	for {
 		n, err := src.Read(buf)
@@ -233,7 +364,7 @@ func sendFile(ctx context.Context, pc *webrtc.PeerConnection, path string) error
 	select {
 	case r := <-result:
 		if r.T != "done" {
-			return errors.New(r.Msg)
+			return fmt.Errorf("получатель: %s %s", r.T, r.Msg)
 		}
 		log.Printf("файл отправлен: %s (SHA-256 у получателя %s)", path, r.SHA256)
 		return nil

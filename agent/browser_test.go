@@ -36,6 +36,10 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   console.log('wrong=' + await until(s => s.includes('rror')));
   await ev("document.getElementById('pw').value='secret123'; document.getElementById('go').click()");
   console.log('right=' + await until(s => s.endsWith('|true')));
+  await ev("sendFile(new File([new Uint8Array(300000).map((_, i) => i % 251)], 'browser.bin'))");
+  let x = '';
+  for (let i = 0; i < 75 && !/[✓✗]/.test(x); i++) { await sleep(200); x = await ev("document.getElementById('xfers').textContent"); }
+  console.log('file=' + x);
   process.exit(0);
 })();`
 
@@ -61,7 +65,9 @@ func TestBrowserClient(t *testing.T) {
 	defer srv.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	go newAgent("ws"+strings.TrimPrefix(srv.URL, "http")+"/ws", "123456789", FFArgs("test", "libx264", 30, "1M")).Run(ctx)
+	a := newAgent("ws"+strings.TrimPrefix(srv.URL, "http")+"/ws", "123456789", FFArgs("test", "libx264", 30, "1M"))
+	a.FileDir = t.TempDir() // не в настоящие «Загрузки»
+	go a.Run(ctx)
 
 	l, _ := net.Listen("tcp", "127.0.0.1:0")
 	port := strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
@@ -87,5 +93,9 @@ func TestBrowserClient(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "|true") || !strings.Contains(string(out), "right=") {
 		t.Error("верный пароль после неверного: сессия не открылась")
+	}
+	got, err := os.ReadFile(filepath.Join(a.FileDir, "browser.bin")) // отправка файла из браузера (докачка-протокол)
+	if err != nil || len(got) != 300000 || got[251] != 0 || got[252] != 1 {
+		t.Errorf("файл из браузера: %d байт, %v", len(got), err)
 	}
 }
