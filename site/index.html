@@ -50,6 +50,8 @@
   ul.list { margin: 0; padding-left: 20px; } ul.list li { margin: 6px 0; }
   .two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; } @media (max-width: 760px) { .two { grid-template-columns: 1fr; } }
   .warn { color: var(--acc); font-weight: 600; }
+  .gh { display: inline-flex; align-items: center; gap: 6px; color: var(--fg); text-decoration: none; font-size: 14px; font-weight: 600; }
+  .gh:hover { color: var(--acc); }
   footer { border-top: 1px solid var(--line); color: var(--mut); font-size: 13px; padding: 24px 0 40px; margin-top: 24px; }
 </style>
 </head>
@@ -57,7 +59,10 @@
 <div class="wrap">
   <header class="top">
     <a class="logo" href="#"><svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true"><rect x="1" y="3" width="15" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><rect x="10" y="12" width="15" height="11" rx="2" fill="var(--acc)"/></svg>AnyPC</a>
-    <nav class="langs" id="langs" aria-label="Language"></nav>
+    <div class="row" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+      <a class="gh" href="https://github.com/LoginByCall/AnyPC" target="_blank" rel="noopener" aria-label="GitHub"><svg width="18" height="18" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38v-1.33c-2.23.48-2.7-1.07-2.7-1.07-.36-.92-.89-1.17-.89-1.17-.73-.5.06-.49.06-.49.8.06 1.23.83 1.23.83.72 1.22 1.88.87 2.34.66.07-.52.28-.87.51-1.07-1.78-.2-3.65-.89-3.65-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.2c0 .21.15.46.55.38A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>GitHub</a>
+      <nav class="langs" id="langs" aria-label="Language"></nav>
+    </div>
   </header>
 
   <div class="hero">
@@ -117,7 +122,7 @@
     </div>
   </section>
 
-  <footer data-t="foot"></footer>
+  <footer><span data-t="foot"></span> · <a href="https://github.com/LoginByCall/AnyPC" target="_blank" rel="noopener">GitHub</a> · MIT</footer>
 </div>
 
 <script>
@@ -135,7 +140,7 @@ const T = {
     secT: 'Security', sec1: 'Every connection requires the password set on the controlled PC.', sec2: 'During a session the controlled PC always shows a notice with a button to disconnect.',
     sec3: 'After 5 wrong passwords, access is temporarily locked.', sec4: 'Use AnyPC only on your own computers or with the owner’s consent.',
     sec5: 'Never give your ID and password to someone who calls you unexpectedly — it is a common scam.',
-    limT: 'Beta limitations', lim1: 'Ctrl+Alt+Del, UAC prompts and the lock screen are not available yet.', lim2: 'Clipboard: text only. File transfer is coming soon.', lim3: 'One monitor (the primary one) is shown.',
+    limT: 'Beta limitations', lim1: 'Ctrl+Alt+Del, UAC prompts and the lock screen are not available yet.', lim2: 'Clipboard: text only; files are sent with the toolbar buttons.', lim3: 'One monitor (the primary one) is shown.',
     foot: 'AnyPC beta. Includes FFmpeg (GPLv3), source code at ffmpeg.org. Provided “as is”, without warranty.', size: ' · ' },
   ru: { _: 'Русский', badge: 'Бета · бесплатно', title: 'Ваш компьютер — откуда угодно', lead: 'AnyPC показывает экран вашего ПК с Windows и даёт управлять им с другого компьютера — даже если оба за роутерами или в мобильной сети. Без проброса портов и регистрации.',
     dl: 'Скачать для Windows', web: 'Открыть веб-клиент', req: 'Windows 10/11 · 64 бит', whyT: 'Почему AnyPC',
@@ -150,7 +155,7 @@ const T = {
     secT: 'Безопасность', sec1: 'Любое подключение требует пароль, заданный на управляемом ПК.', sec2: 'Во время сессии на управляемом ПК всегда видно уведомление с кнопкой разрыва.',
     sec3: 'После 5 неверных паролей доступ временно блокируется.', sec4: 'Используйте AnyPC только на своих компьютерах или с согласия владельца.',
     sec5: 'Никогда не сообщайте ID и пароль тому, кто неожиданно вам позвонил, — это частая схема мошенников.',
-    limT: 'Ограничения бета-версии', lim1: 'Ctrl+Alt+Del, окна UAC и экран блокировки пока недоступны.', lim2: 'Буфер обмена — только текст. Передача файлов — скоро.', lim3: 'Показывается один (основной) монитор.',
+    limT: 'Ограничения бета-версии', lim1: 'Ctrl+Alt+Del, окна UAC и экран блокировки пока недоступны.', lim2: 'Буфер обмена — только текст; файлы передаются кнопками на панели.', lim3: 'Показывается один (основной) монитор.',
     foot: 'AnyPC, бета. Включает FFmpeg (GPLv3), исходный код — на ffmpeg.org. Предоставляется «как есть», без гарантий.', size: ' · ' },
   zh: { _: '中文', badge: '测试版 · 免费', title: '随时随地访问您的电脑', lead: 'AnyPC 让您从另一台电脑查看并控制您的 Windows 电脑——即使两台电脑都在路由器或移动网络之后。无需端口转发，无需注册账号。',
     dl: '下载 Windows 版', web: '打开网页客户端', req: 'Windows 10/11 · 64 位', whyT: '为什么选择 AnyPC',
@@ -165,7 +170,7 @@ const T = {
     secT: '安全', sec1: '每次连接都需要被控电脑上设置的密码。', sec2: '会话期间，被控电脑始终显示提示，并带有断开按钮。',
     sec3: '连续 5 次密码错误后，访问将被暂时锁定。', sec4: '请仅在自己的电脑上或经所有者同意后使用 AnyPC。',
     sec5: '切勿把 ID 和密码告诉突然给您打电话的人——这是常见的诈骗手法。',
-    limT: '测试版限制', lim1: '暂不支持 Ctrl+Alt+Del、UAC 提示窗口和锁屏界面。', lim2: '剪贴板仅支持文本。文件传输即将推出。', lim3: '仅显示一个（主）显示器。',
+    limT: '测试版限制', lim1: '暂不支持 Ctrl+Alt+Del、UAC 提示窗口和锁屏界面。', lim2: '剪贴板仅支持文本；文件可通过工具栏按钮传输。', lim3: '仅显示一个（主）显示器。',
     foot: 'AnyPC 测试版。包含 FFmpeg（GPLv3），源代码见 ffmpeg.org。按“原样”提供，不作任何保证。', size: ' · ' },
   es: { _: 'Español', badge: 'Beta · gratis', title: 'Tu PC, desde cualquier lugar', lead: 'AnyPC te permite ver y controlar tu ordenador con Windows desde otro, aunque ambos estén detrás de routers o redes móviles. Sin abrir puertos y sin cuentas.',
     dl: 'Descargar para Windows', web: 'Abrir cliente web', req: 'Windows 10/11 · 64 bits', whyT: 'Por qué AnyPC',
@@ -180,7 +185,7 @@ const T = {
     secT: 'Seguridad', sec1: 'Cada conexión requiere la contraseña establecida en el PC controlado.', sec2: 'Durante una sesión, el PC controlado siempre muestra un aviso con un botón para desconectar.',
     sec3: 'Tras 5 contraseñas incorrectas, el acceso se bloquea temporalmente.', sec4: 'Usa AnyPC solo en tus propios ordenadores o con el consentimiento del propietario.',
     sec5: 'Nunca des tu ID y contraseña a alguien que te llame inesperadamente: es una estafa habitual.',
-    limT: 'Limitaciones de la beta', lim1: 'Ctrl+Alt+Supr, las ventanas de UAC y la pantalla de bloqueo aún no están disponibles.', lim2: 'Portapapeles: solo texto. La transferencia de archivos llegará pronto.', lim3: 'Se muestra un solo monitor (el principal).',
+    limT: 'Limitaciones de la beta', lim1: 'Ctrl+Alt+Supr, las ventanas de UAC y la pantalla de bloqueo aún no están disponibles.', lim2: 'Portapapeles: solo texto; los archivos se envían con los botones de la barra.', lim3: 'Se muestra un solo monitor (el principal).',
     foot: 'AnyPC beta. Incluye FFmpeg (GPLv3), código fuente en ffmpeg.org. Se ofrece «tal cual», sin garantía.', size: ' · ' },
   de: { _: 'Deutsch', badge: 'Beta · kostenlos', title: 'Ihr PC – von überall', lead: 'Mit AnyPC sehen und steuern Sie Ihren Windows-Computer von einem anderen aus – auch wenn beide hinter Routern oder im Mobilfunknetz sind. Ohne Portfreigabe, ohne Konto.',
     dl: 'Für Windows herunterladen', web: 'Web-Client öffnen', req: 'Windows 10/11 · 64 Bit', whyT: 'Warum AnyPC',
@@ -195,7 +200,7 @@ const T = {
     secT: 'Sicherheit', sec1: 'Jede Verbindung erfordert das auf dem gesteuerten PC festgelegte Passwort.', sec2: 'Während einer Sitzung zeigt der gesteuerte PC immer einen Hinweis mit einer Trennen-Schaltfläche.',
     sec3: 'Nach 5 falschen Passwörtern wird der Zugang vorübergehend gesperrt.', sec4: 'Verwenden Sie AnyPC nur auf eigenen Computern oder mit Zustimmung des Besitzers.',
     sec5: 'Geben Sie ID und Passwort niemals an unerwartete Anrufer weiter – das ist eine verbreitete Betrugsmasche.',
-    limT: 'Einschränkungen der Beta', lim1: 'Strg+Alt+Entf, UAC-Abfragen und der Sperrbildschirm sind noch nicht verfügbar.', lim2: 'Zwischenablage: nur Text. Dateiübertragung folgt in Kürze.', lim3: 'Es wird ein Monitor (der Hauptmonitor) angezeigt.',
+    limT: 'Einschränkungen der Beta', lim1: 'Strg+Alt+Entf, UAC-Abfragen und der Sperrbildschirm sind noch nicht verfügbar.', lim2: 'Zwischenablage: nur Text; Dateien über die Schaltflächen der Leiste.', lim3: 'Es wird ein Monitor (der Hauptmonitor) angezeigt.',
     foot: 'AnyPC Beta. Enthält FFmpeg (GPLv3), Quellcode unter ffmpeg.org. Bereitgestellt „wie besehen“, ohne Gewährleistung.', size: ' · ' },
   fr: { _: 'Français', badge: 'Bêta · gratuit', title: 'Votre PC, où que vous soyez', lead: 'AnyPC vous permet de voir et de contrôler votre ordinateur Windows depuis un autre, même si les deux sont derrière des routeurs ou un réseau mobile. Sans redirection de ports, sans compte.',
     dl: 'Télécharger pour Windows', web: 'Ouvrir le client web', req: 'Windows 10/11 · 64 bits', whyT: 'Pourquoi AnyPC',
@@ -210,7 +215,7 @@ const T = {
     secT: 'Sécurité', sec1: 'Chaque connexion exige le mot de passe défini sur le PC contrôlé.', sec2: 'Pendant une session, le PC contrôlé affiche toujours un avis avec un bouton de déconnexion.',
     sec3: 'Après 5 mots de passe erronés, l’accès est temporairement bloqué.', sec4: 'N’utilisez AnyPC que sur vos propres ordinateurs ou avec l’accord du propriétaire.',
     sec5: 'Ne donnez jamais votre ID et votre mot de passe à une personne qui vous appelle à l’improviste : c’est une arnaque courante.',
-    limT: 'Limites de la bêta', lim1: 'Ctrl+Alt+Suppr, les fenêtres UAC et l’écran de verrouillage ne sont pas encore pris en charge.', lim2: 'Presse-papiers : texte uniquement. Le transfert de fichiers arrive bientôt.', lim3: 'Un seul écran (le principal) est affiché.',
+    limT: 'Limites de la bêta', lim1: 'Ctrl+Alt+Suppr, les fenêtres UAC et l’écran de verrouillage ne sont pas encore pris en charge.', lim2: 'Presse-papiers : texte uniquement ; les fichiers passent par les boutons de la barre.', lim3: 'Un seul écran (le principal) est affiché.',
     foot: 'AnyPC bêta. Inclut FFmpeg (GPLv3), code source sur ffmpeg.org. Fourni « tel quel », sans garantie.', size: ' · ' },
   it: { _: 'Italiano', badge: 'Beta · gratis', title: 'Il tuo PC, ovunque tu sia', lead: 'AnyPC ti permette di vedere e controllare il tuo computer Windows da un altro, anche se entrambi sono dietro router o reti mobili. Senza aprire porte e senza account.',
     dl: 'Scarica per Windows', web: 'Apri il client web', req: 'Windows 10/11 · 64 bit', whyT: 'Perché AnyPC',
@@ -225,7 +230,7 @@ const T = {
     secT: 'Sicurezza', sec1: 'Ogni connessione richiede la password impostata sul PC controllato.', sec2: 'Durante una sessione, il PC controllato mostra sempre un avviso con un pulsante per disconnettere.',
     sec3: 'Dopo 5 password errate, l’accesso viene bloccato temporaneamente.', sec4: 'Usa AnyPC solo sui tuoi computer o con il consenso del proprietario.',
     sec5: 'Non comunicare mai ID e password a chi ti chiama inaspettatamente: è una truffa comune.',
-    limT: 'Limiti della beta', lim1: 'Ctrl+Alt+Canc, le finestre UAC e la schermata di blocco non sono ancora disponibili.', lim2: 'Appunti: solo testo. Il trasferimento file arriverà presto.', lim3: 'Viene mostrato un solo monitor (quello principale).',
+    limT: 'Limiti della beta', lim1: 'Ctrl+Alt+Canc, le finestre UAC e la schermata di blocco non sono ancora disponibili.', lim2: 'Appunti: solo testo; i file si inviano con i pulsanti della barra.', lim3: 'Viene mostrato un solo monitor (quello principale).',
     foot: 'AnyPC beta. Include FFmpeg (GPLv3), codice sorgente su ffmpeg.org. Fornito «così com’è», senza garanzia.', size: ' · ' },
 };
 const MB = { en: 'MB', ru: 'МБ', zh: 'MB', es: 'MB', de: 'MB', fr: 'Mo', it: 'MB' };
