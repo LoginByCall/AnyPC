@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AnyPC</title>
+<style>
+  :root { --bg: #f6f6f4; --card: #fff; --fg: #1a1a1a; --mut: #6b6b6b; --line: #ddd; --acc: #c0392b; --ok: #2e7d32; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #161616; --card: #202020; --fg: #eee; --mut: #9a9a9a; --line: #333; --acc: #e57368; --ok: #81c784; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px system-ui, sans-serif; height: 100vh; display: flex; flex-direction: column; }
+  button, input { font: inherit; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--fg); }
+  button { cursor: pointer; } button.main { background: var(--acc); color: #fff; border-color: var(--acc); }
+  .hidden { display: none !important; }
+  .mut { color: var(--mut); } .mono { font-family: ui-monospace, monospace; }
+  #home { display: flex; gap: 16px; padding: 16px; flex-wrap: wrap; align-items: flex-start; overflow: auto; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; flex: 1 1 320px; display: flex; flex-direction: column; gap: 10px; }
+  .card h2 { margin: 0; font-size: 15px; font-weight: 600; }
+  .big { font-size: 28px; letter-spacing: 2px; font-family: ui-monospace, monospace; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .banner { border: 1px solid var(--acc); border-radius: 8px; padding: 10px; }
+  #recent button { font-family: ui-monospace, monospace; }
+  #msg { color: var(--acc); min-height: 1.2em; }
+  #sess { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  #bar { display: flex; gap: 6px; padding: 6px 8px; flex-wrap: wrap; align-items: center; background: var(--card); border-bottom: 1px solid var(--line); }
+  #bar button { padding: 4px 8px; }
+  video { flex: 1; min-height: 0; width: 100%; background: #000; object-fit: contain; outline: none; }
+  body.fs #bar { position: fixed; top: 0; left: 0; right: 0; z-index: 2; transform: translateY(calc(-100% + 4px)); transition: transform .15s; opacity: .95; }
+  body.fs #bar:hover { transform: none; }
+</style>
+
+<section id="home">
+  <div class="card" id="me">
+    <h2 data-t="me_h"></h2>
+    <div><span class="mut" data-t="myid_l"></span><div class="big" id="myid">—</div></div>
+    <div id="mystate" class="mut">—</div>
+    <div class="row">
+      <input id="newpw" type="password" data-tp="newpw_p" autocomplete="new-password">
+      <button id="setpw" data-t="setpw"></button>
+    </div>
+    <div id="pwstate" class="mut"></div>
+    <div id="incoming" class="banner hidden">
+      <span data-t="incoming"></span> <span class="mono" id="incid"></span>
+      <button id="hostbye" class="main" data-t="disc"></button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 data-t="remote_h"></h2>
+    <input id="id" data-tp="id_p" inputmode="numeric">
+    <input id="pw" type="password" data-tp="pw_p">
+    <label class="mut"><input id="relay" type="checkbox"> <span data-t="relay"></span></label>
+    <div class="row"><button id="go" class="main" data-t="go"></button></div>
+    <div id="msg"></div>
+    <div id="recentbox" class="hidden"><span class="mut" data-t="recent"></span> <span id="recent" class="row"></span></div>
+  </div>
+</section>
+
+<section id="sess" class="hidden">
+  <div id="bar">
+    <button id="bye" class="main" data-t="disc"></button>
+    <button id="fs" data-t="fs"></button>
+    <button data-keys="MetaLeft">Win</button>
+    <button data-keys="AltLeft Tab">Alt+Tab</button>
+    <button data-keys="ControlLeft ShiftLeft Escape">Ctrl+Shift+Esc</button>
+    <button data-keys="MetaLeft Space" title="Win+Space" data-t="layout"></button>
+    <button id="csv" data-tt="csv_t">CSV</button>
+    <button id="reset" data-tt="reset_t" data-t="reset"></button>
+    <span id="st" class="mut mono">—</span>
+    <div id="sum" class="mut mono" style="flex-basis:100%"></div>
+  </div>
+  <video id="v" autoplay playsinline muted tabindex="0"></video>
+</section>
+
+<script>
+const $ = id => document.getElementById(id);
+const WS = window.ANYPC?.ws || (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
+const APP = typeof window.hostInfo === 'function'; // открыто в AnyPC.exe
+// ---------- Языки: по языку Windows/браузера, по умолчанию английский ----------
+const L = {
+  en: { need_app: 'Connecting is available in the AnyPC program — download it at www.turboseller.xyz', e_nopass: 'no password is set on the remote PC', e_hostauth: 'the remote PC could not be verified — connection may be intercepted',
+    me_h: 'This computer', myid_l: 'Your ID', newpw_p: 'New password (8+ characters)', setpw: 'Set password', incoming: 'Incoming session:', disc: 'Disconnect',
+    remote_h: 'Remote computer', id_p: 'Remote PC ID', pw_p: 'Password', relay: 'relay (TURN) only — for measurements', go: 'Connect', recent: 'Recent:',
+    fs: 'Full screen', fs_exit: 'Exit full screen', layout: 'Layout', csv_t: 'Export collected statistics', reset: 'Reset', reset_t: 'Reset collected statistics',
+    online: 'online — this PC can be reached', offline: 'no connection to the server, retrying…', pw_set: 'Password is set. Connections require it.',
+    pw_none: 'No password set — incoming connections are refused.', pw_short: 'Password must be at least 8 characters.', err: 'Error: ', id9: 'ID must be 9 digits',
+    connecting: 'connecting…', waiting: 'waiting for the remote PC…', host_bye: 'The remote PC ended the session', lost: 'Connection lost', ended: 'Session ended',
+    no_server: 'No connection to the server', e_auth: 'wrong password', e_locked: 'too many attempts — please wait', e_busy: 'the remote PC is busy with another session',
+    e_not_found: 'the remote PC is offline', e_internal: 'error on the remote PC', e_forbidden: 'forbidden',
+    s_for: 'over {n} s', med: 'med', max: 'max', ms: 'ms', fps: 'fps', kbps: 'kbit/s', loss: 'loss', jb: 'jitter buffer', frz: 'freezes' },
+  ru: { need_app: 'Подключение доступно в программе AnyPC — скачайте её на www.turboseller.xyz', e_nopass: 'на удалённом ПК не задан пароль', e_hostauth: 'удалённый ПК не подтвердил подлинность — соединение может быть перехвачено',
+    me_h: 'Это рабочее место', myid_l: 'Ваш ID', newpw_p: 'Новый пароль (≥ 8 символов)', setpw: 'Задать пароль', incoming: 'Идёт входящая сессия:', disc: 'Разорвать',
+    remote_h: 'Удалённое рабочее место', id_p: 'ID удалённого ПК', pw_p: 'Пароль', relay: 'только через TURN (для замеров)', go: 'Подключиться', recent: 'Недавние:',
+    fs: 'Полный экран', fs_exit: 'Выйти из полного экрана', layout: 'Раскладка', csv_t: 'Выгрузить накопленную статистику', reset: 'Сброс', reset_t: 'Сбросить накопленную статистику',
+    online: 'в сети — к этому ПК можно подключиться', offline: 'нет связи с сервером, повтор…', pw_set: 'Пароль задан. Без пароля подключиться нельзя.',
+    pw_none: 'Пароль не задан — входящие подключения отклоняются.', pw_short: 'Пароль — не короче 8 символов.', err: 'Ошибка: ', id9: 'ID — 9 цифр',
+    connecting: 'подключение…', waiting: 'ожидание удалённого ПК…', host_bye: 'Удалённый ПК завершил сессию', lost: 'Связь потеряна', ended: 'Сессия завершена',
+    no_server: 'Нет связи с сервером', e_auth: 'неверный пароль', e_locked: 'слишком много попыток — подождите', e_busy: 'удалённый ПК занят другой сессией',
+    e_not_found: 'удалённый ПК не в сети', e_internal: 'ошибка на удалённом ПК', e_forbidden: 'запрещено',
+    s_for: 'за {n} с', med: 'мед', max: 'макс', ms: 'мс', fps: 'к/с', kbps: 'кбит/с', loss: 'потери', jb: 'джиттер-буфер', frz: 'фризов' },
+  zh: { need_app: '请在 AnyPC 程序中连接——可在 www.turboseller.xyz 下载', e_nopass: '远程电脑未设置密码', e_hostauth: '无法验证远程电脑——连接可能被拦截',
+    me_h: '本机', myid_l: '您的 ID', newpw_p: '新密码（至少 8 个字符）', setpw: '设置密码', incoming: '正在进行的传入会话：', disc: '断开',
+    remote_h: '远程电脑', id_p: '远程电脑 ID', pw_p: '密码', relay: '仅通过中继 (TURN)——用于测量', go: '连接', recent: '最近：',
+    fs: '全屏', fs_exit: '退出全屏', layout: '输入法', csv_t: '导出已收集的统计数据', reset: '重置', reset_t: '重置已收集的统计数据',
+    online: '在线——可以连接到本机', offline: '无法连接服务器，正在重试…', pw_set: '已设置密码，连接时必须输入。',
+    pw_none: '未设置密码——将拒绝所有传入连接。', pw_short: '密码至少需要 8 个字符。', err: '错误：', id9: 'ID 必须是 9 位数字',
+    connecting: '正在连接…', waiting: '正在等待远程电脑…', host_bye: '远程电脑已结束会话', lost: '连接已断开', ended: '会话已结束',
+    no_server: '无法连接服务器', e_auth: '密码错误', e_locked: '尝试次数过多，请稍候', e_busy: '远程电脑正被其他会话占用',
+    e_not_found: '远程电脑不在线', e_internal: '远程电脑出错', e_forbidden: '禁止访问',
+    s_for: '最近 {n} 秒', med: '中位', max: '最大', ms: '毫秒', fps: '帧/秒', kbps: 'kbit/s', loss: '丢包', jb: '抖动缓冲', frz: '卡顿' },
+  es: { need_app: 'La conexión está disponible en el programa AnyPC: descárgalo en www.turboseller.xyz', e_nopass: 'el PC remoto no tiene contraseña', e_hostauth: 'no se pudo verificar el PC remoto; la conexión podría estar interceptada',
+    me_h: 'Este equipo', myid_l: 'Tu ID', newpw_p: 'Nueva contraseña (8+ caracteres)', setpw: 'Establecer contraseña', incoming: 'Sesión entrante:', disc: 'Desconectar',
+    remote_h: 'Equipo remoto', id_p: 'ID del PC remoto', pw_p: 'Contraseña', relay: 'solo por relé (TURN), para mediciones', go: 'Conectar', recent: 'Recientes:',
+    fs: 'Pantalla completa', fs_exit: 'Salir de pantalla completa', layout: 'Idioma de teclado', csv_t: 'Exportar estadísticas recogidas', reset: 'Reiniciar', reset_t: 'Reiniciar estadísticas',
+    online: 'en línea: se puede conectar a este PC', offline: 'sin conexión con el servidor, reintentando…', pw_set: 'Contraseña establecida. Es obligatoria para conectar.',
+    pw_none: 'Sin contraseña: se rechazan las conexiones entrantes.', pw_short: 'La contraseña debe tener al menos 8 caracteres.', err: 'Error: ', id9: 'El ID debe tener 9 dígitos',
+    connecting: 'conectando…', waiting: 'esperando al PC remoto…', host_bye: 'El PC remoto finalizó la sesión', lost: 'Conexión perdida', ended: 'Sesión finalizada',
+    no_server: 'Sin conexión con el servidor', e_auth: 'contraseña incorrecta', e_locked: 'demasiados intentos, espera un momento', e_busy: 'el PC remoto está ocupado con otra sesión',
+    e_not_found: 'el PC remoto no está en línea', e_internal: 'error en el PC remoto', e_forbidden: 'prohibido',
+    s_for: 'en {n} s', med: 'med', max: 'máx', ms: 'ms', fps: 'fps', kbps: 'kbit/s', loss: 'pérdidas', jb: 'búfer de jitter', frz: 'congelaciones' },
+  de: { need_app: 'Verbinden ist im Programm AnyPC möglich – Download unter www.turboseller.xyz', e_nopass: 'auf dem entfernten PC ist kein Passwort festgelegt', e_hostauth: 'der entfernte PC konnte nicht verifiziert werden – die Verbindung könnte abgefangen sein',
+    me_h: 'Dieser Computer', myid_l: 'Ihre ID', newpw_p: 'Neues Passwort (mind. 8 Zeichen)', setpw: 'Passwort festlegen', incoming: 'Eingehende Sitzung:', disc: 'Trennen',
+    remote_h: 'Entfernter Computer', id_p: 'ID des entfernten PCs', pw_p: 'Passwort', relay: 'nur über Relay (TURN) – für Messungen', go: 'Verbinden', recent: 'Zuletzt:',
+    fs: 'Vollbild', fs_exit: 'Vollbild beenden', layout: 'Tastaturlayout', csv_t: 'Gesammelte Statistik exportieren', reset: 'Zurücksetzen', reset_t: 'Gesammelte Statistik zurücksetzen',
+    online: 'online – dieser PC ist erreichbar', offline: 'keine Verbindung zum Server, neuer Versuch…', pw_set: 'Passwort ist festgelegt. Verbindungen erfordern es.',
+    pw_none: 'Kein Passwort festgelegt – eingehende Verbindungen werden abgelehnt.', pw_short: 'Das Passwort muss mindestens 8 Zeichen haben.', err: 'Fehler: ', id9: 'Die ID muss 9 Ziffern haben',
+    connecting: 'Verbindung wird hergestellt…', waiting: 'Warte auf den entfernten PC…', host_bye: 'Der entfernte PC hat die Sitzung beendet', lost: 'Verbindung verloren', ended: 'Sitzung beendet',
+    no_server: 'Keine Verbindung zum Server', e_auth: 'falsches Passwort', e_locked: 'zu viele Versuche – bitte warten', e_busy: 'der entfernte PC ist mit einer anderen Sitzung belegt',
+    e_not_found: 'der entfernte PC ist offline', e_internal: 'Fehler auf dem entfernten PC', e_forbidden: 'nicht erlaubt',
+    s_for: 'über {n} s', med: 'Med', max: 'max', ms: 'ms', fps: 'fps', kbps: 'kbit/s', loss: 'Verlust', jb: 'Jitter-Puffer', frz: 'Hänger' },
+  fr: { need_app: 'La connexion est disponible dans le programme AnyPC — téléchargez-le sur www.turboseller.xyz', e_nopass: 'aucun mot de passe n’est défini sur le PC distant', e_hostauth: 'impossible de vérifier le PC distant — la connexion est peut-être interceptée',
+    me_h: 'Cet ordinateur', myid_l: 'Votre ID', newpw_p: 'Nouveau mot de passe (8 caractères min.)', setpw: 'Définir le mot de passe', incoming: 'Session entrante :', disc: 'Déconnecter',
+    remote_h: 'Ordinateur distant', id_p: 'ID du PC distant', pw_p: 'Mot de passe', relay: 'relais (TURN) uniquement — pour les mesures', go: 'Se connecter', recent: 'Récents :',
+    fs: 'Plein écran', fs_exit: 'Quitter le plein écran', layout: 'Disposition clavier', csv_t: 'Exporter les statistiques', reset: 'Réinitialiser', reset_t: 'Réinitialiser les statistiques',
+    online: 'en ligne — ce PC est joignable', offline: 'pas de connexion au serveur, nouvelle tentative…', pw_set: 'Mot de passe défini. Il est exigé à chaque connexion.',
+    pw_none: 'Aucun mot de passe — les connexions entrantes sont refusées.', pw_short: 'Le mot de passe doit contenir au moins 8 caractères.', err: 'Erreur : ', id9: 'L’ID doit comporter 9 chiffres',
+    connecting: 'connexion…', waiting: 'en attente du PC distant…', host_bye: 'Le PC distant a mis fin à la session', lost: 'Connexion perdue', ended: 'Session terminée',
+    no_server: 'Pas de connexion au serveur', e_auth: 'mot de passe incorrect', e_locked: 'trop de tentatives — patientez', e_busy: 'le PC distant est occupé par une autre session',
+    e_not_found: 'le PC distant est hors ligne', e_internal: 'erreur sur le PC distant', e_forbidden: 'interdit',
+    s_for: 'sur {n} s', med: 'méd', max: 'max', ms: 'ms', fps: 'i/s', kbps: 'kbit/s', loss: 'pertes', jb: 'tampon de gigue', frz: 'gels' },
+  it: { need_app: 'La connessione è disponibile nel programma AnyPC: scaricalo da www.turboseller.xyz', e_nopass: 'sul PC remoto non è impostata alcuna password', e_hostauth: 'impossibile verificare il PC remoto: la connessione potrebbe essere intercettata',
+    me_h: 'Questo computer', myid_l: 'Il tuo ID', newpw_p: 'Nuova password (almeno 8 caratteri)', setpw: 'Imposta password', incoming: 'Sessione in entrata:', disc: 'Disconnetti',
+    remote_h: 'Computer remoto', id_p: 'ID del PC remoto', pw_p: 'Password', relay: 'solo tramite relay (TURN) — per le misure', go: 'Connetti', recent: 'Recenti:',
+    fs: 'Schermo intero', fs_exit: 'Esci da schermo intero', layout: 'Layout tastiera', csv_t: 'Esporta le statistiche raccolte', reset: 'Azzera', reset_t: 'Azzera le statistiche raccolte',
+    online: 'online — questo PC è raggiungibile', offline: 'nessuna connessione al server, nuovo tentativo…', pw_set: 'Password impostata. È necessaria per connettersi.',
+    pw_none: 'Nessuna password — le connessioni in entrata vengono rifiutate.', pw_short: 'La password deve avere almeno 8 caratteri.', err: 'Errore: ', id9: 'L’ID deve avere 9 cifre',
+    connecting: 'connessione…', waiting: 'in attesa del PC remoto…', host_bye: 'Il PC remoto ha terminato la sessione', lost: 'Connessione persa', ended: 'Sessione terminata',
+    no_server: 'Nessuna connessione al server', e_auth: 'password errata', e_locked: 'troppi tentativi — attendi', e_busy: 'il PC remoto è occupato con un’altra sessione',
+    e_not_found: 'il PC remoto non è online', e_internal: 'errore sul PC remoto', e_forbidden: 'vietato',
+    s_for: 'in {n} s', med: 'med', max: 'max', ms: 'ms', fps: 'fps', kbps: 'kbit/s', loss: 'perdite', jb: 'buffer di jitter', frz: 'blocchi' },
+};
+const lang = [...(navigator.languages || [navigator.language]), 'en'].map(c => (c || '').slice(0, 2).toLowerCase()).find(k => L[k]);
+const t = k => L[lang][k] ?? L.en[k] ?? k;
+document.documentElement.lang = lang;
+document.querySelectorAll('[data-t]').forEach(e => e.textContent = t(e.dataset.t));
+document.querySelectorAll('[data-tp]').forEach(e => e.placeholder = t(e.dataset.tp));
+document.querySelectorAll('[data-tt]').forEach(e => e.title = t(e.dataset.tt));
+const store = { get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
+                set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
+
+// ---------- Это рабочее место (только в AnyPC.exe) ----------
+window.onHostState = s => {
+  $('myid').textContent = s.id.replace(/(\d{3})(?=\d)/g, '$1 ');
+  $('mystate').textContent = t(s.online ? 'online' : 'offline');
+  $('mystate').style.color = s.online ? 'var(--ok)' : 'var(--acc)';
+  $('pwstate').textContent = t(s.hasPass ? 'pw_set' : 'pw_none');
+  $('incoming').classList.toggle('hidden', !s.session);
+  $('incid').textContent = s.session || '';
+};
+if (APP) hostInfo().then(onHostState); else $('me').classList.add('hidden');
+$('setpw').onclick = async () => {
+  if ([...$('newpw').value].length < 8) { $('pwstate').textContent = t('pw_short'); return; }
+  try { await setPassword($('newpw').value); $('newpw').value = ''; onHostState(await hostInfo()); }
+  catch (e) { $('pwstate').textContent = t('err') + e; }
+};
+$('hostbye').onclick = () => hostDisconnect();
+
+// ---------- Недавние ----------
+function renderRecent() {
+  const r = store.get('recent', []);
+  $('recentbox').classList.toggle('hidden', !r.length);
+  $('recent').replaceChildren(...r.map(id => {
+    const b = document.createElement('button'); b.textContent = id;
+    b.onclick = () => { $('id').value = id; $('pw').focus(); }; return b;
+  }));
+}
+renderRecent();
+
+// ---------- Сессия ----------
+let ws, pc, dc, ctl, host, timer, last, samples = [], lastClip = '';
+const held = new Set();
+const v = $('v');
+const show = sess => { $('home').classList.toggle('hidden', sess); $('sess').classList.toggle('hidden', !sess); };
+const sig = (type, data) => ws?.readyState === 1 && ws.send(JSON.stringify({ v: 1, type, to: host, data }));
+const sendIn = o => dc?.readyState === 'open' && dc.send(JSON.stringify(o));
+
+function end(reason) {
+  if (!ws && !pc) return;
+  releaseAll();
+  clearInterval(timer);
+  pc?.close(); ws?.close();
+  pc = ws = dc = ctl = null;
+  setFs(false);
+  v.srcObject = null;
+  show(false);
+  $('msg').textContent = reason || '';
+}
+
+$('go').onclick = async () => {
+  end();
+  host = $('id').value.replace(/\D/g, '');
+  if (host.length !== 9) { $('msg').textContent = t('id9'); return; }
+  $('msg').textContent = t('connecting');
+  if (!APP && !(await loadPake())) { $('msg').textContent = t('need_app'); return; }
+  last = null;
+  ws = new WebSocket(WS);
+  let ice = [];
+  ws.onmessage = async e => {
+    const m = JSON.parse(e.data);
+    if (m.type === 'hello') { ice = m.data.ice || []; sig('connect', {}); $('msg').textContent = t('waiting'); }
+    else if (m.type === 'error') end(t('err') + (L[lang]['e_' + m.data] || m.data));
+    else if (m.type === 'bye') end(t('host_bye'));
+    else if (m.type === 'offer') {
+      pc = new RTCPeerConnection({ iceServers: ice, iceTransportPolicy: $('relay').checked ? 'relay' : 'all' });
+      pc.ontrack = ev => {
+        v.srcObject = ev.streams[0] || new MediaStream([ev.track]);
+        try { ev.receiver.jitterBufferTarget = 0; } catch {}
+      };
+      pc.ondatachannel = ev => {
+        if (ev.channel.label === 'input') dc = ev.channel;
+        if (ev.channel.label === 'ctl') { ctl = ev.channel; ctl.onmessage = onCtl; }
+        if (ev.channel.label === 'auth') ev.channel.onmessage = e => onAuth(ev.channel, e);
+      };
+      pc.onicecandidate = ev => ev.candidate && sig('ice', ev.candidate.toJSON());
+      pc.onconnectionstatechange = () => {
+        const s = pc?.connectionState;
+        if (s === 'failed') end(t('lost'));
+      };
+      await pc.setRemoteDescription(m.data);
+      await pc.setLocalDescription();
+      sig('answer', pc.localDescription);
+      timer = setInterval(stats, 1000);
+    } else if (m.type === 'ice') pc?.addIceCandidate(m.data);
+  };
+  ws.onclose = () => { if (pc?.connectionState !== 'connected') end(t('no_server')); }; // после end() — no-op
+};
+$('pw').onkeydown = e => { if (e.key === 'Enter') $('go').click(); };
+$('bye').onclick = () => { sig('bye', 'client'); end(t('ended')); };
+
+// В браузере CPace — из pake.wasm (тот же Go-код, что в программе); грузится при первом подключении.
+let pakeReady;
+function loadPake() {
+  return pakeReady ??= new Promise(ok => {
+    const s = document.createElement('script');
+    s.src = 'wasm_exec.js';
+    s.onload = async () => {
+      try {
+        const go = new Go();
+        const r = await WebAssembly.instantiateStreaming(fetch('pake.wasm'), go.importObject);
+        go.run(r.instance);
+        ok(typeof window.pakeRespond === 'function');
+      } catch { ok(false); }
+    };
+    s.onerror = () => ok(false);
+    document.head.append(s);
+  });
+}
+
+// ---------- Вход по CPace (REQ-S-02): пароль не покидает этот ПК, сервер его не видит ----------
+let expect = '';
+async function onAuth(ch, e) {
+  const m = JSON.parse(e.data);
+  if (m.t === 'a') {
+    try {
+      const r = await pakeRespond($('pw').value, m.salt, m.msg, host, pc.localDescription.sdp, pc.remoteDescription.sdp);
+      expect = r.expect;
+      ch.send(JSON.stringify({ t: 'b', msg: r.msg, conf: r.conf }));
+    } catch (err) { end(t('err') + err); }
+  } else if (m.t === 'ok') {
+    if (m.conf !== expect) return end(t('err') + t('e_hostauth')); // ответил не тот хост или соединение подменено
+    show(true); v.focus(); $('pw').value = '';
+    store.set('recent', [host, ...store.get('recent', []).filter(x => x !== host)].slice(0, 8)); renderRecent();
+  } else if (m.t === 'fail') end(t('err') + t('e_auth'));
+}
+
+// ---------- Буфер обмена (REQ-F-11): текст, в обе стороны, без эха ----------
+const CLIP_MAX = 60 * 1024; // как agent.ClipMax (в байтах UTF-8)
+const clipOK = x => x && new TextEncoder().encode(x).length <= CLIP_MAX;
+function onCtl(e) {
+  const m = JSON.parse(e.data);
+  if (m.t !== 'clip' || !clipOK(m.text)) return;
+  lastClip = m.text;
+  (APP ? setClip(m.text) : navigator.clipboard?.writeText(m.text))?.catch?.(() => {});
+}
+async function pushClip() {
+  if (ctl?.readyState !== 'open') return;
+  let x = '';
+  try { x = APP ? await getClip() : document.hasFocus() ? await navigator.clipboard.readText() : ''; } catch {}
+  if (clipOK(x) && x !== lastClip) { lastClip = x; ctl.send(JSON.stringify({ t: 'clip', text: x })); }
+}
+// В программе — опрос раз в секунду (дёшево, своя привязка); в браузере — при возврате фокуса (чтение просит разрешение).
+if (APP) setInterval(pushClip, 1000); else window.addEventListener('focus', pushClip);
+
+// ---------- Полный экран ----------
+let fs = false;
+async function setFs(on) {
+  if (fs === on) return;
+  fs = on;
+  document.body.classList.toggle('fs', on);
+  $('fs').textContent = t(on ? 'fs_exit' : 'fs');
+  if (APP) return window.fullscreen(on);
+  try {
+    if (on) { await document.documentElement.requestFullscreen(); await navigator.keyboard?.lock(); }
+    else if (document.fullscreenElement) await document.exitFullscreen();
+  } catch {}
+}
+$('fs').onclick = () => { setFs(!fs); v.focus(); };
+document.addEventListener('fullscreenchange', () => { if (!APP && !document.fullscreenElement) setFs(false); });
+
+// ---------- Ввод (ТЗ §7, канал input) ----------
+function pos(e) { // координаты внутри картинки (object-fit: contain) → 0..65535
+  const r = v.getBoundingClientRect(), vw = v.videoWidth, vh = v.videoHeight;
+  if (!vw) return null;
+  const s = Math.min(r.width / vw, r.height / vh);
+  const x = (e.clientX - r.left - (r.width - vw * s) / 2) / (vw * s), y = (e.clientY - r.top - (r.height - vh * s) / 2) / (vh * s);
+  return x < 0 || x > 1 || y < 0 || y > 1 ? null : { x: Math.round(x * 65535), y: Math.round(y * 65535) };
+}
+v.onpointermove = e => { const p = pos(e); p && sendIn({ t: 'm', ...p }); };
+v.onpointerdown = e => {
+  const p = pos(e); if (!p || e.button > 2) return;
+  v.focus(); v.setPointerCapture(e.pointerId); e.preventDefault();
+  sendIn({ t: 'm', ...p }); sendIn({ t: 'b', b: e.button, d: true });
+};
+v.onpointerup = e => e.button <= 2 && sendIn({ t: 'b', b: e.button, d: false });
+v.oncontextmenu = e => e.preventDefault();
+v.addEventListener('wheel', e => {
+  e.preventDefault();
+  const k = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 400 : 1.2; // строки/страницы/пиксели → единицы WHEEL_DELTA (120)
+  if (e.deltaY) sendIn({ t: 'w', v: Math.round(-e.deltaY * k) });
+  if (e.deltaX) sendIn({ t: 'h', v: Math.round(e.deltaX * k) });
+}, { passive: false });
+
+const capturing = () => dc && !$('sess').classList.contains('hidden') && document.activeElement?.tagName !== 'INPUT';
+document.addEventListener('keydown', e => { if (!capturing()) return; e.preventDefault(); held.add(e.code); sendIn({ t: 'k', c: e.code, d: true }); });
+document.addEventListener('keyup', e => { if (!capturing()) return; e.preventDefault(); held.delete(e.code); sendIn({ t: 'k', c: e.code, d: false }); });
+function releaseAll() { held.forEach(c => sendIn({ t: 'k', c, d: false })); held.clear(); }
+window.addEventListener('blur', releaseAll); // переключились в другое окно — не оставить зажатый Alt на удалённом ПК
+document.querySelectorAll('[data-keys]').forEach(b => b.onclick = () => {
+  const k = b.dataset.keys.split(' ');
+  k.forEach(c => sendIn({ t: 'k', c, d: true })); [...k].reverse().forEach(c => sendIn({ t: 'k', c, d: false }));
+  v.focus();
+});
+
+// ---------- Статистика: 1 замер/с, копится до «Сброс» ----------
+// ponytail: только в памяти окна — закрыл, потерял; выгружай CSV.
+const KEYS = ['t', 'path', 'rtt', 'fps', 'kbps', 'lost', 'rx', 'jb', 'frz'];
+const sum = a => a.reduce((x, y) => x + y, 0);
+const pct = (a, p) => { if (!a.length) return 0; const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(p / 100 * s.length))]; };
+$('reset').onclick = () => { samples = []; $('sum').textContent = ''; };
+$('csv').onclick = () => {
+  const csv = [KEYS.join(','), ...samples.map(s => KEYS.map(k => s[k]).join(','))].join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  a.download = `anypc-stats-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.csv`;
+  a.click();
+};
+function summary() {
+  const c = k => samples.map(s => s[k]), n = samples.length;
+  if (!n) return '';
+  const lost = sum(c('lost')), rx = sum(c('rx'));
+  const md = t('med'), ms = t('ms');
+  return `${t('s_for').replace('{n}', n)}: RTT ${md} ${pct(c('rtt'), 50)} / P95 ${pct(c('rtt'), 95)} / ${t('max')} ${pct(c('rtt'), 100)} ${ms} · ` +
+    `${t('fps')} ${md} ${pct(c('fps'), 50)} / P5 ${pct(c('fps'), 5)} · ${t('kbps')} ${md} ${pct(c('kbps'), 50)} · ` +
+    `${t('loss')} ${(lost / Math.max(1, lost + rx) * 100).toFixed(2)} % · ${t('jb')} ${md} ${pct(c('jb'), 50)} / P95 ${pct(c('jb'), 95)} ${ms} · ` +
+    `${t('frz')} ${sum(c('frz'))} · TURN ${Math.round(c('path').filter(p => p === 'TURN').length / n * 100)} %`;
+}
+async function stats() { // REQ-F-17
+  if (!pc) return;
+  const r = await pc.getStats();
+  let pair, inb;
+  r.forEach(s => {
+    if (s.type === 'transport' && s.selectedCandidatePairId) pair = r.get(s.selectedCandidatePairId);
+    if (s.type === 'inbound-rtp' && s.kind === 'video') inb = s;
+  });
+  if (!pair || !inb) return;
+  const loc = r.get(pair.localCandidateId)?.candidateType, rem = r.get(pair.remoteCandidateId)?.candidateType;
+  const path = loc === 'relay' || rem === 'relay' ? 'TURN' : 'P2P';
+  const rtt = Math.round((pair.currentRoundTripTime || 0) * 1000), fps = inb.framesPerSecond || 0;
+  const now = { b: inb.bytesReceived, t: inb.timestamp, rx: inb.packetsReceived, lost: inb.packetsLost,
+                jbd: inb.jitterBufferDelay || 0, jbn: inb.jitterBufferEmittedCount || 0, frz: inb.freezeCount || 0 };
+  let kbps = 0;
+  if (last) {
+    kbps = Math.round((now.b - last.b) * 8 / (now.t - last.t));
+    samples.push({ t: new Date().toISOString(), path, rtt, fps, kbps, lost: now.lost - last.lost, rx: now.rx - last.rx,
+      jb: now.jbn > last.jbn ? Math.round((now.jbd - last.jbd) / (now.jbn - last.jbn) * 1000) : 0, frz: now.frz - last.frz });
+    $('sum').textContent = summary();
+  }
+  last = now;
+  $('st').textContent = `${host} · ${path} (${loc}/${rem}) · RTT ${rtt} ${t('ms')} · ${fps} ${t('fps')} · ${kbps} ${t('kbps')} · ${inb.frameWidth || 0}×${inb.frameHeight || 0}`;
+}
+</script>
+</html>

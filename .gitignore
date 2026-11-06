@@ -1,0 +1,7 @@
+bin/
+*.exe
+anypc-id.txt
+certs/
+app/ffmpeg.exe.gz
+ui/pake.wasm
+ui/wasm_exec.js

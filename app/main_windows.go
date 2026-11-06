@@ -1,0 +1,183 @@
+// AnyPC.exe — одна программа на оба ПК: «это рабочее место» (хост) + подключение к удалённому.
+// Окно — WebView2 (есть в Windows 11), интерфейс — ui/index.html, ffmpeg вшит в exe.
+package main
+
+import (
+	"bytes"
+	"compress/gzip"
+	"context"
+	"crypto/sha256"
+	_ "embed"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"sync"
+	"syscall"
+	"unsafe"
+
+	"anypc/agent"
+	"anypc/pake"
+	"anypc/ui"
+
+	webview2 "github.com/jchv/go-webview2"
+)
+
+//go:embed ffmpeg.exe.gz
+var ffmpegGz []byte // собирается build.sh (gyan.dev essentials, GPL — только для своих ПК)
+
+var (
+	user32     = syscall.NewLazyDLL("user32.dll")
+	pGetWL     = user32.NewProc("GetWindowLongPtrW")
+	pSetWL     = user32.NewProc("SetWindowLongPtrW")
+	pGetWR     = user32.NewProc("GetWindowRect")
+	pSetWP     = user32.NewProc("SetWindowPos")
+	pMonFromW  = user32.NewProc("MonitorFromWindow")
+	pGetMonInf = user32.NewProc("GetMonitorInfoW")
+	pMsgBox    = user32.NewProc("MessageBoxW")
+)
+
+func fatal(msg string) {
+	log.Print(msg)
+	t, _ := syscall.UTF16PtrFromString("AnyPC")
+	m, _ := syscall.UTF16PtrFromString(msg)
+	pMsgBox.Call(0, uintptr(unsafe.Pointer(m)), uintptr(unsafe.Pointer(t)), 0x10)
+	os.Exit(1)
+}
+
+func main() {
+	dir := filepath.Join(os.Getenv("LOCALAPPDATA"), "AnyPC")
+	os.MkdirAll(dir, 0o700)
+	logf, err := os.OpenFile(filepath.Join(dir, "anypc.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err == nil {
+		log.SetOutput(logf) // ponytail: без ротации; REQ-F-16 (журнал ≤ 10 МБ) — Э3
+	}
+	cfg, err := loadConfig(filepath.Join(os.Getenv("APPDATA"), "AnyPC", "config.json"))
+	if err != nil {
+		fatal("Настройки: " + err.Error())
+	}
+	ff, err := extractFFmpeg(dir)
+	if err != nil {
+		fatal("Распаковка ffmpeg: " + err.Error())
+	}
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		fatal("Локальный порт интерфейса: " + err.Error())
+	}
+	go http.Serve(l, http.FileServer(http.FS(ui.FS)))
+
+	w := webview2.NewWithOptions(webview2.WebViewOptions{
+		AutoFocus:     true,
+		DataPath:      filepath.Join(dir, "webview"),
+		WindowOptions: webview2.WindowOptions{Title: "AnyPC — ID " + cfg.ID, Width: 1100, Height: 720, Center: true},
+	})
+	if w == nil {
+		fatal("Не найден Microsoft Edge WebView2 Runtime. Установите его с сайта Microsoft и запустите AnyPC снова.")
+	}
+	defer w.Destroy()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	a := &agent.Agent{
+		Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, FFmpeg: ff,
+		FF: agent.FFArgs("desktop", cfg.Enc, 30, cfg.Bitrate), FPS: 30, Stderr: logf,
+	}
+	var mu sync.Mutex
+	online, session := false, ""
+	info := func() map[string]any {
+		mu.Lock()
+		defer mu.Unlock()
+		return map[string]any{"id": cfg.ID, "online": online, "session": session, "hasPass": cfg.hasPass()}
+	}
+	a.OnState = func(on bool, s string) {
+		mu.Lock()
+		online, session = on, s
+		mu.Unlock()
+		j, _ := json.Marshal(info())
+		w.Dispatch(func() { w.Eval("window.onHostState && onHostState(" + string(j) + ")") })
+	}
+	w.Bind("hostInfo", info)
+	w.Bind("setPassword", cfg.setPassword)
+	w.Bind("hostDisconnect", a.Disconnect)
+	w.Bind("fullscreen", func(on bool) { setFullscreen(uintptr(w.Window()), on) })
+	w.Bind("pakeRespond", pake.ClientRespondB64)
+	w.Bind("getClip", agent.ClipText)
+	w.Bind("setClip", agent.SetClipText)
+	srv, _ := json.Marshal(cfg.Server)
+	w.Init("window.ANYPC = {ws: " + string(srv) + "};")
+	w.Navigate("http://" + l.Addr().String() + "/")
+
+	log.Printf("AnyPC запущен, ID %s", cfg.ID)
+	go a.Run(ctx)
+	w.Run()
+	cancel()
+	a.Disconnect()
+}
+
+// extractFFmpeg распаковывает вшитый ffmpeg один раз; имя с хэшем — новая сборка не путается со старой.
+func extractFFmpeg(dir string) (string, error) {
+	sum := sha256.Sum256(ffmpegGz)
+	p := filepath.Join(dir, fmt.Sprintf("ffmpeg-%x.exe", sum[:6]))
+	if _, err := os.Stat(p); err == nil {
+		return p, nil
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(ffmpegGz))
+	if err != nil {
+		return "", err
+	}
+	tmp := p + ".tmp"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return "", err
+	}
+	_, err = io.Copy(f, zr)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(tmp)
+		return "", err
+	}
+	return p, os.Rename(tmp, p)
+}
+
+type rect struct{ L, T, R, B int32 }
+
+type monitorInfo struct {
+	Size    uint32
+	Monitor rect
+	Work    rect
+	Flags   uint32
+}
+
+var saved struct {
+	style uintptr
+	r     rect
+}
+
+// setFullscreen: окно без рамки на весь монитор и обратно (HTML Fullscreen в WebView2 занимает только окно).
+func setFullscreen(h uintptr, on bool) {
+	const gwlStyle = ^uintptr(15) // GWL_STYLE = -16
+	const overlapped = 0x00CF0000 // WS_OVERLAPPEDWINDOW
+	const flags = 0x0020 | 0x0200 // SWP_FRAMECHANGED | SWP_NOOWNERZORDER
+	if on {
+		saved.style, _, _ = pGetWL.Call(h, gwlStyle)
+		pGetWR.Call(h, uintptr(unsafe.Pointer(&saved.r)))
+		mi := monitorInfo{Size: uint32(unsafe.Sizeof(monitorInfo{}))}
+		m, _, _ := pMonFromW.Call(h, 2) // MONITOR_DEFAULTTONEAREST
+		pGetMonInf.Call(m, uintptr(unsafe.Pointer(&mi)))
+		r := mi.Monitor
+		pSetWL.Call(h, gwlStyle, saved.style&^overlapped)
+		pSetWP.Call(h, 0, uintptr(r.L), uintptr(r.T), uintptr(r.R-r.L), uintptr(r.B-r.T), flags)
+		return
+	}
+	if saved.style == 0 {
+		return
+	}
+	r := saved.r
+	pSetWL.Call(h, gwlStyle, saved.style)
+	pSetWP.Call(h, 0, uintptr(r.L), uintptr(r.T), uintptr(r.R-r.L), uintptr(r.B-r.T), flags|0x0004) // SWP_NOZORDER
+}
