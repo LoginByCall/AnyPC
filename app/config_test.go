@@ -63,3 +63,18 @@ func TestConfirmSetting(t *testing.T) {
 		t.Fatal("выбор не сохранился")
 	}
 }
+
+// TestServerRename — старый адрес any. переводится на новый; свой адрес пользователя не трогается.
+func TestServerRename(t *testing.T) {
+	for in, want := range map[string]string{oldServer: DefaultServer, "wss://my.example/ws": "wss://my.example/ws"} {
+		p := filepath.Join(t.TempDir(), "config.json")
+		os.WriteFile(p, []byte(`{"server":"`+in+`"}`), 0o600)
+		c, err := loadConfig(p)
+		if err != nil || c.Server != want {
+			t.Fatalf("%s → %s, ждали %s (%v)", in, c.Server, want, err)
+		}
+		if c2, _ := loadConfig(p); c2.Server != want {
+			t.Fatal("не сохранилось")
+		}
+	}
+}
