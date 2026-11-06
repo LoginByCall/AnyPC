@@ -115,6 +115,9 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 		case "auth": // как клиент в ui/index.html + app: CPace с отпечатками из своих SDP
 			var wantConf []byte
 			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+				if !msg.IsString { // браузер ждёт JSON строкой (регрессия: ArrayBuffer ломал вход в веб-клиенте)
+					t.Error("сообщение auth не текстовое")
+				}
 				var am authMsg
 				json.Unmarshal(msg.Data, &am)
 				switch am.T {

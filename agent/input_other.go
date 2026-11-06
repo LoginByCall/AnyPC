@@ -21,3 +21,6 @@ func hideWindow(*exec.Cmd) {}
 func ClipSeq() uint32           { return 0 }
 func ClipText() (string, error) { return "", nil }
 func SetClipText(string) error  { return nil }
+
+// STUB: окна выбора файла вне Windows нет.
+func pickFile() (string, bool) { return "", false }

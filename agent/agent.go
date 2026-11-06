@@ -37,6 +37,7 @@ type Agent struct {
 	FPS     int
 	Stderr  io.Writer                         // вывод ffmpeg; nil — os.Stderr
 	OnState func(online bool, session string) // session "" — сессии нет
+	FileDir string                            // куда принимать файлы; "" — %USERPROFILE%\Downloads
 
 	mu        sync.Mutex
 	conn      *websocket.Conn
@@ -48,11 +49,12 @@ type Agent struct {
 }
 
 type session struct {
-	cid    string
-	pc     *webrtc.PeerConnection
-	keys   held
-	clip   clipSync
-	authed atomic.Bool // до успешного CPace ни видео, ни ввод, ни буфер обмена не работают
+	cid     string
+	pc      *webrtc.PeerConnection
+	keys    held
+	clip    clipSync
+	authed  atomic.Bool // до успешного CPace ни видео, ни ввод, ни буфер обмена, ни файлы не работают
+	picking atomic.Bool // открыто окно выбора файла
 
 	mu       sync.Mutex
 	closeInd func() // закрыть плашку сессии
@@ -67,7 +69,8 @@ type authMsg struct {
 	Conf []byte `json:"conf,omitempty"`
 }
 
-// ctlMsg — канал "ctl": {"t":"clip","text":"…"} — буфер обмена в обе стороны (REQ-F-11).
+// ctlMsg — канал "ctl": {"t":"clip","text":"…"} — буфер обмена в обе стороны (REQ-F-11);
+// {"t":"pick"} от клиента — открыть на хосте окно выбора файла и отправить выбранный (REQ-F-12).
 type ctlMsg struct {
 	T    string `json:"t"`
 	Text string `json:"text,omitempty"`
@@ -301,18 +304,53 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string) (
 	}
 	ctl.OnMessage(func(msg webrtc.DataChannelMessage) {
 		var m ctlMsg
-		if s.authed.Load() && json.Unmarshal(msg.Data, &m) == nil && m.T == "clip" && s.clip.fromRemote(m.Text) {
+		if !s.authed.Load() || json.Unmarshal(msg.Data, &m) != nil {
+			return
+		}
+		switch {
+		case m.T == "clip" && s.clip.fromRemote(m.Text):
 			if err := SetClipText(m.Text); err != nil {
 				log.Printf("буфер обмена: %v", err)
 			}
+		case m.T == "pick" && s.picking.CompareAndSwap(false, true): // одно окно выбора за раз
+			go func() {
+				path, ok := pickFile()
+				s.picking.Store(false)
+				if ok {
+					if err := sendFile(sctx, pc, path); err != nil {
+						log.Printf("отправка %s: %v", path, err)
+					}
+				}
+			}()
 		}
 	})
 	ctl.OnOpen(func() { go s.watchClip(sctx, ctl) })
-	var started, ended sync.Once
-	pc.OnICECandidate(func(ci *webrtc.ICECandidate) {
-		if ci != nil {
-			a.send(ctx, c, "ice", cid, ci.ToJSON())
+	pc.OnDataChannel(func(dc *webrtc.DataChannel) { // каналы от клиента — только файлы и только после входа
+		if dc.Label() == "file" && s.authed.Load() {
+			a.receiveFile(dc)
+			return
 		}
+		dc.OnOpen(func() { dc.Close() })
+	})
+	var started, ended sync.Once
+	// Кандидаты до отправки offer копятся: клиент без offer их выбросит (найдено -race в TestE2E).
+	var (
+		cmu       sync.Mutex
+		pending   []webrtc.ICECandidateInit
+		offerSent bool
+	)
+	pc.OnICECandidate(func(ci *webrtc.ICECandidate) {
+		if ci == nil {
+			return
+		}
+		cmu.Lock()
+		if !offerSent {
+			pending = append(pending, ci.ToJSON())
+			cmu.Unlock()
+			return
+		}
+		cmu.Unlock()
+		a.send(ctx, c, "ice", cid, ci.ToJSON())
 	})
 	pc.OnConnectionStateChange(func(st webrtc.PeerConnectionState) {
 		log.Printf("сессия %s: %s", cid, st)
@@ -352,6 +390,14 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string) (
 		return fail(err)
 	}
 	a.send(ctx, c, "offer", cid, offer)
+	cmu.Lock()
+	offerSent = true
+	early := pending
+	pending = nil
+	cmu.Unlock()
+	for _, ci := range early {
+		a.send(ctx, c, "ice", cid, ci)
+	}
 	return s, nil
 }
 
@@ -363,7 +409,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		return err
 	}
 	var st *cpace.State
-	send := func(m authMsg) { b, _ := json.Marshal(m); ch.Send(b) }
+	send := func(m authMsg) { b, _ := json.Marshal(m); ch.SendText(string(b)) } // JSON — текстом: браузер парсит строку
 	ch.OnOpen(func() {
 		salt, secret := a.Secret()
 		fpHost, fpClient := pake.Fingerprint(s.pc.LocalDescription().SDP), pake.Fingerprint(s.pc.RemoteDescription().SDP)
@@ -391,7 +437,12 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		a.authResult(s.cid, err == nil)
 		if err != nil {
 			send(authMsg{T: "fail"})
-			time.AfterFunc(500*time.Millisecond, func() { s.pc.Close() })
+			a.mu.Lock() // освободить сразу: повтор с верным паролем не должен получить «занят»
+			if a.sess == s {
+				a.sess = nil
+			}
+			a.mu.Unlock()
+			time.AfterFunc(500*time.Millisecond, func() { s.pc.Close() }) // дать дойти «fail»
 			return
 		}
 		s.authed.Store(true)
@@ -426,7 +477,7 @@ func (s *session) watchClip(ctx context.Context, ctl *webrtc.DataChannel) {
 			seq = n
 			if text, err := ClipText(); err == nil && s.clip.toRemote(text) {
 				b, _ := json.Marshal(ctlMsg{T: "clip", Text: text})
-				ctl.Send(b)
+				ctl.SendText(string(b))
 			}
 		}
 	}

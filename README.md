@@ -7,12 +7,9 @@ Landing page and download: https://www.turboseller.xyz · Описание на 
 **Status: beta.** See *Security* and *Limitations* before relying on it.
 
 ## How it works
-```
-AnyPC.exe (controller) ──WSS── anypc-server (signaling) ──WSS── AnyPC.exe (controlled)
-        └────────── WebRTC: P2P, or relayed through coturn (TURN) ──────────┘
-```
+Both PCs keep a WebSocket connection to the signaling server (`anypc-server`), which only helps them find each other. The session itself is a WebRTC connection: direct (P2P) when the NATs allow it, otherwise relayed through coturn (TURN).
 - **Transport:** WebRTC (ICE/STUN/TURN, DTLS-SRTP). Video and input never pass through the signaling server in clear.
-- **Controlled side** (`agent/`): screen capture via FFmpeg `ddagrab` (DXGI) → H.264 → Pion WebRTC; input via `SendInput` scancodes; text clipboard sync.
+- **Controlled side** (`agent/`): screen capture via FFmpeg `ddagrab` (DXGI) → H.264 → Pion WebRTC; input via `SendInput` scancodes; text clipboard sync; file transfer both ways (one data channel per file; to the host's Downloads, or picked on the host via a file dialog).
 - **Window** (`app/`): WebView2 + `ui/index.html` (7 languages). FFmpeg is embedded and extracted to `%LOCALAPPDATA%\AnyPC`. The browser web client (also for Linux/macOS controllers) runs the same CPace code compiled to WebAssembly (`wasm/`).
 - **Server** (`server/`, `hub/`): signaling, time-limited TURN credentials, landing page (`site/`), downloads.
 
@@ -37,7 +34,7 @@ Open ports: 80, 443/tcp, 3478/udp+tcp, 49152–65535/udp. The client's default s
 - **Known gaps:** host ID is not yet bound to a key; the stored hash is password-equivalent (OPAQUE would fix it); the CPace implementation follows draft-haase-cpace-01 and has no independent audit; binaries are not code-signed. Review welcome.
 
 ## Limitations
-No Ctrl+Alt+Del / UAC / lock screen yet (needs service mode), primary monitor only, clipboard is text ≤ 60 KB, no file transfer yet.
+No Ctrl+Alt+Del / UAC / lock screen yet (needs service mode), primary monitor only, clipboard is text ≤ 60 KB, files received by the controller are buffered in memory before saving.
 
 ## License
 MIT — see `LICENSE`. Bundled FFmpeg is GPLv3 (separate program).

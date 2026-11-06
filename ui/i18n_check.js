@@ -9,5 +9,7 @@ for (const [file, start, end] of [['site/index.html', 'const T = {', '};\nconst 
   for (const k in D) { const miss = en.filter(x => !(x in D[k])); if (miss.length) throw new Error(`${file} ${k}: нет ${miss}`); }
   const used = [...html.matchAll(/data-t[pt]?="(\w+)"/g)].map(m => m[1]).filter(k => !en.includes(k));
   if (used.length) throw new Error(`${file}: не определены ${used}`);
+  const clash = [...html.matchAll(/\bid="(fs|process|path|crypto|performance|Go)"|^(?:let|const|var) (fs|process|path|crypto)\b/gm)].map(m => m[1] || m[2]);
+  if (clash.length) throw new Error(`${file}: глобальные имена, нужные wasm_exec.js: ${clash}`); // иначе Go в браузере падает
   console.log(`${file}: ${Object.keys(D).join(',')} — ${en.length} ключей OK`);
 }

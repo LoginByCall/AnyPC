@@ -20,7 +20,7 @@ fi
 
 # CPace для веб-клиента: тот же Go-код в WebAssembly (встраивается в ui)
 GOOS=js GOARCH=wasm go build -ldflags='-s -w' -o ui/pake.wasm ./wasm
-cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" ui/wasm_exec.js
+install -m 644 "$(go env GOROOT)/lib/wasm/wasm_exec.js" ui/wasm_exec.js
 go vet ./...
 if command -v node >/dev/null; then node ui/i18n_check.js; fi
 go test ./...
