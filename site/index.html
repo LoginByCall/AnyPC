@@ -111,14 +111,14 @@
       <button role="tab" id="tab-lin" aria-controls="p-lin" data-p="lin"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="m4 17 6-5-6-5M12 19h8"/></svg><span data-t="tab_lin"></span></button>
     </div>
     <div class="panel" id="p-win" role="tabpanel" aria-labelledby="tab-win">
-      <div class="cta"><a class="btn primary" href="/download/AnyPC.exe" download><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 19h16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg><span data-t="dl_win"></span></a></div>
+      <div class="cta"><a class="btn primary" href="/download/AnyPC.exe" data-file="AnyPC.exe" download><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 19h16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg><span data-t="dl_win"></span></a></div>
       <div class="meta"><span data-t="sys_win"></span><span class="size" data-f="AnyPC.exe"></span></div>
       <div class="sha"><span data-t="sha"></span>: <span class="sum" data-f="AnyPC.exe">—</span></div>
       <ol class="howto"><li data-t="w1"></li><li data-t="w2"></li><li data-t="w3"></li><li data-t="w4"></li></ol>
       <div class="chk"><span data-t="wchk"></span><pre class="code">Get-FileHash .\AnyPC.exe</pre></div>
     </div>
     <div class="panel" id="p-lin" role="tabpanel" aria-labelledby="tab-lin" hidden>
-      <div class="cta"><a class="btn primary" href="/download/AnyPC-linux-amd64" download><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 19h16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg><span data-t="dl_lin"></span></a></div>
+      <div class="cta"><a class="btn primary" href="/download/AnyPC-linux-amd64" data-file="AnyPC-linux-amd64" download><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 19h16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg><span data-t="dl_lin"></span></a></div>
       <div class="meta"><span data-t="sys_lin"></span><span class="size" data-f="AnyPC-linux-amd64"></span></div>
       <div class="sha"><span data-t="sha"></span>: <span class="sum" data-f="AnyPC-linux-amd64">—</span></div>
       <ol class="howto">
@@ -226,15 +226,21 @@ for (const k in T) {
 }
 apply(pick());
 
-// Размеры и контрольные суммы — из каталога загрузок (обновляются вместе с файлами).
-for (const f of Object.values(FILES))
-  fetch('/download/' + f, { method: 'HEAD' }).then(r => {
-    const n = +r.headers.get('content-length'); if (n) { sizes[f] = Math.round(n / 1048576); apply(lang); }
-  }).catch(() => {});
-fetch('/download/SHA256SUMS').then(r => r.ok ? r.text() : '').then(s => {
-  for (const [, h, f] of s.matchAll(/^([0-9a-f]{64})\s+\*?(\S+)$/gm))
+// Скачивание — с ближнего узла: зеркала /download/ на каждом хабе (/hubs), берём ответившее первым;
+// размеры и контрольные суммы — с того же зеркала, чтобы совпадали со скачанным файлом.
+const useMirror = (m, sums) => {
+  for (const a of document.querySelectorAll('a[data-file]')) a.href = m + a.dataset.file;
+  for (const [, h, f] of sums.matchAll(/^([0-9a-f]{64})\s+\*?(\S+)$/gm))
     document.querySelectorAll(`.sum[data-f="${f}"]`).forEach(e => e.textContent = h);
-}).catch(() => {});
+  for (const f of Object.values(FILES))
+    fetch(m + f, { method: 'HEAD' }).then(r => {
+      const n = +r.headers.get('content-length'); if (n) { sizes[f] = Math.round(n / 1048576); apply(lang); }
+    }).catch(() => {});
+};
+const sums = m => fetch(m + 'SHA256SUMS', { cache: 'no-store' }).then(r => r.ok ? r.text().then(t => [m, t]) : Promise.reject());
+fetch('/hubs').then(r => r.json()).catch(() => [])
+  .then(l => Promise.any(['/download/', ...l.map(u => u.replace(/^ws/, 'http').replace(/\/ws$/, '/download/'))].map(sums)))
+  .then(([m, t]) => useMirror(m, t), () => {});
 </script>
 </body>
 </html>

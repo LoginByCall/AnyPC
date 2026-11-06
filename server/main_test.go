@@ -32,6 +32,12 @@ func TestRouting(t *testing.T) {
 	if _, b := get(t, h, "example.com", "/"); !strings.Contains(b, `id="get"`) {
 		t.Error("голый домен (второй в списке -site) → лендинг")
 	}
+	if c, b := get(t, h, "any.example.com", "/download/AnyPC.exe"); c != 200 || b != "MZ-test" { // зеркало на хабе
+		t.Errorf("скачивание с хаба: %d %q", c, b)
+	}
+	if c, b := get(t, h, "www.example.com", "/hubs"); c != 200 || !strings.Contains(b, "b.example") {
+		t.Errorf("/hubs на лендинге: %d %q", c, b)
+	}
 	if c, b := get(t, h, "www.example.com", "/download/AnyPC.exe"); c != 200 || b != "MZ-test" {
 		t.Errorf("скачивание: %d %q", c, b)
 	}
