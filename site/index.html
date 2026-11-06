@@ -53,6 +53,14 @@
   .gh { display: inline-flex; align-items: center; gap: 6px; color: var(--fg); text-decoration: none; font-size: 14px; font-weight: 600; }
   .gh:hover { color: var(--acc); }
   pre.code { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; overflow-x: auto; font: 14px/1.5 ui-monospace, Consolas, monospace; }
+  .tabs { display: flex; gap: 4px; margin-bottom: -1px; position: relative; }
+  .tabs button { font: inherit; font-weight: 600; display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px; border: 1px solid var(--line); border-bottom-color: transparent; border-radius: 12px 12px 0 0; background: transparent; color: var(--mut); cursor: pointer; }
+  .tabs button[aria-selected="true"] { background: var(--card); color: var(--fg); border-bottom-color: var(--card); }
+  .tabs button:focus-visible { outline: 2px solid var(--acc); outline-offset: -2px; }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: 0 14px 14px 14px; padding: 24px; }
+  .panel .cta { margin-bottom: 8px; }
+  ol.howto { margin: 20px 0 0; padding-left: 22px; } ol.howto li { margin: 10px 0; } ol.howto pre.code { margin: 8px 0 0; background: var(--bg); }
+  .chk { margin-top: 18px; color: var(--mut); font-size: 15px; } .chk pre.code { margin: 8px 0 0; background: var(--bg); }
   footer { border-top: 1px solid var(--line); color: var(--mut); font-size: 13px; padding: 24px 0 40px; margin-top: 24px; }
 </style>
 </head>
@@ -74,12 +82,10 @@
       <div class="cta">
         <a class="btn primary" id="download" href="/download/AnyPC.exe" download>
           <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 19h16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          <span data-t="dl"></span></a>
+          <span></span></a>
         <a class="btn ghost" href="https://any.turboseller.xyz/" target="_blank" rel="noopener" data-t="web"></a>
       </div>
-      <div class="meta"><span data-t="req"></span><span id="size"></span></div>
-      <div class="meta"><span data-t="other"></span> <a id="alt" href="/download/AnyPC-linux-amd64" download></a></div>
-      <div class="sha" id="sha"></div>
+      <div class="meta" data-t="req"></div>
     </div>
     <svg viewBox="0 0 400 260" role="img" aria-label="">
       <defs><linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="var(--acc)"/><stop offset="1" stop-color="var(--fg)"/></linearGradient></defs>
@@ -97,6 +103,36 @@
     </svg>
   </div>
 
+  <section id="get">
+    <h2 data-t="getT"></h2>
+    <div class="tabs" role="tablist">
+      <button role="tab" id="tab-win" aria-controls="p-win" data-p="win"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M0 2.3 6.5 1.4v6.2H0zM7.3 1.3 16 0v7.6H7.3zM0 8.4h6.5v6.2L0 13.7zM7.3 8.4H16V16l-8.7-1.2z"/></svg><span data-t="tab_win"></span></button>
+      <button role="tab" id="tab-lin" aria-controls="p-lin" data-p="lin"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="m4 17 6-5-6-5M12 19h8"/></svg><span data-t="tab_lin"></span></button>
+    </div>
+    <div class="panel" id="p-win" role="tabpanel" aria-labelledby="tab-win">
+      <div class="cta"><a class="btn primary" href="/download/AnyPC.exe" download><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 19h16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg><span data-t="dl_win"></span></a></div>
+      <div class="meta"><span data-t="sys_win"></span><span class="size" data-f="AnyPC.exe"></span></div>
+      <div class="sha"><span data-t="sha"></span>: <span class="sum" data-f="AnyPC.exe">—</span></div>
+      <ol class="howto"><li data-t="w1"></li><li data-t="w2"></li><li data-t="w3"></li><li data-t="w4"></li></ol>
+      <div class="chk"><span data-t="wchk"></span><pre class="code">Get-FileHash .\AnyPC.exe</pre></div>
+    </div>
+    <div class="panel" id="p-lin" role="tabpanel" aria-labelledby="tab-lin" hidden>
+      <div class="cta"><a class="btn primary" href="/download/AnyPC-linux-amd64" download><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 19h16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg><span data-t="dl_lin"></span></a></div>
+      <div class="meta"><span data-t="sys_lin"></span><span class="size" data-f="AnyPC-linux-amd64"></span></div>
+      <div class="sha"><span data-t="sha"></span>: <span class="sum" data-f="AnyPC-linux-amd64">—</span></div>
+      <ol class="howto">
+        <li><span data-t="l1"></span><pre class="code"># X11
+sudo apt install ffmpeg xclip zenity
+# Wayland
+sudo apt install gstreamer1.0-pipewire gstreamer1.0-plugins-ugly wl-clipboard zenity</pre></li>
+        <li><span data-t="l2"></span><pre class="code">chmod +x AnyPC-linux-amd64
+./AnyPC-linux-amd64</pre></li>
+        <li data-t="l3"></li><li data-t="l4"></li>
+      </ol>
+      <div class="chk"><span data-t="lchk"></span><pre class="code">sha256sum AnyPC-linux-amd64</pre></div>
+    </div>
+  </section>
+
   <section>
     <h2 data-t="whyT"></h2>
     <div class="grid">
@@ -110,25 +146,12 @@
   <section>
     <h2 data-t="howT"></h2>
     <ol class="steps"><li data-t="s1"></li><li data-t="s2"></li><li data-t="s3"></li></ol>
-    <div class="note"><b data-t="smT"></b><span data-t="smD"></span></div>
-  </section>
-
-  <section id="linux">
-    <h2 data-t="linT"></h2>
-    <p data-t="linD"></p>
-    <pre class="code"># X11
-sudo apt install ffmpeg xclip zenity
-# Wayland
-sudo apt install gstreamer1.0-pipewire gstreamer1.0-plugins-ugly wl-clipboard zenity
-
-chmod +x AnyPC-linux-amd64
-./AnyPC-linux-amd64</pre>
   </section>
 
   <section class="two">
     <div class="card">
       <h2 data-t="secT"></h2>
-      <ul class="list"><li data-t="sec1"></li><li data-t="sec2"></li><li data-t="sec3"></li><li data-t="sec4"></li><li class="warn" data-t="sec5"></li></ul>
+      <ul class="list"><li data-t="sec1"></li><li data-t="secAsk"></li><li data-t="sec2"></li><li data-t="sec3"></li><li data-t="sec4"></li><li class="warn" data-t="sec5"></li></ul>
     </div>
     <div class="card">
       <h2 data-t="limT"></h2>
@@ -141,9 +164,15 @@ chmod +x AnyPC-linux-amd64
 
 <script>
 const T = {
-  en: { dl_lin: 'Download for Linux', dl_win: 'Download for Windows', other: 'Other platforms:', linT: 'Linux (beta)', linD: 'Works on X11 and Wayland. Install the dependencies, then run the file — the AnyPC window opens in your browser. On Wayland, the first connection asks you to allow remote control.', lim4: 'The Linux version is in beta and has been tested less than the Windows one.',
+  en: { getT: 'Download AnyPC', tab_win: 'Windows', tab_lin: 'Linux', sys_win: 'Windows 10 or 11, 64-bit', sys_lin: '64-bit (x86-64), X11 or Wayland · beta', sha: 'SHA-256 checksum',
+    w1: 'Run the downloaded AnyPC.exe — no installation; it shows this computer’s ID right away.', w2: 'If you see “Windows protected your PC”, click “More info” → “Run anyway”: the program is not code-signed yet.',
+    w3: 'If Windows Firewall asks about network access, allow it; otherwise a direct connection may fail and traffic will go through the relay.', w4: 'To allow connections to this computer, set a password under “This computer”.',
+    wchk: 'Verify the file (PowerShell) — the checksum must match the one above:', l1: 'Install the dependencies — they depend on your graphical session:', l2: 'Make the file executable and run it — the AnyPC window opens in a browser tab:',
+    l3: 'On Wayland, the first connection asks which screen to share and whether to allow control. The choice is remembered.', l4: 'To quit, click “Quit AnyPC” in the tab or press Ctrl+C in the terminal.', lchk: 'Verify the file — the checksum must match the one above:',
+    secAsk: 'Optionally, the controlled PC asks “Allow / Deny” for every connection; no answer within 30 seconds means deny.', lim3: 'Multiple monitors can be switched from the toolbar; on Wayland the monitor is chosen in the system dialog.',
+    dl_lin: 'Download for Linux', dl_win: 'Download for Windows', lim4: 'The Linux version is in beta and has been tested less than the Windows one.',
     _: 'English', badge: 'Beta · free', title: 'Your PC, from anywhere', lead: 'AnyPC lets you see and control your Windows computer from another one — even when both are behind routers or mobile networks. No port forwarding, no accounts.',
-    dl: 'Download for Windows', web: 'Open web client', req: 'Windows 10/11 · Linux (X11, Wayland)', whyT: 'Why AnyPC',
+    web: 'Open web client', req: 'Windows 10/11 · Linux (X11, Wayland)', whyT: 'Why AnyPC',
     f1t: 'Works through any NAT', f1d: 'Connects directly when possible and falls back to a relay server otherwise. Nothing to configure on your router.',
     f2t: 'Encrypted end-to-end', f2d: 'Screen and input travel over DTLS-SRTP. The relay server forwards only ciphertext.',
     f3t: 'One file, both roles', f3d: 'The same program shows your ID and password and connects to other PCs. No installer.',
@@ -151,31 +180,16 @@ const T = {
     howT: 'Get started in 3 steps', s1: 'Download AnyPC on both computers and run it.',
     s2: 'On the computer you want to control, set a password (8+ characters) and note its 9-digit ID.',
     s3: 'On the other computer, enter that ID and password and click “Connect”.',
-    smT: 'Windows warning on first launch', smD: 'AnyPC is not code-signed yet, so SmartScreen may say “Windows protected your PC”. Click “More info” → “Run anyway”. You can verify the file with the SHA-256 checksum above.',
+    
     secT: 'Security', sec1: 'Every connection requires the password set on the controlled PC.', sec2: 'During a session the controlled PC always shows a notice with a button to disconnect.',
     sec3: 'After 5 wrong passwords, access is temporarily locked.', sec4: 'Use AnyPC only on your own computers or with the owner’s consent.',
     sec5: 'Never give your ID and password to someone who calls you unexpectedly — it is a common scam.',
-    limT: 'Beta limitations', lim1: 'Ctrl+Alt+Del, UAC prompts and the lock screen are not available yet.', lim2: 'Clipboard: text only; files are sent with the toolbar buttons.', lim3: 'One monitor (the primary one) is shown.',
-    foot: 'AnyPC beta. Includes FFmpeg (GPLv3), source code at ffmpeg.org. Provided “as is”, without warranty.', size: ' · ' },
-  ru: { dl_lin: 'Скачать для Linux', dl_win: 'Скачать для Windows', other: 'Другие платформы:', linT: 'Linux (бета)', linD: 'Работает в X11 и Wayland. Установите зависимости и запустите файл — окно AnyPC откроется в браузере. В Wayland при первом подключении система попросит разрешить удалённое управление.', lim4: 'Версия для Linux — бета, проверена меньше, чем версия для Windows.',
-    _: 'Русский', badge: 'Бета · бесплатно', title: 'Ваш компьютер — откуда угодно', lead: 'AnyPC показывает экран вашего ПК с Windows и даёт управлять им с другого компьютера — даже если оба за роутерами или в мобильной сети. Без проброса портов и регистрации.',
-    dl: 'Скачать для Windows', web: 'Открыть веб-клиент', req: 'Windows 10/11 · Linux (X11, Wayland)', whyT: 'Почему AnyPC',
-    f1t: 'Работает через любой NAT', f1d: 'Соединяется напрямую, когда это возможно, иначе — через сервер-ретранслятор. Роутер настраивать не нужно.',
-    f2t: 'Сквозное шифрование', f2d: 'Экран и ввод идут по DTLS-SRTP. Ретранслятор пересылает только шифротекст.',
-    f3t: 'Один файл на обе роли', f3d: 'Одна программа показывает ваш ID и пароль и подключается к другим ПК. Установка не нужна.',
-    f4t: 'Плавно и отзывчиво', f4d: 'Видео H.264 до 1080p, 30 кадров/с, статистика соединения в реальном времени.',
-    howT: 'Начать за 3 шага', s1: 'Скачайте AnyPC на оба компьютера и запустите.',
-    s2: 'На компьютере, которым нужно управлять, задайте пароль (от 8 символов) и запишите его ID из 9 цифр.',
-    s3: 'На другом компьютере введите этот ID и пароль и нажмите «Подключиться».',
-    smT: 'Предупреждение Windows при первом запуске', smD: 'Программа пока не подписана, поэтому SmartScreen может написать «Система Windows защитила ваш компьютер». Нажмите «Подробнее» → «Выполнить в любом случае». Файл можно проверить по контрольной сумме SHA-256 выше.',
-    secT: 'Безопасность', sec1: 'Любое подключение требует пароль, заданный на управляемом ПК.', sec2: 'Во время сессии на управляемом ПК всегда видно уведомление с кнопкой разрыва.',
-    sec3: 'После 5 неверных паролей доступ временно блокируется.', sec4: 'Используйте AnyPC только на своих компьютерах или с согласия владельца.',
-    sec5: 'Никогда не сообщайте ID и пароль тому, кто неожиданно вам позвонил, — это частая схема мошенников.',
-    limT: 'Ограничения бета-версии', lim1: 'Ctrl+Alt+Del, окна UAC и экран блокировки пока недоступны.', lim2: 'Буфер обмена — только текст; файлы передаются кнопками на панели.', lim3: 'Показывается один (основной) монитор.',
-    foot: 'AnyPC, бета. Включает FFmpeg (GPLv3), исходный код — на ffmpeg.org. Предоставляется «как есть», без гарантий.', size: ' · ' },
-  zh: { dl_lin: '下载 Linux 版', dl_win: '下载 Windows 版', other: '其他平台：', linT: 'Linux（测试版）', linD: '支持 X11 和 Wayland。安装依赖后运行该文件，AnyPC 窗口会在浏览器中打开。在 Wayland 下，首次连接时系统会请求允许远程控制。', lim4: 'Linux 版为测试版，测试程度低于 Windows 版。',
+    limT: 'Beta limitations', lim1: 'Ctrl+Alt+Del, UAC prompts and the lock screen are not available yet.', lim2: 'Clipboard: text only; files are sent with the toolbar buttons.',
+    foot: 'AnyPC beta. Includes FFmpeg (GPLv3), source code at ffmpeg.org. Provided “as is”, without warranty.', },
+  ru: {"_": "Русский", "title": "Ваш компьютер — откуда угодно", "badge": "Бета · бесплатно", "lead": "AnyPC показывает экран вашего компьютера и даёт управлять им с другого — даже если оба за роутерами или в мобильной сети. Без проброса портов и регистрации.", "web": "Открыть веб-клиент", "req": "Windows 10/11 · Linux (X11, Wayland)", "whyT": "Почему AnyPC", "f1t": "Работает через любой NAT", "f1d": "Соединяется напрямую, когда это возможно, иначе — через сервер-ретранслятор. Роутер настраивать не нужно.", "f2t": "Сквозное шифрование", "f2d": "Экран и ввод идут по DTLS-SRTP. Ретранслятор пересылает только шифротекст.", "f3t": "Один файл на обе роли", "f3d": "Одна программа показывает ваш ID и пароль и подключается к другим ПК. Установка не нужна.", "f4t": "Плавно и отзывчиво", "f4d": "Видео H.264 до 1080p, 30 кадров/с; качество подстраивается под канал, статистика соединения — в реальном времени.", "getT": "Скачать AnyPC", "tab_win": "Windows", "tab_lin": "Linux", "dl_win": "Скачать для Windows", "dl_lin": "Скачать для Linux", "sys_win": "Windows 10 или 11, 64 бит", "sys_lin": "64 бит (x86-64), X11 или Wayland · бета", "sha": "Контрольная сумма SHA-256", "w1": "Запустите скачанный AnyPC.exe — установка не нужна, программа сразу показывает ID этого компьютера.", "w2": "Если появится «Система Windows защитила ваш компьютер», нажмите «Подробнее» → «Выполнить в любом случае»: программа пока не подписана сертификатом.", "w3": "⚠ Если брандмауэр Windows спросит о доступе к сети — разрешите, иначе прямое соединение может не получиться и связь пойдёт через ретранслятор.", "w4": "Чтобы к этому компьютеру можно было подключаться, задайте пароль в разделе «Это рабочее место».", "wchk": "Проверить файл (PowerShell) — сумма должна совпасть с указанной выше:", "l1": "Установите зависимости — набор зависит от графической сессии:", "l2": "Сделайте файл исполняемым и запустите — окно AnyPC откроется во вкладке браузера:", "l3": "В Wayland при первом подключении система спросит, какой экран показывать и можно ли управлять. Разрешение запоминается, повторно спрашивать не будет.", "l4": "Чтобы завершить программу, нажмите «Выйти из AnyPC» во вкладке или Ctrl+C в терминале.", "lchk": "Проверить файл — сумма должна совпасть с указанной выше:", "howT": "Начать за 3 шага", "s1": "Скачайте AnyPC на оба компьютера и запустите.", "s2": "На компьютере, которым нужно управлять, задайте пароль (от 8 символов) и запишите его ID из 9 цифр.", "s3": "На другом компьютере введите этот ID и пароль и нажмите «Подключиться». Если на управляемом ПК включено подтверждение, там нужно нажать «Разрешить».", "secT": "Безопасность", "sec1": "Любое подключение требует пароль, заданный на управляемом ПК; сам пароль по сети не передаётся.", "secAsk": "Можно включить подтверждение: на каждое подключение управляемый ПК спрашивает «Разрешить / Отклонить», без ответа за 30 секунд — отказ.", "sec2": "Во время сессии на управляемом ПК всегда видно уведомление с кнопкой разрыва.", "sec3": "После 5 неверных паролей доступ временно блокируется.", "sec4": "Используйте AnyPC только на своих компьютерах или с согласия владельца.", "sec5": "Никогда не сообщайте ID и пароль тому, кто неожиданно вам позвонил, — это частая схема мошенников.", "limT": "Ограничения бета-версии", "lim1": "Ctrl+Alt+Del, окна UAC и экран блокировки пока недоступны.", "lim2": "Буфер обмена — только текст; файлы передаются кнопками на панели.", "lim3": "Несколько мониторов переключаются на панели; в Wayland монитор выбирается в системном окне при подключении.", "lim4": "Версия для Linux — бета, проверена меньше, чем версия для Windows.", "foot": "AnyPC, бета. Включает FFmpeg (GPLv3), исходный код — на ffmpeg.org. Предоставляется «как есть», без гарантий."},
+  zh: { dl_lin: '下载 Linux 版', dl_win: '下载 Windows 版', lim4: 'Linux 版为测试版，测试程度低于 Windows 版。',
     _: '中文', badge: '测试版 · 免费', title: '随时随地访问您的电脑', lead: 'AnyPC 让您从另一台电脑查看并控制您的 Windows 电脑——即使两台电脑都在路由器或移动网络之后。无需端口转发，无需注册账号。',
-    dl: '下载 Windows 版', web: '打开网页客户端', req: 'Windows 10/11 · Linux (X11, Wayland)', whyT: '为什么选择 AnyPC',
+    web: '打开网页客户端', req: 'Windows 10/11 · Linux (X11, Wayland)', whyT: '为什么选择 AnyPC',
     f1t: '穿透任何 NAT', f1d: '能直连时直接连接，否则自动通过中继服务器。无需设置路由器。',
     f2t: '端到端加密', f2d: '画面和输入通过 DTLS-SRTP 传输，中继服务器只转发密文。',
     f3t: '一个文件，两种角色', f3d: '同一个程序既显示您的 ID 和密码，又能连接其他电脑。无需安装。',
@@ -183,15 +197,15 @@ const T = {
     howT: '三步开始使用', s1: '在两台电脑上下载并运行 AnyPC。',
     s2: '在需要被控制的电脑上设置密码（至少 8 个字符），并记下 9 位数字 ID。',
     s3: '在另一台电脑上输入该 ID 和密码，然后点击“连接”。',
-    smT: '首次运行时的 Windows 警告', smD: '程序暂未进行代码签名，SmartScreen 可能提示“Windows 已保护你的电脑”。请点击“更多信息”→“仍要运行”。可使用上方的 SHA-256 校验和验证文件。',
+    
     secT: '安全', sec1: '每次连接都需要被控电脑上设置的密码。', sec2: '会话期间，被控电脑始终显示提示，并带有断开按钮。',
     sec3: '连续 5 次密码错误后，访问将被暂时锁定。', sec4: '请仅在自己的电脑上或经所有者同意后使用 AnyPC。',
     sec5: '切勿把 ID 和密码告诉突然给您打电话的人——这是常见的诈骗手法。',
-    limT: '测试版限制', lim1: '暂不支持 Ctrl+Alt+Del、UAC 提示窗口和锁屏界面。', lim2: '剪贴板仅支持文本；文件可通过工具栏按钮传输。', lim3: '仅显示一个（主）显示器。',
-    foot: 'AnyPC 测试版。包含 FFmpeg（GPLv3），源代码见 ffmpeg.org。按“原样”提供，不作任何保证。', size: ' · ' },
-  es: { dl_lin: 'Descargar para Linux', dl_win: 'Descargar para Windows', other: 'Otras plataformas:', linT: 'Linux (beta)', linD: 'Funciona en X11 y Wayland. Instala las dependencias y ejecuta el archivo: la ventana de AnyPC se abre en el navegador. En Wayland, la primera conexión pide permitir el control remoto.', lim4: 'La versión para Linux está en beta y se ha probado menos que la de Windows.',
+    limT: '测试版限制', lim1: '暂不支持 Ctrl+Alt+Del、UAC 提示窗口和锁屏界面。', lim2: '剪贴板仅支持文本；文件可通过工具栏按钮传输。',
+    foot: 'AnyPC 测试版。包含 FFmpeg（GPLv3），源代码见 ffmpeg.org。按“原样”提供，不作任何保证。', },
+  es: { dl_lin: 'Descargar para Linux', dl_win: 'Descargar para Windows', lim4: 'La versión para Linux está en beta y se ha probado menos que la de Windows.',
     _: 'Español', badge: 'Beta · gratis', title: 'Tu PC, desde cualquier lugar', lead: 'AnyPC te permite ver y controlar tu ordenador con Windows desde otro, aunque ambos estén detrás de routers o redes móviles. Sin abrir puertos y sin cuentas.',
-    dl: 'Descargar para Windows', web: 'Abrir cliente web', req: 'Windows 10/11 · Linux (X11, Wayland)', whyT: 'Por qué AnyPC',
+    web: 'Abrir cliente web', req: 'Windows 10/11 · Linux (X11, Wayland)', whyT: 'Por qué AnyPC',
     f1t: 'Funciona a través de cualquier NAT', f1d: 'Conecta directamente cuando es posible y, si no, mediante un servidor de retransmisión. No hay que configurar el router.',
     f2t: 'Cifrado de extremo a extremo', f2d: 'La pantalla y la entrada viajan por DTLS-SRTP. El servidor de retransmisión solo reenvía datos cifrados.',
     f3t: 'Un solo archivo, dos funciones', f3d: 'El mismo programa muestra tu ID y contraseña y se conecta a otros PC. Sin instalación.',
@@ -199,15 +213,15 @@ const T = {
     howT: 'Empieza en 3 pasos', s1: 'Descarga AnyPC en ambos ordenadores y ejecútalo.',
     s2: 'En el ordenador que quieres controlar, establece una contraseña (8+ caracteres) y anota su ID de 9 dígitos.',
     s3: 'En el otro ordenador, introduce ese ID y la contraseña y pulsa «Conectar».',
-    smT: 'Aviso de Windows en el primer inicio', smD: 'AnyPC todavía no tiene firma de código, así que SmartScreen puede mostrar «Windows protegió tu PC». Pulsa «Más información» → «Ejecutar de todas formas». Puedes verificar el archivo con la suma SHA-256 de arriba.',
+    
     secT: 'Seguridad', sec1: 'Cada conexión requiere la contraseña establecida en el PC controlado.', sec2: 'Durante una sesión, el PC controlado siempre muestra un aviso con un botón para desconectar.',
     sec3: 'Tras 5 contraseñas incorrectas, el acceso se bloquea temporalmente.', sec4: 'Usa AnyPC solo en tus propios ordenadores o con el consentimiento del propietario.',
     sec5: 'Nunca des tu ID y contraseña a alguien que te llame inesperadamente: es una estafa habitual.',
-    limT: 'Limitaciones de la beta', lim1: 'Ctrl+Alt+Supr, las ventanas de UAC y la pantalla de bloqueo aún no están disponibles.', lim2: 'Portapapeles: solo texto; los archivos se envían con los botones de la barra.', lim3: 'Se muestra un solo monitor (el principal).',
-    foot: 'AnyPC beta. Incluye FFmpeg (GPLv3), código fuente en ffmpeg.org. Se ofrece «tal cual», sin garantía.', size: ' · ' },
-  de: { dl_lin: 'Für Linux herunterladen', dl_win: 'Für Windows herunterladen', other: 'Andere Plattformen:', linT: 'Linux (Beta)', linD: 'Läuft unter X11 und Wayland. Abhängigkeiten installieren und die Datei starten – das AnyPC-Fenster öffnet sich im Browser. Unter Wayland fragt das System bei der ersten Verbindung nach der Erlaubnis zur Fernsteuerung.', lim4: 'Die Linux-Version ist eine Beta und weniger getestet als die Windows-Version.',
+    limT: 'Limitaciones de la beta', lim1: 'Ctrl+Alt+Supr, las ventanas de UAC y la pantalla de bloqueo aún no están disponibles.', lim2: 'Portapapeles: solo texto; los archivos se envían con los botones de la barra.',
+    foot: 'AnyPC beta. Incluye FFmpeg (GPLv3), código fuente en ffmpeg.org. Se ofrece «tal cual», sin garantía.', },
+  de: { dl_lin: 'Für Linux herunterladen', dl_win: 'Für Windows herunterladen', lim4: 'Die Linux-Version ist eine Beta und weniger getestet als die Windows-Version.',
     _: 'Deutsch', badge: 'Beta · kostenlos', title: 'Ihr PC – von überall', lead: 'Mit AnyPC sehen und steuern Sie Ihren Windows-Computer von einem anderen aus – auch wenn beide hinter Routern oder im Mobilfunknetz sind. Ohne Portfreigabe, ohne Konto.',
-    dl: 'Für Windows herunterladen', web: 'Web-Client öffnen', req: 'Windows 10/11 · Linux (X11, Wayland)', whyT: 'Warum AnyPC',
+    web: 'Web-Client öffnen', req: 'Windows 10/11 · Linux (X11, Wayland)', whyT: 'Warum AnyPC',
     f1t: 'Funktioniert durch jedes NAT', f1d: 'Verbindet direkt, wenn möglich, sonst über einen Relay-Server. Am Router ist nichts einzustellen.',
     f2t: 'Ende-zu-Ende-verschlüsselt', f2d: 'Bild und Eingaben laufen über DTLS-SRTP. Der Relay-Server leitet nur verschlüsselte Daten weiter.',
     f3t: 'Eine Datei, beide Rollen', f3d: 'Dasselbe Programm zeigt Ihre ID und Ihr Passwort und verbindet sich mit anderen PCs. Keine Installation.',
@@ -215,15 +229,15 @@ const T = {
     howT: 'In 3 Schritten starten', s1: 'Laden Sie AnyPC auf beide Computer herunter und starten Sie es.',
     s2: 'Legen Sie auf dem zu steuernden Computer ein Passwort fest (mind. 8 Zeichen) und notieren Sie die 9-stellige ID.',
     s3: 'Geben Sie auf dem anderen Computer diese ID und das Passwort ein und klicken Sie auf „Verbinden“.',
-    smT: 'Windows-Warnung beim ersten Start', smD: 'AnyPC ist noch nicht code-signiert, daher zeigt SmartScreen eventuell „Der Computer wurde durch Windows geschützt“. Klicken Sie auf „Weitere Informationen“ → „Trotzdem ausführen“. Die Datei lässt sich mit der SHA-256-Prüfsumme oben verifizieren.',
+    
     secT: 'Sicherheit', sec1: 'Jede Verbindung erfordert das auf dem gesteuerten PC festgelegte Passwort.', sec2: 'Während einer Sitzung zeigt der gesteuerte PC immer einen Hinweis mit einer Trennen-Schaltfläche.',
     sec3: 'Nach 5 falschen Passwörtern wird der Zugang vorübergehend gesperrt.', sec4: 'Verwenden Sie AnyPC nur auf eigenen Computern oder mit Zustimmung des Besitzers.',
     sec5: 'Geben Sie ID und Passwort niemals an unerwartete Anrufer weiter – das ist eine verbreitete Betrugsmasche.',
-    limT: 'Einschränkungen der Beta', lim1: 'Strg+Alt+Entf, UAC-Abfragen und der Sperrbildschirm sind noch nicht verfügbar.', lim2: 'Zwischenablage: nur Text; Dateien über die Schaltflächen der Leiste.', lim3: 'Es wird ein Monitor (der Hauptmonitor) angezeigt.',
-    foot: 'AnyPC Beta. Enthält FFmpeg (GPLv3), Quellcode unter ffmpeg.org. Bereitgestellt „wie besehen“, ohne Gewährleistung.', size: ' · ' },
-  fr: { dl_lin: 'Télécharger pour Linux', dl_win: 'Télécharger pour Windows', other: 'Autres plateformes :', linT: 'Linux (bêta)', linD: 'Fonctionne sous X11 et Wayland. Installez les dépendances puis lancez le fichier : la fenêtre AnyPC s’ouvre dans le navigateur. Sous Wayland, la première connexion demande d’autoriser le contrôle à distance.', lim4: 'La version Linux est en bêta et moins testée que la version Windows.',
+    limT: 'Einschränkungen der Beta', lim1: 'Strg+Alt+Entf, UAC-Abfragen und der Sperrbildschirm sind noch nicht verfügbar.', lim2: 'Zwischenablage: nur Text; Dateien über die Schaltflächen der Leiste.',
+    foot: 'AnyPC Beta. Enthält FFmpeg (GPLv3), Quellcode unter ffmpeg.org. Bereitgestellt „wie besehen“, ohne Gewährleistung.', },
+  fr: { dl_lin: 'Télécharger pour Linux', dl_win: 'Télécharger pour Windows', lim4: 'La version Linux est en bêta et moins testée que la version Windows.',
     _: 'Français', badge: 'Bêta · gratuit', title: 'Votre PC, où que vous soyez', lead: 'AnyPC vous permet de voir et de contrôler votre ordinateur Windows depuis un autre, même si les deux sont derrière des routeurs ou un réseau mobile. Sans redirection de ports, sans compte.',
-    dl: 'Télécharger pour Windows', web: 'Ouvrir le client web', req: 'Windows 10/11 · Linux (X11, Wayland)', whyT: 'Pourquoi AnyPC',
+    web: 'Ouvrir le client web', req: 'Windows 10/11 · Linux (X11, Wayland)', whyT: 'Pourquoi AnyPC',
     f1t: 'Traverse n’importe quel NAT', f1d: 'Connexion directe quand c’est possible, sinon via un serveur relais. Rien à configurer sur le routeur.',
     f2t: 'Chiffré de bout en bout', f2d: 'L’écran et les saisies passent par DTLS-SRTP. Le serveur relais ne transmet que des données chiffrées.',
     f3t: 'Un seul fichier, deux rôles', f3d: 'Le même programme affiche votre ID et votre mot de passe et se connecte à d’autres PC. Sans installation.',
@@ -231,15 +245,15 @@ const T = {
     howT: 'Démarrer en 3 étapes', s1: 'Téléchargez AnyPC sur les deux ordinateurs et lancez-le.',
     s2: 'Sur l’ordinateur à contrôler, définissez un mot de passe (8 caractères ou plus) et notez son ID à 9 chiffres.',
     s3: 'Sur l’autre ordinateur, saisissez cet ID et le mot de passe, puis cliquez sur « Se connecter ».',
-    smT: 'Avertissement Windows au premier lancement', smD: 'AnyPC n’est pas encore signé, SmartScreen peut donc afficher « Windows a protégé votre ordinateur ». Cliquez sur « Informations complémentaires » → « Exécuter quand même ». Vous pouvez vérifier le fichier avec la somme SHA-256 ci-dessus.',
+    
     secT: 'Sécurité', sec1: 'Chaque connexion exige le mot de passe défini sur le PC contrôlé.', sec2: 'Pendant une session, le PC contrôlé affiche toujours un avis avec un bouton de déconnexion.',
     sec3: 'Après 5 mots de passe erronés, l’accès est temporairement bloqué.', sec4: 'N’utilisez AnyPC que sur vos propres ordinateurs ou avec l’accord du propriétaire.',
     sec5: 'Ne donnez jamais votre ID et votre mot de passe à une personne qui vous appelle à l’improviste : c’est une arnaque courante.',
-    limT: 'Limites de la bêta', lim1: 'Ctrl+Alt+Suppr, les fenêtres UAC et l’écran de verrouillage ne sont pas encore pris en charge.', lim2: 'Presse-papiers : texte uniquement ; les fichiers passent par les boutons de la barre.', lim3: 'Un seul écran (le principal) est affiché.',
-    foot: 'AnyPC bêta. Inclut FFmpeg (GPLv3), code source sur ffmpeg.org. Fourni « tel quel », sans garantie.', size: ' · ' },
-  it: { dl_lin: 'Scarica per Linux', dl_win: 'Scarica per Windows', other: 'Altre piattaforme:', linT: 'Linux (beta)', linD: 'Funziona su X11 e Wayland. Installa le dipendenze e avvia il file: la finestra di AnyPC si apre nel browser. Su Wayland, alla prima connessione il sistema chiede di consentire il controllo remoto.', lim4: 'La versione per Linux è in beta ed è stata testata meno di quella per Windows.',
+    limT: 'Limites de la bêta', lim1: 'Ctrl+Alt+Suppr, les fenêtres UAC et l’écran de verrouillage ne sont pas encore pris en charge.', lim2: 'Presse-papiers : texte uniquement ; les fichiers passent par les boutons de la barre.',
+    foot: 'AnyPC bêta. Inclut FFmpeg (GPLv3), code source sur ffmpeg.org. Fourni « tel quel », sans garantie.', },
+  it: { dl_lin: 'Scarica per Linux', dl_win: 'Scarica per Windows', lim4: 'La versione per Linux è in beta ed è stata testata meno di quella per Windows.',
     _: 'Italiano', badge: 'Beta · gratis', title: 'Il tuo PC, ovunque tu sia', lead: 'AnyPC ti permette di vedere e controllare il tuo computer Windows da un altro, anche se entrambi sono dietro router o reti mobili. Senza aprire porte e senza account.',
-    dl: 'Scarica per Windows', web: 'Apri il client web', req: 'Windows 10/11 · Linux (X11, Wayland)', whyT: 'Perché AnyPC',
+    web: 'Apri il client web', req: 'Windows 10/11 · Linux (X11, Wayland)', whyT: 'Perché AnyPC',
     f1t: 'Funziona attraverso qualsiasi NAT', f1d: 'Si connette direttamente quando possibile, altrimenti tramite un server relay. Nessuna configurazione del router.',
     f2t: 'Crittografia end-to-end', f2d: 'Schermo e input viaggiano su DTLS-SRTP. Il server relay inoltra solo dati cifrati.',
     f3t: 'Un solo file, due ruoli', f3d: 'Lo stesso programma mostra il tuo ID e la password e si connette ad altri PC. Nessuna installazione.',
@@ -247,15 +261,17 @@ const T = {
     howT: 'Inizia in 3 passi', s1: 'Scarica AnyPC su entrambi i computer ed eseguilo.',
     s2: 'Sul computer da controllare, imposta una password (almeno 8 caratteri) e annota il suo ID di 9 cifre.',
     s3: 'Sull’altro computer, inserisci quell’ID e la password e fai clic su «Connetti».',
-    smT: 'Avviso di Windows al primo avvio', smD: 'AnyPC non ha ancora una firma digitale, quindi SmartScreen potrebbe mostrare «Windows ha protetto il PC». Fai clic su «Ulteriori informazioni» → «Esegui comunque». Puoi verificare il file con il checksum SHA-256 qui sopra.',
+    
     secT: 'Sicurezza', sec1: 'Ogni connessione richiede la password impostata sul PC controllato.', sec2: 'Durante una sessione, il PC controllato mostra sempre un avviso con un pulsante per disconnettere.',
     sec3: 'Dopo 5 password errate, l’accesso viene bloccato temporaneamente.', sec4: 'Usa AnyPC solo sui tuoi computer o con il consenso del proprietario.',
     sec5: 'Non comunicare mai ID e password a chi ti chiama inaspettatamente: è una truffa comune.',
-    limT: 'Limiti della beta', lim1: 'Ctrl+Alt+Canc, le finestre UAC e la schermata di blocco non sono ancora disponibili.', lim2: 'Appunti: solo testo; i file si inviano con i pulsanti della barra.', lim3: 'Viene mostrato un solo monitor (quello principale).',
-    foot: 'AnyPC beta. Include FFmpeg (GPLv3), codice sorgente su ffmpeg.org. Fornito «così com’è», senza garanzia.', size: ' · ' },
+    limT: 'Limiti della beta', lim1: 'Ctrl+Alt+Canc, le finestre UAC e la schermata di blocco non sono ancora disponibili.', lim2: 'Appunti: solo testo; i file si inviano con i pulsanti della barra.',
+    foot: 'AnyPC beta. Include FFmpeg (GPLv3), codice sorgente su ffmpeg.org. Fornito «così com’è», senza garanzia.', },
 };
 const MB = { en: 'MB', ru: 'МБ', zh: 'MB', es: 'MB', de: 'MB', fr: 'Mo', it: 'MB' };
-let lang, sizeMB = '';
+const FILES = { win: 'AnyPC.exe', lin: 'AnyPC-linux-amd64' };
+const sizes = {};
+let lang;
 
 function pick() {
   const q = new URLSearchParams(location.search).get('lang');
@@ -266,16 +282,40 @@ function pick() {
   }
   return 'en';
 }
-let apply = function (l) {
+function apply(l) {
   lang = l;
-  const t = T[l];
+  const t = k => T[l][k] ?? T.en[k] ?? ''; // ponytail: непереведённый ключ — по-английски
   document.documentElement.lang = l === 'zh' ? 'zh-CN' : l;
-  document.title = 'AnyPC — ' + t.title;
-  document.querySelectorAll('[data-t]').forEach(e => e.textContent = t[e.dataset.t]);
+  document.title = 'AnyPC — ' + t('title');
+  document.querySelectorAll('[data-t]').forEach(e => e.textContent = t(e.dataset.t));
   document.querySelectorAll('#langs button').forEach(b => b.setAttribute('aria-pressed', b.dataset.l === l));
-  $size();
+  document.querySelector('#download span').textContent = t('dl_' + os);
+  document.querySelectorAll('.size').forEach(e => e.textContent = sizes[e.dataset.f] ? ` · ${sizes[e.dataset.f]} ${MB[l]}` : '');
 }
-function $size() { document.getElementById('size').textContent = sizeMB ? ` · ${sizeMB} ${MB[lang]}` : ''; }
+
+// Плашки платформ; по умолчанию — ОС посетителя.
+const os = /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent) ? 'lin' : 'win';
+const tabs = [...document.querySelectorAll('[role=tab]')];
+function show(p) {
+  for (const b of tabs) {
+    const on = b.dataset.p === p;
+    b.setAttribute('aria-selected', on); b.tabIndex = on ? 0 : -1;
+    document.getElementById('p-' + b.dataset.p).hidden = !on;
+  }
+}
+tabs.forEach((b, i) => {
+  b.onclick = () => show(b.dataset.p);
+  b.onkeydown = e => { // стрелки — как у вкладок (WAI-ARIA)
+    const d = { ArrowRight: 1, ArrowLeft: -1 }[e.key]; if (!d) return;
+    const n = tabs[(i + d + tabs.length) % tabs.length]; show(n.dataset.p); n.focus();
+  };
+});
+show(os);
+
+// Кнопка первого экрана: скачать под свою ОС и показать инструкцию.
+const dl = document.getElementById('download');
+dl.href = '/download/' + FILES[os];
+dl.addEventListener('click', () => { show(os); document.getElementById('get').scrollIntoView({ behavior: 'smooth' }); });
 
 const nav = document.getElementById('langs');
 for (const k in T) {
@@ -286,27 +326,14 @@ for (const k in T) {
 }
 apply(pick());
 
-// Главная кнопка — под ОС посетителя; вторая платформа — ссылкой ниже.
-const isLinux = /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
-const FILES = { win: '/download/AnyPC.exe', lin: '/download/AnyPC-linux-amd64' };
-function platform() {
-  const t = T[lang], dl = document.getElementById('download'), alt = document.getElementById('alt');
-  dl.href = isLinux ? FILES.lin : FILES.win;
-  dl.querySelector('span').textContent = isLinux ? t.dl_lin : t.dl;
-  alt.href = isLinux ? FILES.win : FILES.lin;
-  alt.textContent = isLinux ? t.dl_win : t.dl_lin;
-}
-const apply0 = apply;
-apply = l => { apply0(l); platform(); };
-platform();
-
-// Размер и контрольные суммы — из каталога загрузок (обновляются вместе с файлами).
-fetch(isLinux ? FILES.lin : FILES.win, { method: 'HEAD' }).then(r => {
-  const n = +r.headers.get('content-length'); if (n) { sizeMB = Math.round(n / 1048576); $size(); }
-}).catch(() => {});
+// Размеры и контрольные суммы — из каталога загрузок (обновляются вместе с файлами).
+for (const f of Object.values(FILES))
+  fetch('/download/' + f, { method: 'HEAD' }).then(r => {
+    const n = +r.headers.get('content-length'); if (n) { sizes[f] = Math.round(n / 1048576); apply(lang); }
+  }).catch(() => {});
 fetch('/download/SHA256SUMS').then(r => r.ok ? r.text() : '').then(s => {
-  const sums = [...s.matchAll(/^([0-9a-f]{64})\s+\*?(\S+)$/gm)].map(m => `SHA-256 ${m[2]}: ${m[1]}`);
-  document.getElementById('sha').innerText = sums.join('\n');
+  for (const [, h, f] of s.matchAll(/^([0-9a-f]{64})\s+\*?(\S+)$/gm))
+    document.querySelectorAll(`.sum[data-f="${f}"]`).forEach(e => e.textContent = h);
 }).catch(() => {});
 </script>
 </body>
