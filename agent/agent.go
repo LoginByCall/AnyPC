@@ -36,7 +36,7 @@ import (
 )
 
 type Agent struct {
-	Server  string                       // wss://…/ws
+	Server  string                       // wss://…/ws; несколько хабов — через запятую (хост в сети на каждом)
 	ID      string                       // 9 цифр
 	Secret  func() (salt, secret []byte) // соль и KDF(пароль, соль) из настроек; пустой secret — пароль не задан
 	Key     ed25519.PrivateKey           // ключ хоста: за ним закреплён ID (REQ-F-01), им хост подтверждает себя клиенту
@@ -51,17 +51,17 @@ type Agent struct {
 	Confirm func(cid, peer string) bool                                 // REQ-F-03: спросить человека на хосте после верного пароля; nil — не спрашивать (unattended)
 
 	mu        sync.Mutex
-	conn      *websocket.Conn
 	ice       []webrtc.ICEServer
 	rtt       map[string]int // мс от хоста до каждого TURN (замер при каждом hello)
 	sess      *session
 	fails     int
 	lockUntil time.Time
-	online    bool
+	online    map[string]bool // хабы, на которых хост зарегистрирован
 }
 
 type session struct {
 	cid     string
+	conn    *websocket.Conn // хаб, через который пришёл клиент
 	pc      *webrtc.PeerConnection
 	keys    held
 	clip    clipSync
@@ -154,44 +154,59 @@ func FFArgs(src, enc string, fps int, br string) []string {
 	return append(a, "-flush_packets", "1", "-f", "h264", "-")
 }
 
-// Run держит регистрацию на сервере, переподключаясь каждые 5 с до отмены ctx.
+// Run держит регистрацию на каждом хабе из Server, переподключаясь каждые 5 с до отмены ctx.
+// Хост в сети на всех хабах сразу: клиент идёт через тот, что ответил ему первым, — синхронизировать хабы не нужно.
 func (a *Agent) Run(ctx context.Context) {
-	for ctx.Err() == nil {
-		err := a.run(ctx)
-		a.setOnline(false)
-		log.Printf("сигнализация: %v — повтор через 5 с", err)
-		select {
-		case <-ctx.Done():
-		case <-time.After(5 * time.Second):
+	var wg sync.WaitGroup
+	for _, u := range strings.Split(a.Server, ",") {
+		if u = strings.TrimSpace(u); u == "" {
+			continue
 		}
+		wg.Go(func() {
+			for ctx.Err() == nil {
+				err := a.run(ctx, u)
+				a.setOnline(u, false)
+				log.Printf("сигнализация %s: %v — повтор через 5 с", u, err)
+				select {
+				case <-ctx.Done():
+				case <-time.After(5 * time.Second):
+				}
+			}
+		})
 	}
+	wg.Wait()
 	a.Disconnect()
 }
 
 // Disconnect разрывает текущую сессию (кнопка «Разорвать» на хосте).
 func (a *Agent) Disconnect() {
 	a.mu.Lock()
-	s, c := a.sess, a.conn
+	s := a.sess
 	a.mu.Unlock()
 	if s == nil {
 		return
 	}
-	if c != nil {
-		a.send(context.Background(), c, "bye", s.cid, "host")
-	}
+	a.send(context.Background(), s.conn, "bye", s.cid, "host") // через хаб, по которому пришёл клиент
 	s.pc.Close()
 }
 
-func (a *Agent) setOnline(on bool) {
+func (a *Agent) setOnline(hub string, on bool) {
 	a.mu.Lock()
-	a.online = on
+	if a.online == nil {
+		a.online = map[string]bool{}
+	}
+	if on {
+		a.online[hub] = true
+	} else {
+		delete(a.online, hub)
+	}
 	a.mu.Unlock()
 	a.notify()
 }
 
 func (a *Agent) notify() {
 	a.mu.Lock()
-	on, cid := a.online, ""
+	on, cid := len(a.online) > 0, "" // в сети, если зарегистрирован хоть на одном хабе
 	if a.sess != nil {
 		cid = a.sess.cid
 	}
@@ -227,17 +242,14 @@ func dial(ctx context.Context, u string) (*websocket.Conn, error) {
 	return c, err
 }
 
-func (a *Agent) run(ctx context.Context) error {
+func (a *Agent) run(ctx context.Context, server string) error {
 	pub := base64.RawURLEncoding.EncodeToString(a.Key.Public().(ed25519.PublicKey))
-	c, err := dial(ctx, a.Server+"?host="+a.ID+"&key="+pub)
+	c, err := dial(ctx, server+"?host="+a.ID+"&key="+pub)
 	if err != nil {
 		return err
 	}
 	defer c.CloseNow()
 	c.SetReadLimit(64 << 10)
-	a.mu.Lock()
-	a.conn = c
-	a.mu.Unlock()
 	for {
 		var m hub.Msg
 		if err := wsjson.Read(ctx, c, &m); err != nil {
@@ -262,7 +274,7 @@ func (a *Agent) run(ctx context.Context) error {
 			a.mu.Unlock()
 			go func(hs []string) { r := measureTURN(hs); a.mu.Lock(); a.rtt = r; a.mu.Unlock() }(turnHosts(d.ICE))
 			log.Printf("зарегистрирован как %s, ICE-серверов: %d", a.ID, len(d.ICE))
-			a.setOnline(true)
+			a.setOnline(server, true)
 		case "error":
 			log.Printf("сервер: %s", m.Data)
 			switch string(m.Data) {
@@ -274,7 +286,7 @@ func (a *Agent) run(ctx context.Context) error {
 		case "connect":
 			a.onConnect(ctx, c, m)
 		case "answer", "ice", "bye":
-			if s == nil || s.cid != m.From {
+			if s == nil || s.cid != m.From || s.conn != c { // ответ клиента — только по хабу его сессии
 				continue
 			}
 			switch m.Type {
@@ -369,7 +381,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 	if err != nil {
 		return fail(err)
 	}
-	s := &session{cid: cid, pc: pc, mons: listMonitors()}
+	s := &session{cid: cid, conn: c, pc: pc, mons: listMonitors()}
 	if a.Capture != nil && a.Bitrate > 0 {
 		s.rate = rate{max: a.Bitrate, cur: a.Bitrate}
 	}

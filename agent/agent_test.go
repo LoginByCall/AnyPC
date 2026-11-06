@@ -79,7 +79,7 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 	a.OnState = func(_ bool, s string) { sessions <- s }
 	go a.Run(ctx)
 
-	c, _, err := websocket.Dial(ctx, url, nil)
+	c, _, err := websocket.Dial(ctx, url[strings.LastIndex(url, ",")+1:], nil) // клиент — через последний хаб списка хоста
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -449,4 +449,14 @@ func TestDeadProxy(t *testing.T) {
 		t.Fatalf("напрямую после мёртвого прокси: err=%v, прокси пробовали=%v", err, used)
 	}
 	c.CloseNow()
+}
+
+// TestTwoHubs — резервная сигнализация: хост в сети на двух хабах сразу, клиент входит через второй
+// (первый мог бы быть недоступен из его сети); видео, ввод и вход по паролю — как через один хаб.
+func TestTwoHubs(t *testing.T) {
+	e2e(t, local(t)+","+local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "secret123")
+	l, _ := net.Listen("tcp", "127.0.0.1:0")
+	dead := "ws://" + l.Addr().String() + "/ws"
+	l.Close() // недоступный хаб не мешает живому
+	e2e(t, dead+","+local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "secret123")
 }

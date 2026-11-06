@@ -24,7 +24,7 @@ func TestRouting(t *testing.T) {
 	dl := t.TempDir()
 	os.WriteFile(filepath.Join(dl, "AnyPC.exe"), []byte("MZ-test"), 0o644)
 	ws := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "WS") })
-	h := newMux(ws, "www.example.com", dl, []string{"t1.example", "t2.example"})
+	h := newMux(ws, "www.example.com", dl, []string{"t1.example", "t2.example"}, []string{"wss://a.example/ws", "wss://b.example/ws"})
 
 	if _, b := get(t, h, "WWW.example.com:443", "/"); !strings.Contains(b, `id="get"`) {
 		t.Error("www → лендинг")
@@ -37,6 +37,9 @@ func TestRouting(t *testing.T) {
 	}
 	if c, b := get(t, h, "any.example.com", "/turns"); c != 200 || strings.TrimSpace(b) != `["t1.example","t2.example"]` {
 		t.Errorf("/turns: %d %q", c, b)
+	}
+	if c, b := get(t, h, "any.example.com", "/hubs"); c != 200 || strings.TrimSpace(b) != `["wss://a.example/ws","wss://b.example/ws"]` {
+		t.Errorf("/hubs: %d %q", c, b)
 	}
 	if c, _ := get(t, h, "www.example.com", "/ws"); c != 404 {
 		t.Errorf("/ws на лендинге: %d", c)

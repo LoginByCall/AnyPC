@@ -1,6 +1,6 @@
 #!/bin/sh
 # Развёртывание сервера AnyPC на Ubuntu (root). Повторный запуск безопасен.
-# Использование: sh setup.sh <домен клиента> [домен лендинга]   (рядом — бинарник anypc-server)
+# Использование: [TURN=a,b HUBS=wss://a/ws,wss://b/ws] sh setup.sh <домен клиента> [домен лендинга]   (рядом — бинарник anypc-server)
 # Второй TURN без сигнализации: TURN_ONLY=1 [TURN_MIN=50000 TURN_MAX=50999] sh setup.sh <домен TURN> — нужен /etc/anypc/turn-secret,
 # скопированный с основного сервера (учётки TURN выдаёт его хаб).
 # Файлы для скачивания с лендинга кладутся в /srv/anypc/dl (AnyPC.exe, SHA256SUMS).
@@ -65,7 +65,7 @@ Wants=network-online.target
 
 [Service]
 EnvironmentFile=/etc/anypc/env
-ExecStart=/usr/local/bin/anypc-server -domain $DOMAIN -turn ${TURN:-$DOMAIN} -site "$SITE" -dl /srv/anypc/dl -certs /var/lib/anypc/certs
+ExecStart=/usr/local/bin/anypc-server -domain $DOMAIN -turn ${TURN:-$DOMAIN} -hubs "${HUBS:-}" -site "$SITE" -dl /srv/anypc/dl -certs /var/lib/anypc/certs
 DynamicUser=yes
 StateDirectory=anypc
 AmbientCapabilities=CAP_NET_BIND_SERVICE

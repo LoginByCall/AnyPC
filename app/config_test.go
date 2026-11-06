@@ -66,7 +66,7 @@ func TestConfirmSetting(t *testing.T) {
 
 // TestServerRename — старый адрес any. переводится на новый; свой адрес пользователя не трогается.
 func TestServerRename(t *testing.T) {
-	for in, want := range map[string]string{oldServer: DefaultServer, "wss://my.example/ws": "wss://my.example/ws"} {
+	for in, want := range map[string]string{oldServers[0]: DefaultServer, oldServers[1]: DefaultServer, "wss://my.example/ws": "wss://my.example/ws"} {
 		p := filepath.Join(t.TempDir(), "config.json")
 		os.WriteFile(p, []byte(`{"server":"`+in+`"}`), 0o600)
 		c, err := loadConfig(p)

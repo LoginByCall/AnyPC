@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"io/fs"
 	"net"
 	"net/http"
@@ -69,14 +70,23 @@ func TestBrowserClient(t *testing.T) {
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		t.Skip("нет ffmpeg")
 	}
+	// Резервная сигнализация: страница открыта с хаба 1, где хоста нет (not_found), а /hubs подсказывает хаб 2,
+	// где хост есть, — веб-клиент должен войти через хаб 2, и весь сценарий ниже идёт через него.
+	other := httptest.NewServer(&hub.Hub{})
+	defer other.Close()
+	hub2 := "ws" + strings.TrimPrefix(other.URL, "http") + "/ws"
+	var srv *httptest.Server
 	mux := http.NewServeMux()
 	mux.Handle("/ws", &hub.Hub{})
+	mux.HandleFunc("/hubs", func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode([]string{"ws" + strings.TrimPrefix(srv.URL, "http") + "/ws", hub2})
+	})
 	mux.Handle("/", http.FileServer(http.FS(ui.FS)))
-	srv := httptest.NewServer(mux)
+	srv = httptest.NewServer(mux)
 	defer srv.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	a := newAgent("ws"+strings.TrimPrefix(srv.URL, "http")+"/ws", "123456789", FFArgs("test", "libx264", 30, "1M"))
+	a := newAgent(hub2, "123456789", FFArgs("test", "libx264", 30, "1M"))
 	a.FileDir = t.TempDir() // не в настоящие «Загрузки»
 	go a.Run(ctx)
 
