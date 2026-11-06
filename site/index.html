@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AnyPC — remote desktop</title>
+<meta name="description" content="AnyPC: remote access to your Windows PC through any NAT. One file, encrypted, free.">
+<style>
+  :root {
+    --bg: #fbfaf7; --card: #ffffff; --fg: #17181c; --mut: #5d6170; --line: #e4e2dc;
+    --acc: #d2452d; --acc-fg: #fff; --soft: #fbe9e5; --ok: #2e7d4f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #121317; --card: #1b1d22; --fg: #eceae4; --mut: #a2a5b0; --line: #2b2e36; --acc: #ef6a52; --acc-fg: #121317; --soft: #2a1d1b; --ok: #6cc28f; }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+  a { color: var(--acc); }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 16px; }
+  header.top { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 0; flex-wrap: wrap; }
+  .logo { font-weight: 700; font-size: 20px; letter-spacing: .3px; display: flex; align-items: center; gap: 8px; color: var(--fg); text-decoration: none; }
+  .langs { display: flex; flex-wrap: wrap; gap: 4px; }
+  .langs button { font: inherit; font-size: 13px; padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--mut); cursor: pointer; }
+  .langs button[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+  .hero { display: grid; grid-template-columns: 1.1fr .9fr; gap: 32px; align-items: center; padding: 40px 0 56px; }
+  @media (max-width: 760px) { .hero { grid-template-columns: 1fr; padding-top: 16px; } .hero svg { max-width: 360px; margin: 0 auto; } }
+  .badge { display: inline-block; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .8px; color: var(--acc); background: var(--soft); padding: 3px 10px; border-radius: 999px; }
+  h1 { font-size: clamp(32px, 5vw, 50px); line-height: 1.1; margin: 14px 0 14px; letter-spacing: -.5px; }
+  .lead { font-size: 19px; color: var(--mut); margin: 0 0 26px; max-width: 34em; }
+  .cta { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  .btn { display: inline-flex; align-items: center; gap: 10px; font-weight: 600; text-decoration: none; padding: 14px 22px; border-radius: 12px; border: 1px solid transparent; }
+  .btn.primary { background: var(--acc); color: var(--acc-fg); box-shadow: 0 6px 20px -8px var(--acc); }
+  .btn.primary:hover { filter: brightness(1.06); }
+  .btn.ghost { border-color: var(--line); color: var(--fg); }
+  .meta { color: var(--mut); font-size: 13px; margin-top: 12px; }
+  .sha { font-family: ui-monospace, Consolas, monospace; font-size: 12px; word-break: break-all; color: var(--mut); }
+  section { padding: 40px 0; }
+  h2 { font-size: 26px; margin: 0 0 20px; letter-spacing: -.2px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 20px; }
+  .card h3 { margin: 10px 0 6px; font-size: 17px; }
+  .card p { margin: 0; color: var(--mut); font-size: 15px; }
+  .ico { width: 36px; height: 36px; border-radius: 10px; background: var(--soft); display: grid; place-items: center; color: var(--acc); }
+  ol.steps { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; counter-reset: s; }
+  ol.steps li { counter-increment: s; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 20px 20px 20px 64px; position: relative; }
+  ol.steps li::before { content: counter(s); position: absolute; left: 18px; top: 18px; width: 32px; height: 32px; border-radius: 50%; background: var(--fg); color: var(--bg); display: grid; place-items: center; font-weight: 700; }
+  .note { border-left: 4px solid var(--acc); background: var(--soft); padding: 14px 18px; border-radius: 0 12px 12px 0; margin-top: 20px; }
+  .note b { display: block; margin-bottom: 4px; }
+  ul.list { margin: 0; padding-left: 20px; } ul.list li { margin: 6px 0; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; } @media (max-width: 760px) { .two { grid-template-columns: 1fr; } }
+  .warn { color: var(--acc); font-weight: 600; }
+  footer { border-top: 1px solid var(--line); color: var(--mut); font-size: 13px; padding: 24px 0 40px; margin-top: 24px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <a class="logo" href="#"><svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true"><rect x="1" y="3" width="15" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><rect x="10" y="12" width="15" height="11" rx="2" fill="var(--acc)"/></svg>AnyPC</a>
+    <nav class="langs" id="langs" aria-label="Language"></nav>
+  </header>
+
+  <div class="hero">
+    <div>
+      <span class="badge" data-t="badge"></span>
+      <h1 data-t="title"></h1>
+      <p class="lead" data-t="lead"></p>
+      <div class="cta">
+        <a class="btn primary" id="download" href="/download/AnyPC.exe" download>
+          <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 19h16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span data-t="dl"></span></a>
+        <a class="btn ghost" href="https://any.turboseller.xyz/" target="_blank" rel="noopener" data-t="web"></a>
+      </div>
+      <div class="meta"><span data-t="req"></span><span id="size"></span></div>
+      <div class="sha" id="sha"></div>
+    </div>
+    <svg viewBox="0 0 400 260" role="img" aria-label="">
+      <defs><linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="var(--acc)"/><stop offset="1" stop-color="var(--fg)"/></linearGradient></defs>
+      <rect x="10" y="40" width="160" height="110" rx="10" fill="var(--card)" stroke="var(--line)" stroke-width="2"/>
+      <rect x="22" y="52" width="136" height="80" rx="4" fill="var(--soft)"/>
+      <rect x="70" y="150" width="40" height="18" fill="var(--line)"/><rect x="50" y="168" width="80" height="6" rx="3" fill="var(--line)"/>
+      <rect x="230" y="90" width="160" height="110" rx="10" fill="var(--card)" stroke="var(--line)" stroke-width="2"/>
+      <rect x="242" y="102" width="136" height="80" rx="4" fill="var(--soft)"/>
+      <rect x="290" y="200" width="40" height="18" fill="var(--line)"/><rect x="270" y="218" width="80" height="6" rx="3" fill="var(--line)"/>
+      <rect x="40" y="66" width="60" height="8" rx="4" fill="var(--acc)"/><rect x="40" y="82" width="90" height="6" rx="3" fill="var(--line)"/><rect x="40" y="96" width="70" height="6" rx="3" fill="var(--line)"/>
+      <rect x="260" y="116" width="60" height="8" rx="4" fill="var(--acc)"/><rect x="260" y="132" width="90" height="6" rx="3" fill="var(--line)"/><rect x="260" y="146" width="70" height="6" rx="3" fill="var(--line)"/>
+      <path d="M170 95 C 215 95, 190 145, 230 145" fill="none" stroke="url(#g)" stroke-width="3" stroke-dasharray="6 6"/>
+      <circle cx="200" cy="120" r="16" fill="var(--bg)" stroke="var(--acc)" stroke-width="2"/>
+      <path d="M194 119v-3a6 6 0 0 1 12 0v3m-14 0h16v10h-16z" fill="none" stroke="var(--acc)" stroke-width="2" stroke-linejoin="round"/>
+    </svg>
+  </div>
+
+  <section>
+    <h2 data-t="whyT"></h2>
+    <div class="grid">
+      <div class="card"><div class="ico"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/></svg></div><h3 data-t="f1t"></h3><p data-t="f1d"></p></div>
+      <div class="card"><div class="ico"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M7 11V8a5 5 0 0 1 10 0v3M5 11h14v10H5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></div><h3 data-t="f2t"></h3><p data-t="f2d"></p></div>
+      <div class="card"><div class="ico"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z M14 3v4h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></div><h3 data-t="f3t"></h3><p data-t="f3d"></p></div>
+      <div class="card"><div class="ico"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></div><h3 data-t="f4t"></h3><p data-t="f4d"></p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2 data-t="howT"></h2>
+    <ol class="steps"><li data-t="s1"></li><li data-t="s2"></li><li data-t="s3"></li></ol>
+    <div class="note"><b data-t="smT"></b><span data-t="smD"></span></div>
+  </section>
+
+  <section class="two">
+    <div class="card">
+      <h2 data-t="secT"></h2>
+      <ul class="list"><li data-t="sec1"></li><li data-t="sec2"></li><li data-t="sec3"></li><li data-t="sec4"></li><li class="warn" data-t="sec5"></li></ul>
+    </div>
+    <div class="card">
+      <h2 data-t="limT"></h2>
+      <ul class="list"><li data-t="lim1"></li><li data-t="lim2"></li><li data-t="lim3"></li></ul>
+    </div>
+  </section>
+
+  <footer data-t="foot"></footer>
+</div>
+
+<script>
+const T = {
+  en: { _: 'English', badge: 'Beta · free', title: 'Your PC, from anywhere', lead: 'AnyPC lets you see and control your Windows computer from another one — even when both are behind routers or mobile networks. No port forwarding, no accounts.',
+    dl: 'Download for Windows', web: 'Open web client', req: 'Windows 10/11 · 64-bit', whyT: 'Why AnyPC',
+    f1t: 'Works through any NAT', f1d: 'Connects directly when possible and falls back to a relay server otherwise. Nothing to configure on your router.',
+    f2t: 'Encrypted end-to-end', f2d: 'Screen and input travel over DTLS-SRTP. The relay server forwards only ciphertext.',
+    f3t: 'One file, both roles', f3d: 'The same program shows your ID and password and connects to other PCs. No installer.',
+    f4t: 'Smooth and responsive', f4d: 'H.264 video up to 1080p at 30 fps, with live connection statistics.',
+    howT: 'Get started in 3 steps', s1: 'Download AnyPC.exe on both computers and run it.',
+    s2: 'On the computer you want to control, set a password (8+ characters) and note its 9-digit ID.',
+    s3: 'On the other computer, enter that ID and password and click “Connect”.',
+    smT: 'Windows warning on first launch', smD: 'AnyPC is not code-signed yet, so SmartScreen may say “Windows protected your PC”. Click “More info” → “Run anyway”. You can verify the file with the SHA-256 checksum above.',
+    secT: 'Security', sec1: 'Every connection requires the password set on the controlled PC.', sec2: 'During a session the controlled PC always shows a notice with a button to disconnect.',
+    sec3: 'After 5 wrong passwords, access is temporarily locked.', sec4: 'Use AnyPC only on your own computers or with the owner’s consent.',
+    sec5: 'Never give your ID and password to someone who calls you unexpectedly — it is a common scam.',
+    limT: 'Beta limitations', lim1: 'Ctrl+Alt+Del, UAC prompts and the lock screen are not available yet.', lim2: 'Clipboard: text only. File transfer is coming soon.', lim3: 'One monitor (the primary one) is shown.',
+    foot: 'AnyPC beta. Includes FFmpeg (GPLv3), source code at ffmpeg.org. Provided “as is”, without warranty.', size: ' · ' },
+  ru: { _: 'Русский', badge: 'Бета · бесплатно', title: 'Ваш компьютер — откуда угодно', lead: 'AnyPC показывает экран вашего ПК с Windows и даёт управлять им с другого компьютера — даже если оба за роутерами или в мобильной сети. Без проброса портов и регистрации.',
+    dl: 'Скачать для Windows', web: 'Открыть веб-клиент', req: 'Windows 10/11 · 64 бит', whyT: 'Почему AnyPC',
+    f1t: 'Работает через любой NAT', f1d: 'Соединяется напрямую, когда это возможно, иначе — через сервер-ретранслятор. Роутер настраивать не нужно.',
+    f2t: 'Сквозное шифрование', f2d: 'Экран и ввод идут по DTLS-SRTP. Ретранслятор пересылает только шифротекст.',
+    f3t: 'Один файл на обе роли', f3d: 'Одна программа показывает ваш ID и пароль и подключается к другим ПК. Установка не нужна.',
+    f4t: 'Плавно и отзывчиво', f4d: 'Видео H.264 до 1080p, 30 кадров/с, статистика соединения в реальном времени.',
+    howT: 'Начать за 3 шага', s1: 'Скачайте AnyPC.exe на оба компьютера и запустите.',
+    s2: 'На компьютере, которым нужно управлять, задайте пароль (от 8 символов) и запишите его ID из 9 цифр.',
+    s3: 'На другом компьютере введите этот ID и пароль и нажмите «Подключиться».',
+    smT: 'Предупреждение Windows при первом запуске', smD: 'Программа пока не подписана, поэтому SmartScreen может написать «Система Windows защитила ваш компьютер». Нажмите «Подробнее» → «Выполнить в любом случае». Файл можно проверить по контрольной сумме SHA-256 выше.',
+    secT: 'Безопасность', sec1: 'Любое подключение требует пароль, заданный на управляемом ПК.', sec2: 'Во время сессии на управляемом ПК всегда видно уведомление с кнопкой разрыва.',
+    sec3: 'После 5 неверных паролей доступ временно блокируется.', sec4: 'Используйте AnyPC только на своих компьютерах или с согласия владельца.',
+    sec5: 'Никогда не сообщайте ID и пароль тому, кто неожиданно вам позвонил, — это частая схема мошенников.',
+    limT: 'Ограничения бета-версии', lim1: 'Ctrl+Alt+Del, окна UAC и экран блокировки пока недоступны.', lim2: 'Буфер обмена — только текст. Передача файлов — скоро.', lim3: 'Показывается один (основной) монитор.',
+    foot: 'AnyPC, бета. Включает FFmpeg (GPLv3), исходный код — на ffmpeg.org. Предоставляется «как есть», без гарантий.', size: ' · ' },
+  zh: { _: '中文', badge: '测试版 · 免费', title: '随时随地访问您的电脑', lead: 'AnyPC 让您从另一台电脑查看并控制您的 Windows 电脑——即使两台电脑都在路由器或移动网络之后。无需端口转发，无需注册账号。',
+    dl: '下载 Windows 版', web: '打开网页客户端', req: 'Windows 10/11 · 64 位', whyT: '为什么选择 AnyPC',
+    f1t: '穿透任何 NAT', f1d: '能直连时直接连接，否则自动通过中继服务器。无需设置路由器。',
+    f2t: '端到端加密', f2d: '画面和输入通过 DTLS-SRTP 传输，中继服务器只转发密文。',
+    f3t: '一个文件，两种角色', f3d: '同一个程序既显示您的 ID 和密码，又能连接其他电脑。无需安装。',
+    f4t: '流畅灵敏', f4d: 'H.264 视频，最高 1080p、每秒 30 帧，并实时显示连接统计。',
+    howT: '三步开始使用', s1: '在两台电脑上下载并运行 AnyPC.exe。',
+    s2: '在需要被控制的电脑上设置密码（至少 8 个字符），并记下 9 位数字 ID。',
+    s3: '在另一台电脑上输入该 ID 和密码，然后点击“连接”。',
+    smT: '首次运行时的 Windows 警告', smD: '程序暂未进行代码签名，SmartScreen 可能提示“Windows 已保护你的电脑”。请点击“更多信息”→“仍要运行”。可使用上方的 SHA-256 校验和验证文件。',
+    secT: '安全', sec1: '每次连接都需要被控电脑上设置的密码。', sec2: '会话期间，被控电脑始终显示提示，并带有断开按钮。',
+    sec3: '连续 5 次密码错误后，访问将被暂时锁定。', sec4: '请仅在自己的电脑上或经所有者同意后使用 AnyPC。',
+    sec5: '切勿把 ID 和密码告诉突然给您打电话的人——这是常见的诈骗手法。',
+    limT: '测试版限制', lim1: '暂不支持 Ctrl+Alt+Del、UAC 提示窗口和锁屏界面。', lim2: '剪贴板仅支持文本。文件传输即将推出。', lim3: '仅显示一个（主）显示器。',
+    foot: 'AnyPC 测试版。包含 FFmpeg（GPLv3），源代码见 ffmpeg.org。按“原样”提供，不作任何保证。', size: ' · ' },
+  es: { _: 'Español', badge: 'Beta · gratis', title: 'Tu PC, desde cualquier lugar', lead: 'AnyPC te permite ver y controlar tu ordenador con Windows desde otro, aunque ambos estén detrás de routers o redes móviles. Sin abrir puertos y sin cuentas.',
+    dl: 'Descargar para Windows', web: 'Abrir cliente web', req: 'Windows 10/11 · 64 bits', whyT: 'Por qué AnyPC',
+    f1t: 'Funciona a través de cualquier NAT', f1d: 'Conecta directamente cuando es posible y, si no, mediante un servidor de retransmisión. No hay que configurar el router.',
+    f2t: 'Cifrado de extremo a extremo', f2d: 'La pantalla y la entrada viajan por DTLS-SRTP. El servidor de retransmisión solo reenvía datos cifrados.',
+    f3t: 'Un solo archivo, dos funciones', f3d: 'El mismo programa muestra tu ID y contraseña y se conecta a otros PC. Sin instalación.',
+    f4t: 'Fluido y rápido', f4d: 'Vídeo H.264 hasta 1080p a 30 fps, con estadísticas de conexión en tiempo real.',
+    howT: 'Empieza en 3 pasos', s1: 'Descarga AnyPC.exe en ambos ordenadores y ejecútalo.',
+    s2: 'En el ordenador que quieres controlar, establece una contraseña (8+ caracteres) y anota su ID de 9 dígitos.',
+    s3: 'En el otro ordenador, introduce ese ID y la contraseña y pulsa «Conectar».',
+    smT: 'Aviso de Windows en el primer inicio', smD: 'AnyPC todavía no tiene firma de código, así que SmartScreen puede mostrar «Windows protegió tu PC». Pulsa «Más información» → «Ejecutar de todas formas». Puedes verificar el archivo con la suma SHA-256 de arriba.',
+    secT: 'Seguridad', sec1: 'Cada conexión requiere la contraseña establecida en el PC controlado.', sec2: 'Durante una sesión, el PC controlado siempre muestra un aviso con un botón para desconectar.',
+    sec3: 'Tras 5 contraseñas incorrectas, el acceso se bloquea temporalmente.', sec4: 'Usa AnyPC solo en tus propios ordenadores o con el consentimiento del propietario.',
+    sec5: 'Nunca des tu ID y contraseña a alguien que te llame inesperadamente: es una estafa habitual.',
+    limT: 'Limitaciones de la beta', lim1: 'Ctrl+Alt+Supr, las ventanas de UAC y la pantalla de bloqueo aún no están disponibles.', lim2: 'Portapapeles: solo texto. La transferencia de archivos llegará pronto.', lim3: 'Se muestra un solo monitor (el principal).',
+    foot: 'AnyPC beta. Incluye FFmpeg (GPLv3), código fuente en ffmpeg.org. Se ofrece «tal cual», sin garantía.', size: ' · ' },
+  de: { _: 'Deutsch', badge: 'Beta · kostenlos', title: 'Ihr PC – von überall', lead: 'Mit AnyPC sehen und steuern Sie Ihren Windows-Computer von einem anderen aus – auch wenn beide hinter Routern oder im Mobilfunknetz sind. Ohne Portfreigabe, ohne Konto.',
+    dl: 'Für Windows herunterladen', web: 'Web-Client öffnen', req: 'Windows 10/11 · 64 Bit', whyT: 'Warum AnyPC',
+    f1t: 'Funktioniert durch jedes NAT', f1d: 'Verbindet direkt, wenn möglich, sonst über einen Relay-Server. Am Router ist nichts einzustellen.',
+    f2t: 'Ende-zu-Ende-verschlüsselt', f2d: 'Bild und Eingaben laufen über DTLS-SRTP. Der Relay-Server leitet nur verschlüsselte Daten weiter.',
+    f3t: 'Eine Datei, beide Rollen', f3d: 'Dasselbe Programm zeigt Ihre ID und Ihr Passwort und verbindet sich mit anderen PCs. Keine Installation.',
+    f4t: 'Flüssig und reaktionsschnell', f4d: 'H.264-Video bis 1080p mit 30 fps, mit Live-Verbindungsstatistik.',
+    howT: 'In 3 Schritten starten', s1: 'Laden Sie AnyPC.exe auf beide Computer herunter und starten Sie es.',
+    s2: 'Legen Sie auf dem zu steuernden Computer ein Passwort fest (mind. 8 Zeichen) und notieren Sie die 9-stellige ID.',
+    s3: 'Geben Sie auf dem anderen Computer diese ID und das Passwort ein und klicken Sie auf „Verbinden“.',
+    smT: 'Windows-Warnung beim ersten Start', smD: 'AnyPC ist noch nicht code-signiert, daher zeigt SmartScreen eventuell „Der Computer wurde durch Windows geschützt“. Klicken Sie auf „Weitere Informationen“ → „Trotzdem ausführen“. Die Datei lässt sich mit der SHA-256-Prüfsumme oben verifizieren.',
+    secT: 'Sicherheit', sec1: 'Jede Verbindung erfordert das auf dem gesteuerten PC festgelegte Passwort.', sec2: 'Während einer Sitzung zeigt der gesteuerte PC immer einen Hinweis mit einer Trennen-Schaltfläche.',
+    sec3: 'Nach 5 falschen Passwörtern wird der Zugang vorübergehend gesperrt.', sec4: 'Verwenden Sie AnyPC nur auf eigenen Computern oder mit Zustimmung des Besitzers.',
+    sec5: 'Geben Sie ID und Passwort niemals an unerwartete Anrufer weiter – das ist eine verbreitete Betrugsmasche.',
+    limT: 'Einschränkungen der Beta', lim1: 'Strg+Alt+Entf, UAC-Abfragen und der Sperrbildschirm sind noch nicht verfügbar.', lim2: 'Zwischenablage: nur Text. Dateiübertragung folgt in Kürze.', lim3: 'Es wird ein Monitor (der Hauptmonitor) angezeigt.',
+    foot: 'AnyPC Beta. Enthält FFmpeg (GPLv3), Quellcode unter ffmpeg.org. Bereitgestellt „wie besehen“, ohne Gewährleistung.', size: ' · ' },
+  fr: { _: 'Français', badge: 'Bêta · gratuit', title: 'Votre PC, où que vous soyez', lead: 'AnyPC vous permet de voir et de contrôler votre ordinateur Windows depuis un autre, même si les deux sont derrière des routeurs ou un réseau mobile. Sans redirection de ports, sans compte.',
+    dl: 'Télécharger pour Windows', web: 'Ouvrir le client web', req: 'Windows 10/11 · 64 bits', whyT: 'Pourquoi AnyPC',
+    f1t: 'Traverse n’importe quel NAT', f1d: 'Connexion directe quand c’est possible, sinon via un serveur relais. Rien à configurer sur le routeur.',
+    f2t: 'Chiffré de bout en bout', f2d: 'L’écran et les saisies passent par DTLS-SRTP. Le serveur relais ne transmet que des données chiffrées.',
+    f3t: 'Un seul fichier, deux rôles', f3d: 'Le même programme affiche votre ID et votre mot de passe et se connecte à d’autres PC. Sans installation.',
+    f4t: 'Fluide et réactif', f4d: 'Vidéo H.264 jusqu’en 1080p à 30 i/s, avec statistiques de connexion en direct.',
+    howT: 'Démarrer en 3 étapes', s1: 'Téléchargez AnyPC.exe sur les deux ordinateurs et lancez-le.',
+    s2: 'Sur l’ordinateur à contrôler, définissez un mot de passe (8 caractères ou plus) et notez son ID à 9 chiffres.',
+    s3: 'Sur l’autre ordinateur, saisissez cet ID et le mot de passe, puis cliquez sur « Se connecter ».',
+    smT: 'Avertissement Windows au premier lancement', smD: 'AnyPC n’est pas encore signé, SmartScreen peut donc afficher « Windows a protégé votre ordinateur ». Cliquez sur « Informations complémentaires » → « Exécuter quand même ». Vous pouvez vérifier le fichier avec la somme SHA-256 ci-dessus.',
+    secT: 'Sécurité', sec1: 'Chaque connexion exige le mot de passe défini sur le PC contrôlé.', sec2: 'Pendant une session, le PC contrôlé affiche toujours un avis avec un bouton de déconnexion.',
+    sec3: 'Après 5 mots de passe erronés, l’accès est temporairement bloqué.', sec4: 'N’utilisez AnyPC que sur vos propres ordinateurs ou avec l’accord du propriétaire.',
+    sec5: 'Ne donnez jamais votre ID et votre mot de passe à une personne qui vous appelle à l’improviste : c’est une arnaque courante.',
+    limT: 'Limites de la bêta', lim1: 'Ctrl+Alt+Suppr, les fenêtres UAC et l’écran de verrouillage ne sont pas encore pris en charge.', lim2: 'Presse-papiers : texte uniquement. Le transfert de fichiers arrive bientôt.', lim3: 'Un seul écran (le principal) est affiché.',
+    foot: 'AnyPC bêta. Inclut FFmpeg (GPLv3), code source sur ffmpeg.org. Fourni « tel quel », sans garantie.', size: ' · ' },
+  it: { _: 'Italiano', badge: 'Beta · gratis', title: 'Il tuo PC, ovunque tu sia', lead: 'AnyPC ti permette di vedere e controllare il tuo computer Windows da un altro, anche se entrambi sono dietro router o reti mobili. Senza aprire porte e senza account.',
+    dl: 'Scarica per Windows', web: 'Apri il client web', req: 'Windows 10/11 · 64 bit', whyT: 'Perché AnyPC',
+    f1t: 'Funziona attraverso qualsiasi NAT', f1d: 'Si connette direttamente quando possibile, altrimenti tramite un server relay. Nessuna configurazione del router.',
+    f2t: 'Crittografia end-to-end', f2d: 'Schermo e input viaggiano su DTLS-SRTP. Il server relay inoltra solo dati cifrati.',
+    f3t: 'Un solo file, due ruoli', f3d: 'Lo stesso programma mostra il tuo ID e la password e si connette ad altri PC. Nessuna installazione.',
+    f4t: 'Fluido e reattivo', f4d: 'Video H.264 fino a 1080p a 30 fps, con statistiche di connessione in tempo reale.',
+    howT: 'Inizia in 3 passi', s1: 'Scarica AnyPC.exe su entrambi i computer ed eseguilo.',
+    s2: 'Sul computer da controllare, imposta una password (almeno 8 caratteri) e annota il suo ID di 9 cifre.',
+    s3: 'Sull’altro computer, inserisci quell’ID e la password e fai clic su «Connetti».',
+    smT: 'Avviso di Windows al primo avvio', smD: 'AnyPC non ha ancora una firma digitale, quindi SmartScreen potrebbe mostrare «Windows ha protetto il PC». Fai clic su «Ulteriori informazioni» → «Esegui comunque». Puoi verificare il file con il checksum SHA-256 qui sopra.',
+    secT: 'Sicurezza', sec1: 'Ogni connessione richiede la password impostata sul PC controllato.', sec2: 'Durante una sessione, il PC controllato mostra sempre un avviso con un pulsante per disconnettere.',
+    sec3: 'Dopo 5 password errate, l’accesso viene bloccato temporaneamente.', sec4: 'Usa AnyPC solo sui tuoi computer o con il consenso del proprietario.',
+    sec5: 'Non comunicare mai ID e password a chi ti chiama inaspettatamente: è una truffa comune.',
+    limT: 'Limiti della beta', lim1: 'Ctrl+Alt+Canc, le finestre UAC e la schermata di blocco non sono ancora disponibili.', lim2: 'Appunti: solo testo. Il trasferimento file arriverà presto.', lim3: 'Viene mostrato un solo monitor (quello principale).',
+    foot: 'AnyPC beta. Include FFmpeg (GPLv3), codice sorgente su ffmpeg.org. Fornito «così com’è», senza garanzia.', size: ' · ' },
+};
+const MB = { en: 'MB', ru: 'МБ', zh: 'MB', es: 'MB', de: 'MB', fr: 'Mo', it: 'MB' };
+let lang, sizeMB = '';
+
+function pick() {
+  const q = new URLSearchParams(location.search).get('lang');
+  let saved; try { saved = localStorage.getItem('lang'); } catch {}
+  for (const c of [q, saved, ...(navigator.languages || [navigator.language])]) {
+    const k = (c || '').slice(0, 2).toLowerCase();
+    if (T[k]) return k;
+  }
+  return 'en';
+}
+function apply(l) {
+  lang = l;
+  const t = T[l];
+  document.documentElement.lang = l === 'zh' ? 'zh-CN' : l;
+  document.title = 'AnyPC — ' + t.title;
+  document.querySelectorAll('[data-t]').forEach(e => e.textContent = t[e.dataset.t]);
+  document.querySelectorAll('#langs button').forEach(b => b.setAttribute('aria-pressed', b.dataset.l === l));
+  $size();
+}
+function $size() { document.getElementById('size').textContent = sizeMB ? ` · ${sizeMB} ${MB[lang]}` : ''; }
+
+const nav = document.getElementById('langs');
+for (const k in T) {
+  const b = document.createElement('button');
+  b.dataset.l = k; b.textContent = T[k]._; b.lang = k;
+  b.onclick = () => { try { localStorage.setItem('lang', k); } catch {} apply(k); };
+  nav.append(b);
+}
+apply(pick());
+
+// Размер и контрольная сумма — из каталога загрузок (обновляются вместе с файлом).
+fetch('/download/AnyPC.exe', { method: 'HEAD' }).then(r => {
+  const n = +r.headers.get('content-length'); if (n) { sizeMB = Math.round(n / 1048576); $size(); }
+}).catch(() => {});
+fetch('/download/SHA256SUMS').then(r => r.ok ? r.text() : '').then(s => {
+  const h = (s.match(/^([0-9a-f]{64})\s+\*?AnyPC\.exe$/m) || [])[1];
+  if (h) document.getElementById('sha').textContent = 'SHA-256: ' + h;
+}).catch(() => {});
+</script>
+</body>
+</html>

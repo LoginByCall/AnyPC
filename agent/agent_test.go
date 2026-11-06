@@ -1,0 +1,309 @@
+package agent
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"strings"
+	"testing"
+	"time"
+
+	"anypc/hub"
+	"anypc/pake"
+
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
+	"github.com/pion/webrtc/v4"
+)
+
+var salt = []byte("0123456789abcdef")
+
+func newAgent(url, id string, ff []string) *Agent {
+	secret := pake.KDF("secret123", salt)
+	return &Agent{Server: url, ID: id, Secret: func() ([]byte, []byte) { return salt, secret }, FF: ff, FPS: 30}
+}
+
+func local(t *testing.T) string {
+	srv := httptest.NewServer(&hub.Hub{})
+	t.Cleanup(srv.Close)
+	return "ws" + strings.TrimPrefix(srv.URL, "http")
+}
+
+// TestE2E: сигнализация + пароль + ICE + DTLS + ffmpeg (testsrc) → видео H.264 и канал ввода; bye закрывает сессию.
+func TestE2E(t *testing.T) {
+	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "secret123")
+}
+
+// TestWrongPassword: CPace с неверным паролем → отказ, видео не идёт (REQ-S-02).
+func TestWrongPassword(t *testing.T) {
+	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "wrong-pass")
+}
+
+// TestCaptureRestart — регрессия 887a0026: ffmpeg завершается через 0,5 с, видео должно идти дальше.
+func TestCaptureRestart(t *testing.T) {
+	ff := FFArgs("test", "libx264", 30, "1M")
+	ff = append(ff[:len(ff)-3:len(ff)-3], "-t", "0.5", "-f", "h264", "-")
+	e2e(t, local(t), "123456789", false, ff, "secret123")
+}
+
+// TestLive: то же через боевой сервер, только TURN. ANYPC_LIVE=wss://any.turboseller.xyz/ws
+func TestLive(t *testing.T) {
+	url := os.Getenv("ANYPC_LIVE")
+	if url == "" {
+		t.Skip("ANYPC_LIVE не задан")
+	}
+	e2e(t, url, hub.RandDigits(9), true, FFArgs("test", "libx264", 30, "1M"), "secret123")
+}
+
+func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("нет ffmpeg")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	sessions := make(chan string, 10)
+	a := newAgent(url, id, ff)
+	a.OnState = func(_ bool, s string) { sessions <- s }
+	go a.Run(ctx)
+
+	c, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	read := func() hub.Msg {
+		var m hub.Msg
+		if err := wsjson.Read(ctx, c, &m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	send := func(typ string, v any) {
+		d, _ := json.Marshal(v)
+		wsjson.Write(ctx, c, hub.Msg{V: 1, Type: typ, To: id, Data: d})
+	}
+	var hello struct{ ICE []webrtc.ICEServer }
+	json.Unmarshal(read().Data, &hello)
+
+	var m hub.Msg
+	for { // пароль в connect больше не передаётся; ждём регистрации хоста
+		send("connect", struct{}{})
+		if m = read(); m.Type == "offer" {
+			break
+		}
+		if string(m.Data) != `"not_found"` {
+			t.Fatalf("ждали offer: %+v", m)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	cfg := webrtc.Configuration{ICEServers: hello.ICE}
+	if relay {
+		cfg.ICETransportPolicy = webrtc.ICETransportPolicyRelay
+	}
+	pc, _ := webrtc.NewPeerConnection(cfg)
+	defer pc.Close()
+	got := make(chan string, 1)
+	authed := make(chan bool, 1)
+	dcOpen := make(chan *webrtc.DataChannel, 1)
+	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
+		switch dc.Label() {
+		case "input":
+			dc.OnOpen(func() { dcOpen <- dc })
+		case "auth": // как клиент в ui/index.html + app: CPace с отпечатками из своих SDP
+			var wantConf []byte
+			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+				var am authMsg
+				json.Unmarshal(msg.Data, &am)
+				switch am.T {
+				case "a":
+					b, conf, hc, err := pake.ClientRespond(pass, am.Salt, am.Msg, id,
+						pake.Fingerprint(pc.LocalDescription().SDP), pake.Fingerprint(pc.RemoteDescription().SDP))
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					wantConf = hc
+					out, _ := json.Marshal(authMsg{T: "b", Msg: b, Conf: conf})
+					dc.Send(out)
+				case "ok":
+					authed <- bytes.Equal(am.Conf, wantConf)
+				case "fail":
+					authed <- false
+				}
+			})
+		}
+	})
+	pc.OnTrack(func(tr *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+		t0 := time.Now()
+		for i := 0; i < 300; i++ {
+			if _, _, err := tr.ReadRTP(); err != nil {
+				return
+			}
+		}
+		t.Logf("300 RTP за %v", time.Since(t0))
+		got <- tr.Codec().MimeType
+	})
+	pc.OnICECandidate(func(ci *webrtc.ICECandidate) {
+		if ci != nil {
+			send("ice", ci.ToJSON())
+		}
+	})
+	var offer webrtc.SessionDescription
+	json.Unmarshal(m.Data, &offer)
+	pc.SetRemoteDescription(offer)
+	ans, _ := pc.CreateAnswer(nil)
+	pc.SetLocalDescription(ans)
+	send("answer", ans)
+	go func() {
+		for {
+			var m hub.Msg
+			if wsjson.Read(ctx, c, &m) != nil {
+				return
+			}
+			if m.Type == "ice" {
+				var ci webrtc.ICECandidateInit
+				json.Unmarshal(m.Data, &ci)
+				pc.AddICECandidate(ci)
+			}
+		}
+	}()
+	var ok bool
+	select {
+	case ok = <-authed:
+	case <-ctx.Done():
+		t.Fatal("вход не завершился за 20 с")
+	}
+	if pass != "secret123" { // ошибочный путь: отказ и никакого видео
+		if ok {
+			t.Fatal("неверный пароль принят")
+		}
+		select {
+		case <-got:
+			t.Fatal("видео без входа")
+		case <-time.After(time.Second):
+		}
+		return
+	}
+	if !ok {
+		t.Fatal("верный пароль отвергнут или хост не подтвердил ключ")
+	}
+	select {
+	case mt := <-got:
+		if mt != webrtc.MimeTypeH264 {
+			t.Fatalf("кодек %s", mt)
+		}
+	case <-ctx.Done():
+		t.Fatal("нет видео за 20 с")
+	}
+	select {
+	case dc := <-dcOpen:
+		if err := dc.SendText(`{"t":"k","c":"ControlLeft","d":true}`); err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("канал input не открылся")
+	}
+	if relay {
+		if p, err := pc.SCTP().Transport().ICETransport().GetSelectedCandidatePair(); err == nil && p != nil {
+			t.Logf("путь клиента: %s → %s", p.Local.Typ, p.Remote.Typ)
+			if p.Local.Typ != webrtc.ICECandidateTypeRelay {
+				t.Fatalf("ожидали relay, получили %s", p.Local.Typ)
+			}
+		}
+	}
+	// bye от клиента → хост освобождается сразу, без 30-секундного тайм-аута ICE
+	time.Sleep(200 * time.Millisecond) // дать дойти нажатию
+	send("bye", "client")
+	for {
+		select {
+		case s := <-sessions:
+			a.mu.Lock()
+			free := a.sess == nil
+			a.mu.Unlock()
+			if s == "" && free {
+				return
+			}
+		case <-ctx.Done():
+			t.Fatal("сессия не закрылась по bye")
+		}
+	}
+}
+
+func TestLockout(t *testing.T) { // REQ-S-04: 5 неудачных входов → новые подключения отклоняются
+	ctx := context.Background()
+	c, _, _ := websocket.Dial(ctx, local(t), nil)
+	defer c.CloseNow()
+	a := newAgent("", "", nil)
+	for i := 0; i < 5; i++ {
+		a.authResult("c1", false)
+	}
+	a.onConnect(ctx, c, hub.Msg{From: "c1"})
+	if a.sess != nil || time.Until(a.lockUntil) < 50*time.Second {
+		t.Fatalf("блокировка не сработала: sess=%v lock=%v", a.sess, a.lockUntil)
+	}
+}
+
+func TestDecode(t *testing.T) {
+	ok := map[string]event{
+		`{"t":"m","x":65535,"y":0}`:           {x: 65535, y: 0, flags: mMove | mAbs},
+		`{"t":"b","b":0,"d":true}`:            {flags: mLeftDown},
+		`{"t":"b","b":2,"d":false}`:           {flags: mRightUp},
+		`{"t":"w","v":-120}`:                  {data: -120, flags: mWheel},
+		`{"t":"h","v":99999}`:                 {data: 1200, flags: mHWheel},
+		`{"t":"k","c":"KeyA","d":true}`:       {key: true, scan: 0x1E, flags: kScancode},
+		`{"t":"k","c":"ArrowLeft","d":false}`: {key: true, scan: 0x4B, flags: kScancode | kExtended | kUp},
+		`{"t":"k","c":"MetaLeft","d":true}`:   {key: true, scan: 0x5B, flags: kScancode | kExtended},
+	}
+	for in, want := range ok {
+		if got, err := decode([]byte(in)); err != nil || got != want {
+			t.Errorf("%s → %+v, %v; ждали %+v", in, got, err, want)
+		}
+	}
+	for _, in := range []string{`{"t":"m","x":-1,"y":0}`, `{"t":"m","x":0,"y":70000}`, `{"t":"b","b":3}`,
+		`{"t":"k","c":"Fn"}`, `{"t":"zz"}`, `not json`} {
+		if _, err := decode([]byte(in)); err == nil {
+			t.Errorf("%s: ждали ошибку", in)
+		}
+	}
+}
+
+func TestRelease(t *testing.T) { // при разрыве отпускается всё зажатое, и только оно
+	var h held
+	for _, in := range []string{`{"t":"k","c":"ControlLeft","d":true}`, `{"t":"k","c":"AltRight","d":true}`,
+		`{"t":"k","c":"KeyA","d":true}`, `{"t":"k","c":"KeyA","d":false}`, `{"t":"b","b":0,"d":true}`} {
+		e, _ := decode([]byte(in))
+		h.track(e)
+	}
+	rel := h.release()
+	if len(rel) != 3 {
+		t.Fatalf("ждали 3 отпускания (Ctrl, AltGr, ЛКМ): %+v", rel)
+	}
+	for _, e := range rel {
+		if e.key && (e.flags&kUp == 0 || (e.scan == 0x38) != (e.flags&kExtended != 0)) {
+			t.Errorf("неверное отпускание клавиши %+v", e)
+		}
+		if !e.key && e.flags != mLeftUp {
+			t.Errorf("неверное отпускание кнопки %+v", e)
+		}
+	}
+	if len(h.release()) != 0 {
+		t.Error("повторный release не пуст")
+	}
+}
+
+func TestClipEcho(t *testing.T) {
+	var c clipSync
+	if !c.fromRemote("из клиента") || c.toRemote("из клиента") {
+		t.Fatal("текст от клиента вернулся эхом")
+	}
+	if !c.toRemote("локальный") || c.toRemote("локальный") {
+		t.Fatal("локальное изменение: отправить один раз")
+	}
+	big := strings.Repeat("я", ClipMax) // 2 байта на символ — больше предела
+	if c.toRemote("") || c.toRemote(big) || c.fromRemote(big) {
+		t.Fatal("пустой или слишком большой текст принят")
+	}
+}
