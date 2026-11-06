@@ -38,6 +38,7 @@
 4. app/config: Server по умолчанию "wss://any-hk.turboseller.xyz/ws,wss://any-ru.turboseller.xyz/ws"; миграция: старый any. и одиночный any-hk-по-умолчанию → новый список; window.ANYPC.ws — массив.
 5. deploy: setup.sh HUBS=… в ExecStart (-hubs); publish.sh — ANYPC_VPS списком; правило разрешения обновить. Владелец: setup.sh на RU (anypc-server, -domain any-ru), -hubs на HK.
 6. V1: build.sh; живой TestLive на обоих хабах; браузерная проверка (cdp.mjs в scratchpad).
+Статус 2026-11-06: шаги 1–5 в коде (9f8f40f), build.sh ✓; HK выложен. Осталось: владелец — setup.sh на RU (anypc-server) и -hubs на HK; затем publish на RU; затем шаг 6 (живая проверка).
 Сделано 2026-11-06 (см. TZ.md §16): монитор (REQ-F-09), ключ ID (REQ-F-01, REQ-S-05); по отчёту «relay периодически рвётся»:
 - хаб шлёт хосту свежий hello (пароль TURN) перед каждым connect;
 - клиент: bye при любом завершении, хост освобождается по bye синхронно (нет «занят» при повторе); автопереподключение до 3 раз; «не удалось соединиться» ≠ «связь потеряна»; кнопка «Свернуть» (Windows).
