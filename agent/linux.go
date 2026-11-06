@@ -27,8 +27,8 @@ var Wayland = os.Getenv("XDG_SESSION_TYPE") == "wayland" || (os.Getenv("WAYLAND_
 var fakeDesktop bool
 
 type desktop interface {
-	capture(ctx context.Context, fps int, bitrate, enc string) (*exec.Cmd, error)
-	input(e event) error
+	capture(ctx context.Context, fps int, bitrate, enc string, m *Monitor) (*exec.Cmd, error)
+	input(e event, m *Monitor) error
 	alive() bool
 }
 
@@ -58,17 +58,21 @@ func getDesktop() (desktop, error) {
 }
 
 // LinuxCapture — Agent.Capture для Linux.
-func LinuxCapture(fps int, bitrate, enc string) func(ctx context.Context) (*exec.Cmd, error) {
-	return func(ctx context.Context) (*exec.Cmd, error) {
+func LinuxCapture(fps int, bitrate, enc string) func(ctx context.Context, mon int) (*exec.Cmd, error) {
+	return func(ctx context.Context, mon int) (*exec.Cmd, error) {
 		d, err := getDesktop()
 		if err != nil {
 			return nil, err
 		}
-		return d.capture(ctx, fps, bitrate, enc)
+		var m *Monitor
+		if ms := monitors(); mon >= 0 && mon < len(ms) {
+			m = &ms[mon]
+		}
+		return d.capture(ctx, fps, bitrate, enc, m)
 	}
 }
 
-func sendInput(e event) error {
+func sendInput(e event, m *Monitor) error {
 	if fakeDesktop {
 		return nil
 	}
@@ -76,7 +80,19 @@ func sendInput(e event) error {
 	if err != nil {
 		return err
 	}
-	return d.input(e)
+	return d.input(e, m)
+}
+
+// monitors — X11: RandR; Wayland: nil (монитор выбирает человек в диалоге портала).
+func monitors() []Monitor {
+	if fakeDesktop || Wayland {
+		return nil
+	}
+	d, err := getDesktop()
+	if err != nil {
+		return nil
+	}
+	return d.(*x11).monitors()
 }
 
 func hideWindow(*exec.Cmd) {}

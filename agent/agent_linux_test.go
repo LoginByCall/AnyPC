@@ -69,7 +69,7 @@ func TestX11(t *testing.T) {
 
 	// курсор в центр: 32767/65535 от 1280×720
 	e, _ := decode([]byte(`{"t":"m","x":32767,"y":32767}`))
-	d.input(e)
+	d.input(e, nil)
 	x.c.Sync()
 	ptr, err := xproto.QueryPointer(x.c, x.root).Reply()
 	if err != nil || ptr.RootX != 639 || ptr.RootY != 359 {
@@ -77,19 +77,19 @@ func TestX11(t *testing.T) {
 	}
 	// клавиша: нажата → в карте клавиш бит keycode = evdev+8 установлен
 	e, _ = decode([]byte(`{"t":"k","c":"KeyA","d":true}`))
-	d.input(e)
+	d.input(e, nil)
 	x.c.Sync()
 	km, _ := xproto.QueryKeymap(x.c).Reply()
 	if km == nil || km.Keys[(30+8)/8]&(1<<((30+8)%8)) == 0 {
 		t.Fatal("клавиша A не нажата на X-сервере")
 	}
 	e, _ = decode([]byte(`{"t":"k","c":"KeyA","d":false}`))
-	d.input(e)
+	d.input(e, nil)
 
 	// захват: ffmpeg x11grab отдаёт H.264 Annex-B
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd, _ := d.capture(ctx, 30, "1M", "libx264")
+	cmd, _ := d.capture(ctx, 30, "1M", "libx264", nil)
 	out, _ := cmd.StdoutPipe()
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)

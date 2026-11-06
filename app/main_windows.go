@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"syscall"
@@ -50,6 +51,8 @@ func fatal(msg string) {
 }
 
 func main() {
+	// Per-Monitor DPI aware v2: координаты DXGI (физические пиксели) и ввода совпадают при масштабе 125–200 %.
+	user32.NewProc("SetProcessDpiAwarenessContext").Call(^uintptr(3)) // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
 	dir := filepath.Join(os.Getenv("LOCALAPPDATA"), "AnyPC")
 	os.MkdirAll(dir, 0o700)
 	logf, err := os.OpenFile(filepath.Join(dir, "anypc.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
@@ -82,8 +85,10 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	a := &agent.Agent{
-		Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, FFmpeg: ff,
-		FF: agent.FFArgs("desktop", cfg.Enc, 30, cfg.Bitrate), FPS: 30, Stderr: logf,
+		Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, FPS: 30, Stderr: logf,
+		Capture: func(ctx context.Context, mon int) (*exec.Cmd, error) { // выход DXGI mon
+			return exec.CommandContext(ctx, ff, agent.FFArgs(fmt.Sprintf("desktop:%d", max(mon, 0)), cfg.Enc, 30, cfg.Bitrate)...), nil
+		},
 	}
 	var mu sync.Mutex
 	online, session := false, ""

@@ -59,6 +59,7 @@
   <div id="bar">
     <button id="bye" class="main" data-t="disc"></button>
     <button id="fsbtn" data-t="fs"></button>
+    <select id="mon" class="hidden" data-tt="mon_t"></select>
     <button data-keys="MetaLeft">Win</button>
     <button data-keys="AltLeft Tab">Alt+Tab</button>
     <button data-keys="ControlLeft ShiftLeft Escape">Ctrl+Shift+Esc</button>
@@ -81,7 +82,7 @@ const WS = window.ANYPC?.ws || (location.protocol === 'https:' ? 'wss://' : 'ws:
 const APP = typeof window.hostInfo === 'function'; // открыто в AnyPC.exe
 // ---------- Языки: по языку Windows/браузера, по умолчанию английский ----------
 const L = {
-  en: { f_broken: 'connection lost — send the file again to resume', f_send: 'Send file', f_get: 'Get file', f_send_t: 'Send a file to the remote PC (or drop it onto the screen)', f_get_t: 'Opens a file picker on the remote PC', f_cancel: 'cancelled', f_err: 'error', f_done_up: 'saved to Downloads on the remote PC', f_done_down: 'saved to Downloads',
+  en: { mon_t: 'Remote PC monitor', f_broken: 'connection lost — send the file again to resume', f_send: 'Send file', f_get: 'Get file', f_send_t: 'Send a file to the remote PC (or drop it onto the screen)', f_get_t: 'Opens a file picker on the remote PC', f_cancel: 'cancelled', f_err: 'error', f_done_up: 'saved to Downloads on the remote PC', f_done_down: 'saved to Downloads',
     need_app: 'Connecting is available in the AnyPC program — download it at www.turboseller.xyz', e_nopass: 'no password is set on the remote PC', e_hostauth: 'the remote PC could not be verified — connection may be intercepted',
     me_h: 'This computer', myid_l: 'Your ID', newpw_p: 'New password (8+ characters)', setpw: 'Set password', incoming: 'Incoming session:', disc: 'Disconnect',
     remote_h: 'Remote computer', id_p: 'Remote PC ID', pw_p: 'Password', relay: 'relay (TURN) only — for measurements', go: 'Connect', recent: 'Recent:',
@@ -92,7 +93,7 @@ const L = {
     no_server: 'No connection to the server', e_auth: 'wrong password', e_locked: 'too many attempts — please wait', e_busy: 'the remote PC is busy with another session',
     e_not_found: 'the remote PC is offline', e_internal: 'error on the remote PC', e_forbidden: 'forbidden',
     s_for: 'over {n} s', med: 'med', max: 'max', ms: 'ms', fps: 'fps', kbps: 'kbit/s', loss: 'loss', jb: 'jitter buffer', frz: 'freezes' },
-  ru: { f_broken: 'обрыв — отправьте файл ещё раз, продолжится с места обрыва', f_send: 'Отправить файл', f_get: 'Получить файл', f_send_t: 'Отправить файл на удалённый ПК (или перетащите его на экран)', f_get_t: 'Откроет окно выбора файла на удалённом ПК', f_cancel: 'отменено', f_err: 'ошибка', f_done_up: 'сохранён в «Загрузки» удалённого ПК', f_done_down: 'сохранён в «Загрузки»',
+  ru: { mon_t: 'Монитор удалённого ПК', f_broken: 'обрыв — отправьте файл ещё раз, продолжится с места обрыва', f_send: 'Отправить файл', f_get: 'Получить файл', f_send_t: 'Отправить файл на удалённый ПК (или перетащите его на экран)', f_get_t: 'Откроет окно выбора файла на удалённом ПК', f_cancel: 'отменено', f_err: 'ошибка', f_done_up: 'сохранён в «Загрузки» удалённого ПК', f_done_down: 'сохранён в «Загрузки»',
     need_app: 'Подключение доступно в программе AnyPC — скачайте её на www.turboseller.xyz', e_nopass: 'на удалённом ПК не задан пароль', e_hostauth: 'удалённый ПК не подтвердил подлинность — соединение может быть перехвачено',
     me_h: 'Это рабочее место', myid_l: 'Ваш ID', newpw_p: 'Новый пароль (≥ 8 символов)', setpw: 'Задать пароль', incoming: 'Идёт входящая сессия:', disc: 'Разорвать',
     remote_h: 'Удалённое рабочее место', id_p: 'ID удалённого ПК', pw_p: 'Пароль', relay: 'только через TURN (для замеров)', go: 'Подключиться', recent: 'Недавние:',
@@ -103,7 +104,7 @@ const L = {
     no_server: 'Нет связи с сервером', e_auth: 'неверный пароль', e_locked: 'слишком много попыток — подождите', e_busy: 'удалённый ПК занят другой сессией',
     e_not_found: 'удалённый ПК не в сети', e_internal: 'ошибка на удалённом ПК', e_forbidden: 'запрещено',
     s_for: 'за {n} с', med: 'мед', max: 'макс', ms: 'мс', fps: 'к/с', kbps: 'кбит/с', loss: 'потери', jb: 'джиттер-буфер', frz: 'фризов' },
-  zh: { f_broken: '连接中断——再次发送文件即可从中断处继续', f_send: '发送文件', f_get: '获取文件', f_send_t: '向远程电脑发送文件（或拖放到画面上）', f_get_t: '在远程电脑上打开文件选择窗口', f_cancel: '已取消', f_err: '错误', f_done_up: '已保存到远程电脑的“下载”文件夹', f_done_down: '已保存到“下载”文件夹',
+  zh: { mon_t: '远程电脑的显示器', f_broken: '连接中断——再次发送文件即可从中断处继续', f_send: '发送文件', f_get: '获取文件', f_send_t: '向远程电脑发送文件（或拖放到画面上）', f_get_t: '在远程电脑上打开文件选择窗口', f_cancel: '已取消', f_err: '错误', f_done_up: '已保存到远程电脑的“下载”文件夹', f_done_down: '已保存到“下载”文件夹',
     need_app: '请在 AnyPC 程序中连接——可在 www.turboseller.xyz 下载', e_nopass: '远程电脑未设置密码', e_hostauth: '无法验证远程电脑——连接可能被拦截',
     me_h: '本机', myid_l: '您的 ID', newpw_p: '新密码（至少 8 个字符）', setpw: '设置密码', incoming: '正在进行的传入会话：', disc: '断开',
     remote_h: '远程电脑', id_p: '远程电脑 ID', pw_p: '密码', relay: '仅通过中继 (TURN)——用于测量', go: '连接', recent: '最近：',
@@ -114,7 +115,7 @@ const L = {
     no_server: '无法连接服务器', e_auth: '密码错误', e_locked: '尝试次数过多，请稍候', e_busy: '远程电脑正被其他会话占用',
     e_not_found: '远程电脑不在线', e_internal: '远程电脑出错', e_forbidden: '禁止访问',
     s_for: '最近 {n} 秒', med: '中位', max: '最大', ms: '毫秒', fps: '帧/秒', kbps: 'kbit/s', loss: '丢包', jb: '抖动缓冲', frz: '卡顿' },
-  es: { f_broken: 'conexión perdida: vuelve a enviar el archivo para continuar', f_send: 'Enviar archivo', f_get: 'Recibir archivo', f_send_t: 'Enviar un archivo al PC remoto (o arrástralo a la pantalla)', f_get_t: 'Abre un selector de archivos en el PC remoto', f_cancel: 'cancelado', f_err: 'error', f_done_up: 'guardado en Descargas del PC remoto', f_done_down: 'guardado en Descargas',
+  es: { mon_t: 'Monitor del PC remoto', f_broken: 'conexión perdida: vuelve a enviar el archivo para continuar', f_send: 'Enviar archivo', f_get: 'Recibir archivo', f_send_t: 'Enviar un archivo al PC remoto (o arrástralo a la pantalla)', f_get_t: 'Abre un selector de archivos en el PC remoto', f_cancel: 'cancelado', f_err: 'error', f_done_up: 'guardado en Descargas del PC remoto', f_done_down: 'guardado en Descargas',
     need_app: 'La conexión está disponible en el programa AnyPC: descárgalo en www.turboseller.xyz', e_nopass: 'el PC remoto no tiene contraseña', e_hostauth: 'no se pudo verificar el PC remoto; la conexión podría estar interceptada',
     me_h: 'Este equipo', myid_l: 'Tu ID', newpw_p: 'Nueva contraseña (8+ caracteres)', setpw: 'Establecer contraseña', incoming: 'Sesión entrante:', disc: 'Desconectar',
     remote_h: 'Equipo remoto', id_p: 'ID del PC remoto', pw_p: 'Contraseña', relay: 'solo por relé (TURN), para mediciones', go: 'Conectar', recent: 'Recientes:',
@@ -125,7 +126,7 @@ const L = {
     no_server: 'Sin conexión con el servidor', e_auth: 'contraseña incorrecta', e_locked: 'demasiados intentos, espera un momento', e_busy: 'el PC remoto está ocupado con otra sesión',
     e_not_found: 'el PC remoto no está en línea', e_internal: 'error en el PC remoto', e_forbidden: 'prohibido',
     s_for: 'en {n} s', med: 'med', max: 'máx', ms: 'ms', fps: 'fps', kbps: 'kbit/s', loss: 'pérdidas', jb: 'búfer de jitter', frz: 'congelaciones' },
-  de: { f_broken: 'Verbindung unterbrochen – Datei erneut senden, um fortzusetzen', f_send: 'Datei senden', f_get: 'Datei holen', f_send_t: 'Datei an den entfernten PC senden (oder auf das Bild ziehen)', f_get_t: 'Öffnet eine Dateiauswahl auf dem entfernten PC', f_cancel: 'abgebrochen', f_err: 'Fehler', f_done_up: 'in „Downloads“ des entfernten PCs gespeichert', f_done_down: 'in „Downloads“ gespeichert',
+  de: { mon_t: 'Monitor des entfernten PCs', f_broken: 'Verbindung unterbrochen – Datei erneut senden, um fortzusetzen', f_send: 'Datei senden', f_get: 'Datei holen', f_send_t: 'Datei an den entfernten PC senden (oder auf das Bild ziehen)', f_get_t: 'Öffnet eine Dateiauswahl auf dem entfernten PC', f_cancel: 'abgebrochen', f_err: 'Fehler', f_done_up: 'in „Downloads“ des entfernten PCs gespeichert', f_done_down: 'in „Downloads“ gespeichert',
     need_app: 'Verbinden ist im Programm AnyPC möglich – Download unter www.turboseller.xyz', e_nopass: 'auf dem entfernten PC ist kein Passwort festgelegt', e_hostauth: 'der entfernte PC konnte nicht verifiziert werden – die Verbindung könnte abgefangen sein',
     me_h: 'Dieser Computer', myid_l: 'Ihre ID', newpw_p: 'Neues Passwort (mind. 8 Zeichen)', setpw: 'Passwort festlegen', incoming: 'Eingehende Sitzung:', disc: 'Trennen',
     remote_h: 'Entfernter Computer', id_p: 'ID des entfernten PCs', pw_p: 'Passwort', relay: 'nur über Relay (TURN) – für Messungen', go: 'Verbinden', recent: 'Zuletzt:',
@@ -136,7 +137,7 @@ const L = {
     no_server: 'Keine Verbindung zum Server', e_auth: 'falsches Passwort', e_locked: 'zu viele Versuche – bitte warten', e_busy: 'der entfernte PC ist mit einer anderen Sitzung belegt',
     e_not_found: 'der entfernte PC ist offline', e_internal: 'Fehler auf dem entfernten PC', e_forbidden: 'nicht erlaubt',
     s_for: 'über {n} s', med: 'Med', max: 'max', ms: 'ms', fps: 'fps', kbps: 'kbit/s', loss: 'Verlust', jb: 'Jitter-Puffer', frz: 'Hänger' },
-  fr: { f_broken: 'connexion perdue — renvoyez le fichier pour reprendre', f_send: 'Envoyer un fichier', f_get: 'Récupérer un fichier', f_send_t: 'Envoyer un fichier au PC distant (ou le déposer sur l’écran)', f_get_t: 'Ouvre un sélecteur de fichiers sur le PC distant', f_cancel: 'annulé', f_err: 'erreur', f_done_up: 'enregistré dans Téléchargements du PC distant', f_done_down: 'enregistré dans Téléchargements',
+  fr: { mon_t: 'Écran du PC distant', f_broken: 'connexion perdue — renvoyez le fichier pour reprendre', f_send: 'Envoyer un fichier', f_get: 'Récupérer un fichier', f_send_t: 'Envoyer un fichier au PC distant (ou le déposer sur l’écran)', f_get_t: 'Ouvre un sélecteur de fichiers sur le PC distant', f_cancel: 'annulé', f_err: 'erreur', f_done_up: 'enregistré dans Téléchargements du PC distant', f_done_down: 'enregistré dans Téléchargements',
     need_app: 'La connexion est disponible dans le programme AnyPC — téléchargez-le sur www.turboseller.xyz', e_nopass: 'aucun mot de passe n’est défini sur le PC distant', e_hostauth: 'impossible de vérifier le PC distant — la connexion est peut-être interceptée',
     me_h: 'Cet ordinateur', myid_l: 'Votre ID', newpw_p: 'Nouveau mot de passe (8 caractères min.)', setpw: 'Définir le mot de passe', incoming: 'Session entrante :', disc: 'Déconnecter',
     remote_h: 'Ordinateur distant', id_p: 'ID du PC distant', pw_p: 'Mot de passe', relay: 'relais (TURN) uniquement — pour les mesures', go: 'Se connecter', recent: 'Récents :',
@@ -147,7 +148,7 @@ const L = {
     no_server: 'Pas de connexion au serveur', e_auth: 'mot de passe incorrect', e_locked: 'trop de tentatives — patientez', e_busy: 'le PC distant est occupé par une autre session',
     e_not_found: 'le PC distant est hors ligne', e_internal: 'erreur sur le PC distant', e_forbidden: 'interdit',
     s_for: 'sur {n} s', med: 'méd', max: 'max', ms: 'ms', fps: 'i/s', kbps: 'kbit/s', loss: 'pertes', jb: 'tampon de gigue', frz: 'gels' },
-  it: { f_broken: 'connessione persa: invia di nuovo il file per riprendere', f_send: 'Invia file', f_get: 'Ricevi file', f_send_t: 'Invia un file al PC remoto (o trascinalo sullo schermo)', f_get_t: 'Apre una finestra di selezione file sul PC remoto', f_cancel: 'annullato', f_err: 'errore', f_done_up: 'salvato in Download del PC remoto', f_done_down: 'salvato in Download',
+  it: { mon_t: 'Monitor del PC remoto', f_broken: 'connessione persa: invia di nuovo il file per riprendere', f_send: 'Invia file', f_get: 'Ricevi file', f_send_t: 'Invia un file al PC remoto (o trascinalo sullo schermo)', f_get_t: 'Apre una finestra di selezione file sul PC remoto', f_cancel: 'annullato', f_err: 'errore', f_done_up: 'salvato in Download del PC remoto', f_done_down: 'salvato in Download',
     need_app: 'La connessione è disponibile nel programma AnyPC: scaricalo da www.turboseller.xyz', e_nopass: 'sul PC remoto non è impostata alcuna password', e_hostauth: 'impossibile verificare il PC remoto: la connessione potrebbe essere intercettata',
     me_h: 'Questo computer', myid_l: 'Il tuo ID', newpw_p: 'Nuova password (almeno 8 caratteri)', setpw: 'Imposta password', incoming: 'Sessione in entrata:', disc: 'Disconnetti',
     remote_h: 'Computer remoto', id_p: 'ID del PC remoto', pw_p: 'Password', relay: 'solo tramite relay (TURN) — per le misure', go: 'Connetti', recent: 'Recenti:',
@@ -210,6 +211,7 @@ function end(reason) {
   clearInterval(timer);
   pc?.close(); ws?.close();
   pc = ws = dc = ctl = null;
+  $('mon').classList.add('hidden');
   setFs(false);
   v.srcObject = null;
   show(false);
@@ -300,6 +302,7 @@ const CLIP_MAX = 60 * 1024; // как agent.ClipMax (в байтах UTF-8)
 const clipOK = x => x && new TextEncoder().encode(x).length <= CLIP_MAX;
 function onCtl(e) {
   const m = JSON.parse(e.data);
+  if (m.t === 'monitors') return showMonitors(m);
   if (m.t !== 'clip' || !clipOK(m.text)) return;
   lastClip = m.text;
   (APP ? setClip(m.text) : navigator.clipboard?.writeText(m.text))?.catch?.(() => {});
@@ -423,6 +426,19 @@ $('fpick').onchange = () => { [...$('fpick').files].forEach(sendFile); $('fpick'
 $('fget').onclick = () => { ctl?.readyState === 'open' && ctl.send(JSON.stringify({ t: 'pick' })); v.focus(); };
 v.addEventListener('dragover', e => e.preventDefault());
 v.addEventListener('drop', e => { e.preventDefault(); [...e.dataTransfer.files].forEach(sendFile); });
+
+// ---------- Мониторы (REQ-F-09): список от хоста, выбор — перезапуск захвата на нём ----------
+function showMonitors(m) {
+  const sel = $('mon'), list = m.list || [];
+  sel.replaceChildren(...list.map((x, i) => {
+    const o = document.createElement('option');
+    o.value = i; o.title = x.name; o.textContent = `${i + 1}${x.primary ? ' ★' : ''} · ${x.w}×${x.h}`;
+    return o;
+  }));
+  sel.value = m.cur;
+  sel.classList.toggle('hidden', list.length < 2);
+}
+$('mon').onchange = () => { ctl?.readyState === 'open' && ctl.send(JSON.stringify({ t: 'monitor', i: +$('mon').value })); v.focus(); };
 
 // ---------- Полный экран ----------
 let full = false; // имена fs/process/path/crypto не занимать ни переменными, ни id: их берёт wasm_exec.js

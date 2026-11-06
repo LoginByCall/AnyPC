@@ -5,11 +5,13 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"sync"
 
 	"github.com/jezek/xgb"
+	"github.com/jezek/xgb/randr"
 	"github.com/jezek/xgb/xproto"
 	"github.com/jezek/xgb/xtest"
 )
@@ -39,12 +41,36 @@ func newX11() (desktop, error) {
 
 func (x *x11) alive() bool { return true }
 
-func (x *x11) capture(ctx context.Context, fps int, bitrate, enc string) (*exec.Cmd, error) {
+func (x *x11) capture(ctx context.Context, fps int, bitrate, enc string, m *Monitor) (*exec.Cmd, error) {
 	disp := os.Getenv("DISPLAY")
 	if disp == "" {
 		disp = ":0"
 	}
-	return exec.CommandContext(ctx, "ffmpeg", FFArgs("x11:"+disp, enc, fps, bitrate)...), nil
+	src := "x11:" + disp
+	if m != nil { // один монитор: размер и смещение в общем экране X
+		src = fmt.Sprintf("x11:%dx%d@%s+%d,%d", m.W&^1, m.H&^1, disp, m.X, m.Y) // libx264: чётные размеры
+	}
+	return exec.CommandContext(ctx, "ffmpeg", FFArgs(src, enc, fps, bitrate)...), nil
+}
+
+// monitors — мониторы по RandR 1.5 (основной отмечен); нет RandR — nil (весь экран).
+func (x *x11) monitors() []Monitor {
+	if err := randr.Init(x.c); err != nil {
+		return nil
+	}
+	r, err := randr.GetMonitors(x.c, x.root, true).Reply()
+	if err != nil {
+		return nil
+	}
+	var out []Monitor
+	for _, mi := range r.Monitors {
+		name := ""
+		if a, err := xproto.GetAtomName(x.c, mi.Name).Reply(); err == nil {
+			name = a.Name
+		}
+		out = append(out, Monitor{Name: name, X: int(mi.X), Y: int(mi.Y), W: int(mi.Width), H: int(mi.Height), Primary: mi.Primary})
+	}
+	return out
 }
 
 const (
@@ -62,7 +88,7 @@ func (x *x11) click(button byte, n int32) {
 	}
 }
 
-func (x *x11) input(e event) error {
+func (x *x11) input(e event, m *Monitor) error {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	if e.key {
@@ -79,7 +105,11 @@ func (x *x11) input(e event) error {
 	}
 	switch f := e.flags; {
 	case f&mMove != 0:
-		x.fake(xMotion, 0, int16(int(e.x)*(x.w-1)/65535), int16(int(e.y)*(x.h-1)/65535))
+		if m == nil {
+			m = &Monitor{W: x.w, H: x.h}
+		}
+		px, py := monPoint(m, e.x, e.y)
+		x.fake(xMotion, 0, int16(px), int16(py))
 	case f&mWheel != 0: // кнопки 4/5 — щелчок вверх/вниз (WHEEL_DELTA = 120)
 		x.wheelV += e.data
 		for ; x.wheelV >= 120; x.wheelV -= 120 {

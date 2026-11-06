@@ -36,10 +36,10 @@ type Agent struct {
 	FFmpeg  string                       // путь к ffmpeg
 	FF      []string                     // аргументы ffmpeg, см. FFArgs
 	FPS     int
-	Stderr  io.Writer                                    // вывод ffmpeg; nil — os.Stderr
-	OnState func(online bool, session string)            // session "" — сессии нет
-	FileDir string                                       // куда принимать файлы; "" — %USERPROFILE%\Downloads
-	Capture func(ctx context.Context) (*exec.Cmd, error) // свой процесс захвата (H.264 Annex-B в stdout); nil — FFmpeg + FF
+	Stderr  io.Writer                                             // вывод ffmpeg; nil — os.Stderr
+	OnState func(online bool, session string)                     // session "" — сессии нет
+	FileDir string                                                // куда принимать файлы; "" — %USERPROFILE%\Downloads
+	Capture func(ctx context.Context, mon int) (*exec.Cmd, error) // захват монитора mon (H.264 Annex-B в stdout); nil — FFmpeg + FF
 
 	mu        sync.Mutex
 	conn      *websocket.Conn
@@ -58,8 +58,39 @@ type session struct {
 	authed  atomic.Bool // до успешного CPace ни видео, ни ввод, ни буфер обмена, ни файлы не работают
 	picking atomic.Bool // открыто окно выбора файла
 
-	mu       sync.Mutex
-	closeInd func() // закрыть плашку сессии
+	mu        sync.Mutex
+	closeInd  func() // закрыть плашку сессии
+	mons      []Monitor
+	mon       int                // выбранный монитор (индекс в mons)
+	capCancel context.CancelFunc // остановить текущий процесс захвата
+	switched  atomic.Bool        // захват остановлен ради смены монитора — перезапуск без паузы
+}
+
+// monitor — выбранный монитор для пересчёта координат мыши (nil — мониторов не знаем).
+func (s *session) monitor() *Monitor {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.mon < len(s.mons) {
+		m := s.mons[s.mon]
+		return &m
+	}
+	return nil
+}
+
+// selectMonitor переключает захват на монитор i (REQ-F-09): текущий захват останавливается,
+// цикл stream сразу запускает новый — клиент получает новый ключевой кадр.
+func (s *session) selectMonitor(i int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if i < 0 || i >= len(s.mons) || i == s.mon {
+		return false
+	}
+	s.mon = i
+	s.switched.Store(true)
+	if s.capCancel != nil {
+		s.capCancel()
+	}
+	return true
 }
 
 // authMsg — канал "auth" (REQ-S-02): хост → {"t":"a",salt,msg}; клиент → {"t":"b",msg,conf};
@@ -72,20 +103,33 @@ type authMsg struct {
 }
 
 // ctlMsg — канал "ctl": {"t":"clip","text":"…"} — буфер обмена в обе стороны (REQ-F-11);
-// {"t":"pick"} от клиента — открыть на хосте окно выбора файла и отправить выбранный (REQ-F-12).
+// {"t":"pick"} от клиента — открыть на хосте окно выбора файла и отправить выбранный (REQ-F-12);
+// хост → {"t":"monitors","list":[…],"cur":i}, клиент → {"t":"monitor","i":N} — выбор монитора (REQ-F-09).
 type ctlMsg struct {
-	T    string `json:"t"`
-	Text string `json:"text,omitempty"`
+	T    string    `json:"t"`
+	Text string    `json:"text,omitempty"`
+	List []Monitor `json:"list,omitempty"`
+	Cur  int       `json:"cur"`
+	I    int       `json:"i"`
 }
 
 func FFArgs(src, enc string, fps int, br string) []string {
 	a := []string{"-hide_banner", "-loglevel", "warning"}
 	if src == "test" {
 		a = append(a, "-re", "-f", "lavfi", "-i", fmt.Sprintf("testsrc2=size=1280x720:rate=%d", fps))
-	} else if disp, ok := strings.CutPrefix(src, "x11:"); ok { // Linux X11: весь экран, с курсором
-		a = append(a, "-f", "x11grab", "-framerate", strconv.Itoa(fps), "-draw_mouse", "1", "-i", disp)
-	} else { // Windows 8+, ffmpeg ≥ 6.0; курсор рисуется
-		a = append(a, "-f", "lavfi", "-i", fmt.Sprintf("ddagrab=framerate=%d", fps), "-vf", "hwdownload,format=bgra")
+	} else if in, ok := strings.CutPrefix(src, "x11:"); ok { // Linux X11, с курсором: "x11::0" или "x11:WxH@:0+X,Y"
+		a = append(a, "-f", "x11grab", "-framerate", strconv.Itoa(fps), "-draw_mouse", "1")
+		if size, disp, ok := strings.Cut(in, "@"); ok {
+			a = append(a, "-video_size", size)
+			in = disp
+		}
+		a = append(a, "-i", in)
+	} else { // Windows 8+, ffmpeg ≥ 6.0, курсор рисуется: "desktop" или "desktop:N" (N — выход DXGI)
+		out := 0
+		if n, ok := strings.CutPrefix(src, "desktop:"); ok {
+			out, _ = strconv.Atoi(n)
+		}
+		a = append(a, "-f", "lavfi", "-i", fmt.Sprintf("ddagrab=output_idx=%d:framerate=%d", out, fps), "-vf", "hwdownload,format=bgra")
 	}
 	// ponytail: GOP = 1 с вместо реакции на PLI — потеря кадра лечится ≤ 1 с; PLI → когда упрёмся
 	a = append(a, "-c:v", enc, "-b:v", br, "-maxrate", br, "-bufsize", br, "-g", strconv.Itoa(fps), "-bf", "0", "-pix_fmt", "yuv420p")
@@ -276,7 +320,8 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string) (
 			}
 		}
 	}()
-	s := &session{cid: cid, pc: pc}
+	s := &session{cid: cid, pc: pc, mons: listMonitors()}
+	s.mon = primaryIndex(s.mons)
 	sctx, cancel := context.WithCancel(ctx)
 	fail = func(err error) (*session, error) { cancel(); pc.Close(); return nil, err }
 	if err := a.authChannel(sctx, s, track); err != nil {
@@ -294,7 +339,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string) (
 		e, err := decode(msg.Data)
 		if err == nil {
 			s.keys.track(e)
-			err = sendInput(e)
+			err = sendInput(e, s.monitor())
 		}
 		if err != nil && bad < 10 { // не забивать журнал
 			bad++
@@ -316,6 +361,10 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string) (
 			if err := SetClipText(m.Text); err != nil {
 				log.Printf("буфер обмена: %v", err)
 			}
+		case m.T == "monitor":
+			if s.selectMonitor(m.I) {
+				log.Printf("сессия %s: монитор %d", s.cid, m.I+1)
+			}
 		case m.T == "pick" && s.picking.CompareAndSwap(false, true): // одно окно выбора за раз
 			go func() {
 				path, ok := pickFile()
@@ -328,7 +377,13 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string) (
 			}()
 		}
 	})
-	ctl.OnOpen(func() { go s.watchClip(sctx, ctl) })
+	ctl.OnOpen(func() {
+		go s.watchClip(sctx, ctl)
+		s.mu.Lock()
+		b, _ := json.Marshal(ctlMsg{T: "monitors", List: s.mons, Cur: s.mon})
+		s.mu.Unlock()
+		ctl.SendText(string(b))
+	})
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) { // каналы от клиента — только файлы и только после входа
 		if dc.Label() == "file" && s.authed.Load() {
 			a.receiveFile(dc)
@@ -369,7 +424,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string) (
 			ended.Do(func() {
 				cancel()
 				for _, e := range s.keys.release() { // не оставить зажатый Ctrl/кнопку на хосте
-					sendInput(e)
+					sendInput(e, nil)
 				}
 				s.mu.Lock()
 				if s.closeInd != nil {
@@ -462,7 +517,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		s.closeInd = closeInd
 		s.mu.Unlock()
 		a.notify()
-		go a.stream(ctx, track)
+		go a.stream(ctx, s, track)
 	})
 	time.AfterFunc(20*time.Second, func() {
 		if !s.authed.Load() {
@@ -493,9 +548,12 @@ func (s *session) watchClip(ctx context.Context, ctl *webrtc.DataChannel) {
 	}
 }
 
-func (a *Agent) stream(ctx context.Context, track *webrtc.TrackLocalStaticSample) {
+func (a *Agent) stream(ctx context.Context, s *session, track *webrtc.TrackLocalStaticSample) {
 	for {
-		a.streamOnce(ctx, track)
+		a.streamOnce(ctx, s, track)
+		if ctx.Err() == nil && s.switched.Swap(false) {
+			continue // смена монитора — сразу
+		}
 		// ffmpeg завершился сам — обычно DXGI_ERROR_ACCESS_LOST (887a0026): UAC, блокировка,
 		// полноэкранное окно, смена режима (ТЗ §9). Перезапуск отдаёт браузеру новый IDR.
 		select {
@@ -510,11 +568,17 @@ func (a *Agent) stream(ctx context.Context, track *webrtc.TrackLocalStaticSample
 // streamOnce: ffmpeg пишет H.264 Annex-B в stdout, NAL-юниты уходят в трек.
 // ponytail: h264reader отдаёт NAL только по старт-коду следующего → +1 кадр задержки (33 мс при 30 к/с);
 // убрать — читать пакеты из контейнера (nut/mkv) или кодировать в процессе.
-func (a *Agent) streamOnce(ctx context.Context, track *webrtc.TrackLocalStaticSample) {
+func (a *Agent) streamOnce(ctx context.Context, s *session, track *webrtc.TrackLocalStaticSample) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	s.mu.Lock()
+	s.capCancel = cancel
+	mon := s.mon
+	s.mu.Unlock()
 	var cmd *exec.Cmd
 	if a.Capture != nil {
 		var err error
-		if cmd, err = a.Capture(ctx); err != nil {
+		if cmd, err = a.Capture(ctx, mon); err != nil {
 			log.Printf("захват: %v", err)
 			return
 		}

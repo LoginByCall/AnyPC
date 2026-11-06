@@ -8,7 +8,9 @@ import (
 )
 
 // STUB: вне Windows ввод только логируется — для тестов на Linux.
-func sendInput(e event) error { return nil }
+func sendInput(event, *Monitor) error { return nil }
+
+func monitors() []Monitor { return nil }
 
 func showIndicator(cid string, _ func()) (func(), error) {
 	log.Printf("плашка: идёт удалённая сессия %s", cid)
