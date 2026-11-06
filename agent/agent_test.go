@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"net/http/httptest"
 	"os"
@@ -23,7 +24,8 @@ var salt = []byte("0123456789abcdef")
 
 func newAgent(url, id string, ff []string) *Agent {
 	secret := pake.KDF("secret123", salt)
-	return &Agent{Server: url, ID: id, Secret: func() ([]byte, []byte) { return salt, secret }, FF: ff, FPS: 30}
+	_, key, _ := ed25519.GenerateKey(nil)
+	return &Agent{Server: url, ID: id, Secret: func() ([]byte, []byte) { return salt, secret }, Key: key, FF: ff, FPS: 30}
 }
 
 func local(t *testing.T) string {
@@ -144,8 +146,12 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 					wantConf = hc
 					out, _ := json.Marshal(authMsg{T: "b", Msg: b, Conf: conf})
 					dc.Send(out)
-				case "ok":
-					authed <- bytes.Equal(am.Conf, wantConf)
+				case "ok": // ключ подтверждён CPace, личность хоста — подписью над DTLS-отпечатками (REQ-S-05)
+					sigOK := pake.HostVerify(am.Pub, am.Sig, id, pake.Fingerprint(pc.LocalDescription().SDP), pake.Fingerprint(pc.RemoteDescription().SDP)) == nil
+					if !sigOK {
+						t.Error("подпись хоста не прошла проверку")
+					}
+					authed <- bytes.Equal(am.Conf, wantConf) && sigOK
 				case "fail":
 					authed <- false
 				}

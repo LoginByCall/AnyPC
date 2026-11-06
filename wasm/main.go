@@ -30,5 +30,18 @@ func main() {
 			return nil
 		}))
 	}))
+	js.Global().Set("hostVerify", js.FuncOf(func(_ js.Value, a []js.Value) any { // → Promise<отпечаток ключа хоста>
+		args := make([]string, 5)
+		for i := range args {
+			if i < len(a) {
+				args[i] = a[i].String()
+			}
+		}
+		fp, err := pake.HostVerifyB64(args[0], args[1], args[2], args[3], args[4])
+		if err != nil {
+			return js.Global().Get("Promise").Call("reject", js.Global().Get("Error").New(err.Error()))
+		}
+		return js.Global().Get("Promise").Call("resolve", fp)
+	}))
 	select {}
 }

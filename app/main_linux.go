@@ -48,7 +48,7 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	a := &agent.Agent{Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, FPS: 30,
+	a := &agent.Agent{Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, Key: cfg.key(), FPS: 30,
 		Capture: agent.LinuxCapture(30, cfg.Bitrate, cfg.Enc), FileDir: downloads()}
 	var mu sync.Mutex
 	online, session := false, ""
@@ -56,7 +56,7 @@ func main() {
 	info := func() map[string]any {
 		mu.Lock()
 		defer mu.Unlock()
-		return map[string]any{"id": cfg.ID, "online": online, "session": session, "hasPass": cfg.hasPass()}
+		return map[string]any{"id": cfg.ID, "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass()}
 	}
 
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -130,7 +130,7 @@ window.ANYPC = {ws: %s};
   const T = %s;
   const api = (n, ...a) => fetch('/api/' + n, {method: 'POST', headers: {'X-Token': T, 'Content-Type': 'application/json'}, body: JSON.stringify(a)})
     .then(async r => { const j = await r.json(); if (!r.ok) throw j.error; return j.result; });
-  for (const n of ['hostInfo', 'setPassword', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort']) window[n] = (...a) => api(n, ...a);
+  for (const n of ['hostInfo', 'setPassword', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'hostVerify', 'knownGet', 'knownSet', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort']) window[n] = (...a) => api(n, ...a);
   window.fullscreen = on => on ? document.documentElement.requestFullscreen().then(() => navigator.keyboard?.lock()).catch(() => {})
                                : document.fullscreenElement && document.exitFullscreen();
   setInterval(() => hostInfo().then(s => window.onHostState?.(s)).catch(() => {}), 1000);
@@ -182,6 +182,12 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 		res, err = agent.ClipText()
 	case "setClip":
 		err = agent.SetClipText(str(0))
+	case "hostVerify":
+		res, err = pake.HostVerifyB64(str(0), str(1), str(2), str(3), str(4))
+	case "knownGet":
+		res = cfg.knownGet(str(0))
+	case "knownSet":
+		err = cfg.knownSet(str(0), str(1))
 	case "pakeRespond":
 		res, err = pake.ClientRespondB64(str(0), str(1), str(2), str(3), str(4), str(5))
 	default:

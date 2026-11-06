@@ -30,7 +30,13 @@ func TestConfig(t *testing.T) {
 	if strings.Contains(string(b), "пароль-123") {
 		t.Fatal("пароль в открытом виде в конфиге")
 	}
-	c2, err := loadConfig(p) // ID и пароль переживают перезапуск
+	c2, err := loadConfig(p)                                                                    // ID и пароль переживают перезапуск
+	if !bytes.Equal(c2.Key, c.Key) || len(c.Key) != 64 || c2.fingerprint() != c.fingerprint() { // ключ хоста постоянный
+		t.Fatal("ключ хоста не сохранился")
+	}
+	if c2.knownSet("123456789", "abcd") != nil || c2.knownGet("123456789") != "abcd" || c2.knownSet("../x", "a") == nil {
+		t.Fatal("известные хосты")
+	}
 	salt, h := c2.secret()
 	if err != nil || c2.ID != c.ID || !bytes.Equal(h, pake.KDF("пароль-123", salt)) || bytes.Equal(h, pake.KDF("пароль-124", salt)) {
 		t.Fatalf("перезагрузка: %v %+v", err, c2)

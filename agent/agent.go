@@ -4,6 +4,8 @@ package agent
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,6 +35,7 @@ type Agent struct {
 	Server  string                       // wss://…/ws
 	ID      string                       // 9 цифр
 	Secret  func() (salt, secret []byte) // соль и KDF(пароль, соль) из настроек; пустой secret — пароль не задан
+	Key     ed25519.PrivateKey           // ключ хоста: за ним закреплён ID (REQ-F-01), им хост подтверждает себя клиенту
 	FFmpeg  string                       // путь к ffmpeg
 	FF      []string                     // аргументы ffmpeg, см. FFArgs
 	FPS     int
@@ -100,6 +103,8 @@ type authMsg struct {
 	Salt []byte `json:"salt,omitempty"`
 	Msg  []byte `json:"msg,omitempty"`
 	Conf []byte `json:"conf,omitempty"`
+	Pub  []byte `json:"pub,omitempty"` // в "ok": ключ хоста и подпись над DTLS-отпечатками (REQ-S-05)
+	Sig  []byte `json:"sig,omitempty"`
 }
 
 // ctlMsg — канал "ctl": {"t":"clip","text":"…"} — буфер обмена в обе стороны (REQ-F-11);
@@ -194,7 +199,8 @@ func (a *Agent) send(ctx context.Context, c *websocket.Conn, typ, to string, v a
 }
 
 func (a *Agent) run(ctx context.Context) error {
-	c, _, err := websocket.Dial(ctx, a.Server+"?host="+a.ID, nil)
+	pub := base64.RawURLEncoding.EncodeToString(a.Key.Public().(ed25519.PublicKey))
+	c, _, err := websocket.Dial(ctx, a.Server+"?host="+a.ID+"&key="+pub, nil)
 	if err != nil {
 		return err
 	}
@@ -212,6 +218,13 @@ func (a *Agent) run(ctx context.Context) error {
 		s := a.sess
 		a.mu.Unlock()
 		switch m.Type {
+		case "challenge": // REQ-F-01: доказать серверу владение ключом, за которым закреплён ID
+			var nonce string
+			json.Unmarshal(m.Data, &nonce)
+			d, _ := json.Marshal(map[string][]byte{"sig": ed25519.Sign(a.Key, pake.RegisterMsg(a.ID, nonce))})
+			wctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			wsjson.Write(wctx, c, hub.Msg{V: 1, Type: "register", Data: d})
+			cancel()
 		case "hello":
 			var d struct{ ICE []webrtc.ICEServer }
 			json.Unmarshal(m.Data, &d)
@@ -222,8 +235,11 @@ func (a *Agent) run(ctx context.Context) error {
 			a.setOnline(true)
 		case "error":
 			log.Printf("сервер: %s", m.Data)
-			if string(m.Data) == `"id_taken"` {
-				return errors.New("ID занят другим хостом")
+			switch string(m.Data) {
+			case `"id_taken"`:
+				return errors.New("ID занят: в сети другой экземпляр или ID закреплён за другим ключом")
+			case `"bad_sig"`:
+				return errors.New("сервер не принял подпись ключа хоста")
 			}
 		case "connect":
 			a.onConnect(ctx, c, m)
@@ -468,10 +484,13 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		return err
 	}
 	var st *cpace.State
+	var fpClient, fpHost string
 	send := func(m authMsg) { b, _ := json.Marshal(m); ch.SendText(string(b)) } // JSON — текстом: браузер парсит строку
 	ch.OnOpen(func() {
 		salt, secret := a.Secret()
-		fpHost, fpClient := pake.Fingerprint(s.pc.LocalDescription().SDP), pake.Fingerprint(s.pc.RemoteDescription().SDP)
+		s.mu.Lock()
+		fpHost, fpClient = pake.Fingerprint(s.pc.LocalDescription().SDP), pake.Fingerprint(s.pc.RemoteDescription().SDP)
+		s.mu.Unlock()
 		msgA, state, err := pake.HostStart(secret, a.ID, fpClient, fpHost)
 		if err != nil {
 			log.Printf("вход: %v", err)
@@ -486,7 +505,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 	ch.OnMessage(func(msg webrtc.DataChannelMessage) {
 		var m authMsg
 		s.mu.Lock()
-		cur := st
+		cur, fpc, fph := st, fpClient, fpHost
 		st = nil // одна попытка на сессию
 		s.mu.Unlock()
 		if cur == nil || json.Unmarshal(msg.Data, &m) != nil || m.T != "b" {
@@ -505,7 +524,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 			return
 		}
 		s.authed.Store(true)
-		send(authMsg{T: "ok", Conf: conf})
+		send(authMsg{T: "ok", Conf: conf, Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph)})
 		log.Printf("сессия %s: вход выполнен", s.cid)
 		closeInd, err := showIndicator(s.cid, a.Disconnect) // REQ-F-15
 		if err != nil {                                     // REQ-S-08: без видимой плашки сессии нет

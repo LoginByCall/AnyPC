@@ -85,7 +85,7 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	a := &agent.Agent{
-		Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, FPS: 30, Stderr: logf,
+		Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, Key: cfg.key(), FPS: 30, Stderr: logf,
 		Capture: func(ctx context.Context, mon int) (*exec.Cmd, error) { // выход DXGI mon
 			return exec.CommandContext(ctx, ff, agent.FFArgs(fmt.Sprintf("desktop:%d", max(mon, 0)), cfg.Enc, 30, cfg.Bitrate)...), nil
 		},
@@ -95,7 +95,7 @@ func main() {
 	info := func() map[string]any {
 		mu.Lock()
 		defer mu.Unlock()
-		return map[string]any{"id": cfg.ID, "online": online, "session": session, "hasPass": cfg.hasPass()}
+		return map[string]any{"id": cfg.ID, "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass()}
 	}
 	a.OnState = func(on bool, s string) {
 		mu.Lock()
@@ -109,6 +109,9 @@ func main() {
 	w.Bind("hostDisconnect", a.Disconnect)
 	w.Bind("fullscreen", func(on bool) { setFullscreen(uintptr(w.Window()), on) })
 	w.Bind("pakeRespond", pake.ClientRespondB64)
+	w.Bind("hostVerify", pake.HostVerifyB64)
+	w.Bind("knownGet", cfg.knownGet)
+	w.Bind("knownSet", cfg.knownSet)
 	fl := newFiles(filepath.Join(os.Getenv("USERPROFILE"), "Downloads"))
 	w.Bind("fileOpen", fl.Open)
 	w.Bind("fileWrite", fl.Write)

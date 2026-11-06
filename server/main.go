@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -49,7 +50,8 @@ func main() {
 	certs := flag.String("certs", "certs", "каталог кэша сертификатов")
 	flag.Parse()
 
-	mux := newMux(&hub.Hub{TurnHost: *turn, TurnSecret: os.Getenv("ANYPC_TURN_SECRET")}, *siteHost, *dl)
+	h := &hub.Hub{TurnHost: *turn, TurnSecret: os.Getenv("ANYPC_TURN_SECRET"), Keys: filepath.Join(filepath.Dir(*certs), "hosts.json")}
+	mux := newMux(h, *siteHost, *dl)
 	if *domain == "" {
 		log.Println("HTTP", *addr)
 		log.Fatal(http.ListenAndServe(*addr, mux))

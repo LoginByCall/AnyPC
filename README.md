@@ -33,7 +33,8 @@ Open ports: 80, 443/tcp, 3478/udp+tcp, 49152–65535/udp. The client's default s
 - A password set on the controlled PC is required; only an Argon2id hash is stored.
 - **The password never leaves the controller PC:** after the WebRTC/DTLS channel is up, both sides run **CPace** (PAKE, `pake/`, `filippo.io/cpace`) with the input `Argon2id(password, host salt)`, bound to both DTLS certificate fingerprints and the host ID, followed by mutual key confirmation. The signaling server never sees the password or its hash; a server that swaps DTLS certificates (MITM) makes the keys differ and the login fails. Video, input and clipboard start only after that.
 - 5 failed logins → temporary lockout. The controlled PC always shows a session notice with a Disconnect button.
-- **Known gaps:** host ID is not yet bound to a key; the stored hash is password-equivalent (OPAQUE would fix it); the CPace implementation follows draft-haase-cpace-01 and has no independent audit; binaries are not code-signed. Review welcome.
+- **Host identity:** each host has an Ed25519 key (it never leaves the PC). The server binds the 9-digit ID to that key at first registration (challenge signature), so nobody else can take the ID. After CPace the host also signs both DTLS fingerprints; the client remembers the key fingerprint on first login and warns if it changes (trust on first use).
+- **Known gaps:** the stored hash is password-equivalent (OPAQUE would fix it); the CPace implementation follows draft-haase-cpace-01 and has no independent audit; binaries are not code-signed. Review welcome.
 
 ## Limitations
 No Ctrl+Alt+Del / UAC / lock screen yet (needs service mode); monitor switching works on Windows (GPU 0 outputs) and X11, on Wayland the monitor is chosen in the portal dialog; clipboard is text ≤ 60 KB; the browser web client keeps files received from the remote PC in memory and does not resume them (the app writes to disk and resumes).

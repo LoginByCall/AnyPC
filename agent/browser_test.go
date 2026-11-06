@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/ed25519"
 	"io/fs"
 	"net"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"anypc/hub"
+	"anypc/pake"
 	"anypc/ui"
 )
 
@@ -34,8 +36,12 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await sleep(1000);
   await ev("document.getElementById('id').value='123456789'; document.getElementById('pw').value='wrong-pass'; document.getElementById('go').click()");
   console.log('wrong=' + await until(s => s.includes('rror')));
-  await ev("document.getElementById('pw').value='secret123'; document.getElementById('go').click()");
+  // REQ-S-05: в памяти браузера «другой» ключ этого ID → предупреждение и кнопка доверия
+  await ev("localStorage.setItem('known', JSON.stringify({'123456789': '0000 0000'})); document.getElementById('pw').value='secret123'; document.getElementById('go').click()");
+  console.log('changed=' + await until(s => s.includes('changed')) + '|trust=' + await ev("!document.getElementById('trust').classList.contains('hidden')"));
+  await ev("document.getElementById('trust').click()");
   console.log('right=' + await until(s => s.endsWith('|true')));
+  console.log('stored=' + await ev("JSON.parse(localStorage.getItem('known'))['123456789']"));
   await ev("sendFile(new File([new Uint8Array(300000).map((_, i) => i % 251)], 'browser.bin'))");
   let x = '';
   for (let i = 0; i < 75 && !/[✓✗]/.test(x); i++) { await sleep(200); x = await ev("document.getElementById('xfers').textContent"); }
@@ -90,6 +96,12 @@ func TestBrowserClient(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "wrong=Error: wrong password|false") {
 		t.Error("неверный пароль: ждали «wrong password» и без сессии")
+	}
+	if !strings.Contains(string(out), "key has changed") || !strings.Contains(string(out), "|trust=true") {
+		t.Error("смена ключа хоста: нет предупреждения или кнопки доверия")
+	}
+	if want := "stored=" + pake.KeyFingerprint(a.Key.Public().(ed25519.PublicKey)); !strings.Contains(string(out), want) {
+		t.Errorf("после доверия запомнен не тот отпечаток, ждали %s", want)
 	}
 	if !strings.Contains(string(out), "|true") || !strings.Contains(string(out), "right=") {
 		t.Error("верный пароль после неверного: сессия не открылась")
