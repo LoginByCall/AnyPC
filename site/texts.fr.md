@@ -23,7 +23,7 @@
 - `sys_win`: Windows 10 ou 11, 64 bits
 - `sys_lin`: 64 bits (x86-64), X11 ou Wayland · bêta
 - `sha`: Somme de contrôle SHA-256
-- `w1`: Lancez le fichier AnyPC.exe téléchargé : aucune installation n’est nécessaire, le programme affiche aussitôt l’ID de cet ordinateur.
+- `w1`: Lancez le fichier AnyPC.exe téléchargé : aucune installation n’est nécessaire, le programme affiche aussitôt l’ID de cet ordinateur. Au premier lancement, il télécharge une seule fois le composant FFmpeg (environ 40 Mo).
 - `w2`: Si le message « Windows a protégé votre ordinateur » s’affiche, cliquez sur « Informations complémentaires » → « Exécuter quand même » : le programme n’est pas encore signé.
 - `w3`: Si le pare-feu Windows demande l’accès au réseau, autorisez-le ; sinon, la connexion directe risque d’échouer et le trafic passera par le serveur relais.
 - `w4`: Pour que l’on puisse se connecter à cet ordinateur, définissez un mot de passe dans la section « Cet ordinateur ».
@@ -49,4 +49,4 @@
 - `lim2`: Presse-papiers : texte uniquement ; les fichiers s’envoient avec les boutons de la barre d’outils.
 - `lim3`: Vous passez d’un écran à l’autre depuis la barre d’outils ; sous Wayland, l’écran se choisit dans la boîte de dialogue du système lors de la connexion.
 - `lim4`: La version Linux est en bêta et a été moins testée que la version Windows.
-- `foot`: AnyPC bêta. Inclut FFmpeg (GPLv3), code source sur ffmpeg.org. Fourni « tel quel », sans garantie.
+- `foot`: AnyPC bêta. Au premier lancement, la version Windows télécharge FFmpeg (GPLv3) depuis les builds de gyan.dev. Fourni « tel quel », sans garantie.

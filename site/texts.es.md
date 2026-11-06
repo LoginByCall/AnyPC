@@ -23,7 +23,7 @@
 - `sys_win`: Windows 10 u 11, 64 bits
 - `sys_lin`: 64 bits (x86-64), X11 o Wayland · beta
 - `sha`: Suma de comprobación SHA-256
-- `w1`: Ejecuta el AnyPC.exe descargado: no requiere instalación y el programa muestra al instante el ID de este equipo.
+- `w1`: Ejecuta el AnyPC.exe descargado: no requiere instalación y el programa muestra al instante el ID de este equipo. En el primer inicio descarga una sola vez el componente FFmpeg (unos 40 MB).
 - `w2`: Si aparece «Windows protegió su PC», haz clic en «Más información» → «Ejecutar de todas formas»: el programa aún no está firmado.
 - `w3`: Si el Firewall de Windows pide acceso a la red, permítelo; de lo contrario, puede que la conexión directa no funcione y el tráfico pase por el servidor de retransmisión.
 - `w4`: Para que puedan conectarse a este equipo, establece una contraseña en la sección «Este equipo».
@@ -49,4 +49,4 @@
 - `lim2`: Portapapeles: solo texto; los archivos se envían con los botones de la barra.
 - `lim3`: Puedes cambiar de monitor desde la barra; en Wayland, el monitor se elige en el diálogo del sistema al conectarte.
 - `lim4`: La versión para Linux está en beta y se ha probado menos que la de Windows.
-- `foot`: AnyPC beta. Incluye FFmpeg (GPLv3); código fuente en ffmpeg.org. Se ofrece «tal cual», sin garantía.
+- `foot`: AnyPC beta. En el primer inicio, la versión para Windows descarga FFmpeg (GPLv3) de las compilaciones de gyan.dev. Se ofrece «tal cual», sin garantía.

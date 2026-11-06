@@ -1,22 +1,10 @@
 #!/bin/sh
-# Сборка: bin/anypc-server (Linux) и bin/AnyPC.exe (Windows, ffmpeg вшит).
-# ffmpeg: gyan.dev essentials (GPLv3) — допустимо для своих ПК; раздача третьим лицам → ASK #11.
+# Сборка: bin/anypc-server (Linux), bin/AnyPC.exe (Windows), bin/AnyPC-linux-amd64.
+# FFmpeg не вшивается: Windows-версия скачивает его с gyan.dev при первом запуске (app/ffmpeg.go, SHA-256 закреплён),
+# Linux берёт системный. Так AnyPC сам не распространяет GPL-код (ASK #11 → A, 2026-11-07).
 set -eu
 cd "$(dirname "$0")"
 export GOTOOLCHAIN=auto
-
-FF=app/ffmpeg.exe.gz
-if [ ! -s "$FF" ]; then
-  URL=https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
-  tmp=$(mktemp -d)
-  curl -fL -o "$tmp/ff.zip" "$URL"
-  want=$(curl -fsL "$URL.sha256" | cut -c1-64)
-  got=$(sha256sum "$tmp/ff.zip" | cut -c1-64)
-  [ "$want" = "$got" ] || { echo "ffmpeg: SHA-256 не совпал ($got != $want)"; exit 1; }
-  unzip -q -j "$tmp/ff.zip" '*/bin/ffmpeg.exe' -d "$tmp"
-  gzip -9c "$tmp/ffmpeg.exe" > "$FF"
-  rm -rf "$tmp"
-fi
 
 # CPace для веб-клиента: тот же Go-код в WebAssembly (встраивается в ui)
 V=$(git describe --tags --always --dirty 2>/dev/null || echo dev) # v0.1.0, v0.1.0-3-gabc123, …-dirty
