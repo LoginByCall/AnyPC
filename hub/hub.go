@@ -42,9 +42,9 @@ type ICEServer struct {
 const TurnTTL = 24 * time.Hour
 
 type Hub struct {
-	TurnHost   string // "" — без STUN/TURN (локальная отладка)
-	TurnSecret string // static-auth-secret coturn; "" — только STUN
-	Keys       string // файл привязок ID → ключ хоста (JSON); "" — только в памяти
+	TurnHosts  []string // STUN/TURN по порядку предпочтения (общий TurnSecret); пусто — без них (локальная отладка)
+	TurnSecret string   // static-auth-secret coturn; "" — только STUN
+	Keys       string   // файл привязок ID → ключ хоста (JSON); "" — только в памяти
 
 	mu    sync.Mutex
 	peers map[string]*websocket.Conn
@@ -133,19 +133,19 @@ func send(ctx context.Context, c *websocket.Conn, m Msg) {
 }
 
 func (h *Hub) ICEServers(id string) []ICEServer {
-	if h.TurnHost == "" {
-		return nil
-	}
-	s := []ICEServer{{URLs: []string{"stun:" + h.TurnHost + ":3478"}}}
-	if h.TurnSecret != "" {
-		user := fmt.Sprintf("%d:%s", time.Now().Add(TurnTTL).Unix(), id)
-		mac := hmac.New(sha1.New, []byte(h.TurnSecret))
-		mac.Write([]byte(user))
-		s = append(s, ICEServer{
-			URLs:       []string{"turn:" + h.TurnHost + ":3478?transport=udp", "turn:" + h.TurnHost + ":3478?transport=tcp"},
-			Username:   user,
-			Credential: base64.StdEncoding.EncodeToString(mac.Sum(nil)),
-		})
+	var s []ICEServer
+	user := fmt.Sprintf("%d:%s", time.Now().Add(TurnTTL).Unix(), id)
+	mac := hmac.New(sha1.New, []byte(h.TurnSecret))
+	mac.Write([]byte(user))
+	for _, t := range h.TurnHosts {
+		s = append(s, ICEServer{URLs: []string{"stun:" + t + ":3478"}})
+		if h.TurnSecret != "" { // одна учётка на все серверы: у coturn общий static-auth-secret
+			s = append(s, ICEServer{
+				URLs:       []string{"turn:" + t + ":3478?transport=udp", "turn:" + t + ":3478?transport=tcp"},
+				Username:   user,
+				Credential: base64.StdEncoding.EncodeToString(mac.Sum(nil)),
+			})
+		}
 	}
 	return s
 }

@@ -1,6 +1,8 @@
 #!/bin/sh
 # Развёртывание сервера AnyPC на Ubuntu (root). Повторный запуск безопасен.
 # Использование: sh setup.sh <домен клиента> [домен лендинга]   (рядом — бинарник anypc-server)
+# Второй TURN без сигнализации: TURN_ONLY=1 sh setup.sh <домен TURN> — нужен /etc/anypc/turn-secret,
+# скопированный с основного сервера (учётки TURN выдаёт его хаб).
 # Файлы для скачивания с лендинга кладутся в /srv/anypc/dl (AnyPC.exe, SHA256SUMS).
 set -eu
 DOMAIN=$1
@@ -12,6 +14,9 @@ apt-get update -q
 DEBIAN_FRONTEND=noninteractive apt-get install -yq coturn
 
 mkdir -p /etc/anypc
+if [ "${TURN_ONLY:-}" ] && [ ! -s /etc/anypc/turn-secret ]; then
+  echo "TURN_ONLY: сначала скопируйте /etc/anypc/turn-secret с основного сервера" >&2; exit 1
+fi
 [ -s /etc/anypc/turn-secret ] || head -c 32 /dev/urandom | base64 > /etc/anypc/turn-secret
 chmod 600 /etc/anypc/turn-secret
 SECRET=$(cat /etc/anypc/turn-secret)
@@ -45,6 +50,7 @@ chmod 640 /etc/turnserver.conf
 chgrp turnserver /etc/turnserver.conf 2>/dev/null || true
 systemctl enable coturn
 systemctl restart coturn
+[ "${TURN_ONLY:-}" ] && { systemctl --no-pager --lines=5 status coturn; exit 0; }
 
 install -m 755 anypc-server /usr/local/bin/anypc-server
 cat > /etc/systemd/system/anypc-server.service <<EOF
@@ -55,7 +61,7 @@ Wants=network-online.target
 
 [Service]
 EnvironmentFile=/etc/anypc/env
-ExecStart=/usr/local/bin/anypc-server -domain $DOMAIN -turn $DOMAIN -site "$SITE" -dl /srv/anypc/dl -certs /var/lib/anypc/certs
+ExecStart=/usr/local/bin/anypc-server -domain $DOMAIN -turn ${TURN:-$DOMAIN} -site "$SITE" -dl /srv/anypc/dl -certs /var/lib/anypc/certs
 DynamicUser=yes
 StateDirectory=anypc
 AmbientCapabilities=CAP_NET_BIND_SERVICE

@@ -29,8 +29,13 @@ type config struct {
 	path string
 }
 
+const (
+	DefaultServer = "wss://any-hk.turboseller.xyz/ws"
+	oldServer     = "wss://any.turboseller.xyz/ws"
+)
+
 func loadConfig(path string) (*config, error) {
-	c := &config{path: path, Server: "wss://any.turboseller.xyz/ws", Enc: "libx264", Bitrate: "4M"}
+	c := &config{path: path, Server: DefaultServer, Enc: "libx264", Bitrate: "4M"}
 	b, err := os.ReadFile(path)
 	if err == nil {
 		err = json.Unmarshal(b, c)
@@ -41,6 +46,9 @@ func loadConfig(path string) (*config, error) {
 		return nil, err
 	}
 	changed := false
+	if c.Server == oldServer { // домен any. переименован 2026-11-06
+		c.Server, changed = DefaultServer, true
+	}
 	if !hub.IsHostID(c.ID) {
 		c.ID, changed = hub.RandDigits(9), true
 	}

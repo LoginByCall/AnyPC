@@ -70,7 +70,7 @@ func read(t *testing.T, ctx context.Context, c *websocket.Conn) Msg {
 func TestRelay(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	srv := httptest.NewServer(&Hub{TurnHost: "t.example", TurnSecret: "sec"})
+	srv := httptest.NewServer(&Hub{TurnHosts: []string{"t.example"}, TurnSecret: "sec"})
 	defer srv.Close()
 	url := "ws" + strings.TrimPrefix(srv.URL, "http")
 
@@ -152,8 +152,8 @@ func TestIDsAndTurn(t *testing.T) {
 	if id := RandDigits(9); !IsHostID(id) {
 		t.Errorf("RandDigits: %q", id)
 	}
-	s := (&Hub{TurnHost: "t.example", TurnSecret: "sec"}).ICEServers("c1")
-	if len(s) != 2 {
+	s := (&Hub{TurnHosts: []string{"t.example", "t2.example"}, TurnSecret: "sec"}).ICEServers("c1")
+	if len(s) != 4 || s[2].URLs[0] != "stun:t2.example:3478" || s[3].Username != s[1].Username || s[3].Credential != s[1].Credential {
 		t.Fatalf("ice: %+v", s)
 	}
 	mac := hmac.New(sha1.New, []byte("sec"))
@@ -162,6 +162,6 @@ func TestIDsAndTurn(t *testing.T) {
 		t.Fatalf("turn creds: %+v", s[1])
 	}
 	if (&Hub{}).ICEServers("c1") != nil {
-		t.Fatal("без TurnHost серверов быть не должно")
+		t.Fatal("без TurnHosts серверов быть не должно")
 	}
 }
