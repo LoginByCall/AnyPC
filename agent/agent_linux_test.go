@@ -27,8 +27,8 @@ func TestEvdevAndBitrate(t *testing.T) {
 		}
 	}
 	for in, want := range map[string]int{"4M": 4000, "1500k": 1500, "800": 800, "x": 4000} {
-		if kbps(in) != want {
-			t.Errorf("kbps(%q) = %d", in, kbps(in))
+		if Kbps(in) != want {
+			t.Errorf("Kbps(%q) = %d", in, Kbps(in))
 		}
 	}
 	for c := range scancodes { // у каждой клавиши таблицы есть код evdev

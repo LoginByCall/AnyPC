@@ -23,6 +23,7 @@ type config struct {
 	Hash    []byte            `json:"hash,omitempty"`  // Argon2id (REQ-S-03); сам пароль не хранится
 	Key     []byte            `json:"key"`             // Ed25519 ключ хоста (REQ-F-01); не покидает ПК
 	Known   map[string]string `json:"known,omitempty"` // ID удалённого ПК → отпечаток его ключа (TOFU, REQ-S-05)
+	Confirm *bool             `json:"confirm"`         // REQ-F-03: окно «Разрешить / Отклонить» на каждое подключение
 
 	mu   sync.Mutex
 	path string
@@ -46,6 +47,10 @@ func loadConfig(path string) (*config, error) {
 	if len(c.Key) != ed25519.PrivateKeySize {
 		_, k, _ := ed25519.GenerateKey(nil)
 		c.Key, changed = k, true
+	}
+	if c.Confirm == nil { // старые установки с паролем работали без окна — не запереть ПК, у которого никого нет
+		v := len(c.Hash) == 0
+		c.Confirm, changed = &v, true
 	}
 	if changed {
 		return c, c.save()
@@ -74,6 +79,19 @@ func (c *config) setPassword(p string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.Salt, c.Hash = salt, pake.KDF(p, salt)
+	return c.save()
+}
+
+func (c *config) confirm() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Confirm == nil || *c.Confirm
+}
+
+func (c *config) setConfirm(on bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Confirm = &on
 	return c.save()
 }
 

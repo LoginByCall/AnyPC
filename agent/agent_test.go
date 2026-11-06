@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -67,6 +68,7 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	sessions := make(chan string, 10)
+	var asked, denied atomic.Bool
 	a := newAgent(url, id, ff)
 	if e2eAgent != nil {
 		e2eAgent(a)
@@ -152,7 +154,10 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 						t.Error("подпись хоста не прошла проверку")
 					}
 					authed <- bytes.Equal(am.Conf, wantConf) && sigOK
-				case "fail":
+				case "ask":
+					asked.Store(true)
+				case "fail", "denied":
+					denied.Store(am.T == "denied")
 					authed <- false
 				}
 			})
@@ -198,9 +203,12 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 	case <-ctx.Done():
 		t.Fatal("вход не завершился за 20 с")
 	}
-	if pass != "secret123" { // ошибочный путь: отказ и никакого видео
+	if pass != "secret123" || e2eDeny { // ошибочный путь: отказ и никакого видео
 		if ok {
-			t.Fatal("неверный пароль принят")
+			t.Fatal("неверный пароль принят или отказ на хосте не сработал")
+		}
+		if e2eDeny && (!asked.Load() || !denied.Load()) {
+			t.Fatalf("отказ на хосте: ask=%v denied=%v", asked.Load(), denied.Load())
 		}
 		select {
 		case <-got:
@@ -341,6 +349,7 @@ func TestClipEcho(t *testing.T) {
 // Крючки e2e для отдельных тестов (по умолчанию nil).
 var (
 	e2eAgent func(*Agent)
+	e2eDeny  bool // ожидать отказ человека на хосте (REQ-F-03)
 	e2eCtl   func(*testing.T, *webrtc.DataChannel, chan ctlMsg)
 )
 
@@ -350,7 +359,7 @@ func TestMonitorSwitch(t *testing.T) {
 	listMonitors = func() []Monitor { return two }
 	calls := make(chan int, 10)
 	e2eAgent = func(a *Agent) {
-		a.Capture = func(ctx context.Context, mon int) (*exec.Cmd, error) {
+		a.Capture = func(ctx context.Context, mon, _ int) (*exec.Cmd, error) {
 			calls <- mon
 			return exec.CommandContext(ctx, "ffmpeg", FFArgs("test", "libx264", 30, "1M")...), nil
 		}
@@ -401,4 +410,22 @@ func TestMonitorHelpers(t *testing.T) {
 	if s.selectMonitor(1) || s.selectMonitor(5) || s.selectMonitor(-1) {
 		t.Error("тот же или несуществующий монитор принят")
 	}
+}
+
+// TestConfirm — REQ-F-03: после верного пароля хост спрашивает человека; «Отклонить» → отказ без видео,
+// хост свободен; «Разрешить» → обычная сессия. Окно получает ID клиента и его адрес.
+func TestConfirm(t *testing.T) {
+	var gotPeer atomic.Value
+	answer := false
+	e2eAgent = func(a *Agent) {
+		a.Confirm = func(cid, peer string) bool { gotPeer.Store(cid + "|" + peer); return answer }
+	}
+	defer func() { e2eAgent, e2eDeny = nil, false }()
+	e2eDeny = true
+	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "secret123")
+	if p, _ := gotPeer.Load().(string); !strings.HasPrefix(p, "c") || strings.HasSuffix(p, "|") {
+		t.Fatalf("окну не передан клиент и адрес: %q", p)
+	}
+	answer, e2eDeny = true, false
+	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "secret123")
 }

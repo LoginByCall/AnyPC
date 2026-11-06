@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // Канал данных "input" (ТЗ §7). JSON:
@@ -167,6 +168,28 @@ var plaques = map[string][3]string{
 	"de": {"Fernsitzung", "Eine Fernsitzung ist aktiv.", "Klicken Sie auf „OK“, um zu trennen."},
 	"fr": {"session à distance", "Une session à distance est en cours.", "Cliquez sur « OK » pour déconnecter."},
 	"it": {"sessione remota", "È in corso una sessione remota.", "Fai clic su «OK» per disconnettere."},
+}
+
+// asks — окно «Разрешить / Отклонить» (REQ-F-03): заголовок, вопрос, сноска, кнопки.
+var asks = map[string][5]string{
+	"en": {"incoming connection", "Allow remote control of this computer?", "No answer within 30 s — rejected.", "Allow", "Deny"},
+	"ru": {"входящее подключение", "Разрешить удалённое управление этим компьютером?", "Без ответа 30 с — отказ.", "Разрешить", "Отклонить"},
+	"zh": {"传入连接", "允许远程控制这台电脑吗？", "30 秒内未响应将自动拒绝。", "允许", "拒绝"},
+	"es": {"conexión entrante", "¿Permitir el control remoto de este equipo?", "Sin respuesta en 30 s — se rechaza.", "Permitir", "Rechazar"},
+	"de": {"eingehende Verbindung", "Fernsteuerung dieses Computers erlauben?", "Ohne Antwort in 30 s — abgelehnt.", "Erlauben", "Ablehnen"},
+	"fr": {"connexion entrante", "Autoriser le contrôle à distance de cet ordinateur ?", "Sans réponse sous 30 s — refusé.", "Autoriser", "Refuser"},
+	"it": {"connessione in arrivo", "Consentire il controllo remoto di questo computer?", "Senza risposta entro 30 s — rifiutata.", "Consenti", "Rifiuta"},
+}
+
+// AskTimeout — REQ-F-03: без ответа на хосте 30 с ± 1 с → отказ.
+const AskTimeout = 30 * time.Second
+
+func askText(lang, cid, peer string) (title, text, yes, no string) {
+	q, ok := asks[lang]
+	if !ok {
+		q = asks["en"]
+	}
+	return "AnyPC — " + q[0], q[1] + "\n\nID: " + cid + "\nIP: " + peer + "\n\n" + q[2], q[3], q[4]
 }
 
 func plaqueText(lang, cid string) (title, text string) {

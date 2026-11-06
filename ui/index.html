@@ -39,10 +39,12 @@
       <button id="setpw" data-t="setpw"></button>
     </div>
     <div id="pwstate" class="mut"></div>
+    <label class="mut"><input id="confirm" type="checkbox"> <span data-t="confirm_l"></span></label>
     <div id="incoming" class="banner hidden">
       <span data-t="incoming"></span> <span class="mono" id="incid"></span>
       <button id="hostbye" class="main" data-t="disc"></button>
     </div>
+    <div class="row"><button id="quit" class="hidden" data-t="quit"></button></div>
   </div>
 
   <div class="card">
@@ -89,7 +91,7 @@ const L = {
     need_app: 'Connecting is available in the AnyPC program — download it at www.turboseller.xyz', e_nopass: 'no password is set on the remote PC', e_hostauth: 'the remote PC could not be verified — connection may be intercepted',
     me_h: 'This computer', myid_l: 'Your ID', newpw_p: 'New password (8+ characters)', setpw: 'Set password', incoming: 'Incoming session:', disc: 'Disconnect',
     remote_h: 'Remote computer', id_p: 'Remote PC ID', pw_p: 'Password', relay: 'relay (TURN) only — for measurements', go: 'Connect', recent: 'Recent:',
-    fs: 'Full screen', min: 'Minimize', redial: 'reconnecting…', fs_exit: 'Exit full screen', layout: 'Layout', csv_t: 'Export collected statistics', reset: 'Reset', reset_t: 'Reset collected statistics',
+    fs: 'Full screen', confirm_l: 'Ask before each incoming connection (Allow / Deny)', quit: 'Quit AnyPC', bye_app: 'AnyPC has quit. You can close this tab.', asking: 'waiting for confirmation on the remote PC…', e_denied: 'the connection was declined on the remote PC', min: 'Minimize', redial: 'reconnecting…', fs_exit: 'Exit full screen', layout: 'Layout', csv_t: 'Export collected statistics', reset: 'Reset', reset_t: 'Reset collected statistics',
     online: 'online — this PC can be reached', offline: 'no connection to the server, retrying…', pw_set: 'Password is set. Connections require it.',
     pw_none: 'No password set — incoming connections are refused.', pw_short: 'Password must be at least 8 characters.', err: 'Error: ', id9: 'ID must be 9 digits',
     connecting: 'connecting…', waiting: 'waiting for the remote PC…', host_bye: 'The remote PC ended the session', lost: 'Connection lost', nopath: 'Could not connect: no direct path and no relay. Check that UDP/TCP 3478 to the server is not blocked', ended: 'Session ended',
@@ -100,7 +102,7 @@ const L = {
     need_app: 'Подключение доступно в программе AnyPC — скачайте её на www.turboseller.xyz', e_nopass: 'на удалённом ПК не задан пароль', e_hostauth: 'удалённый ПК не подтвердил подлинность — соединение может быть перехвачено',
     me_h: 'Это рабочее место', myid_l: 'Ваш ID', newpw_p: 'Новый пароль (≥ 8 символов)', setpw: 'Задать пароль', incoming: 'Идёт входящая сессия:', disc: 'Разорвать',
     remote_h: 'Удалённое рабочее место', id_p: 'ID удалённого ПК', pw_p: 'Пароль', relay: 'только через TURN (для замеров)', go: 'Подключиться', recent: 'Недавние:',
-    fs: 'Полный экран', min: 'Свернуть', redial: 'переподключение…', fs_exit: 'Выйти из полного экрана', layout: 'Раскладка', csv_t: 'Выгрузить накопленную статистику', reset: 'Сброс', reset_t: 'Сбросить накопленную статистику',
+    fs: 'Полный экран', confirm_l: 'Спрашивать перед каждым входящим подключением («Разрешить / Отклонить»)', quit: 'Выйти из AnyPC', bye_app: 'AnyPC завершена. Вкладку можно закрыть.', asking: 'ожидание подтверждения на удалённом ПК…', e_denied: 'подключение отклонено на удалённом ПК', min: 'Свернуть', redial: 'переподключение…', fs_exit: 'Выйти из полного экрана', layout: 'Раскладка', csv_t: 'Выгрузить накопленную статистику', reset: 'Сброс', reset_t: 'Сбросить накопленную статистику',
     online: 'в сети — к этому ПК можно подключиться', offline: 'нет связи с сервером, повтор…', pw_set: 'Пароль задан. Без пароля подключиться нельзя.',
     pw_none: 'Пароль не задан — входящие подключения отклоняются.', pw_short: 'Пароль — не короче 8 символов.', err: 'Ошибка: ', id9: 'ID — 9 цифр',
     connecting: 'подключение…', waiting: 'ожидание удалённого ПК…', host_bye: 'Удалённый ПК завершил сессию', lost: 'Связь потеряна', nopath: 'Не удалось соединиться: нет ни прямого пути, ни ретранслятора. Проверьте, что UDP/TCP 3478 до сервера не блокируется', ended: 'Сессия завершена',
@@ -111,7 +113,7 @@ const L = {
     need_app: '请在 AnyPC 程序中连接——可在 www.turboseller.xyz 下载', e_nopass: '远程电脑未设置密码', e_hostauth: '无法验证远程电脑——连接可能被拦截',
     me_h: '本机', myid_l: '您的 ID', newpw_p: '新密码（至少 8 个字符）', setpw: '设置密码', incoming: '正在进行的传入会话：', disc: '断开',
     remote_h: '远程电脑', id_p: '远程电脑 ID', pw_p: '密码', relay: '仅通过中继 (TURN)——用于测量', go: '连接', recent: '最近：',
-    fs: '全屏', min: '最小化', redial: '正在重新连接…', fs_exit: '退出全屏', layout: '输入法', csv_t: '导出已收集的统计数据', reset: '重置', reset_t: '重置已收集的统计数据',
+    fs: '全屏', confirm_l: '每次传入连接前询问（允许 / 拒绝）', quit: '退出 AnyPC', bye_app: 'AnyPC 已退出，可以关闭此标签页。', asking: '正在等待远程电脑确认…', e_denied: '远程电脑拒绝了连接', min: '最小化', redial: '正在重新连接…', fs_exit: '退出全屏', layout: '输入法', csv_t: '导出已收集的统计数据', reset: '重置', reset_t: '重置已收集的统计数据',
     online: '在线——可以连接到本机', offline: '无法连接服务器，正在重试…', pw_set: '已设置密码，连接时必须输入。',
     pw_none: '未设置密码——将拒绝所有传入连接。', pw_short: '密码至少需要 8 个字符。', err: '错误：', id9: 'ID 必须是 9 位数字',
     connecting: '正在连接…', waiting: '正在等待远程电脑…', host_bye: '远程电脑已结束会话', lost: '连接已断开', nopath: '无法连接：没有直连路径，也无法使用中继。请检查到服务器的 UDP/TCP 3478 端口是否被阻止', ended: '会话已结束',
@@ -122,7 +124,7 @@ const L = {
     need_app: 'La conexión está disponible en el programa AnyPC: descárgalo en www.turboseller.xyz', e_nopass: 'el PC remoto no tiene contraseña', e_hostauth: 'no se pudo verificar el PC remoto; la conexión podría estar interceptada',
     me_h: 'Este equipo', myid_l: 'Tu ID', newpw_p: 'Nueva contraseña (8+ caracteres)', setpw: 'Establecer contraseña', incoming: 'Sesión entrante:', disc: 'Desconectar',
     remote_h: 'Equipo remoto', id_p: 'ID del PC remoto', pw_p: 'Contraseña', relay: 'solo por relé (TURN), para mediciones', go: 'Conectar', recent: 'Recientes:',
-    fs: 'Pantalla completa', min: 'Minimizar', redial: 'reconectando…', fs_exit: 'Salir de pantalla completa', layout: 'Idioma de teclado', csv_t: 'Exportar estadísticas recogidas', reset: 'Reiniciar', reset_t: 'Reiniciar estadísticas',
+    fs: 'Pantalla completa', confirm_l: 'Preguntar antes de cada conexión entrante (Permitir / Rechazar)', quit: 'Salir de AnyPC', bye_app: 'AnyPC se ha cerrado. Puede cerrar esta pestaña.', asking: 'esperando confirmación en el PC remoto…', e_denied: 'la conexión fue rechazada en el PC remoto', min: 'Minimizar', redial: 'reconectando…', fs_exit: 'Salir de pantalla completa', layout: 'Idioma de teclado', csv_t: 'Exportar estadísticas recogidas', reset: 'Reiniciar', reset_t: 'Reiniciar estadísticas',
     online: 'en línea: se puede conectar a este PC', offline: 'sin conexión con el servidor, reintentando…', pw_set: 'Contraseña establecida. Es obligatoria para conectar.',
     pw_none: 'Sin contraseña: se rechazan las conexiones entrantes.', pw_short: 'La contraseña debe tener al menos 8 caracteres.', err: 'Error: ', id9: 'El ID debe tener 9 dígitos',
     connecting: 'conectando…', waiting: 'esperando al PC remoto…', host_bye: 'El PC remoto finalizó la sesión', lost: 'Conexión perdida', nopath: 'No se pudo conectar: no hay ruta directa ni relé. Compruebe que UDP/TCP 3478 hacia el servidor no esté bloqueado', ended: 'Sesión finalizada',
@@ -133,7 +135,7 @@ const L = {
     need_app: 'Verbinden ist im Programm AnyPC möglich – Download unter www.turboseller.xyz', e_nopass: 'auf dem entfernten PC ist kein Passwort festgelegt', e_hostauth: 'der entfernte PC konnte nicht verifiziert werden – die Verbindung könnte abgefangen sein',
     me_h: 'Dieser Computer', myid_l: 'Ihre ID', newpw_p: 'Neues Passwort (mind. 8 Zeichen)', setpw: 'Passwort festlegen', incoming: 'Eingehende Sitzung:', disc: 'Trennen',
     remote_h: 'Entfernter Computer', id_p: 'ID des entfernten PCs', pw_p: 'Passwort', relay: 'nur über Relay (TURN) – für Messungen', go: 'Verbinden', recent: 'Zuletzt:',
-    fs: 'Vollbild', min: 'Minimieren', redial: 'Verbindung wird wiederhergestellt…', fs_exit: 'Vollbild beenden', layout: 'Tastaturlayout', csv_t: 'Gesammelte Statistik exportieren', reset: 'Zurücksetzen', reset_t: 'Gesammelte Statistik zurücksetzen',
+    fs: 'Vollbild', confirm_l: 'Vor jeder eingehenden Verbindung fragen (Erlauben / Ablehnen)', quit: 'AnyPC beenden', bye_app: 'AnyPC wurde beendet. Sie können diesen Tab schließen.', asking: 'warte auf Bestätigung am entfernten PC…', e_denied: 'die Verbindung wurde am entfernten PC abgelehnt', min: 'Minimieren', redial: 'Verbindung wird wiederhergestellt…', fs_exit: 'Vollbild beenden', layout: 'Tastaturlayout', csv_t: 'Gesammelte Statistik exportieren', reset: 'Zurücksetzen', reset_t: 'Gesammelte Statistik zurücksetzen',
     online: 'online – dieser PC ist erreichbar', offline: 'keine Verbindung zum Server, neuer Versuch…', pw_set: 'Passwort ist festgelegt. Verbindungen erfordern es.',
     pw_none: 'Kein Passwort festgelegt – eingehende Verbindungen werden abgelehnt.', pw_short: 'Das Passwort muss mindestens 8 Zeichen haben.', err: 'Fehler: ', id9: 'Die ID muss 9 Ziffern haben',
     connecting: 'Verbindung wird hergestellt…', waiting: 'Warte auf den entfernten PC…', host_bye: 'Der entfernte PC hat die Sitzung beendet', lost: 'Verbindung verloren', nopath: 'Keine Verbindung: weder direkter Weg noch Relay. Prüfen Sie, ob UDP/TCP 3478 zum Server blockiert ist', ended: 'Sitzung beendet',
@@ -144,7 +146,7 @@ const L = {
     need_app: 'La connexion est disponible dans le programme AnyPC — téléchargez-le sur www.turboseller.xyz', e_nopass: 'aucun mot de passe n’est défini sur le PC distant', e_hostauth: 'impossible de vérifier le PC distant — la connexion est peut-être interceptée',
     me_h: 'Cet ordinateur', myid_l: 'Votre ID', newpw_p: 'Nouveau mot de passe (8 caractères min.)', setpw: 'Définir le mot de passe', incoming: 'Session entrante :', disc: 'Déconnecter',
     remote_h: 'Ordinateur distant', id_p: 'ID du PC distant', pw_p: 'Mot de passe', relay: 'relais (TURN) uniquement — pour les mesures', go: 'Se connecter', recent: 'Récents :',
-    fs: 'Plein écran', min: 'Réduire', redial: 'reconnexion…', fs_exit: 'Quitter le plein écran', layout: 'Disposition clavier', csv_t: 'Exporter les statistiques', reset: 'Réinitialiser', reset_t: 'Réinitialiser les statistiques',
+    fs: 'Plein écran', confirm_l: 'Demander avant chaque connexion entrante (Autoriser / Refuser)', quit: 'Quitter AnyPC', bye_app: 'AnyPC est fermé. Vous pouvez fermer cet onglet.', asking: 'en attente de confirmation sur le PC distant…', e_denied: 'la connexion a été refusée sur le PC distant', min: 'Réduire', redial: 'reconnexion…', fs_exit: 'Quitter le plein écran', layout: 'Disposition clavier', csv_t: 'Exporter les statistiques', reset: 'Réinitialiser', reset_t: 'Réinitialiser les statistiques',
     online: 'en ligne — ce PC est joignable', offline: 'pas de connexion au serveur, nouvelle tentative…', pw_set: 'Mot de passe défini. Il est exigé à chaque connexion.',
     pw_none: 'Aucun mot de passe — les connexions entrantes sont refusées.', pw_short: 'Le mot de passe doit contenir au moins 8 caractères.', err: 'Erreur : ', id9: 'L’ID doit comporter 9 chiffres',
     connecting: 'connexion…', waiting: 'en attente du PC distant…', host_bye: 'Le PC distant a mis fin à la session', lost: 'Connexion perdue', nopath: 'Connexion impossible : ni chemin direct ni relais. Vérifiez que UDP/TCP 3478 vers le serveur n’est pas bloqué', ended: 'Session terminée',
@@ -155,7 +157,7 @@ const L = {
     need_app: 'La connessione è disponibile nel programma AnyPC: scaricalo da www.turboseller.xyz', e_nopass: 'sul PC remoto non è impostata alcuna password', e_hostauth: 'impossibile verificare il PC remoto: la connessione potrebbe essere intercettata',
     me_h: 'Questo computer', myid_l: 'Il tuo ID', newpw_p: 'Nuova password (almeno 8 caratteri)', setpw: 'Imposta password', incoming: 'Sessione in entrata:', disc: 'Disconnetti',
     remote_h: 'Computer remoto', id_p: 'ID del PC remoto', pw_p: 'Password', relay: 'solo tramite relay (TURN) — per le misure', go: 'Connetti', recent: 'Recenti:',
-    fs: 'Schermo intero', min: 'Riduci a icona', redial: 'riconnessione…', fs_exit: 'Esci da schermo intero', layout: 'Layout tastiera', csv_t: 'Esporta le statistiche raccolte', reset: 'Azzera', reset_t: 'Azzera le statistiche raccolte',
+    fs: 'Schermo intero', confirm_l: 'Chiedi prima di ogni connessione in arrivo (Consenti / Rifiuta)', quit: 'Esci da AnyPC', bye_app: 'AnyPC è stato chiuso. Puoi chiudere questa scheda.', asking: 'in attesa di conferma sul PC remoto…', e_denied: 'la connessione è stata rifiutata sul PC remoto', min: 'Riduci a icona', redial: 'riconnessione…', fs_exit: 'Esci da schermo intero', layout: 'Layout tastiera', csv_t: 'Esporta le statistiche raccolte', reset: 'Azzera', reset_t: 'Azzera le statistiche raccolte',
     online: 'online — questo PC è raggiungibile', offline: 'nessuna connessione al server, nuovo tentativo…', pw_set: 'Password impostata. È necessaria per connettersi.',
     pw_none: 'Nessuna password — le connessioni in entrata vengono rifiutate.', pw_short: 'La password deve avere almeno 8 caratteri.', err: 'Errore: ', id9: 'L’ID deve avere 9 cifre',
     connecting: 'connessione…', waiting: 'in attesa del PC remoto…', host_bye: 'Il PC remoto ha terminato la sessione', lost: 'Connessione persa', nopath: 'Impossibile connettersi: nessun percorso diretto né relay. Verificare che UDP/TCP 3478 verso il server non sia bloccato', ended: 'Sessione terminata',
@@ -181,6 +183,7 @@ window.onHostState = s => {
   $('pwstate').textContent = t(s.hasPass ? 'pw_set' : 'pw_none');
   $('incoming').classList.toggle('hidden', !s.session);
   $('incid').textContent = s.session || '';
+  $('confirm').checked = s.confirm !== false;
 };
 if (APP) hostInfo().then(onHostState); else $('me').classList.add('hidden');
 $('setpw').onclick = async () => {
@@ -189,6 +192,8 @@ $('setpw').onclick = async () => {
   catch (e) { $('pwstate').textContent = t('err') + e; }
 };
 $('hostbye').onclick = () => hostDisconnect();
+$('confirm').onchange = e => setConfirm(e.target.checked).catch(err => { $('pwstate').textContent = t('err') + err; });
+if (typeof window.quit === 'function') { $('quit').classList.remove('hidden'); $('quit').onclick = () => { quit(); document.body.textContent = t('bye_app'); }; }
 
 // ---------- Недавние ----------
 function renderRecent() {
@@ -338,7 +343,9 @@ async function onAuth(ch, e) {
     again = { host, pw: $('pw').value || again?.pw, n: 0 };
     show(true); v.focus(); $('pw').value = '';
     store.set('recent', [host, ...store.get('recent', []).filter(x => x !== host)].slice(0, 8)); renderRecent();
-  } else if (m.t === 'fail') end(t('err') + t('e_auth'));
+  } else if (m.t === 'ask') $('msg').textContent = t('asking');
+  else if (m.t === 'denied') end(t('err') + t('e_denied'));
+  else if (m.t === 'fail') end(t('err') + t('e_auth'));
 }
 
 // ---------- Буфер обмена (REQ-F-11): текст, в обе стороны, без эха ----------

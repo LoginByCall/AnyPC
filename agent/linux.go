@@ -58,8 +58,8 @@ func getDesktop() (desktop, error) {
 }
 
 // LinuxCapture — Agent.Capture для Linux.
-func LinuxCapture(fps int, bitrate, enc string) func(ctx context.Context, mon int) (*exec.Cmd, error) {
-	return func(ctx context.Context, mon int) (*exec.Cmd, error) {
+func LinuxCapture(fps int, enc string) func(ctx context.Context, mon, kbps int) (*exec.Cmd, error) {
+	return func(ctx context.Context, mon, kbps int) (*exec.Cmd, error) {
 		d, err := getDesktop()
 		if err != nil {
 			return nil, err
@@ -68,7 +68,7 @@ func LinuxCapture(fps int, bitrate, enc string) func(ctx context.Context, mon in
 		if ms := monitors(); mon >= 0 && mon < len(ms) {
 			m = &ms[mon]
 		}
-		return d.capture(ctx, fps, bitrate, enc, m)
+		return d.capture(ctx, fps, strconv.Itoa(kbps)+"k", enc, m)
 	}
 }
 
@@ -96,22 +96,6 @@ func monitors() []Monitor {
 }
 
 func hideWindow(*exec.Cmd) {}
-
-// kbps: "4M" → 4000, "1500k" → 1500.
-func kbps(br string) int {
-	m := 1
-	switch {
-	case strings.HasSuffix(br, "M"):
-		m, br = 1000, strings.TrimSuffix(br, "M")
-	case strings.HasSuffix(br, "k"):
-		br = strings.TrimSuffix(br, "k")
-	}
-	n, err := strconv.Atoi(br)
-	if err != nil || n <= 0 {
-		return 4000
-	}
-	return n * m
-}
 
 func sysLang() string {
 	for _, v := range []string{"LC_ALL", "LC_MESSAGES", "LANG"} {
@@ -203,4 +187,15 @@ func SetClipText(s string) error {
 func ClipSeq() uint32 {
 	t, _ := ClipText()
 	return crc32.ChecksumIEEE([]byte(t))
+}
+
+// AskAccept — окно «Разрешить / Отклонить» (REQ-F-03); без ответа AskTimeout или без zenity → отказ.
+func AskAccept(cid, peer string) bool {
+	if fakeDesktop {
+		return true
+	}
+	title, text, yes, no := askText(sysLang(), cid, peer)
+	err := exec.Command("zenity", "--question", "--no-wrap", "--title="+title, "--text="+pangoEscape(text),
+		"--ok-label="+yes, "--cancel-label="+no, "--timeout="+strconv.Itoa(int(AskTimeout.Seconds()))).Run()
+	return err == nil
 }

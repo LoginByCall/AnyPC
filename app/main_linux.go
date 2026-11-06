@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"anypc/agent"
 	"anypc/pake"
@@ -49,14 +50,15 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	a := &agent.Agent{Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, Key: cfg.key(), FPS: 30,
-		Capture: agent.LinuxCapture(30, cfg.Bitrate, cfg.Enc), FileDir: downloads()}
+		Bitrate: agent.Kbps(cfg.Bitrate),
+		Confirm: func(cid, peer string) bool { return !cfg.confirm() || agent.AskAccept(cid, peer) }, Capture: agent.LinuxCapture(30, cfg.Enc), FileDir: downloads()}
 	var mu sync.Mutex
 	online, session := false, ""
 	a.OnState = func(on bool, s string) { mu.Lock(); online, session = on, s; mu.Unlock() }
 	info := func() map[string]any {
 		mu.Lock()
 		defer mu.Unlock()
-		return map[string]any{"id": cfg.ID, "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass()}
+		return map[string]any{"id": cfg.ID, "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm()}
 	}
 
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -130,7 +132,7 @@ window.ANYPC = {ws: %s};
   const T = %s;
   const api = (n, ...a) => fetch('/api/' + n, {method: 'POST', headers: {'X-Token': T, 'Content-Type': 'application/json'}, body: JSON.stringify(a)})
     .then(async r => { const j = await r.json(); if (!r.ok) throw j.error; return j.result; });
-  for (const n of ['hostInfo', 'setPassword', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'hostVerify', 'knownGet', 'knownSet', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort']) window[n] = (...a) => api(n, ...a);
+  for (const n of ['hostInfo', 'setPassword', 'setConfirm', 'quit', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'hostVerify', 'knownGet', 'knownSet', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort']) window[n] = (...a) => api(n, ...a);
   window.fullscreen = on => on ? document.documentElement.requestFullscreen().then(() => navigator.keyboard?.lock()).catch(() => {})
                                : document.fullscreenElement && document.exitFullscreen();
   setInterval(() => hostInfo().then(s => window.onHostState?.(s)).catch(() => {}), 1000);
@@ -176,6 +178,15 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 		res = info()
 	case "setPassword":
 		err = cfg.setPassword(str(0))
+	case "setConfirm":
+		var on bool
+		if len(args) > 0 {
+			json.Unmarshal(args[0], &on)
+		}
+		err = cfg.setConfirm(on)
+	case "quit": // вкладка браузера — не процесс: без кнопки программа живёт до Ctrl+C
+		a.Disconnect()
+		go func() { time.Sleep(300 * time.Millisecond); os.Exit(0) }()
 	case "hostDisconnect":
 		a.Disconnect()
 	case "getClip":

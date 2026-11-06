@@ -3,19 +3,20 @@ module anypc
 go 1.26.0
 
 require (
+	filippo.io/cpace v0.0.0-20210101143347-24d601e2e469
 	github.com/coder/websocket v1.8.15
+	github.com/godbus/dbus/v5 v5.2.4
 	github.com/jchv/go-webview2 v0.0.0-20260205173254-56598839c808
+	github.com/jezek/xgb v1.3.1
+	github.com/pion/rtcp v1.2.20
 	github.com/pion/webrtc/v4 v4.2.26
 	golang.org/x/crypto v0.58.0
 )
 
 require (
-	filippo.io/cpace v0.0.0-20210101143347-24d601e2e469 // indirect
-	github.com/godbus/dbus/v5 v5.2.4 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gtank/ristretto255 v0.1.2 // indirect
 	github.com/jchv/go-winloader v0.0.0-20250406163304-c1995be93bd1 // indirect
-	github.com/jezek/xgb v1.3.1 // indirect
 	github.com/pion/datachannel v1.6.3 // indirect
 	github.com/pion/dtls/v3 v3.1.15 // indirect
 	github.com/pion/ice/v4 v4.4.8 // indirect
@@ -23,7 +24,6 @@ require (
 	github.com/pion/logging v0.2.4 // indirect
 	github.com/pion/mdns/v2 v2.2.2 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
-	github.com/pion/rtcp v1.2.20 // indirect
 	github.com/pion/rtp v1.10.6 // indirect
 	github.com/pion/sctp v1.12.0 // indirect
 	github.com/pion/sdp/v3 v3.0.20 // indirect

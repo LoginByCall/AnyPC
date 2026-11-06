@@ -191,7 +191,7 @@ func (p *portal) capture(ctx context.Context, fps int, bitrate, _ string, _ *Mon
 	go func() { <-ctx.Done(); f.Close() }()
 	pipeline := fmt.Sprintf("pipewiresrc fd=3 path=%d do-timestamp=true keepalive-time=1000 ! videoconvert ! videorate"+
 		" ! video/x-raw,format=I420,framerate=%d/1 ! x264enc tune=zerolatency speed-preset=ultrafast bitrate=%d key-int-max=%d bframes=0 byte-stream=true"+
-		" ! video/x-h264,profile=constrained-baseline,stream-format=byte-stream ! fdsink fd=1", p.node, fps, kbps(bitrate), fps)
+		" ! video/x-h264,profile=constrained-baseline,stream-format=byte-stream ! fdsink fd=1", p.node, fps, Kbps(bitrate), fps)
 	cmd := exec.CommandContext(ctx, "gst-launch-1.0", append([]string{"-q"}, strings.Fields(pipeline)...)...)
 	cmd.ExtraFiles = []*os.File{f} // станет fd 3 в дочернем процессе
 	return cmd, nil

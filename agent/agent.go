@@ -39,10 +39,12 @@ type Agent struct {
 	FFmpeg  string                       // путь к ffmpeg
 	FF      []string                     // аргументы ffmpeg, см. FFArgs
 	FPS     int
-	Stderr  io.Writer                                             // вывод ffmpeg; nil — os.Stderr
-	OnState func(online bool, session string)                     // session "" — сессии нет
-	FileDir string                                                // куда принимать файлы; "" — %USERPROFILE%\Downloads
-	Capture func(ctx context.Context, mon int) (*exec.Cmd, error) // захват монитора mon (H.264 Annex-B в stdout); nil — FFmpeg + FF
+	Stderr  io.Writer                                                   // вывод ffmpeg; nil — os.Stderr
+	OnState func(online bool, session string)                           // session "" — сессии нет
+	FileDir string                                                      // куда принимать файлы; "" — %USERPROFILE%\Downloads
+	Capture func(ctx context.Context, mon, kbps int) (*exec.Cmd, error) // захват монитора mon с битрейтом kbps (H.264 Annex-B в stdout); nil — FFmpeg + FF
+	Bitrate int                                                         // кбит/с — потолок адаптивного битрейта (REQ-N-03); 0 — постоянный
+	Confirm func(cid, peer string) bool                                 // REQ-F-03: спросить человека на хосте после верного пароля; nil — не спрашивать (unattended)
 
 	mu        sync.Mutex
 	conn      *websocket.Conn
@@ -60,13 +62,16 @@ type session struct {
 	clip    clipSync
 	authed  atomic.Bool // до успешного CPace ни видео, ни ввод, ни буфер обмена, ни файлы не работают
 	picking atomic.Bool // открыто окно выбора файла
+	asking  atomic.Bool // на хосте открыто окно «Разрешить / Отклонить»
+	peer    string      // адрес клиента по выбранной паре ICE — для окна подтверждения
 
 	mu        sync.Mutex
 	closeInd  func() // закрыть плашку сессии
 	mons      []Monitor
 	mon       int                // выбранный монитор (индекс в mons)
 	capCancel context.CancelFunc // остановить текущий процесс захвата
-	switched  atomic.Bool        // захват остановлен ради смены монитора — перезапуск без паузы
+	switched  atomic.Bool        // захват остановлен ради смены монитора/битрейта — перезапуск без паузы
+	rate      rate               // адаптивный битрейт; max == 0 — выключен
 }
 
 // monitor — выбранный монитор для пересчёта координат мыши (nil — мониторов не знаем).
@@ -333,15 +338,19 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string) (
 	if err != nil {
 		return fail(err)
 	}
-	go func() { // RTCP нужно вычитывать, иначе не работают интерсепторы
-		buf := make([]byte, 1500)
+	s := &session{cid: cid, pc: pc, mons: listMonitors()}
+	if a.Capture != nil && a.Bitrate > 0 {
+		s.rate = rate{max: a.Bitrate, cur: a.Bitrate}
+	}
+	go func() { // RTCP нужно вычитывать, иначе не работают интерсепторы; отчёты о потерях — битрейту
 		for {
-			if _, _, err := sender.Read(buf); err != nil {
+			pkts, _, err := sender.ReadRTCP()
+			if err != nil {
 				return
 			}
+			s.onRTCP(pkts)
 		}
 	}()
-	s := &session{cid: cid, pc: pc, mons: listMonitors()}
 	s.mon = primaryIndex(s.mons)
 	sctx, cancel := context.WithCancel(ctx)
 	fail = func(err error) (*session, error) { cancel(); pc.Close(); return nil, err }
@@ -439,6 +448,12 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string) (
 			started.Do(func() {
 				if p, err := sender.Transport().ICETransport().GetSelectedCandidatePair(); err == nil && p != nil {
 					log.Printf("путь: %s → %s", p.Local.Typ, p.Remote.Typ) // relay = через TURN
+					s.mu.Lock()
+					s.peer = p.Remote.Address
+					if p.Remote.Typ == webrtc.ICECandidateTypeRelay || p.Local.Typ == webrtc.ICECandidateTypeRelay {
+						s.peer += " (relay)"
+					}
+					s.mu.Unlock()
 				}
 			})
 		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
@@ -518,37 +533,66 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		}
 		conf, err := pake.HostFinish(cur, m.Msg, m.Conf)
 		a.authResult(s.cid, err == nil)
-		if err != nil {
-			send(authMsg{T: "fail"})
-			a.mu.Lock() // освободить сразу: повтор с верным паролем не должен получить «занят»
+		reject := func(t string) {
+			send(authMsg{T: t})
+			a.mu.Lock() // освободить сразу: повтор не должен получить «занят»
 			if a.sess == s {
 				a.sess = nil
 			}
 			a.mu.Unlock()
-			time.AfterFunc(500*time.Millisecond, func() { s.pc.Close() }) // дать дойти «fail»
+			time.AfterFunc(500*time.Millisecond, func() { s.pc.Close() }) // дать дойти ответу
+		}
+		if err != nil {
+			reject("fail")
 			return
 		}
-		s.authed.Store(true)
-		send(authMsg{T: "ok", Conf: conf, Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph)})
-		log.Printf("сессия %s: вход выполнен", s.cid)
-		closeInd, err := showIndicator(s.cid, a.Disconnect) // REQ-F-15
-		if err != nil {                                     // REQ-S-08: без видимой плашки сессии нет
-			log.Printf("плашка сессии: %v — сессия закрыта", err)
-			s.pc.Close()
+		if a.Confirm == nil {
+			a.accept(ctx, s, track, send, conf, fpc, fph)
 			return
 		}
-		s.mu.Lock()
-		s.closeInd = closeInd
-		s.mu.Unlock()
-		a.notify()
-		go a.stream(ctx, s, track)
+		// REQ-F-03: пароль верный — теперь спросить человека на хосте (до 30 с; ответ не держит канал)
+		s.asking.Store(true)
+		send(authMsg{T: "ask"})
+		go func() {
+			s.mu.Lock()
+			peer := s.peer
+			s.mu.Unlock()
+			ok := a.Confirm(s.cid, peer)
+			s.asking.Store(false)
+			switch {
+			case ctx.Err() != nil: // клиент ушёл, пока ждали ответа
+			case ok:
+				a.accept(ctx, s, track, send, conf, fpc, fph)
+			default:
+				log.Printf("сессия %s: отклонена на хосте", s.cid)
+				reject("denied")
+			}
+		}()
 	})
 	time.AfterFunc(20*time.Second, func() {
-		if !s.authed.Load() {
+		if !s.authed.Load() && !s.asking.Load() {
 			s.pc.Close()
 		}
 	})
 	return nil
+}
+
+// accept — вход разрешён: подпись хоста, плашка сессии, видео.
+func (a *Agent) accept(ctx context.Context, s *session, track *webrtc.TrackLocalStaticSample, send func(authMsg), conf []byte, fpc, fph string) {
+	s.authed.Store(true)
+	send(authMsg{T: "ok", Conf: conf, Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph)})
+	log.Printf("сессия %s: вход выполнен", s.cid)
+	closeInd, err := showIndicator(s.cid, a.Disconnect) // REQ-F-15
+	if err != nil {                                     // REQ-S-08: без видимой плашки сессии нет
+		log.Printf("плашка сессии: %v — сессия закрыта", err)
+		s.pc.Close()
+		return
+	}
+	s.mu.Lock()
+	s.closeInd = closeInd
+	s.mu.Unlock()
+	a.notify()
+	go a.stream(ctx, s, track)
 }
 
 // watchClip отправляет клиенту изменения буфера обмена хоста (только изменения после начала сессии).
@@ -597,12 +641,12 @@ func (a *Agent) streamOnce(ctx context.Context, s *session, track *webrtc.TrackL
 	defer cancel()
 	s.mu.Lock()
 	s.capCancel = cancel
-	mon := s.mon
+	mon, kbps := s.mon, s.rate.cur
 	s.mu.Unlock()
 	var cmd *exec.Cmd
 	if a.Capture != nil {
 		var err error
-		if cmd, err = a.Capture(ctx, mon); err != nil {
+		if cmd, err = a.Capture(ctx, mon, kbps); err != nil {
 			log.Printf("захват: %v", err)
 			return
 		}
