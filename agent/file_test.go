@@ -5,9 +5,11 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -62,42 +64,57 @@ func randFile(t *testing.T, n int) []byte {
 	return b
 }
 
-// upload — клиент шлёт файл так же, как ui/index.html; cancelAt > 0 — закрыть канал после стольких байт.
-func upload(t *testing.T, pc *webrtc.PeerConnection, name string, data []byte, cancelAt int) fileMsg {
+func sha(b []byte) string { s := sha256.Sum256(b); return hex.EncodeToString(s[:]) }
+
+// upload — клиент шлёт файл как ui/index.html: meta → ждать resume → куски с offset → end.
+// stopAt > 0 — оборвать канал после стольких байт; cancel — перед этим явно отменить.
+func upload(t *testing.T, pc *webrtc.PeerConnection, name, id string, data []byte, stopAt int, cancel bool) (fileMsg, int64) {
+	t.Helper()
 	dc, _ := pc.CreateDataChannel("file", nil)
-	res := make(chan fileMsg, 1)
+	res := make(chan fileMsg, 4)
 	dc.OnMessage(func(m webrtc.DataChannelMessage) {
 		var fm fileMsg
 		json.Unmarshal(m.Data, &fm)
 		res <- fm
 	})
-	dc.OnOpen(func() {
-		sendJSON(dc, fileMsg{T: "meta", Name: name, Size: int64(len(data))})
-		for off := 0; off < len(data); off += fileChunk {
-			if cancelAt > 0 && off >= cancelAt {
-				dc.Close()
-				return
-			}
-			for dc.BufferedAmount() > fileHigh {
-				time.Sleep(time.Millisecond)
-			}
-			dc.Send(data[off:min(off+fileChunk, len(data))])
-		}
-		sendJSON(dc, fileMsg{T: "end"})
-	})
-	if cancelAt > 0 {
-		return fileMsg{}
-	}
+	dc.OnOpen(func() { sendJSON(dc, fileMsg{T: "meta", Name: name, Size: int64(len(data)), ID: id}) })
+	var r fileMsg
 	select {
-	case r := <-res:
-		return r
+	case r = <-res:
+	case <-time.After(10 * time.Second):
+		t.Fatal("нет resume")
+	}
+	if r.T != "resume" {
+		t.Fatalf("ждали resume: %+v", r)
+	}
+	for off := int(r.Offset); off < len(data); off += fileChunk {
+		if stopAt > 0 && off >= stopAt {
+			if cancel {
+				sendJSON(dc, fileMsg{T: "cancel"})
+			}
+			for i := 0; i < 100 && dc.BufferedAmount() > 0; i++ { // обрыв после доставки отправленного,
+				time.Sleep(10 * time.Millisecond) // иначе хост может не получить ни байта
+			}
+			time.Sleep(100 * time.Millisecond)
+			dc.Close()
+			return fileMsg{}, r.Offset
+		}
+		for dc.BufferedAmount() > fileHigh {
+			time.Sleep(time.Millisecond)
+		}
+		dc.Send(data[off:min(off+fileChunk, len(data))])
+	}
+	sendJSON(dc, fileMsg{T: "end"})
+	select {
+	case d := <-res:
+		return d, r.Offset
 	case <-time.After(20 * time.Second):
 		t.Fatal("нет ответа хоста")
 	}
-	return fileMsg{}
+	return fileMsg{}, 0
 }
 
-func TestFileUpload(t *testing.T) {
+func hostWith(t *testing.T) (*webrtc.PeerConnection, string) {
 	client, host := pair(t)
 	dir := t.TempDir()
 	a := &Agent{FileDir: dir}
@@ -106,71 +123,139 @@ func TestFileUpload(t *testing.T) {
 			a.receiveFile(dc)
 		}
 	})
-	data := randFile(t, 3<<20)
-	r := upload(t, client, "../evil:name.bin", data, 0)
-	sum := sha256.Sum256(data)
-	got, err := os.ReadFile(filepath.Join(dir, "evil_name.bin")) // имя очищено, из папки не вышли
-	if r.T != "done" || err != nil || !bytes.Equal(got, data) {
-		t.Fatalf("приём: %+v %v", r, err)
-	}
-	if r.SHA256 != hexs(sum[:]) {
-		t.Fatal("SHA-256 в ответе не совпадает")
-	}
+	return client, dir
+}
 
-	// отмена: недокачанный файл удаляется
-	upload(t, client, "big.bin", randFile(t, 2<<20), 256<<10)
+func waitParts(t *testing.T, dir string, want int) {
+	t.Helper()
 	for i := 0; i < 50; i++ {
-		ents, _ := os.ReadDir(dir)
-		if len(ents) == 1 {
+		if p, _ := filepath.Glob(filepath.Join(dir, ".anypc-*.part")); len(p) == want {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	ents, _ := os.ReadDir(dir)
-	t.Fatalf("после отмены остались файлы: %v", ents)
+	p, _ := filepath.Glob(filepath.Join(dir, ".anypc-*.part"))
+	t.Fatalf("частей %d, ждали %d", len(p), want)
 }
 
-func TestFileDownload(t *testing.T) {
-	client, host := pair(t)
+func TestFileUpload(t *testing.T) {
+	client, dir := hostWith(t)
 	data := randFile(t, 3<<20)
-	src := filepath.Join(t.TempDir(), "с хоста.bin")
-	os.WriteFile(src, data, 0o644)
-	var got bytes.Buffer
-	name := make(chan string, 1)
-	recv := make(chan []byte, 1)
-	client.OnDataChannel(func(dc *webrtc.DataChannel) { // как приёмник в ui/index.html
+	r, _ := upload(t, client, "../evil:name.bin", "", data, 0, false)
+	got, err := os.ReadFile(filepath.Join(dir, "evil_name.bin")) // имя очищено, из папки не вышли
+	if r.T != "done" || err != nil || !bytes.Equal(got, data) || r.SHA256 != sha(data) {
+		t.Fatalf("приём: %+v %v", r, err)
+	}
+	// явная отмена: часть удаляется
+	upload(t, client, "big.bin", "00112233445566778899aabbccddeeff", randFile(t, 2<<20), 256<<10, true)
+	waitParts(t, dir, 0)
+}
+
+// TestUploadResume — обрыв на середине; повторная отправка того же файла продолжает с места обрыва.
+func TestUploadResume(t *testing.T) {
+	client, dir := hostWith(t)
+	data := randFile(t, 3<<20)
+	id := "0123456789abcdef0123456789abcdef"
+	upload(t, client, "отчёт.bin", id, data, 1<<20, false)
+	waitParts(t, dir, 1) // часть сохранена
+	r, off := upload(t, client, "отчёт.bin", id, data, 0, false)
+	got, _ := os.ReadFile(filepath.Join(dir, "отчёт.bin"))
+	if off <= 0 || r.T != "done" || !bytes.Equal(got, data) || r.SHA256 != sha(data) {
+		t.Fatalf("докачка: offset=%d %+v", off, r)
+	}
+	waitParts(t, dir, 0)
+}
+
+// download — клиент принимает файл с хоста, как программа (Receiver на диск); stopAt — оборвать.
+func download(client *webrtc.PeerConnection, dir string, stopAt int64) chan string {
+	done := make(chan string, 1)
+	client.OnDataChannel(func(dc *webrtc.DataChannel) {
+		r := NewReceiver(dir)
+		var mu sync.Mutex
 		dc.OnMessage(func(m webrtc.DataChannelMessage) {
+			mu.Lock()
+			defer mu.Unlock()
 			if !m.IsString {
-				got.Write(m.Data)
+				if r.Write(m.Data) == nil && stopAt > 0 && r.got >= stopAt {
+					r.Abort(true)
+					dc.Close()
+				}
 				return
 			}
 			var fm fileMsg
 			json.Unmarshal(m.Data, &fm)
-			if fm.T == "meta" {
-				name <- fm.Name
-			}
-			if fm.T == "end" {
-				recv <- got.Bytes()
-				sendJSON(dc, fileMsg{T: "done"})
-				dc.Close()
+			switch fm.T {
+			case "meta":
+				off, _ := r.Open(fm.Name, fm.Size, fm.ID)
+				sendJSON(dc, fileMsg{T: "resume", Offset: off})
+			case "end":
+				dst, sum, err := r.Finish()
+				if err != nil {
+					sendJSON(dc, fileMsg{T: "err", Msg: err.Error()})
+					return
+				}
+				sendJSON(dc, fileMsg{T: "done", SHA256: sum})
+				done <- dst
 			}
 		})
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	if err := sendFile(ctx, host, src); err != nil {
-		t.Fatal(err)
-	}
-	if <-name != "с хоста.bin" || !bytes.Equal(<-recv, data) {
-		t.Fatal("файл с хоста искажён")
-	}
+	return done
 }
 
-func hexs(b []byte) string {
-	const h = "0123456789abcdef"
-	out := make([]byte, 0, len(b)*2)
-	for _, c := range b {
-		out = append(out, h[c>>4], h[c&15])
+func TestFileDownloadResume(t *testing.T) {
+	data := randFile(t, 3<<20)
+	src := filepath.Join(t.TempDir(), "с хоста.bin")
+	os.WriteFile(src, data, 0o644)
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	client, host := pair(t) // первая попытка обрывается на ~1 МБ
+	download(client, dir, 1<<20)
+	if err := sendFile(ctx, host, src); err == nil {
+		t.Fatal("обрыв не замечен отправителем")
 	}
-	return string(out)
+	waitParts(t, dir, 1)
+
+	client2, host2 := pair(t) // новое соединение, тот же файл — докачка
+	done := download(client2, dir, 0)
+	if err := sendFile(ctx, host2, src); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(<-done)
+	if !bytes.Equal(got, data) || filepath.Base(src) != "с хоста.bin" {
+		t.Fatal("файл после докачки искажён")
+	}
+	waitParts(t, dir, 0)
+}
+
+func TestReceiver(t *testing.T) {
+	dir := t.TempDir()
+	id := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	r := NewReceiver(dir)
+	if off, err := r.Open("a.txt", 6, id); off != 0 || err != nil {
+		t.Fatal(off, err)
+	}
+	r.Write([]byte("abc"))
+	r.Abort(true)
+	r = NewReceiver(dir)
+	if off, _ := r.Open("a.txt", 6, id); off != 3 {
+		t.Fatalf("докачка с %d, ждали 3", off)
+	}
+	if r.Write([]byte("defg")) == nil {
+		t.Fatal("лишние данные приняты")
+	}
+	r.Write([]byte("def"))
+	dst, sum, err := r.Finish()
+	if b, _ := os.ReadFile(dst); err != nil || string(b) != "abcdef" || sum != sha([]byte("abcdef")) {
+		t.Fatalf("%q %v", b, err)
+	}
+	r = NewReceiver(dir) // плохой id → без докачки, но приём работает, из папки не выходит
+	if off, err := r.Open("b.txt", 1, "../../etc"); off != 0 || err != nil {
+		t.Fatal(off, err)
+	}
+	r.Abort(false)
+	if p, _ := filepath.Glob(filepath.Join(dir, ".anypc-*")); len(p) != 0 {
+		t.Fatalf("отмена оставила %v", p)
+	}
 }

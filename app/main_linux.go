@@ -71,7 +71,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	h := handler(addr, token, page, cfg, a, info)
+	h := handler(addr, token, page, cfg, a, info, newFiles(downloads()))
 	go http.Serve(l, h)
 	url := "http://" + addr + "/?t=" + token
 	kind := "X11"
@@ -88,7 +88,7 @@ func main() {
 // handler — интерфейс и API. Чужие страницы не могут ни прочитать токен, ни вызвать API:
 // страница отдаётся только с ?t=токен, API требует заголовок X-Token (кросс-доменный запрос с ним
 // упирается в CORS), Host проверяется против DNS rebinding.
-func handler(addr, token string, page []byte, cfg *config, a *agent.Agent, info func() map[string]any) http.Handler {
+func handler(addr, token string, page []byte, cfg *config, a *agent.Agent, info func() map[string]any, fl *files) http.Handler {
 	files := http.FileServer(http.FS(ui.FS))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Host != addr {
@@ -101,7 +101,7 @@ func handler(addr, token string, page []byte, cfg *config, a *agent.Agent, info 
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
 			}
-			api(w, r, strings.TrimPrefix(r.URL.Path, "/api/"), cfg, a, info)
+			api(w, r, strings.TrimPrefix(r.URL.Path, "/api/"), cfg, a, info, fl)
 		case r.URL.Path == "/" || r.URL.Path == "/index.html":
 			if r.URL.Query().Get("t") != token {
 				http.Error(w, "Откройте ссылку, которую напечатал AnyPC в терминале", http.StatusForbidden)
@@ -130,7 +130,7 @@ window.ANYPC = {ws: %s};
   const T = %s;
   const api = (n, ...a) => fetch('/api/' + n, {method: 'POST', headers: {'X-Token': T, 'Content-Type': 'application/json'}, body: JSON.stringify(a)})
     .then(async r => { const j = await r.json(); if (!r.ok) throw j.error; return j.result; });
-  for (const n of ['hostInfo', 'setPassword', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond']) window[n] = (...a) => api(n, ...a);
+  for (const n of ['hostInfo', 'setPassword', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort']) window[n] = (...a) => api(n, ...a);
   window.fullscreen = on => on ? document.documentElement.requestFullscreen().then(() => navigator.keyboard?.lock()).catch(() => {})
                                : document.fullscreenElement && document.exitFullscreen();
   setInterval(() => hostInfo().then(s => window.onHostState?.(s)).catch(() => {}), 1000);
@@ -140,9 +140,9 @@ window.ANYPC = {ws: %s};
 	return []byte(strings.Replace(string(b), "<script>", shim, 1)), nil
 }
 
-func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *agent.Agent, info func() map[string]any) {
+func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *agent.Agent, info func() map[string]any, fl *files) {
 	var args []json.RawMessage
-	json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&args)
+	json.NewDecoder(io.LimitReader(r.Body, 4<<20)).Decode(&args) // кусок файла 1 МБ в base64
 	str := func(i int) string {
 		var s string
 		if i < len(args) {
@@ -150,9 +150,28 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 		}
 		return s
 	}
+	num := func(i int) float64 {
+		var n float64
+		if i < len(args) {
+			json.Unmarshal(args[i], &n)
+		}
+		return n
+	}
 	var res any
 	var err error
 	switch name {
+	case "fileOpen":
+		res, err = fl.Open(str(0), num(1), str(2))
+	case "fileWrite":
+		err = fl.Write(int(num(0)), str(1))
+	case "fileFinish":
+		res, err = fl.Finish(int(num(0)))
+	case "fileAbort":
+		var keep bool
+		if len(args) > 1 {
+			json.Unmarshal(args[1], &keep)
+		}
+		fl.Abort(int(num(0)), keep)
 	case "hostInfo":
 		res = info()
 	case "setPassword":

@@ -9,7 +9,7 @@ Landing page and download: https://www.turboseller.xyz · Описание на 
 ## How it works
 Both PCs keep a WebSocket connection to the signaling server (`anypc-server`), which only helps them find each other. The session itself is a WebRTC connection: direct (P2P) when the NATs allow it, otherwise relayed through coturn (TURN).
 - **Transport:** WebRTC (ICE/STUN/TURN, DTLS-SRTP). Video and input never pass through the signaling server in clear.
-- **Controlled side** (`agent/`): screen capture via FFmpeg `ddagrab` (DXGI) → H.264 → Pion WebRTC; input via `SendInput` scancodes; text clipboard sync; file transfer both ways (one data channel per file; to the host's Downloads, or picked on the host via a file dialog).
+- **Controlled side** (`agent/`): screen capture via FFmpeg `ddagrab` (DXGI) → H.264 → Pion WebRTC; input via `SendInput` scancodes; text clipboard sync; file transfer both ways with resume (one data channel per file; to the host's Downloads, or picked on the host via a file dialog; the app writes received files straight to disk).
 - **Window** (`app/`): WebView2 + `ui/index.html` (7 languages). FFmpeg is embedded and extracted to `%LOCALAPPDATA%\AnyPC`. The browser web client (also for Linux/macOS controllers) runs the same CPace code compiled to WebAssembly (`wasm/`).
 - **Linux** (`app/main_linux.go`, `agent/*_linux.go`, beta): `AnyPC-linux-amd64` runs the host and opens the same UI in the browser on `127.0.0.1` (token-protected local API). X11: FFmpeg `x11grab` + XTest; Wayland: xdg-desktop-portal RemoteDesktop/ScreenCast (one-time consent, restore token) + GStreamer `pipewiresrc`. Needs `zenity` (session notice), `ffmpeg` + `xclip` on X11, or `gstreamer1.0-pipewire` + `gstreamer1.0-plugins-ugly` + `wl-clipboard` on Wayland.
 - **Server** (`server/`, `hub/`): signaling, time-limited TURN credentials, landing page (`site/`), downloads.
@@ -26,6 +26,7 @@ scp bin/anypc-server deploy/setup.sh root@VPS:/root/anypc-deploy/
 ssh root@VPS sh /root/anypc-deploy/setup.sh any.example.com www.example.com
 scp bin/AnyPC.exe bin/SHA256SUMS root@VPS:/srv/anypc/dl/
 ```
+Later updates: `ANYPC_VPS=root@VPS deploy/publish.sh` (uploads only if `build.sh` passed).
 Open ports: 80, 443/tcp, 3478/udp+tcp, 49152–65535/udp. The client's default server is set in `app/config.go`.
 
 ## Security
@@ -35,7 +36,7 @@ Open ports: 80, 443/tcp, 3478/udp+tcp, 49152–65535/udp. The client's default s
 - **Known gaps:** host ID is not yet bound to a key; the stored hash is password-equivalent (OPAQUE would fix it); the CPace implementation follows draft-haase-cpace-01 and has no independent audit; binaries are not code-signed. Review welcome.
 
 ## Limitations
-No Ctrl+Alt+Del / UAC / lock screen yet (needs service mode), primary monitor only, clipboard is text ≤ 60 KB, files received by the controller are buffered in memory before saving.
+No Ctrl+Alt+Del / UAC / lock screen yet (needs service mode), primary monitor only, clipboard is text ≤ 60 KB; the browser web client keeps files received from the remote PC in memory and does not resume them (the app writes to disk and resumes).
 
 ## License
 MIT — see `LICENSE`. Bundled FFmpeg is GPLv3 (separate program).
