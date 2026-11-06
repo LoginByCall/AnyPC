@@ -1,0 +1,52 @@
+# Тексты лендинга — es: перевод Claude с texts.ru.md (2026-11-06); надписи программы — точно как в ui/index.html. Правьте texts.ru.md и переводите заново.
+
+- `title`: Controla tu ordenador desde cualquier lugar del mundo
+- `badge`: Beta · gratis
+- `lead`: AnyPC muestra la pantalla de tu ordenador y te permite controlarlo desde otro, aunque ambos estén detrás de un router o en una red móvil. Sin abrir puertos y sin registro.
+- `dl`: Descargar
+- `web`: Abrir el cliente web
+- `req`: Windows 10/11 · Linux (X11, Wayland)
+- `whyT`: Por qué AnyPC
+- `f1t`: Atraviesa cualquier NAT
+- `f1d`: Se conecta directamente y, cuando no es posible, a través de un servidor de retransmisión. No hace falta configurar el router.
+- `f2t`: Cifrado de extremo a extremo
+- `f2d`: La pantalla y la entrada viajan por DTLS-SRTP. El servidor de retransmisión solo reenvía datos cifrados.
+- `f3t`: Un único ejecutable
+- `f3d`: Un mismo programa muestra tu ID y tu contraseña y se conecta a otros PC. No requiere instalación.
+- `f4t`: Fluido y ágil
+- `f4d`: Vídeo H.264 hasta 1080p a 30 fps; la calidad se adapta a la conexión y las estadísticas de conexión se muestran en tiempo real.
+- `getT`: Descargar AnyPC
+- `tab_win`: Windows
+- `tab_lin`: Linux
+- `dl_win`: Descargar para Windows
+- `dl_lin`: Descargar para Linux
+- `sys_win`: Windows 10 u 11, 64 bits
+- `sys_lin`: 64 bits (x86-64), X11 o Wayland · beta
+- `sha`: Suma de comprobación SHA-256
+- `w1`: Ejecuta el AnyPC.exe descargado: no requiere instalación y el programa muestra al instante el ID de este equipo.
+- `w2`: Si aparece «Windows protegió su PC», haz clic en «Más información» → «Ejecutar de todas formas»: el programa aún no está firmado.
+- `w3`: Si el Firewall de Windows pide acceso a la red, permítelo; de lo contrario, puede que la conexión directa no funcione y el tráfico pase por el servidor de retransmisión.
+- `w4`: Para que puedan conectarse a este equipo, establece una contraseña en la sección «Este equipo».
+- `wchk`: Comprueba el archivo (PowerShell): la suma debe coincidir con la indicada arriba:
+- `l1`: Instala las dependencias, que varían según tu sesión gráfica:
+- `l2`: Da permiso de ejecución al archivo y ejecútalo: la ventana de AnyPC se abre en una pestaña del navegador:
+- `l3`: En Wayland, en la primera conexión el sistema pregunta qué pantalla compartir y si se permite el control. La elección se recuerda y no se vuelve a preguntar.
+- `l4`: Para cerrar el programa, haz clic en «Salir de AnyPC» en la pestaña o pulsa Ctrl+C en el terminal.
+- `lchk`: Comprueba el archivo: la suma debe coincidir con la indicada arriba:
+- `howT`: Empieza en 3 pasos
+- `s1`: Descarga AnyPC en el ordenador que quieres controlar (o en ambos) y ejecútalo.
+- `s2`: En el ordenador que quieres controlar, establece una contraseña (mínimo 8 caracteres) y anota su ID de 9 dígitos.
+- `s3`: En una ventana del navegador o en el otro ordenador, introduce ese ID y la contraseña y haz clic en «Conectar». Si el PC controlado tiene activada la confirmación, alguien tendrá que pulsar allí «Permitir».
+- `secT`: Seguridad
+- `sec1`: Cada conexión requiere la contraseña establecida en el PC controlado; la contraseña en sí nunca se envía por la red.
+- `secAsk`: Puedes activar la confirmación: el PC controlado preguntará «Permitir / Rechazar» en cada conexión y, si nadie responde en 30 segundos, se rechaza.
+- `sec2`: Durante una sesión, el PC controlado siempre muestra un aviso con un botón para desconectar.
+- `sec3`: Tras 5 contraseñas incorrectas, el acceso se bloquea temporalmente.
+- `sec4`: Usa AnyPC solo en tus propios ordenadores o con el consentimiento de su propietario.
+- `sec5`: Nunca des tu ID y tu contraseña a alguien que te llame de forma inesperada: es una estafa habitual.
+- `limT`: Limitaciones de la beta
+- `lim1`: Ctrl+Alt+Supr, las ventanas de UAC y la pantalla de bloqueo aún no están disponibles.
+- `lim2`: Portapapeles: solo texto; los archivos se envían con los botones de la barra.
+- `lim3`: Puedes cambiar de monitor desde la barra; en Wayland, el monitor se elige en el diálogo del sistema al conectarte.
+- `lim4`: La versión para Linux está en beta y se ha probado menos que la de Windows.
+- `foot`: AnyPC beta. Incluye FFmpeg (GPLv3); código fuente en ffmpeg.org. Se ofrece «tal cual», sin garantía.

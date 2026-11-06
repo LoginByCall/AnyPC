@@ -1,0 +1,52 @@
+# Тексты лендинга — de: перевод Claude с texts.ru.md (2026-11-06); надписи программы — точно как в ui/index.html. Правьте texts.ru.md и переводите заново.
+
+- `title`: Steuern Sie Ihren Computer von überall auf der Welt
+- `badge`: Beta · kostenlos
+- `lead`: AnyPC zeigt den Bildschirm Ihres Computers und lässt Sie ihn von einem anderen aus steuern – auch wenn beide hinter Routern oder im Mobilfunknetz sind. Ohne Portweiterleitung, ohne Registrierung.
+- `dl`: Herunterladen
+- `web`: Web-Client öffnen
+- `req`: Windows 10/11 · Linux (X11, Wayland)
+- `whyT`: Warum AnyPC
+- `f1t`: Funktioniert hinter jedem NAT
+- `f1d`: Verbindet direkt; wo das nicht geht, über einen Relay-Server. Am Router müssen Sie nichts einstellen.
+- `f2t`: Ende-zu-Ende-Verschlüsselung
+- `f2d`: Bild und Eingaben laufen über DTLS-SRTP. Der Relay-Server leitet nur verschlüsselte Daten weiter.
+- `f3t`: Eine einzige ausführbare Datei
+- `f3d`: Ein Programm zeigt Ihre ID und Ihr Passwort an und verbindet sich mit anderen PCs. Keine Installation nötig.
+- `f4t`: Flüssig und reaktionsschnell
+- `f4d`: H.264-Video bis 1080p mit 30 fps; die Qualität passt sich der Verbindung an, die Verbindungsstatistik wird live angezeigt.
+- `getT`: AnyPC herunterladen
+- `tab_win`: Windows
+- `tab_lin`: Linux
+- `dl_win`: Für Windows herunterladen
+- `dl_lin`: Für Linux herunterladen
+- `sys_win`: Windows 10 oder 11, 64 Bit
+- `sys_lin`: 64 Bit (x86-64), X11 oder Wayland · Beta
+- `sha`: SHA-256-Prüfsumme
+- `w1`: Starten Sie die heruntergeladene AnyPC.exe – eine Installation ist nicht nötig, das Programm zeigt sofort die ID dieses Computers an.
+- `w2`: Erscheint „Der Computer wurde durch Windows geschützt“, klicken Sie auf „Weitere Informationen“ → „Trotzdem ausführen“: Das Programm ist noch nicht signiert.
+- `w3`: Fragt die Windows-Firewall nach dem Netzwerkzugriff, erlauben Sie ihn – sonst kommt eine direkte Verbindung womöglich nicht zustande, und die Daten laufen über den Relay-Server.
+- `w4`: Damit sich andere mit diesem Computer verbinden können, legen Sie im Bereich „Dieser Computer“ ein Passwort fest.
+- `wchk`: Datei prüfen (PowerShell) – die Prüfsumme muss mit der oben angegebenen übereinstimmen:
+- `l1`: Installieren Sie die Abhängigkeiten – welche, hängt von Ihrer grafischen Sitzung ab:
+- `l2`: Machen Sie die Datei ausführbar und starten Sie sie – das AnyPC-Fenster öffnet sich in einem Browser-Tab:
+- `l3`: Unter Wayland fragt das System bei der ersten Verbindung, welcher Bildschirm geteilt werden soll und ob die Steuerung erlaubt ist. Die Freigabe wird gespeichert, Sie werden nicht erneut gefragt.
+- `l4`: Zum Beenden klicken Sie im Tab auf „AnyPC beenden“ oder drücken im Terminal Strg+C.
+- `lchk`: Datei prüfen – die Prüfsumme muss mit der oben angegebenen übereinstimmen:
+- `howT`: In 3 Schritten loslegen
+- `s1`: Laden Sie AnyPC auf den Computer herunter, den Sie steuern möchten (oder auf beide), und starten Sie es.
+- `s2`: Legen Sie auf dem zu steuernden Computer ein Passwort fest (mindestens 8 Zeichen) und notieren Sie seine 9-stellige ID.
+- `s3`: Geben Sie im Browserfenster oder auf dem anderen Computer diese ID und das Passwort ein und klicken Sie auf „Verbinden“. Ist auf dem gesteuerten PC die Bestätigung aktiviert, muss dort jemand auf „Erlauben“ klicken.
+- `secT`: Sicherheit
+- `sec1`: Jede Verbindung erfordert das auf dem gesteuerten PC festgelegte Passwort; das Passwort selbst wird nie über das Netzwerk übertragen.
+- `secAsk`: Optional lässt sich eine Bestätigung aktivieren: Der gesteuerte PC fragt dann bei jeder Verbindung „Erlauben / Ablehnen“; ohne Antwort binnen 30 Sekunden wird abgelehnt.
+- `sec2`: Während einer Sitzung zeigt der gesteuerte PC stets einen Hinweis mit einer Schaltfläche zum Trennen.
+- `sec3`: Nach 5 falschen Passwörtern wird der Zugang vorübergehend gesperrt.
+- `sec4`: Verwenden Sie AnyPC nur auf eigenen Computern oder mit Zustimmung des Besitzers.
+- `sec5`: Geben Sie ID und Passwort niemals an jemanden weiter, der Sie unerwartet anruft – das ist eine verbreitete Betrugsmasche.
+- `limT`: Einschränkungen der Beta
+- `lim1`: Strg+Alt+Entf, UAC-Abfragen und der Sperrbildschirm sind noch nicht verfügbar.
+- `lim2`: Zwischenablage: nur Text; Dateien werden über die Schaltflächen der Leiste übertragen.
+- `lim3`: Zwischen mehreren Monitoren wechseln Sie in der Leiste; unter Wayland wird der Monitor beim Verbinden im Systemdialog gewählt.
+- `lim4`: Die Linux-Version ist eine Beta und weniger getestet als die Windows-Version.
+- `foot`: AnyPC Beta. Enthält FFmpeg (GPLv3), Quellcode unter ffmpeg.org. Bereitgestellt „wie besehen“, ohne Gewährleistung.

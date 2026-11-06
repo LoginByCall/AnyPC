@@ -5,7 +5,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"net"
+	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -428,4 +431,22 @@ func TestConfirm(t *testing.T) {
 	}
 	answer, e2eDeny = true, false
 	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "secret123")
+}
+
+// TestDeadProxy — регрессия: мёртвый прокси из окружения (HTTPS_PROXY на закрытый порт) не мешает
+// подключиться к сигнализации напрямую; живой прокси по-прежнему используется.
+func TestDeadProxy(t *testing.T) {
+	l, _ := net.Listen("tcp", "127.0.0.1:0")
+	dead := "http://" + l.Addr().String()
+	l.Close() // порт закрыт — как 127.0.0.1:12334
+	used := false
+	defer func(p func(*http.Request) (*url.URL, error)) { proxy = p }(proxy)
+	proxy = func(*http.Request) (*url.URL, error) { used = true; return url.Parse(dead) }
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, err := dial(ctx, local(t))
+	if err != nil || !used {
+		t.Fatalf("напрямую после мёртвого прокси: err=%v, прокси пробовали=%v", err, used)
+	}
+	c.CloseNow()
 }

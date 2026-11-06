@@ -1,0 +1,52 @@
+# Тексты лендинга — fr: перевод Claude с texts.ru.md (2026-11-06); надписи программы — точно как в ui/index.html. Правьте texts.ru.md и переводите заново.
+
+- `title`: Contrôlez votre ordinateur depuis n’importe où dans le monde
+- `badge`: Bêta · gratuit
+- `lead`: AnyPC affiche l’écran de votre ordinateur et vous permet de le contrôler depuis un autre, même si les deux sont derrière un routeur ou sur un réseau mobile. Sans redirection de ports ni inscription.
+- `dl`: Télécharger
+- `web`: Ouvrir le client web
+- `req`: Windows 10/11 · Linux (X11, Wayland)
+- `whyT`: Pourquoi AnyPC
+- `f1t`: Traverse tous les NAT
+- `f1d`: Connexion directe ; quand ce n’est pas possible, via un serveur relais. Rien à configurer sur le routeur.
+- `f2t`: Chiffrement de bout en bout
+- `f2d`: L’écran et les saisies transitent par DTLS-SRTP. Le serveur relais ne transmet que des données chiffrées.
+- `f3t`: Un seul fichier exécutable
+- `f3d`: Un même programme affiche votre ID et votre mot de passe et se connecte à d’autres PC. Aucune installation.
+- `f4t`: Fluide et réactif
+- `f4d`: Vidéo H.264 jusqu’en 1080p à 30 i/s ; la qualité s’adapte à la connexion et les statistiques de connexion s’affichent en temps réel.
+- `getT`: Télécharger AnyPC
+- `tab_win`: Windows
+- `tab_lin`: Linux
+- `dl_win`: Télécharger pour Windows
+- `dl_lin`: Télécharger pour Linux
+- `sys_win`: Windows 10 ou 11, 64 bits
+- `sys_lin`: 64 bits (x86-64), X11 ou Wayland · bêta
+- `sha`: Somme de contrôle SHA-256
+- `w1`: Lancez le fichier AnyPC.exe téléchargé : aucune installation n’est nécessaire, le programme affiche aussitôt l’ID de cet ordinateur.
+- `w2`: Si le message « Windows a protégé votre ordinateur » s’affiche, cliquez sur « Informations complémentaires » → « Exécuter quand même » : le programme n’est pas encore signé.
+- `w3`: Si le pare-feu Windows demande l’accès au réseau, autorisez-le ; sinon, la connexion directe risque d’échouer et le trafic passera par le serveur relais.
+- `w4`: Pour que l’on puisse se connecter à cet ordinateur, définissez un mot de passe dans la section « Cet ordinateur ».
+- `wchk`: Vérifier le fichier (PowerShell) — la somme doit correspondre à celle indiquée ci-dessus :
+- `l1`: Installez les dépendances ; elles varient selon votre session graphique :
+- `l2`: Rendez le fichier exécutable et lancez-le ; la fenêtre AnyPC s’ouvre dans un onglet du navigateur :
+- `l3`: Sous Wayland, lors de la première connexion, le système demande quel écran partager et s’il faut autoriser le contrôle. Ce choix est mémorisé : la question ne sera plus posée.
+- `l4`: Pour quitter le programme, cliquez sur « Quitter AnyPC » dans l’onglet ou appuyez sur Ctrl+C dans le terminal.
+- `lchk`: Vérifier le fichier — la somme doit correspondre à celle indiquée ci-dessus :
+- `howT`: Démarrer en 3 étapes
+- `s1`: Téléchargez AnyPC sur l’ordinateur à contrôler (ou sur les deux) et lancez-le.
+- `s2`: Sur l’ordinateur à contrôler, définissez un mot de passe (8 caractères minimum) et notez son ID à 9 chiffres.
+- `s3`: Dans une fenêtre de navigateur ou sur l’autre ordinateur, saisissez cet ID et le mot de passe, puis cliquez sur « Se connecter ». Si la confirmation est activée sur le PC contrôlé, quelqu’un doit y cliquer sur « Autoriser ».
+- `secT`: Sécurité
+- `sec1`: Chaque connexion exige le mot de passe défini sur le PC contrôlé ; le mot de passe lui-même ne transite jamais sur le réseau.
+- `secAsk`: Vous pouvez activer la confirmation : le PC contrôlé demande alors « Autoriser / Refuser » à chaque connexion ; sans réponse sous 30 secondes, la connexion est refusée.
+- `sec2`: Pendant une session, le PC contrôlé affiche toujours un avis avec un bouton de déconnexion.
+- `sec3`: Après 5 mots de passe erronés, l’accès est temporairement bloqué.
+- `sec4`: N’utilisez AnyPC que sur vos propres ordinateurs ou avec l’accord de leur propriétaire.
+- `sec5`: Ne communiquez jamais votre ID et votre mot de passe à quelqu’un qui vous appelle à l’improviste : c’est une arnaque courante.
+- `limT`: Limites de la bêta
+- `lim1`: Ctrl+Alt+Suppr, les fenêtres UAC et l’écran de verrouillage ne sont pas encore pris en charge.
+- `lim2`: Presse-papiers : texte uniquement ; les fichiers s’envoient avec les boutons de la barre d’outils.
+- `lim3`: Vous passez d’un écran à l’autre depuis la barre d’outils ; sous Wayland, l’écran se choisit dans la boîte de dialogue du système lors de la connexion.
+- `lim4`: La version Linux est en bêta et a été moins testée que la version Windows.
+- `foot`: AnyPC bêta. Inclut FFmpeg (GPLv3), code source sur ffmpeg.org. Fourni « tel quel », sans garantie.

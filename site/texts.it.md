@@ -1,0 +1,52 @@
+# Тексты лендинга — it: перевод Claude с texts.ru.md (2026-11-06); надписи программы — точно как в ui/index.html. Правьте texts.ru.md и переводите заново.
+
+- `title`: Controlla il tuo computer da qualsiasi parte del mondo
+- `badge`: Beta · gratis
+- `lead`: AnyPC mostra lo schermo del tuo computer e ti permette di controllarlo da un altro, anche se entrambi sono dietro un router o su una rete mobile. Senza aprire porte e senza registrazione.
+- `dl`: Scarica
+- `web`: Apri il client web
+- `req`: Windows 10/11 · Linux (X11, Wayland)
+- `whyT`: Perché AnyPC
+- `f1t`: Supera qualsiasi NAT
+- `f1d`: Si connette direttamente e, quando non è possibile, tramite un server relay. Nessuna configurazione del router.
+- `f2t`: Crittografia end-to-end
+- `f2d`: Schermo e input viaggiano su DTLS-SRTP. Il server relay inoltra solo dati cifrati.
+- `f3t`: Un unico eseguibile
+- `f3d`: Lo stesso programma mostra il tuo ID e la password e si connette ad altri PC. Nessuna installazione.
+- `f4t`: Fluido e reattivo
+- `f4d`: Video H.264 fino a 1080p a 30 fps; la qualità si adatta alla connessione e le statistiche di connessione sono mostrate in tempo reale.
+- `getT`: Scarica AnyPC
+- `tab_win`: Windows
+- `tab_lin`: Linux
+- `dl_win`: Scarica per Windows
+- `dl_lin`: Scarica per Linux
+- `sys_win`: Windows 10 o 11, 64 bit
+- `sys_lin`: 64 bit (x86-64), X11 o Wayland · beta
+- `sha`: Checksum SHA-256
+- `w1`: Avvia il file AnyPC.exe scaricato: non serve installarlo e il programma mostra subito l’ID di questo computer.
+- `w2`: Se compare «PC protetto da Windows», fai clic su «Ulteriori informazioni» → «Esegui comunque»: il programma non è ancora firmato.
+- `w3`: Se Windows Firewall chiede l’accesso alla rete, consentilo; altrimenti la connessione diretta potrebbe non riuscire e il traffico passerà dal server relay.
+- `w4`: Per consentire le connessioni a questo computer, imposta una password nella sezione «Questo computer».
+- `wchk`: Verifica il file (PowerShell): il checksum deve coincidere con quello indicato sopra:
+- `l1`: Installa le dipendenze, che variano in base alla sessione grafica:
+- `l2`: Rendi il file eseguibile e avvialo: la finestra di AnyPC si apre in una scheda del browser:
+- `l3`: Su Wayland, alla prima connessione il sistema chiede quale schermo condividere e se consentire il controllo. La scelta viene memorizzata e non verrà più richiesta.
+- `l4`: Per chiudere il programma, fai clic su «Esci da AnyPC» nella scheda oppure premi Ctrl+C nel terminale.
+- `lchk`: Verifica il file: il checksum deve coincidere con quello indicato sopra:
+- `howT`: Inizia in 3 passi
+- `s1`: Scarica AnyPC sul computer da controllare (o su entrambi) e avvialo.
+- `s2`: Sul computer da controllare, imposta una password (almeno 8 caratteri) e annota il suo ID di 9 cifre.
+- `s3`: In una finestra del browser o sull’altro computer, inserisci quell’ID e la password e fai clic su «Connetti». Se sul PC controllato è attiva la conferma, lì qualcuno dovrà fare clic su «Consenti».
+- `secT`: Sicurezza
+- `sec1`: Ogni connessione richiede la password impostata sul PC controllato; la password non viene mai trasmessa in rete.
+- `secAsk`: Puoi attivare la conferma: a ogni connessione il PC controllato chiede «Consenti / Rifiuta» e, senza risposta entro 30 secondi, la connessione viene rifiutata.
+- `sec2`: Durante una sessione, il PC controllato mostra sempre un avviso con un pulsante per disconnettere.
+- `sec3`: Dopo 5 password errate, l’accesso viene bloccato temporaneamente.
+- `sec4`: Usa AnyPC solo sui tuoi computer o con il consenso del proprietario.
+- `sec5`: Non comunicare mai ID e password a chi ti chiama inaspettatamente: è una truffa comune.
+- `limT`: Limiti della beta
+- `lim1`: Ctrl+Alt+Canc, le finestre UAC e la schermata di blocco non sono ancora disponibili.
+- `lim2`: Appunti: solo testo; i file si inviano con i pulsanti della barra.
+- `lim3`: Puoi passare da un monitor all’altro dalla barra; su Wayland il monitor si sceglie nella finestra di sistema al momento della connessione.
+- `lim4`: La versione per Linux è in beta ed è stata testata meno di quella per Windows.
+- `foot`: AnyPC beta. Include FFmpeg (GPLv3), codice sorgente su ffmpeg.org. Fornito «così com’è», senza garanzia.
