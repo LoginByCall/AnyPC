@@ -16,50 +16,34 @@
 ## Затронутые контракты
 - Сигнализация §7 (`hub.Msg`) — внутренний, `v: 1`.
 
-## Состояние
-- VPS-HK hk.anypc.org (170.168.24.45): anypc-server (хаб, веб-клиент, лендинг anypc.org/www) + coturn.
-- VPS-RU ru.anypc.org (170.168.5.86, Москва): anypc-server (второй хаб, зеркало загрузок) + coturn.
-- VPS-US us.anypc.org (netcup 159.195.14.69, почтовый сервер): только coturn. Вход root на HK/RU — по ключу; netcup — через прыжок (см. память).
-- Программа: `bin/AnyPC.exe` (хост + клиент, WebView2, ffmpeg вшит). Веб-клиент: https://hk.anypc.org, https://ru.anypc.org. Старые имена turboseller.xyz серверы ещё принимают (совместимость), нигде не объявляют.
+## Состояние (2026-11-07)
+- Выпущен v0.1.5 (GitHub pre-release + HK и RU). Хабы: hk.anypc.org (170.168.24.45, + лендинг anypc.org/www), ru.anypc.org (170.168.5.86); us.anypc.org (netcup, почтовый) — только coturn. Доступ — см. память.
+- Программы: AnyPC.exe (FFmpeg качается при первом запуске, SHA-256 закреплён), AnyPC-linux-amd64, AnyPC-macos (x86_64+arm64, ad-hoc), anypc-server, install.sh.
+- В main после v0.1.5, не выпущено: опрос буфера в веб-клиенте только с разрешением clipboard-read (Firefox), карточка «Все основные ОС», Docker (deploy/docker, publish.sh с ANYPC_DOCKER=1 → ghcr.io).
 
 ## Лог решений
-- см. `TZ.md` §16.
+- см. `TZ.md` §16 (последнее: Docker → B, образ собирается здесь; выпуск v0.1.6 — копим правки).
 
 ## Верификация
-- V0 ✓ go vet (linux + windows), сборка `build.sh`.
-- V1 ✓ `go test ./...`: хаб; e2e (пароль, ICE, DTLS, H.264, канал input, bye); перезапуск захвата; блокировка перебора; декодирование ввода и скан-коды; отпускание зажатого; конфиг (ID, Argon2id). `TestLive` через боевой TURN ✓ (2026-11-06, any-hk, 4 ICE-сервера). Relay-адрес по учётке хаба выдают оба TURN: any-ru 11–16 мс, any-hk 0.5–0.8 с.
-- V3 — AnyPC.exe на Windows не запускался: окно, ввод, полный экран, плашка — НЕ ПОДТВЕРЖДЕНЫ.
+- V0 ✓ go vet (linux + windows), build.sh.
+- V1 ✓ `go test ./...` (2026-11-07, все пакеты); TestLive через боевые хабы; Docker-образ amd64 запущен, coturn 4.18 в compose стартует.
+- V3 — НЕ ПОДТВЕРЖДЕНЫ: AnyPC.exe на Windows (окно, ввод, полный экран, плашка), Мак (мышь, клавиатура, второй монитор), установка узла на свежий VPS, compose с Let's Encrypt, замер Томск↔Шэньчжэнь.
 
-## СЛЕДУЮЩИЙ ШАГ — выпущен v0.1.5 (свой узел, macOS, лендинг). Владелец: V3 Мака (мышь, клавиатура, второй монитор, плашка-окно), установка узла на свежий VPS; HARDENING — выключить Universal SSL. Открыто: пометка pre-release ломает запасное зеркало install.sh (releases/latest); выкладка rsync вместо scp — по желанию
-Решение владельца: «A) AnyPC.exe скачивает FFmpeg с gyan.dev при первом запуске (с проверкой SHA-256), сам FFmpeg не вшит» (сначала сказал B, затем «хотя лучше А»). Версия по умолчанию v0.1.0.
-План:
-1. app/ffmpeg.go (без тегов сборки, тестируется на Linux): ensureFFmpeg(dir, progress) — зеркала gyan.dev/packages и GitHub GyanD/codexffmpeg (ffmpeg-9.0.2-essentials_build.zip), чтение zip по HTTP Range (только bin/ffmpeg.exe), SHA-256 exe закреплён (= нынешний вшитый, проверенный), прокси из окружения с откатом на прямое. Тесты: успех, неверный хэш, первое зеркало мёртвое.
-2. main_windows: убрать go:embed и extractFFmpeg; ensureFFmpeg в фоне, прогресс в hostInfo (ffmpeg: проценты/ошибка) → ui mystate, ключи на 7 языков; захват до готовности — ошибка «FFmpeg ещё загружается».
-3. build.sh: убрать загрузку/вшивание ffmpeg; удалить app/ffmpeg.exe.gz.
-4. Лендинг: foot и w1 (первый запуск качает FFmpeg ~40 МБ с gyan.dev) — ru + 6 языков; README лицензия.
-5. build.sh ✓ → тег v0.1.0 → publish на оба хаба → gh release create v0.1.0 (AnyPC.exe, AnyPC-linux-amd64, SHA256SUMS, заметки ru/en).
-Решение владельца: «A) Хабы HK + RU, хост на обоих, клиент выбирает первый ответивший».
-План (делать по порядку, каждый шаг — тесты зелёные):
-1. agent: Server — список через запятую; Run держит по циклу переподключения на каждый хаб; online = хоть один хаб; bye при Disconnect — через conn сессии (s.conn), не a.conn. Тест: хост на двух локальных хабах, клиент через любой.
-2. hub: Accept с OriginPatterns ["*"] (страница any-hk → WS any-ru; Origin — гигиена, не защита: cookie нет). server: флаг -hubs (список wss://…/ws), GET /hubs (CORS, как /turns).
-3. ui: HUBS = window.ANYPC.ws (массив из конфига) или свой /ws + /hubs; на «Подключиться» — WS ко всем, connect по каждому hello; победитель — чей offer пришёл; ошибки/закрытия проигравших игнорируются, end — только когда отказали все; /turns — с первого хаба.
-4. app/config: Server по умолчанию "wss://any-hk.turboseller.xyz/ws,wss://any-ru.turboseller.xyz/ws"; миграция: старый any. и одиночный any-hk-по-умолчанию → новый список; window.ANYPC.ws — массив.
-5. deploy: setup.sh HUBS=… в ExecStart (-hubs); publish.sh — ANYPC_VPS списком; правило разрешения обновить. Владелец: setup.sh на RU (anypc-server, -domain any-ru), -hubs на HK.
-6. V1: build.sh; живой TestLive на обоих хабах; браузерная проверка (cdp.mjs в scratchpad).
-Статус 2026-11-06: ВЫПОЛНЕНО. HK и RU — хабы (-hubs на обоих), TestLive ✓ с хостом на обоих хабах (клиент через RU 7.5 с, через HK 9.5 с); веб-клиент any-ru видит оба хаба и три TURN. Ожидает владельца: правило /permissions для publish на оба хаба; V3 (обновить AnyPC на своих ПК).
-Сделано 2026-11-06 (см. TZ.md §16): монитор (REQ-F-09), ключ ID (REQ-F-01, REQ-S-05); по отчёту «relay периодически рвётся»:
-- хаб шлёт хосту свежий hello (пароль TURN) перед каждым connect;
-- клиент: bye при любом завершении, хост освобождается по bye синхронно (нет «занят» при повторе); автопереподключение до 3 раз; «не удалось соединиться» ≠ «связь потеряна»; кнопка «Свернуть» (Windows).
-- адаптивный битрейт REQ-N-03: agent/rate.go — по RTCP RR: потери > 10 % → ×0.6 (кулдаун 3 с, ≥ 300 кбит/с), < 2 % 20 с → ×1.3 до config.bitrate; шаг = перезапуск кодировщика. Agent.Capture(ctx, mon, kbps), Agent.Bitrate.
-- Открыто: установление соединения через relay 9–10 с (подозрение — потеря первых DTLS-пакетов до установки TURN-permission, ретраи 1-2-4 с); проверка `tc netem` (1 Мбит/с, 5 %) не проведена — нужен root.
-Выкладка — только deploy/publish.sh.
+## СЛЕДУЮЩИЙ ШАГ
+- Выпуск v0.1.6 (ASK, решение владельца): Firefox-буфер, лендинг, первая публикация образа в ghcr. Процедура: build.sh → тег → `ANYPC_VPS='root@170.168.24.45 root@170.168.5.86' ANYPC_DOCKER=1 deploy/publish.sh` → gh release.
 
 ## Ожидает человека
-Правка site/texts.ru.md → перевод DeepL (нужен ключ API Free).
-- V3 AnyPC.exe (сначала вручную обновить все установленные копии — старый адрес any. не работает). Замер Томск↔Шэньчжэнь.
+- Решение о v0.1.6.
+- HARDENING: выключить Universal SSL в Cloudflare (CAA).
+- V3 из списка выше.
+- Перевод лендинга через DeepL — нужен ключ API Free (сейчас переводит Claude).
+
+## Открыто (не блокирует)
+- Пометка pre-release ломает запасное зеркало install.sh (releases/latest → 404); рабочие — HK и RU.
+- install.sh на coturn 4.18 — предупреждения no-dtls/no-cli (стартует); на HK/RU 4.6.1.
+- Установление через relay 9–10 с (гипотеза: потеря первых DTLS до TURN-permission); `tc netem` не проведён (нужен root).
 
 ## Риски
-- Битрейт только по потерям: очередь без потерь (bufferbloat) не видна → задержка растёт; добавить RTT из RR.
+- Битрейт только по потерям: bufferbloat не виден → задержка растёт; добавить RTT из RR.
 - Нет Ctrl+Alt+Del / UAC / экрана блокировки — нужен режим службы (Э3).
 - Win/Alt+Tab с физической клавиатуры не перехватываются в окне программы (нужен низкоуровневый хук) — пока кнопки на панели.
-- ffmpeg GPL вшит — только для своих ПК (ASK #11 при раздаче).
