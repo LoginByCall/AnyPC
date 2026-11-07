@@ -1,0 +1,59 @@
+# Свой узел AnyPC в Docker. Рядом — файл .env:
+#   DOMAIN=my.example.com        (запись A → IP этого сервера)
+#   PUBLIC_IP=203.0.113.10       (публичный IP сервера: ретранслятору запрещено слать на него — иначе relay достаёт до служб хоста)
+#   TURN_SECRET=...              (openssl rand -base64 32)
+# Запуск: docker compose up -d. Обновление: docker compose pull && docker compose up -d.
+# network_mode: host — у ретранслятора 16 тысяч UDP-портов, проброс портов Docker для этого не годится.
+services:
+  anypc:
+    image: ghcr.io/loginbycall/anypc-server:latest
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      ANYPC_TURN_SECRET: "${TURN_SECRET:?}"
+    # Сам занимает 80/443 и получает сертификат Let's Encrypt.
+    # За своим обратным прокси (Caddy, nginx, Traefik уже на 80/443) — вместо "-domain", "${DOMAIN}":
+    #   "-addr", "127.0.0.1:8080"   и в прокси: my.example.com → http://127.0.0.1:8080 (с WebSocket)
+    command: ["-domain", "${DOMAIN:?}", "-turn", "${DOMAIN}"]
+    volumes:
+      - anypc:/data
+  coturn:
+    image: coturn/coturn:latest
+    network_mode: host
+    restart: unless-stopped
+    # те же настройки, что ставит install.sh (deploy/setup.sh)
+    command:
+      - -n
+      - --log-file=stdout
+      - --listening-port=3478
+      - --fingerprint
+      - --use-auth-secret
+      - --static-auth-secret=${TURN_SECRET:?}
+      - --realm=${DOMAIN:?}
+      - --min-port=49152
+      - --max-port=65535
+      - --no-tls
+      - --no-dtls
+      - --no-cli
+      - --no-multicast-peers
+      - --user-quota=4
+      - --total-quota=40
+      - --no-tcp-relay
+      - --max-bps=1250000
+      - --denied-peer-ip=0.0.0.0-0.255.255.255
+      - --denied-peer-ip=10.0.0.0-10.255.255.255
+      - --denied-peer-ip=100.64.0.0-100.127.255.255
+      - --denied-peer-ip=127.0.0.0-127.255.255.255
+      - --denied-peer-ip=169.254.0.0-169.254.255.255
+      - --denied-peer-ip=172.16.0.0-172.31.255.255
+      - --denied-peer-ip=192.168.0.0-192.168.255.255
+      - --denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      - --denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      - --denied-peer-ip=::1
+      - --denied-peer-ip=::ffff:0.0.0.0-::ffff:255.255.255.255
+      - --denied-peer-ip=64:ff9b::-64:ff9b::ffff:ffff
+      - --denied-peer-ip=198.18.0.0-198.19.255.255
+      - --denied-peer-ip=240.0.0.0-255.255.255.255
+      - --denied-peer-ip=${PUBLIC_IP:?}
+volumes:
+  anypc:
