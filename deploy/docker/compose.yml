@@ -21,7 +21,7 @@ services:
     image: coturn/coturn:latest
     network_mode: host
     restart: unless-stopped
-    # те же настройки, что ставит install.sh (deploy/setup.sh)
+    # те же настройки, что ставит install.sh (deploy/setup.sh); без no-dtls и no-cli — в coturn 4.18 их нет (CLI выключен по умолчанию), и с ними он не стартует
     command:
       - -n
       - --log-file=stdout
@@ -33,8 +33,6 @@ services:
       - --min-port=49152
       - --max-port=65535
       - --no-tls
-      - --no-dtls
-      - --no-cli
       - --no-multicast-peers
       - --user-quota=4
       - --total-quota=40
