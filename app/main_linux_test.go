@@ -16,7 +16,7 @@ func TestLocalAPI(t *testing.T) {
 	if err != nil || !strings.Contains(string(page), `const T = "tok123"`) || strings.Count(string(page), "<script>") < 2 {
 		t.Fatalf("страница без привязок: %v", err)
 	}
-	h := handler("127.0.0.1:5000", "tok123", page, cfg, &agent.Agent{}, func() map[string]any { return map[string]any{"id": cfg.ID} }, newFiles(t.TempDir()))
+	h := handler("127.0.0.1:5000", "tok123", page, cfg, &agent.Agent{}, nil, func() map[string]any { return map[string]any{"id": cfg.ID} }, newFiles(t.TempDir()))
 	do := func(method, host, path, token string) (int, string) {
 		r := httptest.NewRequest(method, path, strings.NewReader("[]"))
 		r.Host = host

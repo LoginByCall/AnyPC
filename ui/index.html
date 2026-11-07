@@ -44,6 +44,9 @@
     </div>
     <div id="pwstate" class="mut"></div>
     <label class="mut"><input id="confirm" type="checkbox"> <span data-t="confirm_l"></span></label>
+    <div class="row"><span class="mut" data-t="node_l" data-tt="node_t"></span> <input id="node" data-tp="node_p"> <button id="setnode" data-t="node_save"></button></div>
+    <label class="mut"><input id="nodepub" type="checkbox"> <span data-t="nodepub_l"></span></label>
+    <div id="nodestate" class="mut"></div>
     <div id="incoming" class="banner hidden">
       <span data-t="incoming"></span> <span class="mono" id="incid"></span>
       <button id="hostbye" class="main" data-t="disc"></button>
@@ -96,7 +99,7 @@ const APP = typeof window.hostInfo === 'function'; // открыто в AnyPC.ex
 if (!APP) fetch(httpOf(HUBS[0]) + '/hubs').then(r => r.json()).then(l => { for (const u of l) if (!HUBS.includes(u)) HUBS.push(u); }).catch(() => {});
 // ---------- Языки: по языку Windows/браузера, по умолчанию английский ----------
 const L = {
-  en: { upd: "Version %s is available — update", ff_dl: "Downloading the FFmpeg component (once):", ff_err: "Could not download FFmpeg — check the internet connection; retrying every 30 s", turn_l: "Relay server", turn_t: "Used only when a direct connection is impossible. Ping: from this PC + from the remote PC (known after connecting).", auto: "Auto", ms: "ms",
+  en: { node_l: "Own server", node_t: "Your own AnyPC node (install.sh on your VPS). Empty — AnyPC servers. A single connection via another node: ID@node in the ID field.", node_p: "my.example.com — empty: AnyPC servers", node_save: "Save", nodepub_l: "also stay on the AnyPC network", node_chk: "Checking the node…", node_ok: "Saved — this PC is now registered on: ", node_bad: "Not saved: ", id_node: "Invalid node address after @", upd: "Version %s is available — update", ff_dl: "Downloading the FFmpeg component (once):", ff_err: "Could not download FFmpeg — check the internet connection; retrying every 30 s", turn_l: "Relay server", turn_t: "Used only when a direct connection is impossible. Ping: from this PC + from the remote PC (known after connecting).", auto: "Auto", ms: "ms",
     fp_l: 'Key fingerprint:', e_keychanged: 'the remote PC key has changed. If AnyPC was not reinstalled there, do not connect', trust: 'Trust the new key and connect', mon_t: 'Remote PC monitor', f_broken: 'connection lost — send the file again to resume', f_send: 'Send file', f_get: 'Get file', f_send_t: 'Send a file to the remote PC (or drop it onto the screen)', f_get_t: 'Opens a file picker on the remote PC', f_cancel: 'cancelled', f_err: 'error', f_done_up: 'saved to Downloads on the remote PC', f_done_down: 'saved to Downloads',
     need_app: 'Connecting is available in the AnyPC program — download it at www.anypc.org', e_nopass: 'no password is set on the remote PC', e_hostauth: 'the remote PC could not be verified — connection may be intercepted',
     me_h: 'This computer', myid_l: 'Your ID', newpw_p: 'New password (8+ characters)', setpw: 'Set password', incoming: 'Incoming session:', disc: 'Disconnect',
@@ -108,7 +111,7 @@ const L = {
     no_server: 'No connection to the server', e_auth: 'wrong password', e_locked: 'too many attempts — please wait', e_busy: 'the remote PC is busy with another session',
     e_not_found: 'the remote PC is offline', e_internal: 'error on the remote PC', e_forbidden: 'forbidden',
     s_for: 'over {n} s', med: 'med', max: 'max', ms: 'ms', fps: 'fps', kbps: 'kbit/s', loss: 'loss', jb: 'jitter buffer', frz: 'freezes' },
-  ru: { upd: "Доступна версия %s — обновить", ff_dl: "Загрузка компонента FFmpeg (один раз):", ff_err: "Не удалось скачать FFmpeg — проверьте интернет; повтор каждые 30 с", turn_l: "Сервер-ретранслятор", turn_t: "Нужен, только если напрямую соединиться не вышло. Пинг: от этого ПК + от удалённого ПК (известен после подключения).", auto: "Авто", ms: "мс",
+  ru: { node_l: "Свой сервер", node_t: "Свой узел AnyPC (install.sh на вашем VPS). Пусто — серверы AnyPC. Разовое подключение через другой узел: ID@узел в поле ID.", node_p: "my.example.com — пусто: серверы AnyPC", node_save: "Сохранить", nodepub_l: "оставаться и в сети AnyPC", node_chk: "Проверяю узел…", node_ok: "Сохранено — этот ПК теперь в сети на: ", node_bad: "Не сохранено: ", id_node: "Неверный адрес узла после @", upd: "Доступна версия %s — обновить", ff_dl: "Загрузка компонента FFmpeg (один раз):", ff_err: "Не удалось скачать FFmpeg — проверьте интернет; повтор каждые 30 с", turn_l: "Сервер-ретранслятор", turn_t: "Нужен, только если напрямую соединиться не вышло. Пинг: от этого ПК + от удалённого ПК (известен после подключения).", auto: "Авто", ms: "мс",
     fp_l: 'Отпечаток ключа:', e_keychanged: 'ключ удалённого ПК изменился. Если AnyPC на нём не переустанавливали — не подключайтесь', trust: 'Доверять новому ключу и подключиться', mon_t: 'Монитор удалённого ПК', f_broken: 'обрыв — отправьте файл ещё раз, продолжится с места обрыва', f_send: 'Отправить файл', f_get: 'Получить файл', f_send_t: 'Отправить файл на удалённый ПК (или перетащите его на экран)', f_get_t: 'Откроет окно выбора файла на удалённом ПК', f_cancel: 'отменено', f_err: 'ошибка', f_done_up: 'сохранён в «Загрузки» удалённого ПК', f_done_down: 'сохранён в «Загрузки»',
     need_app: 'Подключение доступно в программе AnyPC — скачайте её на www.anypc.org', e_nopass: 'на удалённом ПК не задан пароль', e_hostauth: 'удалённый ПК не подтвердил подлинность — соединение может быть перехвачено',
     me_h: 'Это рабочее место', myid_l: 'Ваш ID', newpw_p: 'Новый пароль (≥ 8 символов)', setpw: 'Задать пароль', incoming: 'Идёт входящая сессия:', disc: 'Разорвать',
@@ -120,7 +123,7 @@ const L = {
     no_server: 'Нет связи с сервером', e_auth: 'неверный пароль', e_locked: 'слишком много попыток — подождите', e_busy: 'удалённый ПК занят другой сессией',
     e_not_found: 'удалённый ПК не в сети', e_internal: 'ошибка на удалённом ПК', e_forbidden: 'запрещено',
     s_for: 'за {n} с', med: 'мед', max: 'макс', ms: 'мс', fps: 'к/с', kbps: 'кбит/с', loss: 'потери', jb: 'джиттер-буфер', frz: 'фризов' },
-  zh: { upd: "有新版本 %s — 更新", ff_dl: "正在下载 FFmpeg 组件（仅一次）：", ff_err: "无法下载 FFmpeg——请检查网络连接；每 30 秒重试", turn_l: "中继服务器", turn_t: "仅在无法直连时使用。延迟：本机 + 远程电脑（连接后可知）。", auto: "自动", ms: "毫秒",
+  zh: { node_l: "自有服务器", node_t: "您自己的 AnyPC 节点（在您的 VPS 上运行 install.sh）。留空——使用 AnyPC 服务器。临时通过其他节点连接：在 ID 栏输入 ID@节点。", node_p: "my.example.com——留空：AnyPC 服务器", node_save: "保存", nodepub_l: "同时保留在 AnyPC 网络中", node_chk: "正在检查节点…", node_ok: "已保存——本机现注册于：", node_bad: "未保存：", id_node: "@ 后的节点地址无效", upd: "有新版本 %s — 更新", ff_dl: "正在下载 FFmpeg 组件（仅一次）：", ff_err: "无法下载 FFmpeg——请检查网络连接；每 30 秒重试", turn_l: "中继服务器", turn_t: "仅在无法直连时使用。延迟：本机 + 远程电脑（连接后可知）。", auto: "自动", ms: "毫秒",
     fp_l: '密钥指纹：', e_keychanged: '远程电脑的密钥已更改。如果没有在该电脑上重新安装 AnyPC，请不要连接', trust: '信任新密钥并连接', mon_t: '远程电脑的显示器', f_broken: '连接中断——再次发送文件即可从中断处继续', f_send: '发送文件', f_get: '获取文件', f_send_t: '向远程电脑发送文件（或拖放到画面上）', f_get_t: '在远程电脑上打开文件选择窗口', f_cancel: '已取消', f_err: '错误', f_done_up: '已保存到远程电脑的“下载”文件夹', f_done_down: '已保存到“下载”文件夹',
     need_app: '请在 AnyPC 程序中连接——可在 www.anypc.org 下载', e_nopass: '远程电脑未设置密码', e_hostauth: '无法验证远程电脑——连接可能被拦截',
     me_h: '本机', myid_l: '您的 ID', newpw_p: '新密码（至少 8 个字符）', setpw: '设置密码', incoming: '正在进行的传入会话：', disc: '断开',
@@ -132,7 +135,7 @@ const L = {
     no_server: '无法连接服务器', e_auth: '密码错误', e_locked: '尝试次数过多，请稍候', e_busy: '远程电脑正被其他会话占用',
     e_not_found: '远程电脑不在线', e_internal: '远程电脑出错', e_forbidden: '禁止访问',
     s_for: '最近 {n} 秒', med: '中位', max: '最大', ms: '毫秒', fps: '帧/秒', kbps: 'kbit/s', loss: '丢包', jb: '抖动缓冲', frz: '卡顿' },
-  es: { upd: "Versión %s disponible — actualizar", ff_dl: "Descargando el componente FFmpeg (una sola vez):", ff_err: "No se pudo descargar FFmpeg: comprueba la conexión a internet; se reintenta cada 30 s", turn_l: "Servidor de retransmisión", turn_t: "Solo se usa si no es posible la conexión directa. Ping: desde este PC + desde el PC remoto (se conoce al conectar).", auto: "Auto", ms: "ms",
+  es: { node_l: "Servidor propio", node_t: "Tu propio nodo AnyPC (install.sh en tu VPS). Vacío: servidores de AnyPC. Una conexión puntual por otro nodo: ID@nodo en el campo ID.", node_p: "my.example.com — vacío: servidores de AnyPC", node_save: "Guardar", nodepub_l: "seguir también en la red AnyPC", node_chk: "Comprobando el nodo…", node_ok: "Guardado: este PC ahora está registrado en: ", node_bad: "No guardado: ", id_node: "Dirección de nodo no válida tras @", upd: "Versión %s disponible — actualizar", ff_dl: "Descargando el componente FFmpeg (una sola vez):", ff_err: "No se pudo descargar FFmpeg: comprueba la conexión a internet; se reintenta cada 30 s", turn_l: "Servidor de retransmisión", turn_t: "Solo se usa si no es posible la conexión directa. Ping: desde este PC + desde el PC remoto (se conoce al conectar).", auto: "Auto", ms: "ms",
     fp_l: 'Huella de la clave:', e_keychanged: 'la clave del PC remoto ha cambiado. Si no se reinstaló AnyPC en él, no te conectes', trust: 'Confiar en la nueva clave y conectar', mon_t: 'Monitor del PC remoto', f_broken: 'conexión perdida: vuelve a enviar el archivo para continuar', f_send: 'Enviar archivo', f_get: 'Recibir archivo', f_send_t: 'Enviar un archivo al PC remoto (o arrástralo a la pantalla)', f_get_t: 'Abre un selector de archivos en el PC remoto', f_cancel: 'cancelado', f_err: 'error', f_done_up: 'guardado en Descargas del PC remoto', f_done_down: 'guardado en Descargas',
     need_app: 'La conexión está disponible en el programa AnyPC: descárgalo en www.anypc.org', e_nopass: 'el PC remoto no tiene contraseña', e_hostauth: 'no se pudo verificar el PC remoto; la conexión podría estar interceptada',
     me_h: 'Este equipo', myid_l: 'Tu ID', newpw_p: 'Nueva contraseña (8+ caracteres)', setpw: 'Establecer contraseña', incoming: 'Sesión entrante:', disc: 'Desconectar',
@@ -144,7 +147,7 @@ const L = {
     no_server: 'Sin conexión con el servidor', e_auth: 'contraseña incorrecta', e_locked: 'demasiados intentos, espera un momento', e_busy: 'el PC remoto está ocupado con otra sesión',
     e_not_found: 'el PC remoto no está en línea', e_internal: 'error en el PC remoto', e_forbidden: 'prohibido',
     s_for: 'en {n} s', med: 'med', max: 'máx', ms: 'ms', fps: 'fps', kbps: 'kbit/s', loss: 'pérdidas', jb: 'búfer de jitter', frz: 'congelaciones' },
-  de: { upd: "Version %s verfügbar — aktualisieren", ff_dl: "FFmpeg-Komponente wird heruntergeladen (einmalig):", ff_err: "FFmpeg konnte nicht heruntergeladen werden – Internetverbindung prüfen; neuer Versuch alle 30 s", turn_l: "Relay-Server", turn_t: "Wird nur genutzt, wenn keine Direktverbindung möglich ist. Ping: von diesem PC + vom entfernten PC (bekannt nach dem Verbinden).", auto: "Auto", ms: "ms",
+  de: { node_l: "Eigener Server", node_t: "Eigener AnyPC-Knoten (install.sh auf Ihrem VPS). Leer – AnyPC-Server. Einzelne Verbindung über einen anderen Knoten: ID@Knoten im ID-Feld.", node_p: "my.example.com – leer: AnyPC-Server", node_save: "Speichern", nodepub_l: "auch im AnyPC-Netz bleiben", node_chk: "Knoten wird geprüft…", node_ok: "Gespeichert – dieser PC ist jetzt angemeldet bei: ", node_bad: "Nicht gespeichert: ", id_node: "Ungültige Knotenadresse nach @", upd: "Version %s verfügbar — aktualisieren", ff_dl: "FFmpeg-Komponente wird heruntergeladen (einmalig):", ff_err: "FFmpeg konnte nicht heruntergeladen werden – Internetverbindung prüfen; neuer Versuch alle 30 s", turn_l: "Relay-Server", turn_t: "Wird nur genutzt, wenn keine Direktverbindung möglich ist. Ping: von diesem PC + vom entfernten PC (bekannt nach dem Verbinden).", auto: "Auto", ms: "ms",
     fp_l: 'Schlüssel-Fingerabdruck:', e_keychanged: 'der Schlüssel des entfernten PCs hat sich geändert. Wenn AnyPC dort nicht neu installiert wurde, nicht verbinden', trust: 'Neuem Schlüssel vertrauen und verbinden', mon_t: 'Monitor des entfernten PCs', f_broken: 'Verbindung unterbrochen – Datei erneut senden, um fortzusetzen', f_send: 'Datei senden', f_get: 'Datei holen', f_send_t: 'Datei an den entfernten PC senden (oder auf das Bild ziehen)', f_get_t: 'Öffnet eine Dateiauswahl auf dem entfernten PC', f_cancel: 'abgebrochen', f_err: 'Fehler', f_done_up: 'in „Downloads“ des entfernten PCs gespeichert', f_done_down: 'in „Downloads“ gespeichert',
     need_app: 'Verbinden ist im Programm AnyPC möglich – Download unter www.anypc.org', e_nopass: 'auf dem entfernten PC ist kein Passwort festgelegt', e_hostauth: 'der entfernte PC konnte nicht verifiziert werden – die Verbindung könnte abgefangen sein',
     me_h: 'Dieser Computer', myid_l: 'Ihre ID', newpw_p: 'Neues Passwort (mind. 8 Zeichen)', setpw: 'Passwort festlegen', incoming: 'Eingehende Sitzung:', disc: 'Trennen',
@@ -156,7 +159,7 @@ const L = {
     no_server: 'Keine Verbindung zum Server', e_auth: 'falsches Passwort', e_locked: 'zu viele Versuche – bitte warten', e_busy: 'der entfernte PC ist mit einer anderen Sitzung belegt',
     e_not_found: 'der entfernte PC ist offline', e_internal: 'Fehler auf dem entfernten PC', e_forbidden: 'nicht erlaubt',
     s_for: 'über {n} s', med: 'Med', max: 'max', ms: 'ms', fps: 'fps', kbps: 'kbit/s', loss: 'Verlust', jb: 'Jitter-Puffer', frz: 'Hänger' },
-  fr: { upd: "Version %s disponible — mettre à jour", ff_dl: "Téléchargement du composant FFmpeg (une seule fois) :", ff_err: "Impossible de télécharger FFmpeg — vérifiez la connexion Internet ; nouvel essai toutes les 30 s", turn_l: "Serveur relais", turn_t: "Utilisé seulement si la connexion directe est impossible. Ping : depuis ce PC + depuis le PC distant (connu après la connexion).", auto: "Auto", ms: "ms",
+  fr: { node_l: "Serveur personnel", node_t: "Votre propre nœud AnyPC (install.sh sur votre VPS). Vide : serveurs AnyPC. Connexion ponctuelle via un autre nœud : ID@nœud dans le champ ID.", node_p: "my.example.com — vide : serveurs AnyPC", node_save: "Enregistrer", nodepub_l: "rester aussi sur le réseau AnyPC", node_chk: "Vérification du nœud…", node_ok: "Enregistré — ce PC est maintenant inscrit sur : ", node_bad: "Non enregistré : ", id_node: "Adresse de nœud invalide après @", upd: "Version %s disponible — mettre à jour", ff_dl: "Téléchargement du composant FFmpeg (une seule fois) :", ff_err: "Impossible de télécharger FFmpeg — vérifiez la connexion Internet ; nouvel essai toutes les 30 s", turn_l: "Serveur relais", turn_t: "Utilisé seulement si la connexion directe est impossible. Ping : depuis ce PC + depuis le PC distant (connu après la connexion).", auto: "Auto", ms: "ms",
     fp_l: 'Empreinte de la clé :', e_keychanged: 'la clé du PC distant a changé. Si AnyPC n’y a pas été réinstallé, ne vous connectez pas', trust: 'Faire confiance à la nouvelle clé et se connecter', mon_t: 'Écran du PC distant', f_broken: 'connexion perdue — renvoyez le fichier pour reprendre', f_send: 'Envoyer un fichier', f_get: 'Récupérer un fichier', f_send_t: 'Envoyer un fichier au PC distant (ou le déposer sur l’écran)', f_get_t: 'Ouvre un sélecteur de fichiers sur le PC distant', f_cancel: 'annulé', f_err: 'erreur', f_done_up: 'enregistré dans Téléchargements du PC distant', f_done_down: 'enregistré dans Téléchargements',
     need_app: 'La connexion est disponible dans le programme AnyPC — téléchargez-le sur www.anypc.org', e_nopass: 'aucun mot de passe n’est défini sur le PC distant', e_hostauth: 'impossible de vérifier le PC distant — la connexion est peut-être interceptée',
     me_h: 'Cet ordinateur', myid_l: 'Votre ID', newpw_p: 'Nouveau mot de passe (8 caractères min.)', setpw: 'Définir le mot de passe', incoming: 'Session entrante :', disc: 'Déconnecter',
@@ -168,7 +171,7 @@ const L = {
     no_server: 'Pas de connexion au serveur', e_auth: 'mot de passe incorrect', e_locked: 'trop de tentatives — patientez', e_busy: 'le PC distant est occupé par une autre session',
     e_not_found: 'le PC distant est hors ligne', e_internal: 'erreur sur le PC distant', e_forbidden: 'interdit',
     s_for: 'sur {n} s', med: 'méd', max: 'max', ms: 'ms', fps: 'i/s', kbps: 'kbit/s', loss: 'pertes', jb: 'tampon de gigue', frz: 'gels' },
-  it: { upd: "Versione %s disponibile — aggiorna", ff_dl: "Download del componente FFmpeg (una sola volta):", ff_err: "Impossibile scaricare FFmpeg: controlla la connessione a Internet; nuovo tentativo ogni 30 s", turn_l: "Server relay", turn_t: "Usato solo se la connessione diretta non è possibile. Ping: da questo PC + dal PC remoto (noto dopo la connessione).", auto: "Auto", ms: "ms",
+  it: { node_l: "Server proprio", node_t: "Il tuo nodo AnyPC (install.sh sul tuo VPS). Vuoto: server AnyPC. Connessione singola tramite un altro nodo: ID@nodo nel campo ID.", node_p: "my.example.com — vuoto: server AnyPC", node_save: "Salva", nodepub_l: "restare anche nella rete AnyPC", node_chk: "Verifica del nodo…", node_ok: "Salvato: questo PC ora è registrato su: ", node_bad: "Non salvato: ", id_node: "Indirizzo del nodo non valido dopo @", upd: "Versione %s disponibile — aggiorna", ff_dl: "Download del componente FFmpeg (una sola volta):", ff_err: "Impossibile scaricare FFmpeg: controlla la connessione a Internet; nuovo tentativo ogni 30 s", turn_l: "Server relay", turn_t: "Usato solo se la connessione diretta non è possibile. Ping: da questo PC + dal PC remoto (noto dopo la connessione).", auto: "Auto", ms: "ms",
     fp_l: 'Impronta della chiave:', e_keychanged: 'la chiave del PC remoto è cambiata. Se AnyPC non è stato reinstallato, non connetterti', trust: 'Fidati della nuova chiave e connettiti', mon_t: 'Monitor del PC remoto', f_broken: 'connessione persa: invia di nuovo il file per riprendere', f_send: 'Invia file', f_get: 'Ricevi file', f_send_t: 'Invia un file al PC remoto (o trascinalo sullo schermo)', f_get_t: 'Apre una finestra di selezione file sul PC remoto', f_cancel: 'annullato', f_err: 'errore', f_done_up: 'salvato in Download del PC remoto', f_done_down: 'salvato in Download',
     need_app: 'La connessione è disponibile nel programma AnyPC: scaricalo da www.anypc.org', e_nopass: 'sul PC remoto non è impostata alcuna password', e_hostauth: 'impossibile verificare il PC remoto: la connessione potrebbe essere intercettata',
     me_h: 'Questo computer', myid_l: 'Il tuo ID', newpw_p: 'Nuova password (almeno 8 caratteri)', setpw: 'Imposta password', incoming: 'Sessione in entrata:', disc: 'Disconnetti',
@@ -203,6 +206,16 @@ window.onHostState = s => {
   $('incoming').classList.toggle('hidden', !s.session);
   $('incid').textContent = s.session || '';
   $('confirm').checked = s.confirm !== false;
+  if (!nodeShown) { nodeShown = true; $('node').value = s.node || ''; $('nodepub').checked = s.nodePub !== false; } // опрос раз в 1 с не затирает ввод
+};
+let nodeShown = false;
+$('setnode').onclick = async () => {
+  $('nodestate').textContent = t('node_chk');
+  try {
+    HUBS.splice(0, HUBS.length, ...(await setNode($('node').value, $('nodepub').checked)).split(','));
+    nodeShown = false; onHostState(await hostInfo());
+    $('nodestate').textContent = t('node_ok') + HUBS.map(u => u.replace(/^wss?:\/\//, '').replace(/\/ws$/, '')).join(', ');
+  } catch (e) { $('nodestate').textContent = t('node_bad') + e; }
 };
 if (APP) { hostInfo().then(onHostState); setInterval(() => hostInfo().then(onHostState).catch(() => {}), 1000); } // опрос: прогресс FFmpeg, новая версия
 else $('me').classList.add('hidden');
@@ -228,7 +241,7 @@ function renderRecent() {
 renderRecent();
 
 // ---------- Сессия ----------
-let ws, pc, dc, ctl, host, timer, last, samples = [], lastClip = '', socks = [], cur = null; // ws — хаб-победитель, socks — все попытки
+let ws, pc, dc, ctl, host, target, timer, last, samples = [], lastClip = '', socks = [], cur = null; // ws — хаб-победитель, socks — все попытки
 const held = new Set();
 const v = $('v');
 const show = sess => { $('home').classList.toggle('hidden', sess); $('sess').classList.toggle('hidden', !sess); };
@@ -294,11 +307,17 @@ function end(reason, keep) {
 
 $('go').onclick = async () => {
   end('', !!again);
-  host = $('id').value.replace(/\D/g, '');
+  // «ID@узел» — подключение через указанный узел, настройки не меняются; хабы — только этот (У10)
+  const [hid, nd = ''] = $('id').value.trim().split('@');
+  host = hid.replace(/\D/g, '');
+  const node = nd.trim().toLowerCase();
+  target = node ? host + '@' + node : host;
+  const hubs = node ? [HUBS[0].slice(0, HUBS[0].indexOf('//') + 2) + node + '/ws'] : HUBS; // схема — как у своих хабов (wss; ws — только отладка)
   $('trust').classList.add('hidden');
   if (trustNext && trustNext.host !== host) trustNext = null;
-  if (again && again.host !== host) again = null;
+  if (again && again.host !== target) again = null;
   if (host.length !== 9) { $('msg').textContent = t('id9'); return; }
+  if (node && !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\d{1,5})?$/.test(node)) { $('msg').textContent = t('id_node'); return; }
   $('msg').textContent = t('connecting');
   if (!APP && !(await loadPake())) { $('msg').textContent = t('need_app'); return; }
   last = null;
@@ -308,9 +327,9 @@ $('go').onclick = async () => {
   const weak = [t('no_server'), t('err') + (L[lang].e_not_found || 'not_found')]; // «этот хаб не знает хост» — не главная причина
   const lose = msg => { // хаб отказал до offer; конец — только когда отказали все
     errs.push(msg);
-    if (!ws && cur === att && errs.length === HUBS.length) end(errs.find(e => !weak.includes(e)) || errs[0]);
+    if (!ws && cur === att && errs.length === hubs.length) end(errs.find(e => !weak.includes(e)) || errs[0]);
   };
-  for (const u of HUBS) {
+  for (const u of hubs) {
     const w = new WebSocket(u);
     socks.push(w);
     let ice = [], out = false;
@@ -427,9 +446,9 @@ async function onAuth(ch, e) {
     }
     trustNext = null; expect = ''; authed = true;
     if (was !== fp) await known.set(host, fp);
-    again = { host, pw: $('pw').value || again?.pw, n: 0 };
+    again = { host: target, pw: $('pw').value || again?.pw, n: 0 };
     show(true); v.focus(); $('pw').value = '';
-    store.set('recent', [host, ...store.get('recent', []).filter(x => x !== host)].slice(0, 8)); renderRecent();
+    store.set('recent', [target, ...store.get('recent', []).filter(x => x !== target)].slice(0, 8)); renderRecent();
   } else if (m.t === 'ask') $('msg').textContent = t('asking');
   else if (m.t === 'denied') end(t('err') + t('e_denied'));
   else if (m.t === 'fail') end(t('err') + t('e_auth'));

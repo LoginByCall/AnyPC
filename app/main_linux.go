@@ -56,9 +56,10 @@ func main() {
 	online, session, update := false, "", ""
 	a.OnState = func(on bool, s string) { mu.Lock(); online, session = on, s; mu.Unlock() }
 	info := func() map[string]any {
+		node, pub := cfg.node()
 		mu.Lock()
 		defer mu.Unlock()
-		return map[string]any{"id": cfg.ID, "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "version": version, "update": update}
+		return map[string]any{"id": cfg.ID, "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "version": version, "update": update, "node": node, "nodePub": pub, "server": cfg.Server}
 	}
 	go watchUpdates(func(v string) { mu.Lock(); update = v; mu.Unlock() })
 
@@ -74,7 +75,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	h := handler(addr, token, page, cfg, a, info, newFiles(downloads()))
+	run := &runner{a: a, ctx: ctx}
+	h := handler(addr, token, page, cfg, a, run, info, newFiles(downloads()))
 	go http.Serve(l, h)
 	url := "http://" + addr + "/?t=" + token
 	kind := "X11"
@@ -85,13 +87,14 @@ func main() {
 	if !*noBrowser {
 		exec.Command("xdg-open", url).Start()
 	}
-	a.Run(ctx)
+	run.start(cfg.Server)
+	run.wait()
 }
 
 // handler — интерфейс и API. Чужие страницы не могут ни прочитать токен, ни вызвать API:
 // страница отдаётся только с ?t=токен, API требует заголовок X-Token (кросс-доменный запрос с ним
 // упирается в CORS), Host проверяется против DNS rebinding.
-func handler(addr, token string, page []byte, cfg *config, a *agent.Agent, info func() map[string]any, fl *files) http.Handler {
+func handler(addr, token string, page []byte, cfg *config, a *agent.Agent, run *runner, info func() map[string]any, fl *files) http.Handler {
 	files := http.FileServer(http.FS(ui.FS))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Host != addr {
@@ -104,7 +107,7 @@ func handler(addr, token string, page []byte, cfg *config, a *agent.Agent, info 
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
 			}
-			api(w, r, strings.TrimPrefix(r.URL.Path, "/api/"), cfg, a, info, fl)
+			api(w, r, strings.TrimPrefix(r.URL.Path, "/api/"), cfg, a, run, info, fl)
 		case r.URL.Path == "/" || r.URL.Path == "/index.html":
 			if r.URL.Query().Get("t") != token {
 				http.Error(w, "Откройте ссылку, которую напечатал AnyPC в терминале", http.StatusForbidden)
@@ -133,7 +136,7 @@ window.ANYPC = {ws: %s};
   const T = %s;
   const api = (n, ...a) => fetch('/api/' + n, {method: 'POST', headers: {'X-Token': T, 'Content-Type': 'application/json'}, body: JSON.stringify(a)})
     .then(async r => { const j = await r.json(); if (!r.ok) throw j.error; return j.result; });
-  for (const n of ['hostInfo', 'setPassword', 'setConfirm', 'quit', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'hostVerify', 'knownGet', 'knownSet', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort']) window[n] = (...a) => api(n, ...a);
+  for (const n of ['hostInfo', 'setPassword', 'setConfirm', 'setNode', 'quit', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'hostVerify', 'knownGet', 'knownSet', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort']) window[n] = (...a) => api(n, ...a);
   window.fullscreen = on => on ? document.documentElement.requestFullscreen().then(() => navigator.keyboard?.lock()).catch(() => {})
                                : document.fullscreenElement && document.exitFullscreen();
 })();
@@ -142,7 +145,7 @@ window.ANYPC = {ws: %s};
 	return []byte(strings.Replace(string(b), "<script>", shim, 1)), nil
 }
 
-func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *agent.Agent, info func() map[string]any, fl *files) {
+func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *agent.Agent, run *runner, info func() map[string]any, fl *files) {
 	var args []json.RawMessage
 	json.NewDecoder(io.LimitReader(r.Body, 4<<20)).Decode(&args) // кусок файла 1 МБ в base64
 	str := func(i int) string {
@@ -184,6 +187,12 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 			json.Unmarshal(args[0], &on)
 		}
 		err = cfg.setConfirm(on)
+	case "setNode":
+		var pub bool
+		if len(args) > 1 {
+			json.Unmarshal(args[1], &pub)
+		}
+		res, err = setNode(cfg, run, str(0), pub)
 	case "quit": // вкладка браузера — не процесс: без кнопки программа живёт до Ctrl+C
 		a.Disconnect()
 		go func() { time.Sleep(300 * time.Millisecond); os.Exit(0) }()

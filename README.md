@@ -20,7 +20,16 @@ Both PCs keep a WebSocket connection to the signaling server (`anypc-server`), w
 ```
 Requires Go (toolchain auto-download), `curl`, `unzip`; `node` optional (translation check).
 
-## Deploy the server (Ubuntu, root)
+## Your own node (VPS, Ubuntu/Debian)
+Hub, relay (TURN) and web client on your server; who connected to whom stays with you.
+1. DNS: an A record `my.example.com` → the VPS IP (Cloudflare: grey cloud, DNS only).
+2. Open ports: 80, 443/tcp; 3478/tcp+udp; 49152–65535/udp (ufw is opened by the script; a hoster firewall — by you).
+3. `curl -fsSL https://hk.anypc.org/download/install.sh | sudo sh -s my.example.com` — downloads `anypc-server`, checks it against `SHA256SUMS`, sets up coturn and a Let's Encrypt certificate. Update: the same command.
+   Without `curl | sh`: download `install.sh`, `anypc-server`, `SHA256SUMS` from the release, `sha256sum -c --ignore-missing SHA256SUMS`, `sudo sh install.sh my.example.com`.
+
+In AnyPC: “Own server” = `my.example.com` → Save. The PC re-registers on your node (the ID stays); tick “also stay on the AnyPC network” to be reachable both ways.
+A single connection through another node without changing settings: `123456789@my.example.com` in the ID field. Web client: `https://my.example.com/`.
+
 ```sh
 scp bin/anypc-server deploy/setup.sh root@VPS:/root/anypc-deploy/
 ssh root@VPS sh /root/anypc-deploy/setup.sh any.example.com www.example.com
