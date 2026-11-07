@@ -139,6 +139,8 @@ func FFArgs(src, enc string, fps int, br string) []string {
 			in = disp
 		}
 		a = append(a, "-i", in)
+	} else if n, ok := strings.CutPrefix(src, "avf:"); ok { // macOS: экран N по avfoundation, с курсором
+		a = append(a, "-f", "avfoundation", "-capture_cursor", "1", "-framerate", strconv.Itoa(fps), "-pixel_format", "uyvy422", "-i", "Capture screen "+n+":none")
 	} else { // Windows 8+, ffmpeg ≥ 6.0, курсор рисуется: "desktop" или "desktop:N" (N — выход DXGI)
 		out := 0
 		if n, ok := strings.CutPrefix(src, "desktop:"); ok {
