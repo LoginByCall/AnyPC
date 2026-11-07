@@ -30,6 +30,23 @@ Hub, relay (TURN) and web client on your server; who connected to whom stays wit
 In AnyPC: “Own server” = `my.example.com` → Save. The PC re-registers on your node (the ID stays); tick “also stay on the AnyPC network” to be reachable both ways.
 A single connection through another node without changing settings: `123456789@my.example.com` in the ID field. Web client: `https://my.example.com/`.
 
+**Docker** (NAS, servers already on Docker): `deploy/docker/compose.yml` — `anypc-server` (image `ghcr.io/loginbycall/anypc-server`, amd64/arm64) + coturn, both with `network_mode: host`.
+```sh
+mkdir anypc && cd anypc
+curl -fsSLO https://raw.githubusercontent.com/LoginByCall/AnyPC/main/deploy/docker/compose.yml
+printf 'DOMAIN=my.example.com\nPUBLIC_IP=203.0.113.10\nTURN_SECRET=%s\n' "$(openssl rand -base64 32)" > .env
+docker compose up -d
+```
+**Behind your own reverse proxy** (ports 80/443 already taken): run `anypc-server -addr 127.0.0.1:8080` without `-domain` (in compose: replace `"-domain", "${DOMAIN}"` with `"-addr", "127.0.0.1:8080"`) and proxy `my.example.com` to `http://127.0.0.1:8080` with WebSocket — Caddy: `my.example.com { reverse_proxy 127.0.0.1:8080 }`; nginx: `proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection upgrade;`. TURN (3478, 49152–65535/udp) stays on the host as is.
+
+**Ansible:** the same script on every host of a group:
+```yaml
+- hosts: anypc
+  become: true
+  tasks:
+    - ansible.builtin.shell: curl -fsSL https://hk.anypc.org/download/install.sh | sh -s {{ inventory_hostname }}
+```
+
 ```sh
 scp bin/anypc-server deploy/setup.sh root@VPS:/root/anypc-deploy/
 ssh root@VPS sh /root/anypc-deploy/setup.sh any.example.com www.example.com
