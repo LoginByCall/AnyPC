@@ -67,3 +67,4 @@
 - `n3`: Ejecuta en el servidor: el script descarga anypc-server, comprueba su suma, configura el relé coturn y un certificado de Let’s Encrypt. Para actualizar, el mismo comando:
 - `n4`: En AnyPC en tus PC: «Servidor propio» = tu dominio → «Guardar». El ID no cambia; con «seguir también en la red AnyPC» marcado, el PC también es accesible por los servidores de AnyPC.
 - `n5`: Para conectar por otro nodo sin cambiar los ajustes, escribe ID@dominio en el campo ID, p. ej. 123456789@my.example.com. El cliente web del nodo está en https://tu-dominio/.
+- `n6`: O, en lugar del paso 3, con Docker (un NAS, un servidor que ya usa Docker): en una carpeta vacía ejecuta los comandos con tu dominio y la IP del servidor. Si los puertos 80 y 443 los usa tu proxy inverso, consulta el README en GitHub.

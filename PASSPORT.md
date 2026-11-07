@@ -17,7 +17,7 @@
 - Сигнализация §7 (`hub.Msg`) — внутренний, `v: 1`.
 
 ## Состояние (2026-11-07)
-- Выпущен v0.1.7 (GitHub pre-release + HK и RU; образ ghcr.io/loginbycall/anypc-server:v0.1.7, amd64+arm64 — пакет пока ЗАКРЫТ, анонимно 403). Тег v0.1.6 — без релиза. Хабы: hk.anypc.org (170.168.24.45, + лендинг anypc.org/www), ru.anypc.org (170.168.5.86); us.anypc.org (netcup, почтовый) — только coturn. Доступ — см. память.
+- Выпущен v0.1.7 (GitHub pre-release + HK и RU; образ ghcr.io/loginbycall/anypc-server:v0.1.7, amd64+arm64 — пакет открыт). Тег v0.1.6 — без релиза. Хабы: hk.anypc.org (170.168.24.45, + лендинг anypc.org/www), ru.anypc.org (170.168.5.86); us.anypc.org (netcup, почтовый) — только coturn. Доступ — см. память.
 - Программы: AnyPC.exe (FFmpeg качается при первом запуске, SHA-256 закреплён), AnyPC-linux-amd64, AnyPC-macos (x86_64+arm64, ad-hoc), anypc-server, install.sh.
 
 ## Лог решений
@@ -33,12 +33,11 @@
 - Выкладка (разрешена правилом): `env -u HTTPS_PROXY -u HTTP_PROXY -u ALL_PROXY -u https_proxy -u http_proxy BUILDX_BUILDER=anypc ANYPC_MAC=alexander@192.168.88.250 ANYPC_DOCKER=1 ANYPC_VPS='root@170.168.24.45 root@170.168.5.86' deploy/publish.sh` — дословно, иначе классификатор.
 
 ## Ожидает человека
-- Открыть пакет ghcr anypc-server (GitHub → Packages → anypc-server → Package settings → Change visibility → Public), иначе `docker pull` у пользователей — 403.
-- HARDENING: выключить Universal SSL в Cloudflare (CAA). [запланировано владельцем 2026-11-07]
 - V3 из списка выше.
 - Перевод лендинга через DeepL — нужен ключ API Free (сейчас переводит Claude).
 
 ## Открыто (не блокирует)
+- В main, не выпущено: шаг Docker на вкладке «Свой сервер» лендинга (выпуск — ASK).
 - [2026-11-07, запланировано владельцем] Firefox: кнопка «Вставить» у курсора — довести (после 5b4b475 readText остался на возврате фокуса; проверить в Firefox, что кнопка не всплывает без действия пользователя).
 - Мак: на `en0` сетевые тесты агента плавают (ICE зависает в UDP WriteTo; TestE2E 1 из 4 и на v0.1.5 — не регрессия). Гипотеза [ПРЕДПОЛОЖЕНИЕ]: файрвол LuLu держит пакеты нового неподписанного agent.test до ответа на запрос (loopback не трогает). Обход: file_test.go на loopback (8e899ad), build.sh на Маке пропускает TestE2E/TestWrongPassword/TestCaptureRestart (f71e106); при v0.1.7 падали ещё TestMonitorSwitch/TestConfirm, сборка прошла с третьей попытки. Живой агент на macOS с LuLu — НЕ ПРОВЕРЕН.
 - Пометка pre-release ломает запасное зеркало install.sh (releases/latest → 404); рабочие — HK и RU.
