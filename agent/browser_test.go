@@ -1,11 +1,15 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -102,8 +106,16 @@ func TestBrowserClient(t *testing.T) {
 	var gotClip atomic.Value
 	setClip = func(s string) error { gotClip.Store(s); return nil }
 	defer func() { setClip = SetClipText }()
-	a := newAgent(hub2, "123456789", FFArgs("test", "libx264", 30, "1M"))
+	a := newAgent(hub2, "123456789", nil)
 	a.FileDir = t.TempDir() // не в настоящие «Загрузки»
+	// адаптивный битрейт с GCC: Chrome обязан слать TWCC на наше расширение заголовка
+	a.Bitrate = 1000
+	a.Capture = func(ctx context.Context, _, kbps, fps int) (*exec.Cmd, error) {
+		return exec.CommandContext(ctx, "ffmpeg", FFArgs("test", "libx264", fps, fmt.Sprintf("%dk", kbps))...), nil
+	}
+	var twcc atomic.Bool
+	log.SetOutput(io.MultiWriter(os.Stderr, logSeen{"клиент шлёт TWCC", &twcc}))
+	defer log.SetOutput(os.Stderr)
 	go a.Run(ctx)
 
 	out := runCDP(t, ctx, chrome, cdpScript, srv.URL+"/")
@@ -125,6 +137,9 @@ func TestBrowserClient(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "reads=0\n") {
 		t.Error("без разрешения clipboard-read буфер опрашивается (Firefox: плашка «Вставить» каждую секунду)")
+	}
+	if !twcc.Load() {
+		t.Error("Chrome не прислал TWCC — оценка полосы GCC не работает")
 	}
 	if v, _ := gotClip.Load().(string); v != "from-browser" {
 		t.Errorf("буфер браузера не дошёл до хоста без события focus: %q", v)
@@ -327,4 +342,17 @@ func TestBrowserNode(t *testing.T) {
 	if !strings.Contains(out, `recent=["123456789@`+node+`"]`) {
 		t.Error("в «Недавних» нет адреса с узлом")
 	}
+}
+
+// logSeen отмечает, что в журнал попала строка с текстом s.
+type logSeen struct {
+	s    string
+	seen *atomic.Bool
+}
+
+func (l logSeen) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte(l.s)) {
+		l.seen.Store(true)
+	}
+	return len(p), nil
 }
