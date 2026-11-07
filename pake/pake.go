@@ -27,12 +27,26 @@ func KDF(pass string, salt []byte) []byte { return argon2.IDKey([]byte(pass), sa
 var fpRe = regexp.MustCompile(`(?m)^a=fingerprint:(\S+) ([0-9A-Fa-f:]+)\s*$`)
 
 // Fingerprint — DTLS-отпечаток из SDP в виде "sha-256 AB:CD:…" ("" — нет).
+// Д-3: строк a=fingerprint может быть несколько (по одной на m-секцию) — все обязаны совпадать и разбираться,
+// иначе "": стек WebRTC может проверить не ту секцию, к которой привязан вход, — это подмена.
 func Fingerprint(sdp string) string {
-	m := fpRe.FindStringSubmatch(sdp)
-	if m == nil {
-		return ""
+	fp := ""
+	for _, l := range strings.Split(sdp, "\n") {
+		l = strings.TrimSpace(l)
+		if !strings.HasPrefix(l, "a=fingerprint:") {
+			continue
+		}
+		m := fpRe.FindStringSubmatch(l)
+		if m == nil {
+			return ""
+		}
+		if f := strings.ToLower(m[1]) + " " + strings.ToUpper(m[2]); fp == "" {
+			fp = f
+		} else if f != fp {
+			return ""
+		}
 	}
-	return strings.ToLower(m[1]) + " " + strings.ToUpper(m[2])
+	return fp
 }
 
 func context(hostID, fpClient, fpHost string) *cpace.ContextInfo {

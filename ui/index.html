@@ -272,6 +272,7 @@ for (const s of [$('turn'), $('turn2')]) s.onchange = () => {
 
 function end(reason, keep) {
   if (!keep) again = null;
+  expect = ''; authed = false; // Д-1: подтверждение входа — только от CPace этой попытки
   if (!socks.length && !pc) return;
   releaseAll();
   clearInterval(timer);
@@ -313,7 +314,7 @@ $('go').onclick = async () => {
     w.onmessage = async e => {
       if (cur !== att || (ws && ws !== w)) return;
       const m = JSON.parse(e.data);
-      if (m.type === 'hello') {
+      if (m.type === 'hello' && !m.from) { // Д-4: hello — только от самого хаба
         ice = m.data.ice || [];
         w.send(JSON.stringify({ v: 1, type: 'connect', to: host, data: { turn: turnSel, rtt: Object.fromEntries(Object.entries(rttMe).filter(([, v]) => v != null)) } }));
         $('msg').textContent = t('waiting');
@@ -335,7 +336,7 @@ $('go').onclick = async () => {
         if (ev.channel.label === 'input') dc = ev.channel;
         if (ev.channel.label === 'ctl') { ctl = ev.channel; ctl.onmessage = onCtl; }
         if (ev.channel.label === 'auth') ev.channel.onmessage = e => onAuth(ev.channel, e);
-        if (ev.channel.label === 'file') recvFile(ev.channel);
+        if (ev.channel.label === 'file') authed ? recvFile(ev.channel) : ev.channel.close(); // Д-2: файлы — только после входа
       };
       pc.onicecandidate = ev => ev.candidate && sig('ice', ev.candidate.toJSON());
       let was = false; // «потеряна» — только если соединение было; иначе путь не нашёлся вовсе
@@ -389,7 +390,7 @@ const known = {
 $('trust').onclick = () => { $('trust').classList.add('hidden'); $('go').click(); };
 
 // ---------- Вход по CPace (REQ-S-02): пароль не покидает этот ПК, сервер его не видит ----------
-let expect = '';
+let expect = '', authed = false; // authed — хост доказал CPace и ключ (Д-1, Д-2)
 // Автопереподключение после обрыва (через relay рвётся на плохих линиях): до 3 попыток подряд.
 // Пароль — только в памяти этой вкладки и только до конца сессии.
 let again = null;
@@ -408,7 +409,7 @@ async function onAuth(ch, e) {
       ch.send(JSON.stringify({ t: 'b', msg: r.msg, conf: r.conf }));
     } catch (err) { end(t('err') + err); }
   } else if (m.t === 'ok') {
-    if (m.conf !== expect) return end(t('err') + t('e_hostauth')); // ответил не тот хост или соединение подменено
+    if (!expect || m.conf !== expect) return end(t('err') + t('e_hostauth')); // Д-1: «ok» без обмена CPace — подмена // ответил не тот хост или соединение подменено
     // REQ-S-05: подпись хоста над DTLS-отпечатками; отпечаток его ключа запоминается при первом входе (TOFU)
     let fp;
     try { fp = await hostVerify(m.pub, m.sig, host, pc.localDescription.sdp, pc.remoteDescription.sdp); }
@@ -420,7 +421,7 @@ async function onAuth(ch, e) {
       $('trust').classList.remove('hidden');
       return;
     }
-    trustNext = null;
+    trustNext = null; expect = ''; authed = true;
     if (was !== fp) await known.set(host, fp);
     again = { host, pw: $('pw').value || again?.pw, n: 0 };
     show(true); v.focus(); $('pw').value = '';
@@ -435,13 +436,13 @@ const CLIP_MAX = 60 * 1024; // как agent.ClipMax (в байтах UTF-8)
 const clipOK = x => x && new TextEncoder().encode(x).length <= CLIP_MAX;
 function onCtl(e) {
   const m = JSON.parse(e.data);
-  if (m.t === 'monitors') return showMonitors(m);
-  if (m.t !== 'clip' || !clipOK(m.text)) return;
+  if (m.t === 'monitors') return showMonitors(m); // хост шлёт список при открытии канала, до входа
+  if (!authed || m.t !== 'clip' || !clipOK(m.text)) return; // Д-2
   lastClip = m.text;
   (APP ? setClip(m.text) : navigator.clipboard?.writeText(m.text))?.catch?.(() => {});
 }
 async function pushClip() {
-  if (ctl?.readyState !== 'open') return;
+  if (!authed || ctl?.readyState !== 'open') return; // Д-2: буфер — только проверенному хосту
   let x = '';
   try { x = APP ? await getClip() : document.hasFocus() ? await navigator.clipboard.readText() : ''; } catch {}
   if (clipOK(x) && x !== lastClip) { lastClip = x; ctl.send(JSON.stringify({ t: 'clip', text: x })); }

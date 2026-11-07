@@ -24,7 +24,9 @@ printf 'ANYPC_TURN_SECRET=%s\n' "$SECRET" > /etc/anypc/env
 chmod 600 /etc/anypc/env
 
 # TURN: временные учётки (use-auth-secret), запрет ретрансляции во внутренние сети VPS и на собственные адреса машины:
-# учётку выдаёт хаб любому клиенту, а relay на свой IP достал бы до соседних служб сервера (почта и т.п.) «изнутри»
+# учётку выдаёт хаб любому клиенту, а relay на свой IP достал бы до соседних служб сервера (почта и т.п.) «изнутри».
+# no-tcp-relay: WebRTC берёт только UDP-аллокации, TCP-relay (RFC 6062) нужен лишь прокси-злоупотреблению;
+# max-bps — байт/с на сеанс (10 Мбит/с при видео до 4 Мбит/с); ::ffff:… — обход запретов IPv4 через IPv4-mapped IPv6.
 cat > /etc/turnserver.conf <<EOF
 listening-port=3478
 fingerprint
@@ -39,6 +41,8 @@ no-cli
 no-multicast-peers
 user-quota=4
 total-quota=40
+no-tcp-relay
+max-bps=1250000
 denied-peer-ip=0.0.0.0-0.255.255.255
 denied-peer-ip=10.0.0.0-10.255.255.255
 denied-peer-ip=100.64.0.0-100.127.255.255
@@ -48,6 +52,11 @@ denied-peer-ip=172.16.0.0-172.31.255.255
 denied-peer-ip=192.168.0.0-192.168.255.255
 denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
 denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+denied-peer-ip=::1
+denied-peer-ip=::ffff:0.0.0.0-::ffff:255.255.255.255
+denied-peer-ip=64:ff9b::-64:ff9b::ffff:ffff
+denied-peer-ip=198.18.0.0-198.19.255.255
+denied-peer-ip=240.0.0.0-255.255.255.255
 $(for ip in $(hostname -I); do echo "denied-peer-ip=$ip"; done)
 EOF
 chmod 640 /etc/turnserver.conf
