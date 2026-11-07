@@ -36,8 +36,10 @@ func main() {
 	cfgDir, _ := os.UserConfigDir()
 	cacheDir, _ := os.UserCacheDir()
 	os.MkdirAll(filepath.Join(cacheDir, "AnyPC"), 0o700)
+	logw := io.Writer(os.Stderr) // и журнал, и вывод ffmpeg — в терминал и в файл (иначе причину «серого экрана» не узнать)
 	if f, err := os.OpenFile(filepath.Join(cacheDir, "AnyPC", "anypc.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
-		log.SetOutput(io.MultiWriter(os.Stderr, f))
+		logw = io.MultiWriter(os.Stderr, f)
+		log.SetOutput(logw)
 	}
 	cfg, err := loadConfig(filepath.Join(cfgDir, "AnyPC", "config.json"))
 	if err != nil {
@@ -53,7 +55,7 @@ func main() {
 	defer stop()
 	a := &agent.Agent{Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, Key: cfg.key(), FPS: 30,
 		Bitrate: agent.Kbps(cfg.Bitrate),
-		Confirm: func(cid, peer string) bool { return !cfg.confirm() || agent.AskAccept(cid, peer) }, Capture: hostCapture(cfg.Enc), FileDir: downloads()}
+		Confirm: func(cid, peer string) bool { return !cfg.confirm() || agent.AskAccept(cid, peer) }, Capture: hostCapture(cfg.Enc), FileDir: downloads(), Stderr: logw}
 	var mu sync.Mutex
 	online, session, update := false, "", ""
 	a.OnState = func(on bool, s string) { mu.Lock(); online, session = on, s; mu.Unlock() }

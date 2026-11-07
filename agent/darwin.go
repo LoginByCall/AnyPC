@@ -211,20 +211,44 @@ func osa(script string, args ...string) *exec.Cmd {
 	return exec.Command("osascript", append([]string{"-e", "on run argv", "-e", script, "-e", "end run"}, args...)...)
 }
 
-// showIndicator — плашка REQ-F-15: окно с кнопкой «ОК»; нажал человек → разорвать сессию.
+// plaqueJS — плашка REQ-F-15: обычное окно macOS (закрыть, свернуть, развернуть) поверх остальных, со значком в Dock.
+// Закрыли окно или нажали «OK» → osascript выходит → сессия рвётся. JXA: окно Cocoa без своего приложения.
+const plaqueJS = `ObjC.import('Cocoa'); ObjC.import('stdlib');
+function run(argv) {
+  const app = $.NSApplication.sharedApplication;
+  app.setActivationPolicy(0);
+  ObjC.registerSubclass({ name: 'AnyPCPlaque', protocols: ['NSWindowDelegate'], methods: {
+    'windowWillClose:': { types: ['void', ['id']], implementation: function () { $.exit(0); } },
+    'ok:': { types: ['void', ['id']], implementation: function () { $.exit(0); } } } });
+  const d = $.AnyPCPlaque.alloc.init;
+  const w = $.NSWindow.alloc.initWithContentRectStyleMaskBackingDefer($.NSMakeRect(0, 0, 440, 160), 15, 2, false);
+  w.title = argv[0]; w.delegate = d; w.releasedWhenClosed = false; w.level = 3;
+  const t = $.NSTextField.wrappingLabelWithString(argv[1]); t.frame = $.NSMakeRect(20, 56, 400, 90);
+  const b = $.NSButton.buttonWithTitleTargetAction('OK', d, 'ok:'); b.frame = $.NSMakeRect(330, 14, 90, 32); b.keyEquivalent = '\r';
+  w.contentView.addSubview(t); w.contentView.addSubview(b);
+  w.center; w.makeKeyAndOrderFront(null); app.activateIgnoringOtherApps(true);
+  app.run;
+}`
+
+// showIndicator — плашка; закрыл её человек (или osascript упал — тогда без плашки сессии не быть) → разорвать сессию.
 func showIndicator(cid string, onUserClose func()) (func(), error) {
 	if fakeDesktop {
 		return func() {}, nil
 	}
 	title, text := plaqueText(sysLang(), cid)
-	cmd := osa(`display dialog (item 2 of argv) with title (item 1 of argv) buttons {"OK"} default button 1 with icon caution`, title, text)
+	cmd := exec.Command("osascript", "-l", "JavaScript", "-e", plaqueJS, title, text)
+	var errb strings.Builder
+	cmd.Stderr = &errb
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
 	var byUs atomic.Bool
 	go func() {
-		cmd.Wait()
+		err := cmd.Wait()
 		if !byUs.Load() {
+			if err != nil {
+				log.Printf("плашка: %v %s", err, errb.String())
+			}
 			onUserClose()
 		}
 	}()
