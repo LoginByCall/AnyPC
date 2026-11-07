@@ -1,4 +1,6 @@
-// AnyPC для Linux: хост (X11 или Wayland) + тот же интерфейс в браузере на 127.0.0.1.
+//go:build linux || darwin
+
+// AnyPC для Linux и macOS: хост + тот же интерфейс в браузере на 127.0.0.1 (своё для ОС — platform_*.go).
 // Привязки окна Windows (hostInfo, setPassword…) здесь — локальный HTTP API с токеном.
 package main
 
@@ -41,7 +43,7 @@ func main() {
 	if err != nil {
 		log.Fatal("настройки: ", err)
 	}
-	for _, b := range append([]string{"zenity"}, deps()...) {
+	for _, b := range deps() {
 		if _, err := exec.LookPath(b); err != nil {
 			log.Printf("ВНИМАНИЕ: нет %s — %s", b, hint[b])
 		}
@@ -51,7 +53,7 @@ func main() {
 	defer stop()
 	a := &agent.Agent{Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, Key: cfg.key(), FPS: 30,
 		Bitrate: agent.Kbps(cfg.Bitrate),
-		Confirm: func(cid, peer string) bool { return !cfg.confirm() || agent.AskAccept(cid, peer) }, Capture: agent.LinuxCapture(30, cfg.Enc), FileDir: downloads()}
+		Confirm: func(cid, peer string) bool { return !cfg.confirm() || agent.AskAccept(cid, peer) }, Capture: hostCapture(cfg.Enc), FileDir: downloads()}
 	var mu sync.Mutex
 	online, session, update := false, "", ""
 	a.OnState = func(on bool, s string) { mu.Lock(); online, session = on, s; mu.Unlock() }
@@ -79,13 +81,9 @@ func main() {
 	h := handler(addr, token, page, cfg, a, run, info, newFiles(downloads()))
 	go http.Serve(l, h)
 	url := "http://" + addr + "/?t=" + token
-	kind := "X11"
-	if agent.Wayland {
-		kind = "Wayland"
-	}
-	log.Printf("AnyPC запущен (%s), ID %s. Окно: %s", kind, cfg.ID, url)
+	log.Printf("AnyPC запущен (%s), ID %s. Окно: %s", platformKind(), cfg.ID, url)
 	if !*noBrowser {
-		exec.Command("xdg-open", url).Start()
+		exec.Command(openCmd, url).Start()
 	}
 	run.start(cfg.Server)
 	run.wait()
@@ -223,28 +221,3 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 	json.NewEncoder(w).Encode(map[string]any{"result": res})
 }
 
-// downloads — папка загрузок по XDG (на русской Ubuntu это ~/Загрузки).
-func downloads() string {
-	if out, err := exec.Command("xdg-user-dir", "DOWNLOAD").Output(); err == nil {
-		if d := strings.TrimSpace(string(out)); d != "" {
-			return d
-		}
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "Downloads")
-}
-
-var hint = map[string]string{
-	"zenity":         "без него нет плашки сессии, и подключения отклоняются (sudo apt install zenity)",
-	"ffmpeg":         "нужен для захвата экрана X11 (sudo apt install ffmpeg)",
-	"xclip":          "без него не работает буфер обмена (sudo apt install xclip)",
-	"gst-launch-1.0": "нужен для захвата экрана Wayland (sudo apt install gstreamer1.0-tools gstreamer1.0-pipewire gstreamer1.0-plugins-ugly)",
-	"wl-paste":       "без него не работает буфер обмена (sudo apt install wl-clipboard)",
-}
-
-func deps() []string {
-	if agent.Wayland {
-		return []string{"gst-launch-1.0", "wl-paste"}
-	}
-	return []string{"ffmpeg", "xclip"}
-}
