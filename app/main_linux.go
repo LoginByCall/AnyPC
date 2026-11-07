@@ -53,13 +53,14 @@ func main() {
 		Bitrate: agent.Kbps(cfg.Bitrate),
 		Confirm: func(cid, peer string) bool { return !cfg.confirm() || agent.AskAccept(cid, peer) }, Capture: agent.LinuxCapture(30, cfg.Enc), FileDir: downloads()}
 	var mu sync.Mutex
-	online, session := false, ""
+	online, session, update := false, "", ""
 	a.OnState = func(on bool, s string) { mu.Lock(); online, session = on, s; mu.Unlock() }
 	info := func() map[string]any {
 		mu.Lock()
 		defer mu.Unlock()
-		return map[string]any{"id": cfg.ID, "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "version": version}
+		return map[string]any{"id": cfg.ID, "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "version": version, "update": update}
 	}
+	go watchUpdates(func(v string) { mu.Lock(); update = v; mu.Unlock() })
 
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -135,7 +136,6 @@ window.ANYPC = {ws: %s};
   for (const n of ['hostInfo', 'setPassword', 'setConfirm', 'quit', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'hostVerify', 'knownGet', 'knownSet', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort']) window[n] = (...a) => api(n, ...a);
   window.fullscreen = on => on ? document.documentElement.requestFullscreen().then(() => navigator.keyboard?.lock()).catch(() => {})
                                : document.fullscreenElement && document.exitFullscreen();
-  setInterval(() => hostInfo().then(s => window.onHostState?.(s)).catch(() => {}), 1000);
 })();
 </script>
 <script>`, ws, t)

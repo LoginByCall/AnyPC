@@ -108,12 +108,13 @@ func main() {
 		},
 	}
 	var mu sync.Mutex
-	online, session := false, ""
+	online, session, update := false, "", ""
 	info := func() map[string]any {
 		mu.Lock()
 		defer mu.Unlock()
-		return map[string]any{"id": cfg.ID, "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "version": version, "ffmpeg": ffSnap(&ffMu, &ffState)}
+		return map[string]any{"id": cfg.ID, "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "version": version, "ffmpeg": ffSnap(&ffMu, &ffState), "update": update}
 	}
+	go watchUpdates(func(v string) { mu.Lock(); update = v; mu.Unlock() }) // окно опрашивает hostInfo
 	a.OnState = func(on bool, s string) {
 		mu.Lock()
 		online, session = on, s
@@ -122,6 +123,7 @@ func main() {
 		w.Dispatch(func() { w.Eval("window.onHostState && onHostState(" + string(j) + ")") })
 	}
 	w.Bind("hostInfo", info)
+	w.Bind("openUpdate", func() { exec.Command("rundll32", "url.dll,FileProtocolHandler", updateSite).Start() }) // адрес фиксирован: странице не открыть произвольный
 	w.Bind("setPassword", cfg.setPassword)
 	w.Bind("setConfirm", cfg.setConfirm)
 	w.Bind("hostDisconnect", a.Disconnect)
