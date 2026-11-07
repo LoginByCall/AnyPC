@@ -17,12 +17,11 @@
 - Сигнализация §7 (`hub.Msg`) — внутренний, `v: 1`.
 
 ## Состояние (2026-11-07)
-- Выпущен v0.1.5 (GitHub pre-release + HK и RU). Хабы: hk.anypc.org (170.168.24.45, + лендинг anypc.org/www), ru.anypc.org (170.168.5.86); us.anypc.org (netcup, почтовый) — только coturn. Доступ — см. память.
+- Выпущен v0.1.7 (GitHub pre-release + HK и RU; образ ghcr.io/loginbycall/anypc-server:v0.1.7, amd64+arm64 — пакет пока ЗАКРЫТ, анонимно 403). Тег v0.1.6 — без релиза. Хабы: hk.anypc.org (170.168.24.45, + лендинг anypc.org/www), ru.anypc.org (170.168.5.86); us.anypc.org (netcup, почтовый) — только coturn. Доступ — см. память.
 - Программы: AnyPC.exe (FFmpeg качается при первом запуске, SHA-256 закреплён), AnyPC-linux-amd64, AnyPC-macos (x86_64+arm64, ad-hoc), anypc-server, install.sh.
-- В main после v0.1.5, не выпущено: опрос буфера в веб-клиенте только с разрешением clipboard-read (Firefox), карточка «Все основные ОС», Docker (deploy/docker, publish.sh с ANYPC_DOCKER=1 → ghcr.io).
 
 ## Лог решений
-- см. `TZ.md` §16 (последнее: Docker → B, образ собирается здесь; выпуск v0.1.6 — копим правки).
+- см. `TZ.md` §16 (последнее: выпуск v0.1.7).
 
 ## Верификация
 - V0 ✓ go vet (linux + windows), build.sh.
@@ -30,17 +29,18 @@
 - V3 — НЕ ПОДТВЕРЖДЕНЫ: AnyPC.exe на Windows (окно, ввод, полный экран, плашка), Мак (мышь, клавиатура, второй монитор), установка узла на свежий VPS, compose с Let's Encrypt, замер Томск↔Шэньчжэнь.
 
 ## СЛЕДУЮЩИЙ ШАГ
-- Выпуск v0.1.6 (ASK, решение владельца): Firefox-буфер, лендинг, первая публикация образа в ghcr. Процедура: build.sh → тег → `ANYPC_VPS='root@170.168.24.45 root@170.168.5.86' ANYPC_DOCKER=1 deploy/publish.sh` → gh release.
+- Проверить гипотезу «зависание ICE на Маке = LuLu»: LuLu выключен/Passive → `go test -count=4 -run '^(TestE2E|TestMonitorSwitch|TestConfirm)$' ./agent` на Маке. Все прошли → вернуть тесты в build.sh (убрать -skip) и обход loopback в file_test.go; нет → на Маке гонять только тесты macOS.
+- Выкладка (разрешена правилом): `env -u HTTPS_PROXY -u HTTP_PROXY -u ALL_PROXY -u https_proxy -u http_proxy BUILDX_BUILDER=anypc ANYPC_MAC=alexander@192.168.88.250 ANYPC_DOCKER=1 ANYPC_VPS='root@170.168.24.45 root@170.168.5.86' deploy/publish.sh` — дословно, иначе классификатор.
 
 ## Ожидает человека
-- Решение о v0.1.6.
+- Открыть пакет ghcr anypc-server (GitHub → Packages → anypc-server → Package settings → Change visibility → Public), иначе `docker pull` у пользователей — 403.
 - HARDENING: выключить Universal SSL в Cloudflare (CAA). [запланировано владельцем 2026-11-07]
 - V3 из списка выше.
 - Перевод лендинга через DeepL — нужен ключ API Free (сейчас переводит Claude).
 
 ## Открыто (не блокирует)
 - [2026-11-07, запланировано владельцем] Firefox: кнопка «Вставить» у курсора — довести (после 5b4b475 readText остался на возврате фокуса; проверить в Firefox, что кнопка не всплывает без действия пользователя).
-- Мак: на `en0` ICE-пинг pion v4.4.8 навсегда зависает в UDP WriteTo (дамп TestFileUpload, 2026-11-07). Тест переведён на loopback (8e899ad), а живой агент на macOS — НЕ ПРОВЕРЕН, возможно такое же зависание в сессии.
+- Мак: на `en0` сетевые тесты агента плавают (ICE зависает в UDP WriteTo; TestE2E 1 из 4 и на v0.1.5 — не регрессия). Гипотеза [ПРЕДПОЛОЖЕНИЕ]: файрвол LuLu держит пакеты нового неподписанного agent.test до ответа на запрос (loopback не трогает). Обход: file_test.go на loopback (8e899ad), build.sh на Маке пропускает TestE2E/TestWrongPassword/TestCaptureRestart (f71e106); при v0.1.7 падали ещё TestMonitorSwitch/TestConfirm, сборка прошла с третьей попытки. Живой агент на macOS с LuLu — НЕ ПРОВЕРЕН.
 - Пометка pre-release ломает запасное зеркало install.sh (releases/latest → 404); рабочие — HK и RU.
 - install.sh на coturn 4.18 — предупреждения no-dtls/no-cli (стартует); на HK/RU 4.6.1.
 - Установление через relay 9–10 с (гипотеза: потеря первых DTLS до TURN-permission); `tc netem` не проведён (нужен root).
