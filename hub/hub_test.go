@@ -90,6 +90,27 @@ func TestRelay(t *testing.T) {
 	if m := read(t, ctx, host); m.Type != "connect" || m.From != cid {
 		t.Fatalf("relay: %+v", m)
 	}
+	// Д-4: клиент шлёт хосту служебное (error id_taken выкидывал хост из сети, hello подменял TURN) — не пересылается
+	for _, typ := range []string{"error", "hello", "challenge", "offer"} {
+		wsjson.Write(ctx, cli, Msg{Type: typ, To: "123456789", Data: json.RawMessage(`"id_taken"`)})
+		if m := read(t, ctx, cli); string(m.Data) != `"forbidden"` {
+			t.Fatalf("%s от клиента: %+v", typ, m)
+		}
+	}
+	wsjson.Write(ctx, cli, Msg{Type: "bye", To: "123456789"})
+	if m := read(t, ctx, host); m.Type != "bye" { // первым до хоста доходит bye, а не что-то из служебного выше
+		t.Fatalf("после служебного хост получил %+v", m)
+	}
+	for _, typ := range []string{"connect", "answer", "hello"} { // и в обратную сторону: хост → клиент
+		wsjson.Write(ctx, host, Msg{Type: typ, To: cid})
+		if m := read(t, ctx, host); string(m.Data) != `"forbidden"` {
+			t.Fatalf("%s от хоста: %+v", typ, m)
+		}
+	}
+	wsjson.Write(ctx, host, Msg{Type: "error", To: cid, Data: json.RawMessage(`"busy"`)})
+	if m := read(t, ctx, cli); m.Type != "error" || m.From != "123456789" {
+		t.Fatalf("ошибка хоста клиенту: %+v", m)
+	}
 	// ошибки: нет такого хоста; клиент → клиент; занятый ID
 	wsjson.Write(ctx, cli, Msg{Type: "connect", To: "987654321"})
 	if m := read(t, ctx, cli); string(m.Data) != `"not_found"` {

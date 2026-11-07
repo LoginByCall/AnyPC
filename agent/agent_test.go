@@ -460,3 +460,70 @@ func TestTwoHubs(t *testing.T) {
 	l.Close() // недоступный хаб не мешает живому
 	e2e(t, dead+","+local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "secret123")
 }
+
+// TestHubSpoof — Д-4: хаб пересылает сообщения с From отправителя. Поддельные error id_taken (выкидывал хост
+// из сети) и hello (подменял TURN) от постороннего агент должен пропускать мимо.
+func TestHubSpoof(t *testing.T) {
+	var conns atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conns.Add(1)
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		ctx := r.Context()
+		nonce, _ := json.Marshal("n")
+		wsjson.Write(ctx, c, hub.Msg{V: 1, Type: "challenge", Data: nonce})
+		var reg hub.Msg
+		wsjson.Read(ctx, c, &reg)
+		wsjson.Write(ctx, c, hub.Msg{V: 1, Type: "hello", Data: json.RawMessage(`{"id":"123456789","ice":[{"urls":["stun:good.example:3478"]}]}`)})
+		wsjson.Write(ctx, c, hub.Msg{V: 1, Type: "hello", From: "c1", Data: json.RawMessage(`{"ice":[{"urls":["turn:evil.example:3478"]}]}`)})
+		wsjson.Write(ctx, c, hub.Msg{V: 1, Type: "error", From: "c1", Data: json.RawMessage(`"id_taken"`)})
+		<-ctx.Done()
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	a := newAgent("ws"+strings.TrimPrefix(srv.URL, "http"), "123456789", nil)
+	go a.Run(ctx)
+	time.Sleep(1500 * time.Millisecond)
+	a.mu.Lock()
+	ice, on := a.ice, len(a.online)
+	a.mu.Unlock()
+	if len(ice) != 1 || ice[0].URLs[0] != "stun:good.example:3478" {
+		t.Errorf("ICE подменён посторонним: %+v", ice)
+	}
+	if n := conns.Load(); n != 1 || on != 1 {
+		t.Errorf("поддельный id_taken разорвал связь с хабом: подключений %d, в сети %d", n, on)
+	}
+}
+
+// TestClipBeforeAuth — Д-5: буфер хоста уходил в канал ctl до ввода пароля (20 с ожидания входа).
+func TestClipBeforeAuth(t *testing.T) {
+	var seq atomic.Uint32
+	defer func(a func() uint32, b func() (string, error)) { clipSeq, clipText = a, b }(clipSeq, clipText)
+	clipSeq, clipText = func() uint32 { return seq.Load() }, func() (string, error) { return "пароль от банка", nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sent := make(chan string, 4)
+	s := &session{}
+	go s.watchClip(ctx, func(b []byte) { sent <- string(b) })
+	time.Sleep(100 * time.Millisecond)
+	seq.Add(1) // буфер изменился, входа нет
+	select {
+	case m := <-sent:
+		t.Fatalf("до входа ушёл буфер: %s", m)
+	case <-time.After(1200 * time.Millisecond):
+	}
+	s.authed.Store(true)
+	seq.Add(1)
+	select {
+	case m := <-sent:
+		if !strings.Contains(m, "пароль от банка") {
+			t.Fatalf("после входа: %s", m)
+		}
+	case <-time.After(1500 * time.Millisecond):
+		t.Fatal("после входа изменение буфера не ушло")
+	}
+}

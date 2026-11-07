@@ -55,4 +55,17 @@ func TestFingerprint(t *testing.T) {
 	if Fingerprint("v=0\r\n") != "" {
 		t.Fatal("нет отпечатка → пусто")
 	}
+	two := "a=fingerprint:sha-256 AB:CD\r\nm=video 9\r\na=fingerprint:sha-256 ab:cd\r\nm=application 9\r\n"
+	if got := Fingerprint(two); got != "sha-256 AB:CD" { // по строке на m-секцию, одинаковые — норма браузеров
+		t.Fatalf("одинаковые отпечатки: %q", got)
+	}
+	// Д-3: разные отпечатки по секциям или неразборчивая строка — подмена, вход к ним не привязывается
+	for _, bad := range []string{
+		"a=fingerprint:sha-256 AB:CD\r\na=fingerprint:sha-256 EE:FF\r\n",
+		"a=fingerprint:sha-256 AB:CD\r\na=fingerprint:sha-256 zz\r\n",
+	} {
+		if got := Fingerprint(bad); got != "" {
+			t.Errorf("%q → %q, ждали пусто", bad, got)
+		}
+	}
 }

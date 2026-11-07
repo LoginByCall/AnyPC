@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"io/fs"
 	"net"
@@ -20,6 +21,10 @@ import (
 	"anypc/hub"
 	"anypc/pake"
 	"anypc/ui"
+
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
+	"github.com/pion/webrtc/v4"
 )
 
 // cdpScript ведёт веб-клиент в headless Chrome через DevTools Protocol:
@@ -90,25 +95,7 @@ func TestBrowserClient(t *testing.T) {
 	a.FileDir = t.TempDir() // не в настоящие «Загрузки»
 	go a.Run(ctx)
 
-	l, _ := net.Listen("tcp", "127.0.0.1:0")
-	port := strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
-	l.Close()
-	prof, _ := os.MkdirTemp("", "anypc-chrome-") // не t.TempDir: дочерние процессы Chrome пишут в профиль и после Kill
-	defer os.RemoveAll(prof)
-	ch := exec.CommandContext(ctx, chrome, "--headless=new", "--disable-gpu", "--lang=en-US",
-		"--remote-debugging-port="+port, "--user-data-dir="+prof, "about:blank")
-	if err := ch.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { ch.Process.Kill(); ch.Wait() }()
-	time.Sleep(2 * time.Second)
-	js := filepath.Join(t.TempDir(), "cdp.js")
-	os.WriteFile(js, []byte(cdpScript), 0o600)
-	out, err := exec.CommandContext(ctx, "node", js, port, srv.URL+"/").CombinedOutput()
-	t.Logf("%s", out)
-	if err != nil {
-		t.Fatal(err)
-	}
+	out := runCDP(t, ctx, chrome, cdpScript, srv.URL+"/")
 	if !strings.Contains(string(out), "wrong=Error: wrong password|false") {
 		t.Error("неверный пароль: ждали «wrong password» и без сессии")
 	}
@@ -128,5 +115,135 @@ func TestBrowserClient(t *testing.T) {
 	got, err := os.ReadFile(filepath.Join(a.FileDir, "browser.bin")) // отправка файла из браузера (докачка-протокол)
 	if err != nil || len(got) != 300000 || got[251] != 0 || got[252] != 1 {
 		t.Errorf("файл из браузера: %d байт, %v", len(got), err)
+	}
+}
+
+// runCDP — headless Chrome + node-скрипт по DevTools Protocol; вывод скрипта.
+func runCDP(t *testing.T, ctx context.Context, chrome, script, url string) []byte {
+	t.Helper()
+	l, _ := net.Listen("tcp", "127.0.0.1:0")
+	port := strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
+	l.Close()
+	prof, _ := os.MkdirTemp("", "anypc-chrome-") // не t.TempDir: дочерние процессы Chrome пишут в профиль и после Kill
+	defer os.RemoveAll(prof)
+	ch := exec.CommandContext(ctx, chrome, "--headless=new", "--disable-gpu", "--lang=en-US",
+		"--remote-debugging-port="+port, "--user-data-dir="+prof, "about:blank")
+	if err := ch.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { ch.Process.Kill(); ch.Wait() }()
+	time.Sleep(2 * time.Second)
+	js := filepath.Join(t.TempDir(), "cdp.js")
+	os.WriteFile(js, []byte(script), 0o600)
+	out, err := exec.CommandContext(ctx, "node", js, port, url).CombinedOutput()
+	t.Logf("%s", out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// cdpFake — клиент вводит пароль; хост «входит» без CPace. Печатает: состояние, буфер клиента, запомненный ключ.
+const cdpFake = `
+const [, , port, url] = process.argv;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+(async () => {
+  const tab = await (await fetch('http://127.0.0.1:' + port + '/json/new?' + url, { method: 'PUT' })).json();
+  const ws = new WebSocket(tab.webSocketDebuggerUrl); await new Promise(r => ws.onopen = r);
+  let id = 0; const wait = {};
+  ws.onmessage = e => { const m = JSON.parse(e.data); if (m.id && wait[m.id]) wait[m.id](m); };
+  const ev = x => new Promise(r => { const i = ++id; wait[i] = m => r(m.result?.result?.value); ws.send(JSON.stringify({ id: i, method: 'Runtime.evaluate', params: { expression: x, awaitPromise: true, returnByValue: true } })); });
+  await sleep(1000);
+  await ev("document.getElementById('id').value='123456789'; document.getElementById('pw').value='secret123'; document.getElementById('go').click()");
+  await sleep(6000);
+  console.log('fake=' + await ev("document.getElementById('msg').textContent + '|' + !document.getElementById('sess').classList.contains('hidden')"));
+  console.log('clip=' + await ev("lastClip") + '|known=' + await ev("localStorage.getItem('known')"));
+  process.exit(0);
+})();`
+
+// TestBrowserFakeHost — Д-1, Д-2: поддельный хост (хаб или захвативший ID) присылает «ok» без обмена CPace,
+// буфер обмена и файл. Клиент не должен открыть сессию, запомнить ключ, принять буфер или файл.
+func TestBrowserFakeHost(t *testing.T) {
+	chrome, err := exec.LookPath("google-chrome")
+	if err != nil {
+		t.Skip("нет google-chrome")
+	}
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("нет node")
+	}
+	if _, err := fs.Stat(ui.FS, "pake.wasm"); err != nil {
+		t.Skip("нет ui/pake.wasm — собрать через build.sh")
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/ws", &hub.Hub{})
+	mux.Handle("/", http.FileServer(http.FS(ui.FS)))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+	go fakeHost(t, ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws", "123456789")
+	out := string(runCDP(t, ctx, chrome, cdpFake, srv.URL+"/"))
+	if !strings.Contains(out, "could not be verified") || !strings.Contains(out, "|false\n") {
+		t.Error("«ok» без CPace принят: ждали ошибку проверки хоста и без сессии")
+	}
+	if !strings.Contains(out, "clip=|known=null") {
+		t.Error("поддельный хост передал буфер или его ключ запомнен")
+	}
+}
+
+// fakeHost — хост без пароля: регистрируется, на connect шлёт offer, в канале auth сразу «ok» со своей подписью.
+func fakeHost(t *testing.T, ctx context.Context, url, id string) {
+	_, key, _ := ed25519.GenerateKey(nil)
+	pub := key.Public().(ed25519.PublicKey)
+	c, _, err := websocket.Dial(ctx, url+"?host="+id+"&key="+base64.RawURLEncoding.EncodeToString(pub), nil)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	defer c.CloseNow()
+	var pc *webrtc.PeerConnection
+	for {
+		var m hub.Msg
+		if wsjson.Read(ctx, c, &m) != nil {
+			return
+		}
+		switch m.Type {
+		case "challenge":
+			var nonce string
+			json.Unmarshal(m.Data, &nonce)
+			d, _ := json.Marshal(map[string][]byte{"sig": ed25519.Sign(key, pake.RegisterMsg(id, nonce))})
+			wsjson.Write(ctx, c, hub.Msg{Type: "register", Data: d})
+		case "connect":
+			pc, _ = webrtc.NewPeerConnection(webrtc.Configuration{})
+			auth, _ := pc.CreateDataChannel("auth", nil)
+			ctl, _ := pc.CreateDataChannel("ctl", nil)
+			ctl.OnOpen(func() { ctl.SendText(`{"t":"clip","text":"evil"}`) })
+			auth.OnOpen(func() {
+				fpH, fpC := pake.Fingerprint(pc.LocalDescription().SDP), pake.Fingerprint(pc.RemoteDescription().SDP)
+				sig := base64.StdEncoding.EncodeToString(pake.HostSign(key, id, fpC, fpH))
+				auth.SendText(`{"t":"ok","conf":"","pub":"` + base64.StdEncoding.EncodeToString(pub) + `","sig":"` + sig + `"}`)
+				time.AfterFunc(time.Second, func() {
+					f, err := pc.CreateDataChannel("file", nil)
+					if err != nil { // клиент уже закрыл соединение — тоже верно
+						return
+					}
+					f.OnOpen(func() { f.SendText(`{"t":"meta","name":"evil.txt","size":4}`) })
+				})
+			})
+			offer, _ := pc.CreateOffer(nil)
+			done := webrtc.GatheringCompletePromise(pc)
+			pc.SetLocalDescription(offer)
+			<-done
+			d, _ := json.Marshal(pc.LocalDescription())
+			wsjson.Write(ctx, c, hub.Msg{Type: "offer", To: m.From, Data: d})
+		case "answer":
+			var sd webrtc.SessionDescription
+			json.Unmarshal(m.Data, &sd)
+			pc.SetRemoteDescription(sd)
+		case "ice":
+			var ci webrtc.ICECandidateInit
+			json.Unmarshal(m.Data, &ci)
+			pc.AddICECandidate(ci)
+		}
 	}
 }

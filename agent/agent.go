@@ -258,6 +258,9 @@ func (a *Agent) run(ctx context.Context, server string) error {
 		a.mu.Lock()
 		s := a.sess
 		a.mu.Unlock()
+		if m.From != "" && (m.Type == "challenge" || m.Type == "hello" || m.Type == "error") {
+			continue // Д-4: служебное — только от самого хаба; пересланное хабом несёт From отправителя
+		}
 		switch m.Type {
 		case "challenge": // REQ-F-01: доказать серверу владение ключом, за которым закреплён ID
 			var nonce string
@@ -451,7 +454,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 		}
 	})
 	ctl.OnOpen(func() {
-		go s.watchClip(sctx, ctl)
+		go s.watchClip(sctx, func(b []byte) { ctl.SendText(string(b)) })
 		s.mu.Lock()
 		b, _ := json.Marshal(ctlMsg{T: "monitors", List: s.mons, Cur: s.mon})
 		s.mu.Unlock()
@@ -639,9 +642,13 @@ func (a *Agent) accept(ctx context.Context, s *session, track *webrtc.TrackLocal
 	go a.stream(ctx, s, track)
 }
 
+// clipSeq, clipText — системный буфер (подменяются в тестах).
+var clipSeq, clipText = ClipSeq, ClipText
+
 // watchClip отправляет клиенту изменения буфера обмена хоста (только изменения после начала сессии).
-func (s *session) watchClip(ctx context.Context, ctl *webrtc.DataChannel) {
-	seq := ClipSeq()
+// Д-5: до успешного входа — ничего: иначе любой, кто знает ID, читал бы буфер хоста 20 с ожидания пароля.
+func (s *session) watchClip(ctx context.Context, send func([]byte)) {
+	seq := clipSeq()
 	t := time.NewTicker(500 * time.Millisecond)
 	defer t.Stop()
 	for {
@@ -650,11 +657,14 @@ func (s *session) watchClip(ctx context.Context, ctl *webrtc.DataChannel) {
 			return
 		case <-t.C:
 		}
-		if n := ClipSeq(); n != seq {
+		if n := clipSeq(); n != seq {
 			seq = n
-			if text, err := ClipText(); err == nil && s.clip.toRemote(text) {
+			if !s.authed.Load() {
+				continue
+			}
+			if text, err := clipText(); err == nil && s.clip.toRemote(text) {
 				b, _ := json.Marshal(ctlMsg{T: "clip", Text: text})
-				ctl.SendText(string(b))
+				send(b)
 			}
 		}
 	}

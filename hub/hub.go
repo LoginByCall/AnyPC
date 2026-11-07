@@ -224,6 +224,10 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			send(ctx, c, errMsg("forbidden"))
 			continue
 		}
+		if !relayed(IsHostID(id), m.Type) { // Д-4: служебные типы (hello, challenge, error от клиента) не пересылаются
+			send(ctx, c, errMsg("forbidden"))
+			continue
+		}
 		dst := h.get(m.To)
 		if dst == nil {
 			send(ctx, c, errMsg("not_found"))
@@ -236,4 +240,18 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.V, m.From = 1, id
 		send(ctx, dst, m)
 	}
+}
+
+// relayed — что хаб пересылает: клиент → хост — connect/answer/ice/bye, хост → клиент — offer/ice/error/bye.
+// Остальное (hello, challenge, error клиента) получатель принял бы за слова самого хаба.
+func relayed(fromHost bool, typ string) bool {
+	switch typ {
+	case "ice", "bye":
+		return true
+	case "connect", "answer":
+		return !fromHost
+	case "offer", "error":
+		return fromHost
+	}
+	return false
 }
