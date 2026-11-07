@@ -99,12 +99,12 @@ var modFlag = map[uint16]uint64{0x38: fShift, 0x3C: fShift, 0x3B: fCtrl, 0x3E: f
 
 var mac struct {
 	sync.Mutex
-	x, y         float64
-	flags        uint64
-	btns         [3]bool
-	lastBtn      int
-	lastDown     time.Time
-	clicks       int
+	x, y           float64
+	flags          uint64
+	btns           [3]bool
+	lastBtn        int
+	lastDown       time.Time
+	clicks         int
 	wheelV, wheelH int32
 }
 
