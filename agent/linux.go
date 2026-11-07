@@ -58,8 +58,8 @@ func getDesktop() (desktop, error) {
 }
 
 // LinuxCapture — Agent.Capture для Linux.
-func LinuxCapture(fps int, enc string) func(ctx context.Context, mon, kbps int) (*exec.Cmd, error) {
-	return func(ctx context.Context, mon, kbps int) (*exec.Cmd, error) {
+func LinuxCapture(enc string) func(ctx context.Context, mon, kbps, fps int) (*exec.Cmd, error) {
+	return func(ctx context.Context, mon, kbps, fps int) (*exec.Cmd, error) {
 		d, err := getDesktop()
 		if err != nil {
 			return nil, err

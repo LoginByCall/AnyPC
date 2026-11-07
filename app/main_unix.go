@@ -222,4 +222,3 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 	}
 	json.NewEncoder(w).Encode(map[string]any{"result": res})
 }
-

@@ -362,7 +362,7 @@ func TestMonitorSwitch(t *testing.T) {
 	listMonitors = func() []Monitor { return two }
 	calls := make(chan int, 10)
 	e2eAgent = func(a *Agent) {
-		a.Capture = func(ctx context.Context, mon, _ int) (*exec.Cmd, error) {
+		a.Capture = func(ctx context.Context, mon, _, _ int) (*exec.Cmd, error) {
 			calls <- mon
 			return exec.CommandContext(ctx, "ffmpeg", FFArgs("test", "libx264", 30, "1M")...), nil
 		}

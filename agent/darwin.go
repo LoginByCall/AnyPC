@@ -72,8 +72,8 @@ func Permissions(ask bool) (screen, input bool) {
 }
 
 // MacCapture — Agent.Capture для macOS: экран mon (порядок — как в CGGetActiveDisplayList, его же берёт avfoundation).
-func MacCapture(fps int, enc string) func(ctx context.Context, mon, kbps int) (*exec.Cmd, error) {
-	return func(ctx context.Context, mon, kbps int) (*exec.Cmd, error) {
+func MacCapture(enc string) func(ctx context.Context, mon, kbps, fps int) (*exec.Cmd, error) {
+	return func(ctx context.Context, mon, kbps, fps int) (*exec.Cmd, error) {
 		return exec.CommandContext(ctx, "ffmpeg", FFArgs("avf:"+strconv.Itoa(max(mon, 0)), enc, fps, strconv.Itoa(kbps)+"k")...), nil
 	}
 }

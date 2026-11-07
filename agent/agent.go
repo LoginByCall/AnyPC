@@ -43,12 +43,12 @@ type Agent struct {
 	FFmpeg  string                       // путь к ffmpeg
 	FF      []string                     // аргументы ffmpeg, см. FFArgs
 	FPS     int
-	Stderr  io.Writer                                                   // вывод ffmpeg; nil — os.Stderr
-	OnState func(online bool, session string)                           // session "" — сессии нет
-	FileDir string                                                      // куда принимать файлы; "" — %USERPROFILE%\Downloads
-	Capture func(ctx context.Context, mon, kbps int) (*exec.Cmd, error) // захват монитора mon с битрейтом kbps (H.264 Annex-B в stdout); nil — FFmpeg + FF
-	Bitrate int                                                         // кбит/с — потолок адаптивного битрейта (REQ-N-03); 0 — постоянный
-	Confirm func(cid, peer string) bool                                 // REQ-F-03: спросить человека на хосте после верного пароля; nil — не спрашивать (unattended)
+	Stderr  io.Writer                                                        // вывод ffmpeg; nil — os.Stderr
+	OnState func(online bool, session string)                                // session "" — сессии нет
+	FileDir string                                                           // куда принимать файлы; "" — %USERPROFILE%\Downloads
+	Capture func(ctx context.Context, mon, kbps, fps int) (*exec.Cmd, error) // захват монитора mon: битрейт kbps, fps кадров/с (H.264 Annex-B в stdout); nil — FFmpeg + FF
+	Bitrate int                                                              // кбит/с — потолок адаптивного битрейта (REQ-N-03); 0 — постоянный
+	Confirm func(cid, peer string) bool                                      // REQ-F-03: спросить человека на хосте после верного пароля; nil — не спрашивать (unattended)
 
 	mu        sync.Mutex
 	ice       []webrtc.ICEServer
@@ -389,7 +389,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 	}
 	s := &session{cid: cid, conn: c, pc: pc, mons: listMonitors()}
 	if a.Capture != nil && a.Bitrate > 0 {
-		s.rate = rate{max: a.Bitrate, cur: a.Bitrate}
+		s.rate = rate{max: a.Bitrate, cur: a.Bitrate, fpsMax: a.FPS}
 	}
 	go func() { // RTCP нужно вычитывать, иначе не работают интерсепторы; отчёты о потерях — битрейту
 		for {
@@ -698,12 +698,15 @@ func (a *Agent) streamOnce(ctx context.Context, s *session, track *webrtc.TrackL
 	defer cancel()
 	s.mu.Lock()
 	s.capCancel = cancel
-	mon, kbps := s.mon, s.rate.cur
+	mon, kbps, fps := s.mon, s.rate.cur, s.rate.fps()
 	s.mu.Unlock()
+	if fps <= 0 { // без адаптации (FF из тестов) — как задано
+		fps = a.FPS
+	}
 	var cmd *exec.Cmd
 	if a.Capture != nil {
 		var err error
-		if cmd, err = a.Capture(ctx, mon, kbps); err != nil {
+		if cmd, err = a.Capture(ctx, mon, kbps, fps); err != nil {
 			log.Printf("захват: %v", err)
 			return
 		}
@@ -733,7 +736,7 @@ func (a *Agent) streamOnce(ctx context.Context, s *session, track *webrtc.TrackL
 		log.Printf("h264: %v", err)
 		return
 	}
-	frame := time.Second / time.Duration(a.FPS)
+	frame := time.Second / time.Duration(fps)
 	for {
 		nal, err := r.NextNAL()
 		if err != nil {
