@@ -437,7 +437,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 		}
 		switch {
 		case m.T == "clip" && s.clip.fromRemote(m.Text):
-			if err := SetClipText(m.Text); err != nil {
+			if err := setClip(m.Text); err != nil {
 				log.Printf("буфер обмена: %v", err)
 			}
 		case m.T == "monitor":
@@ -646,7 +646,7 @@ func (a *Agent) accept(ctx context.Context, s *session, track *webrtc.TrackLocal
 }
 
 // clipSeq, clipText — системный буфер (подменяются в тестах).
-var clipSeq, clipText = ClipSeq, ClipText
+var clipSeq, clipText, setClip = ClipSeq, ClipText, SetClipText
 
 // watchClip отправляет клиенту изменения буфера обмена хоста (только изменения после начала сессии).
 // Д-5: до успешного входа — ничего: иначе любой, кто знает ID, читал бы буфер хоста 20 с ожидания пароля.
