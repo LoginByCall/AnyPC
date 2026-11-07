@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -41,8 +42,14 @@ func TestSafeName(t *testing.T) {
 // pair — два соединённых WebRTC-узла в одном процессе (без сигнализации).
 func pair(t *testing.T) (client, host *webrtc.PeerConnection) {
 	t.Helper()
-	client, _ = webrtc.NewPeerConnection(webrtc.Configuration{})
-	host, _ = webrtc.NewPeerConnection(webrtc.Configuration{})
+	// ponytail: только loopback — на Маке ICE-пинг через en0 мог навсегда зависнуть в UDP WriteTo (pion ice v4.4.8)
+	var se webrtc.SettingEngine
+	se.SetIncludeLoopbackCandidate(true)
+	se.SetInterfaceFilter(func(n string) bool { return strings.HasPrefix(n, "lo") })
+	se.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
+	api := webrtc.NewAPI(webrtc.WithSettingEngine(se))
+	client, _ = api.NewPeerConnection(webrtc.Configuration{})
+	host, _ = api.NewPeerConnection(webrtc.Configuration{})
 	t.Cleanup(func() { client.Close(); host.Close() })
 	client.CreateDataChannel("init", nil)
 	offer, _ := client.CreateOffer(nil)
