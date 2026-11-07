@@ -51,7 +51,11 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   console.log('right=' + await until(s => s.endsWith('|true')));
   console.log('stored=' + await ev("JSON.parse(localStorage.getItem('known'))['123456789']"));
   // регрессия: буфер браузера уходил на хост только по событию focus — скопированное в соседней вкладке терялось
-  await ev("Object.defineProperty(navigator, 'clipboard', { value: { readText: async () => 'from-browser', writeText: async () => {} } }); 1");
+  // Firefox: без постоянного разрешения опроса нет (каждое чтение — кнопка «Вставить» у курсора)
+  await ev("window.reads = 0; clipGranted = false; Object.defineProperty(navigator, 'clipboard', { value: { readText: async () => (reads++, 'from-browser'), writeText: async () => {} } }); 1");
+  await sleep(2500);
+  console.log('reads=' + await ev("reads"));
+  await ev("clipGranted = true; 1");
   await sleep(2500);
   await ev("sendFile(new File([new Uint8Array(300000).map((_, i) => i % 251)], 'browser.bin'))");
   let x = '';
@@ -118,6 +122,9 @@ func TestBrowserClient(t *testing.T) {
 	if !strings.Contains(string(out), "dropped=|false") || !strings.Contains(string(out), "redial=") || strings.Contains(string(out), "redial=Error") ||
 		!regexp.MustCompile(`redial=[^\n]*\|true`).MatchString(string(out)) {
 		t.Error("после обрыва сессия не восстановилась сама")
+	}
+	if !strings.Contains(string(out), "reads=0\n") {
+		t.Error("без разрешения clipboard-read буфер опрашивается (Firefox: плашка «Вставить» каждую секунду)")
 	}
 	if v, _ := gotClip.Load().(string); v != "from-browser" {
 		t.Errorf("буфер браузера не дошёл до хоста без события focus: %q", v)

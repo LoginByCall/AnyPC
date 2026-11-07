@@ -470,9 +470,12 @@ async function pushClip() {
   try { x = APP ? await getClip() : document.hasFocus() ? await navigator.clipboard.readText() : ''; } catch {}
   if (clipOK(x) && x !== lastClip) { lastClip = x; ctl.send(JSON.stringify({ t: 'clip', text: x })); }
 }
-// Опрос раз в секунду: в программе — своя привязка; в браузере — пока окно в фокусе (разрешение на чтение браузер спросит один раз).
-// Только по событию focus терялось скопированное до подключения и в соседней вкладке (фокус окна при этом не меняется).
-setInterval(pushClip, 1000); if (!APP) window.addEventListener('focus', pushClip);
+// Опрос раз в секунду: в программе — своя привязка; в браузере — только с постоянным разрешением clipboard-read (Chrome после
+// «Разрешить»): по событию focus терялось скопированное в соседней вкладке. Firefox разрешения не даёт и на каждое чтение
+// показывает у курсора кнопку «Вставить» — там только при возврате фокуса.
+let clipGranted = false;
+navigator.permissions?.query({ name: 'clipboard-read' }).then(p => { const f = () => clipGranted = p.state === 'granted'; f(); p.onchange = f; }).catch(() => {});
+setInterval(() => (APP || clipGranted) && pushClip(), 1000); if (!APP) window.addEventListener('focus', pushClip);
 
 // ---------- Файлы (REQ-F-12): свой канал "file" на каждый файл, протокол — agent/file.go ----------
 const CHUNK = 16 * 1024, HIGH = 4 << 20;

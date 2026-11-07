@@ -52,6 +52,8 @@
 - `foot`: AnyPC beta. On first launch, the Windows version downloads FFmpeg (GPLv3) from the gyan.dev builds. Provided “as is”, without warranty.
 - `f5t`: Works with your own server
 - `f5d`: Set up your own node on a VPS with one command and switch the program to it — connection records stay with you.
+- `f6t`: All major operating systems
+- `f6d`: Windows, Linux and macOS — the same program for both roles on each system; you can also connect from a browser, nothing to install.
 - `tab_mac`: macOS
 - `dl_mac`: Download for macOS
 - `sys_mac`: macOS 12 or later, Intel and Apple Silicon · beta

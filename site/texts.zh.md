@@ -52,6 +52,8 @@
 - `foot`: AnyPC 测试版。Windows 版首次启动时会从 gyan.dev 的构建下载 FFmpeg（GPLv3）。按“原样”提供，不作任何保证。
 - `f5t`: 可使用自己的服务器
 - `f5d`: 一条命令即可在 VPS 上部署自己的节点，并让程序切换到该节点——连接记录只保留在您手中。
+- `f6t`: 支持所有主流操作系统
+- `f6d`: Windows、Linux 和 macOS——每个系统上都是同一个程序，两种角色兼备；也可以直接在浏览器中连接，无需安装。
 - `tab_mac`: macOS
 - `dl_mac`: 下载 macOS 版
 - `sys_mac`: macOS 12 或更高版本，Intel 和 Apple 芯片 · 测试版
