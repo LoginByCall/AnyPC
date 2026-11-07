@@ -110,9 +110,10 @@ func main() {
 	var mu sync.Mutex
 	online, session, update := false, "", ""
 	info := func() map[string]any {
+		node, pub := cfg.node()
 		mu.Lock()
 		defer mu.Unlock()
-		return map[string]any{"id": cfg.ID, "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "version": version, "ffmpeg": ffSnap(&ffMu, &ffState), "update": update}
+		return map[string]any{"id": cfg.ID, "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "version": version, "ffmpeg": ffSnap(&ffMu, &ffState), "update": update, "node": node, "nodePub": pub, "server": cfg.Server}
 	}
 	go watchUpdates(func(v string) { mu.Lock(); update = v; mu.Unlock() }) // окно опрашивает hostInfo
 	a.OnState = func(on bool, s string) {
@@ -126,6 +127,8 @@ func main() {
 	w.Bind("openUpdate", func() { exec.Command("rundll32", "url.dll,FileProtocolHandler", updateSite).Start() }) // адрес фиксирован: странице не открыть произвольный
 	w.Bind("setPassword", cfg.setPassword)
 	w.Bind("setConfirm", cfg.setConfirm)
+	run := &runner{a: a, ctx: ctx}
+	w.Bind("setNode", func(node string, public bool) (string, error) { return setNode(cfg, run, node, public) })
 	w.Bind("hostDisconnect", a.Disconnect)
 	w.Bind("fullscreen", func(on bool) { setFullscreen(uintptr(w.Window()), on) })
 	w.Bind("minimize", func() { user32.NewProc("ShowWindowAsync").Call(uintptr(w.Window()), 6) }) // SW_MINIMIZE
@@ -145,10 +148,10 @@ func main() {
 	w.Navigate("http://" + l.Addr().String() + "/")
 
 	log.Printf("AnyPC запущен, ID %s", cfg.ID)
-	go a.Run(ctx)
+	run.start(cfg.Server)
 	w.Run()
 	cancel()
-	a.Disconnect()
+	run.wait()
 }
 
 // ffSnap — состояние загрузки FFmpeg для окна.

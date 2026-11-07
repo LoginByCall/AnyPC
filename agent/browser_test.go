@@ -247,3 +247,67 @@ func fakeHost(t *testing.T, ctx context.Context, url, id string) {
 		}
 	}
 }
+
+// cdpNode — «ID@узел»: без узла хост не найден, с узлом — сессия; в «Недавних» адрес запомнен с узлом.
+const cdpNode = `
+const [, , port, url] = process.argv;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+(async () => {
+  const tab = await (await fetch('http://127.0.0.1:' + port + '/json/new?' + url, { method: 'PUT' })).json();
+  const ws = new WebSocket(tab.webSocketDebuggerUrl); await new Promise(r => ws.onopen = r);
+  let id = 0; const wait = {};
+  ws.onmessage = e => { const m = JSON.parse(e.data); if (m.id && wait[m.id]) wait[m.id](m); };
+  const ev = x => new Promise(r => { const i = ++id; wait[i] = m => r(m.result?.result?.value); ws.send(JSON.stringify({ id: i, method: 'Runtime.evaluate', params: { expression: x, awaitPromise: true, returnByValue: true } })); });
+  const state = () => ev("document.getElementById('msg').textContent + '|' + !document.getElementById('sess').classList.contains('hidden')");
+  const until = async f => { for (let i = 0; i < 75; i++) { const s = await state(); if (f(s)) return s; await sleep(200); } return await state(); };
+  await sleep(1000);
+  await ev("document.getElementById('id').value='123456789'; document.getElementById('pw').value='secret123'; document.getElementById('go').click()");
+  console.log('plain=' + await until(s => s.includes('rror')));
+  await ev("document.getElementById('id').value='123 456 789@bad_node'; document.getElementById('go').click()");
+  console.log('bad=' + await state());
+  await ev("document.getElementById('id').value='123456789@NODE'; document.getElementById('go').click()");
+  console.log('node=' + await until(s => s.endsWith('|true')));
+  console.log('recent=' + await ev("localStorage.getItem('recent')"));
+  process.exit(0);
+})();`
+
+// TestBrowserNode — Э-1: подключение «ID@узел» идёт только через указанный узел, без смены настроек.
+func TestBrowserNode(t *testing.T) {
+	chrome, err := exec.LookPath("google-chrome")
+	if err != nil {
+		t.Skip("нет google-chrome")
+	}
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("нет node")
+	}
+	if _, err := fs.Stat(ui.FS, "pake.wasm"); err != nil {
+		t.Skip("нет ui/pake.wasm — собрать через build.sh")
+	}
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("нет ffmpeg")
+	}
+	own := httptest.NewServer(&hub.Hub{}) // «свой узел» с хостом; страница открыта с другого хаба, где хоста нет
+	defer own.Close()
+	mux := http.NewServeMux()
+	mux.Handle("/ws", &hub.Hub{})
+	mux.Handle("/", http.FileServer(http.FS(ui.FS)))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	go newAgent("ws"+strings.TrimPrefix(own.URL, "http")+"/ws", "123456789", FFArgs("test", "libx264", 30, "1M")).Run(ctx)
+	node := strings.TrimPrefix(own.URL, "http://")
+	out := string(runCDP(t, ctx, chrome, strings.Replace(cdpNode, "NODE", node, 1), srv.URL+"/"))
+	if !strings.Contains(out, "plain=Error: ") || !strings.Contains(out, "|false\n") {
+		t.Error("без узла хост найден — ждали ошибку")
+	}
+	if !strings.Contains(out, "bad=Invalid node address") {
+		t.Error("неверный адрес узла не отклонён")
+	}
+	if !strings.Contains(out, "node=") || !regexp.MustCompile(`node=[^\n]*\|true`).MatchString(out) {
+		t.Error("через ID@узел сессия не открылась")
+	}
+	if !strings.Contains(out, `recent=["123456789@`+node+`"]`) {
+		t.Error("в «Недавних» нет адреса с узлом")
+	}
+}

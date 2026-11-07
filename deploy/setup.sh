@@ -4,11 +4,23 @@
 # Второй TURN без сигнализации: TURN_ONLY=1 [TURN_MIN=50000 TURN_MAX=50999] sh setup.sh <домен TURN> — нужен /etc/anypc/turn-secret,
 # скопированный с основного сервера (учётки TURN выдаёт его хаб).
 # Файлы для скачивания с лендинга кладутся в /srv/anypc/dl (AnyPC.exe, SHA256SUMS).
+# Свой узел одной командой (бинарника рядом нет — скачивается и сверяется с SHA256SUMS; обновление — та же команда):
+#   curl -fsSL https://hk.anypc.org/download/install.sh | sudo sh -s my.example.com
 set -eu
-DOMAIN=$1
+DOMAIN=${1:?"использование: install.sh <домен узла>   (запись A домена → IP этого сервера)"}
 SITE=${2:-}
 mkdir -p /srv/anypc/dl
 cd "$(dirname "$0")"
+if [ ! "${TURN_ONLY:-}" ] && [ ! -f anypc-server ]; then
+  # ponytail: сумма — с того же зеркала, что и файл (защита от порчи, не от подмены); подпись выпуска — П1, SHARED-NODES.md
+  cd "$(mktemp -d)"
+  for u in ${ANYPC_DL:-https://hk.anypc.org/download https://ru.anypc.org/download https://github.com/LoginByCall/AnyPC/releases/latest/download}; do
+    curl -fsSL -o anypc-server "$u/anypc-server" && curl -fsSL -o SHA256SUMS "$u/SHA256SUMS" &&
+      grep ' anypc-server$' SHA256SUMS | sha256sum -c - && break
+    rm -f anypc-server SHA256SUMS
+  done
+  [ -f anypc-server ] || { echo "не удалось скачать anypc-server ни с одного зеркала" >&2; exit 1; }
+fi
 
 apt-get update -q
 DEBIAN_FRONTEND=noninteractive apt-get install -yq coturn
@@ -87,5 +99,10 @@ EOF
 systemctl daemon-reload
 systemctl enable anypc-server
 systemctl restart anypc-server
+# ufw включён — открыть порты узла (иначе межсетевой экран — у хостера, см. README)
+if command -v ufw >/dev/null && ufw status | grep -q 'Status: active'; then
+  ufw allow 80,443/tcp; ufw allow 3478; ufw allow 49152:65535/udp
+fi
 sleep 2
 systemctl --no-pager --lines=5 status coturn anypc-server
+echo "Узел готов: https://$DOMAIN/ (веб-клиент). В программе AnyPC: «Свой сервер» = $DOMAIN"
