@@ -67,3 +67,4 @@
 - `n3`: Auf dem Server ausführen – das Skript lädt anypc-server herunter, prüft die Prüfsumme, richtet das coturn-Relay und ein Let’s-Encrypt-Zertifikat ein. Aktualisieren mit demselben Befehl:
 - `n4`: In AnyPC auf Ihren PCs: „Eigener Server“ = Ihre Domain → „Speichern“. Die ID bleibt; mit „auch im AnyPC-Netz bleiben“ ist der PC auch über die AnyPC-Server erreichbar.
 - `n5`: Über einen anderen Knoten verbinden, ohne die Einstellungen zu ändern: ID@Domain ins ID-Feld, z. B. 123456789@my.example.com. Der Web-Client des Knotens liegt unter https://Ihre-Domain/.
+- `n6`: Oder statt Schritt 3 mit Docker (NAS, Server mit Docker): Führen Sie in einem leeren Ordner die folgenden Befehle mit Ihrer Domain und Server-IP aus. Sind die Ports 80 und 443 durch Ihren Reverse Proxy belegt, siehe README auf GitHub.

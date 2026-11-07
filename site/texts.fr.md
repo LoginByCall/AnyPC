@@ -67,3 +67,4 @@
 - `n3`: Exécutez sur le serveur — le script télécharge anypc-server, vérifie sa somme, configure le relais coturn et un certificat Let’s Encrypt. Mise à jour : la même commande :
 - `n4`: Dans AnyPC sur vos PC : « Serveur personnel » = votre domaine → « Enregistrer ». L’ID ne change pas ; avec « rester aussi sur le réseau AnyPC » coché, le PC reste joignable via les serveurs AnyPC.
 - `n5`: Pour passer par un autre nœud sans changer les réglages, saisissez ID@domaine dans le champ ID, par ex. 123456789@my.example.com. Le client web du nœud : https://votre-domaine/.
+- `n6`: Ou, à la place de l’étape 3, avec Docker (NAS, serveur déjà sous Docker) : dans un dossier vide, exécutez les commandes ci-dessous avec votre domaine et l’IP du serveur. Si les ports 80 et 443 sont pris par votre proxy inverse, voir le README sur GitHub.
