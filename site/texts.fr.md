@@ -5,7 +5,7 @@
 - `lead`: AnyPC affiche l’écran de votre ordinateur et vous permet de le contrôler depuis un autre, même si les deux sont derrière un routeur ou sur un réseau mobile. Sans redirection de ports ni inscription.
 - `dl`: Télécharger
 - `web`: Ouvrir le client web
-- `req`: Windows 10/11 · Linux (X11, Wayland)
+- `req`: Windows 10/11 · Linux (X11, Wayland) · macOS 12+
 - `whyT`: Pourquoi AnyPC
 - `f1t`: Traverse tous les NAT
 - `f1d`: Connexion directe ; quand ce n’est pas possible, via un serveur relais. Rien à configurer sur le routeur.
@@ -48,5 +48,20 @@
 - `lim1`: Ctrl+Alt+Suppr, les fenêtres UAC et l’écran de verrouillage ne sont pas encore pris en charge.
 - `lim2`: Presse-papiers : texte uniquement ; les fichiers s’envoient avec les boutons de la barre d’outils.
 - `lim3`: Vous passez d’un écran à l’autre depuis la barre d’outils ; sous Wayland, l’écran se choisit dans la boîte de dialogue du système lors de la connexion.
-- `lim4`: La version Linux est en bêta et a été moins testée que la version Windows.
+- `lim4`: Les versions Linux et macOS sont en bêta et moins testées que la version Windows.
 - `foot`: AnyPC bêta. Au premier lancement, la version Windows télécharge FFmpeg (GPLv3) depuis les builds de gyan.dev. Fourni « tel quel », sans garantie.
+- `f5t`: Possible avec votre propre serveur
+- `f5d`: Installez votre propre nœud sur un VPS en une commande et basculez le programme dessus — les données de connexion restent chez vous.
+- `tab_mac`: macOS
+- `dl_mac`: Télécharger pour macOS
+- `sys_mac`: macOS 12 ou ultérieur, Intel et Apple Silicon · bêta
+- `m1`: Installez ffmpeg (avec Homebrew) :
+- `m2`: Autorisez l’exécution et lancez-le dans le Terminal — la fenêtre AnyPC s’ouvre dans un onglet du navigateur :
+- `m3`: macOS demandera d’autoriser le Terminal pour « Enregistrement de l’écran » et « Accessibilité » (Réglages Système → Confidentialité et sécurité). Autorisez les deux et relancez AnyPC.
+- `mchk`: Vérifier le fichier — la somme doit correspondre à celle ci-dessus :
+- `tab_srv`: Serveur personnel
+- `n1`: Votre propre nœud AnyPC sur votre VPS : signalisation, relais et client web sur votre domaine — seul votre serveur sait qui s’est connecté et quand. Il faut un VPS sous Ubuntu ou Debian avec une IP publique, et un nom de domaine.
+- `n2`: Dans le DNS, ajoutez un enregistrement A : domaine → IP du serveur (chez Cloudflare — DNS uniquement, « nuage gris »). Ouvrez les ports 80 et 443/tcp, 3478/tcp et udp, 49152–65535/udp.
+- `n3`: Exécutez sur le serveur — le script télécharge anypc-server, vérifie sa somme, configure le relais coturn et un certificat Let’s Encrypt. Mise à jour : la même commande :
+- `n4`: Dans AnyPC sur vos PC : « Serveur personnel » = votre domaine → « Enregistrer ». L’ID ne change pas ; avec « rester aussi sur le réseau AnyPC » coché, le PC reste joignable via les serveurs AnyPC.
+- `n5`: Pour passer par un autre nœud sans changer les réglages, saisissez ID@domaine dans le champ ID, par ex. 123456789@my.example.com. Le client web du nœud : https://votre-domaine/.

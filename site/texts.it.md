@@ -5,7 +5,7 @@
 - `lead`: AnyPC mostra lo schermo del tuo computer e ti permette di controllarlo da un altro, anche se entrambi sono dietro un router o su una rete mobile. Senza aprire porte e senza registrazione.
 - `dl`: Scarica
 - `web`: Apri il client web
-- `req`: Windows 10/11 · Linux (X11, Wayland)
+- `req`: Windows 10/11 · Linux (X11, Wayland) · macOS 12+
 - `whyT`: Perché AnyPC
 - `f1t`: Supera qualsiasi NAT
 - `f1d`: Si connette direttamente e, quando non è possibile, tramite un server relay. Nessuna configurazione del router.
@@ -48,5 +48,20 @@
 - `lim1`: Ctrl+Alt+Canc, le finestre UAC e la schermata di blocco non sono ancora disponibili.
 - `lim2`: Appunti: solo testo; i file si inviano con i pulsanti della barra.
 - `lim3`: Puoi passare da un monitor all’altro dalla barra; su Wayland il monitor si sceglie nella finestra di sistema al momento della connessione.
-- `lim4`: La versione per Linux è in beta ed è stata testata meno di quella per Windows.
+- `lim4`: Le versioni per Linux e macOS sono beta e sono state testate meno di quella per Windows.
 - `foot`: AnyPC beta. Al primo avvio, la versione per Windows scarica FFmpeg (GPLv3) dalle build di gyan.dev. Fornito «così com’è», senza garanzia.
+- `f5t`: Anche con il tuo server
+- `f5d`: Installa il tuo nodo su un VPS con un solo comando e passa il programma su di esso: i dati delle connessioni restano a te.
+- `tab_mac`: macOS
+- `dl_mac`: Scarica per macOS
+- `sys_mac`: macOS 12 o successivo, Intel e Apple Silicon · beta
+- `m1`: Installa ffmpeg (con Homebrew):
+- `m2`: Consenti l’esecuzione e avvialo nel Terminale: la finestra di AnyPC si apre in una scheda del browser:
+- `m3`: macOS chiederà di consentire al Terminale «Registrazione schermo» e «Accessibilità» (Impostazioni di Sistema → Privacy e sicurezza). Consenti entrambi e riavvia AnyPC.
+- `mchk`: Verifica il file: la somma deve coincidere con quella sopra:
+- `tab_srv`: Server proprio
+- `n1`: Il tuo nodo AnyPC sul tuo VPS: segnalazione, relay e client web sul tuo dominio; solo il tuo server sa chi si è collegato e quando. Servono un VPS con Ubuntu o Debian con IP pubblico e un dominio.
+- `n2`: Nel DNS aggiungi un record A: dominio → IP del server (su Cloudflare solo DNS, «nuvola grigia»). Apri le porte 80 e 443/tcp, 3478/tcp e udp, 49152–65535/udp.
+- `n3`: Esegui sul server: lo script scarica anypc-server, ne verifica la somma, configura il relay coturn e un certificato Let’s Encrypt. Per aggiornare, lo stesso comando:
+- `n4`: In AnyPC sui tuoi PC: «Server proprio» = il tuo dominio → «Salva». L’ID non cambia; con «restare anche nella rete AnyPC» selezionato, il PC è raggiungibile anche dai server AnyPC.
+- `n5`: Per collegarti tramite un altro nodo senza cambiare le impostazioni, scrivi ID@dominio nel campo ID, ad es. 123456789@my.example.com. Il client web del nodo è su https://tuo-dominio/.

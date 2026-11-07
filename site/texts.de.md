@@ -5,7 +5,7 @@
 - `lead`: AnyPC zeigt den Bildschirm Ihres Computers und lässt Sie ihn von einem anderen aus steuern – auch wenn beide hinter Routern oder im Mobilfunknetz sind. Ohne Portweiterleitung, ohne Registrierung.
 - `dl`: Herunterladen
 - `web`: Web-Client öffnen
-- `req`: Windows 10/11 · Linux (X11, Wayland)
+- `req`: Windows 10/11 · Linux (X11, Wayland) · macOS 12+
 - `whyT`: Warum AnyPC
 - `f1t`: Funktioniert hinter jedem NAT
 - `f1d`: Verbindet direkt; wo das nicht geht, über einen Relay-Server. Am Router müssen Sie nichts einstellen.
@@ -48,5 +48,20 @@
 - `lim1`: Strg+Alt+Entf, UAC-Abfragen und der Sperrbildschirm sind noch nicht verfügbar.
 - `lim2`: Zwischenablage: nur Text; Dateien werden über die Schaltflächen der Leiste übertragen.
 - `lim3`: Zwischen mehreren Monitoren wechseln Sie in der Leiste; unter Wayland wird der Monitor beim Verbinden im Systemdialog gewählt.
-- `lim4`: Die Linux-Version ist eine Beta und weniger getestet als die Windows-Version.
+- `lim4`: Die Versionen für Linux und macOS sind Beta und weniger getestet als die Windows-Version.
 - `foot`: AnyPC Beta. Die Windows-Version lädt beim ersten Start FFmpeg (GPLv3) aus den Builds von gyan.dev herunter. Bereitgestellt „wie besehen“, ohne Gewährleistung.
+- `f5t`: Auch mit eigenem Server
+- `f5d`: Richten Sie mit einem Befehl einen eigenen Knoten auf einem VPS ein und stellen Sie das Programm darauf um – die Verbindungsdaten bleiben bei Ihnen.
+- `tab_mac`: macOS
+- `dl_mac`: Für macOS herunterladen
+- `sys_mac`: macOS 12 oder neuer, Intel und Apple Silicon · Beta
+- `m1`: Installieren Sie ffmpeg (über Homebrew):
+- `m2`: Erlauben Sie die Ausführung und starten Sie es im Terminal – das AnyPC-Fenster öffnet sich in einem Browser-Tab:
+- `m3`: macOS fragt nach den Berechtigungen „Bildschirmaufnahme“ und „Bedienungshilfen“ für das Terminal (Systemeinstellungen → Datenschutz & Sicherheit). Erlauben Sie beide und starten Sie AnyPC neu.
+- `mchk`: Datei prüfen – die Prüfsumme muss mit der obigen übereinstimmen:
+- `tab_srv`: Eigener Server
+- `n1`: Ihr eigener AnyPC-Knoten auf Ihrem VPS: Signalisierung, Relay und Web-Client unter Ihrer Domain – nur Ihr Server weiß, wer sich wann verbunden hat. Sie brauchen einen VPS mit Ubuntu oder Debian und öffentlicher IP sowie eine Domain.
+- `n2`: Legen Sie im DNS einen A-Eintrag an: Domain → Server-IP (bei Cloudflare nur DNS, „graue Wolke“). Öffnen Sie die Ports 80 und 443/tcp, 3478/tcp und udp, 49152–65535/udp.
+- `n3`: Auf dem Server ausführen – das Skript lädt anypc-server herunter, prüft die Prüfsumme, richtet das coturn-Relay und ein Let’s-Encrypt-Zertifikat ein. Aktualisieren mit demselben Befehl:
+- `n4`: In AnyPC auf Ihren PCs: „Eigener Server“ = Ihre Domain → „Speichern“. Die ID bleibt; mit „auch im AnyPC-Netz bleiben“ ist der PC auch über die AnyPC-Server erreichbar.
+- `n5`: Über einen anderen Knoten verbinden, ohne die Einstellungen zu ändern: ID@Domain ins ID-Feld, z. B. 123456789@my.example.com. Der Web-Client des Knotens liegt unter https://Ihre-Domain/.

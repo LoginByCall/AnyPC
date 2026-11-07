@@ -5,7 +5,7 @@
 - `lead`: AnyPC shows your computer’s screen and lets you control it from another one — even when both are behind routers or on a mobile network. No port forwarding, no sign-up.
 - `dl`: Download
 - `web`: Open web client
-- `req`: Windows 10/11 · Linux (X11, Wayland)
+- `req`: Windows 10/11 · Linux (X11, Wayland) · macOS 12+
 - `whyT`: Why AnyPC
 - `f1t`: Gets through any NAT
 - `f1d`: Connects directly; when that isn’t possible, it goes through a relay server. No router setup needed.
@@ -48,5 +48,20 @@
 - `lim1`: Ctrl+Alt+Del, UAC prompts and the lock screen are not available yet.
 - `lim2`: Clipboard: text only; files are sent with the toolbar buttons.
 - `lim3`: You can switch monitors on the toolbar; on Wayland, the monitor is chosen in the system dialog when you connect.
-- `lim4`: The Linux version is in beta and has been tested less than the Windows version.
+- `lim4`: The Linux and macOS versions are in beta and have been tested less than the Windows version.
 - `foot`: AnyPC beta. On first launch, the Windows version downloads FFmpeg (GPLv3) from the gyan.dev builds. Provided “as is”, without warranty.
+- `f5t`: Works with your own server
+- `f5d`: Set up your own node on a VPS with one command and switch the program to it — connection records stay with you.
+- `tab_mac`: macOS
+- `dl_mac`: Download for macOS
+- `sys_mac`: macOS 12 or later, Intel and Apple Silicon · beta
+- `m1`: Install ffmpeg (via Homebrew):
+- `m2`: Allow it to run and start it in Terminal — the AnyPC window opens in a browser tab:
+- `m3`: macOS will ask to allow Terminal “Screen Recording” and “Accessibility” (System Settings → Privacy & Security). Allow both and restart AnyPC.
+- `mchk`: Verify the file — the checksum must match the one above:
+- `tab_srv`: Own server
+- `n1`: Your own AnyPC node on your VPS: signaling, relay and web client on your domain — only your server knows who connected and when. You need a VPS running Ubuntu or Debian with a public IP, and a domain.
+- `n2`: In DNS, add an A record: domain → server IP (on Cloudflare — DNS only, “grey cloud”). Open ports 80 and 443/tcp, 3478/tcp and udp, 49152–65535/udp.
+- `n3`: Run on the server — the script downloads anypc-server, checks its checksum, sets up the coturn relay and a Let’s Encrypt certificate. To update, run the same command:
+- `n4`: In AnyPC on your PCs: “Own server” = your domain → “Save”. The ID stays the same; with “also stay on the AnyPC network” ticked, the PC is reachable through the AnyPC servers too.
+- `n5`: To connect through another node without changing settings, type ID@domain in the ID field, e.g. 123456789@my.example.com. The node’s web client is at https://your-domain/.

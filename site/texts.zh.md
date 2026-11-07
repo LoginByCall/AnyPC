@@ -5,7 +5,7 @@
 - `lead`: AnyPC 可以显示您电脑的屏幕，并让您从另一台电脑进行控制——即使两台电脑都在路由器之后或使用移动网络。无需端口转发，无需注册。
 - `dl`: 下载
 - `web`: 打开网页客户端
-- `req`: Windows 10/11 · Linux（X11、Wayland）
+- `req`: Windows 10/11 · Linux（X11、Wayland）· macOS 12+
 - `whyT`: 为什么选择 AnyPC
 - `f1t`: 穿透任何 NAT
 - `f1d`: 优先直接连接；无法直连时，经由中继服务器转发。无需设置路由器。
@@ -48,5 +48,20 @@
 - `lim1`: 暂不支持 Ctrl+Alt+Del、UAC 提示窗口和锁屏界面。
 - `lim2`: 剪贴板仅支持文本；文件可通过工具栏按钮传输。
 - `lim3`: 可在工具栏中切换多个显示器；在 Wayland 下，连接时在系统对话框中选择显示器。
-- `lim4`: Linux 版为测试版，测试程度低于 Windows 版。
+- `lim4`: Linux 和 macOS 版本为测试版，测试程度不及 Windows 版本。
 - `foot`: AnyPC 测试版。Windows 版首次启动时会从 gyan.dev 的构建下载 FFmpeg（GPLv3）。按“原样”提供，不作任何保证。
+- `f5t`: 可使用自己的服务器
+- `f5d`: 一条命令即可在 VPS 上部署自己的节点，并让程序切换到该节点——连接记录只保留在您手中。
+- `tab_mac`: macOS
+- `dl_mac`: 下载 macOS 版
+- `sys_mac`: macOS 12 或更高版本，Intel 和 Apple 芯片 · 测试版
+- `m1`: 安装 ffmpeg（通过 Homebrew）：
+- `m2`: 允许运行并在“终端”中启动——AnyPC 窗口会在浏览器标签页中打开：
+- `m3`: macOS 会请求为“终端”授予“屏幕录制”和“辅助功能”权限（系统设置 → 隐私与安全性）。两项都允许后重新启动 AnyPC。
+- `mchk`: 校验文件——校验和应与上方一致：
+- `tab_srv`: 自有服务器
+- `n1`: 在您的 VPS 上运行自己的 AnyPC 节点：信令、中继和网页客户端都在您的域名上——只有您的服务器知道谁在何时连接过。需要一台带公网 IP 的 Ubuntu 或 Debian VPS 和一个域名。
+- `n2`: 在 DNS 中添加 A 记录：域名 → 服务器 IP（Cloudflare 上请设为“仅 DNS”，即灰色云朵）。开放端口 80 和 443/tcp、3478/tcp 和 udp、49152–65535/udp。
+- `n3`: 在服务器上运行——脚本会下载 anypc-server、校验其校验和，并配置 coturn 中继和 Let’s Encrypt 证书。更新时运行同一命令：
+- `n4`: 在您各台电脑的 AnyPC 中：“自有服务器”填写您的域名 → “保存”。ID 不变；勾选“同时保留在 AnyPC 网络中”后，也可通过 AnyPC 服务器访问这台电脑。
+- `n5`: 不改设置、临时通过其他节点连接：在 ID 栏输入 ID@域名，例如 123456789@my.example.com。节点的网页客户端位于 https://您的域名/。
