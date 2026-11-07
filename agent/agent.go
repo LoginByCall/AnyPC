@@ -28,6 +28,9 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
+	"github.com/pion/interceptor"
+	"github.com/pion/interceptor/pkg/cc"
+	"github.com/pion/interceptor/pkg/gcc"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
 	"github.com/pion/webrtc/v4/pkg/media/h264reader"
@@ -73,10 +76,12 @@ type session struct {
 	mu        sync.Mutex
 	closeInd  func() // закрыть плашку сессии
 	mons      []Monitor
-	mon       int                // выбранный монитор (индекс в mons)
-	capCancel context.CancelFunc // остановить текущий процесс захвата
-	switched  atomic.Bool        // захват остановлен ради смены монитора/битрейта — перезапуск без паузы
-	rate      rate               // адаптивный битрейт; max == 0 — выключен
+	mon       int                   // выбранный монитор (индекс в mons)
+	capCancel context.CancelFunc    // остановить текущий процесс захвата
+	switched  atomic.Bool           // захват остановлен ради смены монитора/битрейта — перезапуск без паузы
+	rate      rate                  // адаптивный битрейт; max == 0 — выключен
+	bwe       cc.BandwidthEstimator // оценка полосы GCC по TWCC клиента; nil — без неё
+	twcc      atomic.Bool           // от клиента пришёл первый отчёт TWCC (в журнал — один раз)
 }
 
 // monitor — выбранный монитор для пересчёта координат мыши (nil — мониторов не знаем).
@@ -370,9 +375,59 @@ func (a *Agent) authResult(cid string, ok bool) {
 	log.Printf("неверный пароль от %s (%d)", cid, a.fails)
 }
 
+// newAPI — WebRTC со стандартными интерсепторами (NACK, RTCP-отчёты, TWCC-ответы); при kbps > 0 ещё и
+// оценка полосы GCC на стороне отправителя (REQ-N-03): номера TWCC в RTP, клиент (браузер, pion) отвечает
+// отчётами о времени прихода, GCC видит рост очереди до потерь. Оценщик сессии приходит в канал.
+// ponytail: без пейсера — ключевой кадр уходит пачкой, как и раньше; с пейсером он ждал бы в очереди
+// на скорости оценки (+сотни мс). Пейсер — если пачки IDR будут переполнять буферы на узких каналах.
+func newAPI(se webrtc.SettingEngine, kbps int) (*webrtc.API, chan cc.BandwidthEstimator, error) {
+	m := &webrtc.MediaEngine{}
+	if err := m.RegisterDefaultCodecs(); err != nil {
+		return nil, nil, err
+	}
+	ir := &interceptor.Registry{}
+	bwe := make(chan cc.BandwidthEstimator, 1)
+	if kbps > 0 {
+		f, err := cc.NewInterceptor(func() (cc.BandwidthEstimator, error) {
+			return gcc.NewSendSideBWE(gcc.SendSideBWEInitialBitrate(kbps*1000), gcc.SendSideBWEMaxBitrate(kbps*1000),
+				gcc.SendSideBWEMinBitrate(rateMin*1000), gcc.SendSideBWEPacer(gcc.NewNoOpPacer()))
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		f.OnNewPeerConnection(func(_ string, e cc.BandwidthEstimator) {
+			select {
+			case bwe <- e:
+			default:
+			}
+		})
+		ir.Add(f)
+		if err := webrtc.ConfigureTWCCHeaderExtensionSender(m, ir); err != nil {
+			return nil, nil, err
+		}
+	}
+	if err := webrtc.RegisterDefaultInterceptors(m, ir); err != nil {
+		return nil, nil, err
+	}
+	return webrtc.NewAPI(webrtc.WithMediaEngine(m), webrtc.WithInterceptorRegistry(ir), webrtc.WithSettingEngine(se)), bwe, nil
+}
+
 func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, ice []webrtc.ICEServer, om offerMsg) (*session, error) {
-	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{ICEServers: ice})
+	kbps := 0
+	if a.Capture != nil {
+		kbps = a.Bitrate
+	}
+	api, bwe, err := newAPI(webrtc.SettingEngine{}, kbps)
 	if err != nil {
+		return nil, err
+	}
+	pc, err := api.NewPeerConnection(webrtc.Configuration{ICEServers: ice})
+	if err != nil {
+		select { // оценщик создаётся раньше, чем NewPeerConnection может упасть, — закрыть его горутины
+		case e := <-bwe:
+			e.Close()
+		default:
+		}
 		return nil, err
 	}
 	fail := func(err error) (*session, error) { pc.Close(); return nil, err }
@@ -388,14 +443,21 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 		return fail(err)
 	}
 	s := &session{cid: cid, conn: c, pc: pc, mons: listMonitors()}
-	if a.Capture != nil && a.Bitrate > 0 {
-		s.rate = rate{max: a.Bitrate, cur: a.Bitrate, fpsMax: a.FPS}
+	if kbps > 0 {
+		s.rate = rate{max: kbps, cur: kbps, fpsMax: a.FPS}
+		select { // фабрика интерсептора вызывается внутри NewPeerConnection — оценщик уже здесь
+		case s.bwe = <-bwe:
+		default:
+		}
 	}
 	go func() { // RTCP нужно вычитывать, иначе не работают интерсепторы; отчёты о потерях — битрейту
 		for {
 			pkts, _, err := sender.ReadRTCP()
-			if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) {
 				return
+			}
+			if err != nil { // битый RTCP/TWCC от клиента — пропустить, а не терять NACK и битрейт до конца сессии
+				continue
 			}
 			s.onRTCP(pkts)
 		}
