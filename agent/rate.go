@@ -14,12 +14,26 @@ import (
 // Каждый шаг перезапускает кодировщик (ffmpeg не меняет битрейт на лету): ~0.5 с паузы и новый IDR,
 // поэтому шаги крупные и редкие.
 // ponytail: только потери, без оценки по задержке (GCC); добавить RTT/jitter, если очередь растёт без потерь.
+// Качество кадра важнее плавности (решение владельца 2026-11-07): частота кадров падает вместе с битрейтом,
+// бит на кадр остаётся прежним, пока частота не дойдёт до fpsMin; дальше снижается только битрейт.
 type rate struct {
 	max, cur   int // кбит/с
+	fpsMax     int // кадров/с при max; 0 — частота не меняется
 	last, good time.Time
 }
 
-const rateMin = 300 // кбит/с — ниже картинка рабочего стола уже нечитаема
+const (
+	rateMin = 300 // кбит/с — ниже картинка рабочего стола уже нечитаема
+	fpsMin  = 5   // кадров/с — ниже курсор и ввод «прыгают»
+)
+
+// fps — частота кадров для текущего битрейта.
+func (r *rate) fps() int {
+	if r.fpsMax == 0 || r.max == 0 {
+		return r.fpsMax
+	}
+	return max(fpsMin, min(r.fpsMax, (r.fpsMax*r.cur+r.max/2)/r.max))
+}
 
 // report учитывает долю потерь из отчёта; возвращает новый битрейт или 0 — без изменений.
 func (r *rate) report(now time.Time, loss float64) int {
@@ -55,7 +69,7 @@ func (s *session) onRTCP(pkts []rtcp.Packet) {
 			s.mu.Lock()
 			if s.rate.max > 0 {
 				if n := s.rate.report(time.Now(), float64(r.FractionLost)/256); n > 0 {
-					log.Printf("сессия %s: битрейт %d кбит/с (потери %d %%)", s.cid, n, int(r.FractionLost)*100/256)
+					log.Printf("сессия %s: битрейт %d кбит/с, %d к/с (потери %d %%)", s.cid, n, s.rate.fps(), int(r.FractionLost)*100/256)
 					s.switched.Store(true)
 					if s.capCancel != nil {
 						s.capCancel()

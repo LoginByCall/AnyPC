@@ -12,8 +12,8 @@ import (
 
 const openCmd = "xdg-open"
 
-func hostCapture(enc string) func(ctx context.Context, mon, kbps int) (*exec.Cmd, error) {
-	return agent.LinuxCapture(30, enc)
+func hostCapture(enc string) func(ctx context.Context, mon, kbps, fps int) (*exec.Cmd, error) {
+	return agent.LinuxCapture(enc)
 }
 
 func platformKind() string {

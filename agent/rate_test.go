@@ -63,3 +63,21 @@ func TestRateRestartsCapture(t *testing.T) {
 		t.Fatal("адаптация без потолка (тестовый FF) не должна трогать захват")
 	}
 }
+
+// TestRateFPS — качество кадра важнее плавности: частота падает пропорционально битрейту (бит на кадр — как при max),
+// не ниже fpsMin; дальше падает только битрейт. Рост — обратно до fpsMax.
+func TestRateFPS(t *testing.T) {
+	r := rate{max: 4000, cur: 4000, fpsMax: 30}
+	want := []struct{ kbps, fps int }{{4000, 30}, {2400, 18}, {1440, 11}, {864, 6}, {518, 5}, {310, 5}, {300, 5}}
+	for i, w := range want {
+		if i > 0 {
+			r.report(time.Unix(int64(1000+i*3), 0), 0.5)
+		}
+		if r.cur != w.kbps || r.fps() != w.fps {
+			t.Fatalf("шаг %d: %d кбит/с %d к/с, ждали %d/%d", i, r.cur, r.fps(), w.kbps, w.fps)
+		}
+	}
+	if (&rate{max: 4000, cur: 4000}).fps() != 0 || (&rate{fpsMax: 30}).fps() != 30 {
+		t.Fatal("без адаптации частота не должна меняться")
+	}
+}
