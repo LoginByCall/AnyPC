@@ -30,7 +30,7 @@ Hub, relay (TURN) and web client on your server; who connected to whom stays wit
 In AnyPC: “Own server” = `my.example.com` → Save. The PC re-registers on your node (the ID stays); tick “also stay on the AnyPC network” to be reachable both ways.
 A single connection through another node without changing settings: `123456789@my.example.com` in the ID field. Web client: `https://my.example.com/`.
 
-**Docker** (NAS, servers already on Docker): `deploy/docker/compose.yml` — `anypc-server` (image `ghcr.io/loginbycall/anypc-server`, amd64/arm64) + coturn, both with `network_mode: host`.
+**Docker** (NAS, servers already on Docker): `deploy/docker/compose.yml` — `anypc-server` (image `ghcr.io/loginbycall/anypc-server`, amd64/arm64, published with each release) + coturn, both with `network_mode: host`.
 ```sh
 mkdir anypc && cd anypc
 curl -fsSLO https://raw.githubusercontent.com/LoginByCall/AnyPC/main/deploy/docker/compose.yml
