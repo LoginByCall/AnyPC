@@ -20,4 +20,5 @@ GOOS=windows GOARCH=amd64 go vet ./app ./agent
 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w -H windowsgui -X main.version=$V" -o bin/AnyPC.exe ./app
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=$V" -o bin/AnyPC-linux-amd64 ./app
 (cd bin && sha256sum AnyPC.exe AnyPC-linux-amd64 > SHA256SUMS)
+echo "$V" > bin/VERSION # проверка обновлений в программе (app/update.go): выпуском считается только чистый тег
 ls -la bin
