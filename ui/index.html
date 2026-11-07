@@ -470,8 +470,9 @@ async function pushClip() {
   try { x = APP ? await getClip() : document.hasFocus() ? await navigator.clipboard.readText() : ''; } catch {}
   if (clipOK(x) && x !== lastClip) { lastClip = x; ctl.send(JSON.stringify({ t: 'clip', text: x })); }
 }
-// В программе — опрос раз в секунду (дёшево, своя привязка); в браузере — при возврате фокуса (чтение просит разрешение).
-if (APP) setInterval(pushClip, 1000); else window.addEventListener('focus', pushClip);
+// Опрос раз в секунду: в программе — своя привязка; в браузере — пока окно в фокусе (разрешение на чтение браузер спросит один раз).
+// Только по событию focus терялось скопированное до подключения и в соседней вкладке (фокус окна при этом не меняется).
+setInterval(pushClip, 1000); if (!APP) window.addEventListener('focus', pushClip);
 
 // ---------- Файлы (REQ-F-12): свой канал "file" на каждый файл, протокол — agent/file.go ----------
 const CHUNK = 16 * 1024, HIGH = 4 << 20;

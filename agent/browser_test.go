@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -49,6 +50,9 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await ev("document.getElementById('trust').click()");
   console.log('right=' + await until(s => s.endsWith('|true')));
   console.log('stored=' + await ev("JSON.parse(localStorage.getItem('known'))['123456789']"));
+  // регрессия: буфер браузера уходил на хост только по событию focus — скопированное в соседней вкладке терялось
+  await ev("Object.defineProperty(navigator, 'clipboard', { value: { readText: async () => 'from-browser', writeText: async () => {} } }); 1");
+  await sleep(2500);
   await ev("sendFile(new File([new Uint8Array(300000).map((_, i) => i % 251)], 'browser.bin'))");
   let x = '';
   for (let i = 0; i < 75 && !/[✓✗]/.test(x); i++) { await sleep(200); x = await ev("document.getElementById('xfers').textContent"); }
@@ -91,6 +95,9 @@ func TestBrowserClient(t *testing.T) {
 	defer srv.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	var gotClip atomic.Value
+	setClip = func(s string) error { gotClip.Store(s); return nil }
+	defer func() { setClip = SetClipText }()
 	a := newAgent(hub2, "123456789", FFArgs("test", "libx264", 30, "1M"))
 	a.FileDir = t.TempDir() // не в настоящие «Загрузки»
 	go a.Run(ctx)
@@ -111,6 +118,9 @@ func TestBrowserClient(t *testing.T) {
 	if !strings.Contains(string(out), "dropped=|false") || !strings.Contains(string(out), "redial=") || strings.Contains(string(out), "redial=Error") ||
 		!regexp.MustCompile(`redial=[^\n]*\|true`).MatchString(string(out)) {
 		t.Error("после обрыва сессия не восстановилась сама")
+	}
+	if v, _ := gotClip.Load().(string); v != "from-browser" {
+		t.Errorf("буфер браузера не дошёл до хоста без события focus: %q", v)
 	}
 	got, err := os.ReadFile(filepath.Join(a.FileDir, "browser.bin")) // отправка файла из браузера (докачка-протокол)
 	if err != nil || len(got) != 300000 || got[251] != 0 || got[252] != 1 {
