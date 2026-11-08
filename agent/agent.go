@@ -58,7 +58,9 @@ type Agent struct {
 	ice       []webrtc.ICEServer
 	rtt       map[string]int       // мс от хоста до каждого TURN (замер по hello, не чаще measureEvery)
 	rttAt     map[string]time.Time // когда мерили этот набор TURN
-	sess      *session
+	sess      *session             // сессия с верным паролем (одна); до него — в pend
+	pend      map[*session]bool    // незавершённые входы: не больше maxPending, «занят» — только при sess
+	starting  int                  // занятые места pend, пока newSession шлёт offer (без a.mu)
 	fails     int
 	lockUntil time.Time
 	online    map[string]bool // хабы, на которых хост зарегистрирован
@@ -73,6 +75,7 @@ type session struct {
 	authed  atomic.Bool // до успешного CPace ни видео, ни ввод, ни буфер обмена, ни файлы не работают
 	picking atomic.Bool // открыто окно выбора файла
 	asking  atomic.Bool // на хосте открыто окно «Разрешить / Отклонить»
+	gone    atomic.Bool // сессия освобождена (release) — в pend не возвращать
 	peer    string      // адрес клиента по выбранной паре ICE — для окна подтверждения
 
 	mu        sync.Mutex
@@ -269,13 +272,46 @@ func readRTCP(sender *webrtc.RTPSender, on func([]rtcp.Packet)) {
 	}
 }
 
-// release — освободить слот сессии, если он ещё за s.
+// maxPending — незавершённых входов одновременно. Одна попытка занимала хост на 20 с: знающий ID
+// повторял connect и держал владельца на «занят» без единой засчитанной неудачи (У3, У9).
+const maxPending = 3
+
+// release — освободить место сессии s (активной или незавершённой).
 func (a *Agent) release(s *session) {
+	s.gone.Store(true)
 	a.mu.Lock()
 	if a.sess == s {
 		a.sess = nil
 	}
+	delete(a.pend, s)
 	a.mu.Unlock()
+}
+
+// promote — пароль верный: s становится сессией хоста, если её не опередила другая.
+func (a *Agent) promote(s *session) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.sess != nil && a.sess != s || s.gone.Load() {
+		return false
+	}
+	a.sess = s
+	delete(a.pend, s)
+	return true
+}
+
+// byCID — сессия клиента cid (активная или незавершённая).
+func (a *Agent) byCID(cid string) *session {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.sess != nil && a.sess.cid == cid {
+		return a.sess
+	}
+	for s := range a.pend {
+		if s.cid == cid {
+			return s
+		}
+	}
+	return nil
 }
 
 // proxy — прокси из окружения (HTTPS_PROXY…); переменная — для теста.
@@ -313,9 +349,6 @@ func (a *Agent) run(ctx context.Context, server string) error {
 		if err := wsjson.Read(ctx, c, &m); err != nil {
 			return err
 		}
-		a.mu.Lock()
-		s := a.sess
-		a.mu.Unlock()
 		if m.From != "" && (m.Type == "challenge" || m.Type == "hello" || m.Type == "error") {
 			continue // Д-4: служебное — только от самого хаба; пересланное хабом несёт From отправителя
 		}
@@ -348,7 +381,8 @@ func (a *Agent) run(ctx context.Context, server string) error {
 		case "connect":
 			a.onConnect(ctx, c, m)
 		case "answer", "ice", "bye":
-			if s == nil || s.cid != m.From || s.conn != c { // ответ клиента — только по хабу его сессии
+			s := a.byCID(m.From)
+			if s == nil || s.conn != c { // ответ клиента — только по хабу его сессии
 				continue
 			}
 			var err error
@@ -387,33 +421,58 @@ func (a *Agent) onConnect(ctx context.Context, c *websocket.Conn, m hub.Msg) {
 		log.Printf("connect с неверным ID клиента %q — пропущен", m.From)
 		return
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	switch {
-	case time.Now().Before(a.lockUntil):
-		a.send(ctx, c, "error", m.From, "locked")
-		return
-	case a.sess != nil:
-		a.send(ctx, c, "error", m.From, "busy")
-		return
-	}
 	if _, secret := a.Secret(); len(secret) == 0 {
 		a.send(ctx, c, "error", m.From, "nopass")
 		return
 	}
 	var req connectReq
 	json.Unmarshal(m.Data, &req) // старый клиент шлёт {} — выбора нет, ICE получает все серверы
-	turn := pickTURN(req, a.rtt, turnHosts(a.ice))
-	if turn != "" {
-		log.Printf("сессия %s: TURN %s (выбор клиента %q; клиент %v, хост %v мс)", m.From, turn, req.TURN, req.RTT, a.rtt)
+	// под a.mu — только занять место: offer уходит по сети до 5 с, а a.mu нужен циклам других хабов
+	a.mu.Lock()
+	var old *session // повторный connect того же клиента (переподключение): ответы шли бы не той сессии
+	for p := range a.pend {
+		if p.cid == m.From {
+			old = p
+			delete(a.pend, p)
+		}
 	}
-	s, err := a.newSession(ctx, c, m.From, onlyTURN(a.ice, turn), offerMsg{TURN: turn, RTT: maps.Clone(a.rtt)})
+	refuse := ""
+	switch {
+	case time.Now().Before(a.lockUntil):
+		refuse = "locked"
+	case a.sess != nil || len(a.pend)+a.starting >= maxPending:
+		refuse = "busy"
+	default:
+		a.starting++
+	}
+	turn := pickTURN(req, a.rtt, turnHosts(a.ice))
+	ice, rtt := onlyTURN(a.ice, turn), maps.Clone(a.rtt)
+	a.mu.Unlock()
+	if old != nil {
+		old.gone.Store(true)
+		old.pc.Close()
+	}
+	if refuse != "" {
+		a.send(ctx, c, "error", m.From, refuse)
+		return
+	}
+	if turn != "" {
+		log.Printf("сессия %s: TURN %s (выбор клиента %q; клиент %v, хост %v мс)", m.From, turn, req.TURN, req.RTT, rtt)
+	}
+	s, err := a.newSession(ctx, c, m.From, ice, offerMsg{TURN: turn, RTT: rtt})
+	a.mu.Lock()
+	a.starting--
+	if err == nil && !s.gone.Load() { // gone: сессия кончилась, пока шёл offer
+		if a.pend == nil {
+			a.pend = map[*session]bool{}
+		}
+		a.pend[s] = true
+	}
+	a.mu.Unlock()
 	if err != nil {
 		log.Printf("сессия: %v", err)
 		a.send(ctx, c, "error", m.From, "internal")
-		return
 	}
-	a.sess = s
 }
 
 // authResult учитывает попытку входа для блокировки перебора.
@@ -694,6 +753,10 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		}
 		if err != nil {
 			reject("fail")
+			return
+		}
+		if !a.promote(s) { // пароль верный, но другой вход успел раньше
+			reject("busy")
 			return
 		}
 		if a.Confirm == nil {

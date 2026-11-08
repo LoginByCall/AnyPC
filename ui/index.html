@@ -457,6 +457,7 @@ async function onAuth(ch, e, mine) {
   } else if (m.t === 'ask') $('msg').textContent = t('asking');
   else if (m.t === 'denied') end(t('err') + t('e_denied'));
   else if (m.t === 'fail') end(t('err') + t('e_auth'));
+  else if (m.t === 'busy') end(t('err') + t('e_busy')); // пароль верный, но другой вход успел раньше
 }
 
 // ---------- Буфер обмена (REQ-F-11): текст, в обе стороны, без эха ----------
