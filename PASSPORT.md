@@ -17,7 +17,7 @@
 - Сигнализация §7 (`hub.Msg`) — внутренний, `v: 1`.
 
 ## Состояние (2026-11-07)
-- Выпущен v0.1.7 (GitHub pre-release + HK и RU; образ ghcr.io/loginbycall/anypc-server:v0.1.7, amd64+arm64 — пакет открыт). Тег v0.1.6 — без релиза. Хабы: hk.anypc.org (170.168.24.45, + лендинг anypc.org/www), ru.anypc.org (170.168.5.86); us.anypc.org (netcup, почтовый) — только coturn. Доступ — см. память.
+- Выпущен v0.1.9 (2026-11-08: GitHub pre-release с SHA256SUMS.sig + HK и RU; образ ghcr.io/loginbycall/anypc-server:v0.1.9, amd64+arm64). Теги v0.1.6, v0.1.8 — без релиза. Хабы: hk.anypc.org (170.168.24.45, + лендинг anypc.org/www), ru.anypc.org (170.168.5.86); us.anypc.org (netcup, почтовый) — только coturn. Доступ — см. память.
 - Программы: AnyPC.exe (FFmpeg качается при первом запуске, SHA-256 закреплён), AnyPC-linux-amd64, AnyPC-macos (x86_64+arm64, ad-hoc), anypc-server, install.sh.
 
 ## Лог решений
@@ -29,7 +29,8 @@
 - V3 — НЕ ПОДТВЕРЖДЕНЫ: AnyPC.exe на Windows (окно, ввод, полный экран, плашка), Мак (мышь, клавиатура, второй монитор), установка узла на свежий VPS, compose с Let's Encrypt, замер Томск↔Шэньчжэнь.
 
 ## СЛЕДУЮЩИЙ ШАГ
-- [2026-11-08] Пункты 1–9, П1 (подпись выпуска), У3 (незавершённые входы + доверенные ключи) сделаны и в main (TZ §16). Идёт независимое ревью пакета → исправить находки → Мак (LuLu в Passive) → тег v0.1.9 → разрешённая команда выкладки → владельцу: команда total-quota для HK/RU/US и резервная копия ключа выпуска ~/.config/anypc/release-ed25519.pem.
+- Владелец: резервная копия ключа выпуска ~/.config/anypc/release-ed25519.pem; команда total-quota=1000 на HK/RU/US; V3 нового входа (доверенный ключ, «занят» только после пароля) и окна на Linux/Mac (одноразовый код).
+- Каждый выпуск: поднять MIN_VERSION в deploy/setup.sh до версии в том же коммите, что и тег (publish.sh иначе откажет); в GitHub-релиз — SHA256SUMS.sig и VERSION.
 - Проверить гипотезу «зависание ICE на Маке = LuLu»: LuLu выключен/Passive → `go test -count=4 -run '^(TestE2E|TestMonitorSwitch|TestConfirm)$' ./agent` на Маке. Все прошли → вернуть тесты в build.sh (убрать -skip) и обход loopback в file_test.go; нет → на Маке гонять только тесты macOS.
 - Выкладка (разрешена правилом): `env -u HTTPS_PROXY -u HTTP_PROXY -u ALL_PROXY -u https_proxy -u http_proxy BUILDX_BUILDER=anypc ANYPC_MAC=alexander@192.168.88.250 ANYPC_DOCKER=1 ANYPC_VPS='root@170.168.24.45 root@170.168.5.86' deploy/publish.sh` — дословно, иначе классификатор.
 
@@ -38,7 +39,6 @@
 - Перевод лендинга через DeepL — нужен ключ API Free (сейчас переводит Claude).
 
 ## Открыто (не блокирует)
-- В main, не выпущено: шаг Docker на вкладке «Свой сервер» лендинга; адаптивный битрейт с GCC/TWCC; исправления ревью безопасности/утечек 2026-11-07 (CPace один раз на соединение, WS-ping, лимит регистраций, таймауты сервера — см. TZ §16).
 - Ревью 2026-11-07, не исправлено: см. «Открыто» в последней записи TZ §16 (У1/П1/У3/У9, total-quota coturn, токен API в argv, WebView2 без CSP, плашка, мониторы до входа). Тег v0.1.8 стоит на коммите без GCC, не выложен.
 - [2026-11-07, запланировано владельцем] Firefox: кнопка «Вставить» у курсора — довести (после 5b4b475 readText остался на возврате фокуса; проверить в Firefox, что кнопка не всплывает без действия пользователя).
 - Мак: на `en0` сетевые тесты агента плавают (ICE зависает в UDP WriteTo; TestE2E 1 из 4 и на v0.1.5 — не регрессия). Гипотеза [ПРЕДПОЛОЖЕНИЕ]: файрвол LuLu держит пакеты нового неподписанного agent.test до ответа на запрос (loopback не трогает). Обход: file_test.go на loopback (8e899ad), build.sh на Маке пропускает TestE2E/TestWrongPassword/TestCaptureRestart (f71e106); при v0.1.7 падали ещё TestMonitorSwitch/TestConfirm, сборка прошла с третьей попытки. Живой агент на macOS с LuLu — НЕ ПРОВЕРЕН.
