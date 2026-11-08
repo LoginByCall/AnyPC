@@ -53,6 +53,8 @@ type Agent struct {
 	Capture func(ctx context.Context, mon, kbps, fps int) (*exec.Cmd, error) // захват монитора mon: битрейт kbps, fps кадров/с (H.264 Annex-B в stdout); nil — FFmpeg + FF
 	Bitrate int                                                              // кбит/с — потолок адаптивного битрейта (REQ-N-03); 0 — постоянный
 	Confirm func(cid, peer string) bool                                      // REQ-F-03: спросить человека на хосте после верного пароля; nil — не спрашивать (unattended)
+	Trusted func(pub []byte) bool                                            // У3: ключ клиента закреплён (вход с ним был); nil — без доверенных
+	Trust   func(pub []byte)                                                 // закрепить ключ клиента после входа по паролю
 
 	mu        sync.Mutex
 	ice       []webrtc.ICEServer
@@ -126,6 +128,8 @@ type authMsg struct {
 	Conf []byte `json:"conf,omitempty"`
 	Pub  []byte `json:"pub,omitempty"` // в "ok": ключ хоста и подпись над DTLS-отпечатками (REQ-S-05)
 	Sig  []byte `json:"sig,omitempty"`
+	CPub []byte `json:"cpub,omitempty"` // в "b": ключ клиента и его подпись над DTLS-отпечатками (У3)
+	CSig []byte `json:"csig,omitempty"`
 }
 
 // ctlMsg — канал "ctl": {"t":"clip","text":"…"} — буфер обмена в обе стороны (REQ-F-11);
@@ -428,6 +432,11 @@ func (a *Agent) onConnect(ctx context.Context, c *websocket.Conn, m hub.Msg) {
 	}
 	var req connectReq
 	json.Unmarshal(m.Data, &req) // старый клиент шлёт {} — выбора нет, ICE получает все серверы
+	trusted := a.Trusted != nil && len(req.CPub) == ed25519.PublicKeySize && a.Trusted(req.CPub)
+	extra := 0
+	if trusted { // молчуны не займут места владельца; заявка без ключа отсеется в auth и освободит место
+		extra = 2
+	}
 	// под a.mu — только занять место: offer уходит по сети до 5 с, а a.mu нужен циклам других хабов
 	a.mu.Lock()
 	var old *session // повторный connect того же клиента (переподключение): ответы шли бы не той сессии
@@ -439,9 +448,9 @@ func (a *Agent) onConnect(ctx context.Context, c *websocket.Conn, m hub.Msg) {
 	}
 	refuse := ""
 	switch {
-	case time.Now().Before(a.lockUntil):
+	case time.Now().Before(a.lockUntil) && !trusted: // доверенный клиент докажет ключ в auth (там же блокировка)
 		refuse = "locked"
-	case a.sess != nil || len(a.pend)+a.starting >= maxPending:
+	case a.sess != nil || len(a.pend)+a.starting >= maxPending+extra:
 		refuse = "busy"
 	default:
 		a.starting++
@@ -474,6 +483,12 @@ func (a *Agent) onConnect(ctx context.Context, c *websocket.Conn, m hub.Msg) {
 		log.Printf("сессия: %v", err)
 		a.send(ctx, c, "error", m.From, "internal")
 	}
+}
+
+func (a *Agent) locked() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return time.Now().Before(a.lockUntil)
 }
 
 // authResult учитывает попытку входа для блокировки перебора.
@@ -744,17 +759,28 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		if cur == nil || json.Unmarshal(msg.Data, &m) != nil || m.T != "b" {
 			return
 		}
-		conf, err := pake.HostFinish(cur, m.Msg, m.Conf)
-		a.authResult(s.cid, err == nil)
+		keyOK := pake.ClientVerify(m.CPub, m.CSig, a.ID, fpc, fph) // клиент владеет ключом cpub
+		trusted := keyOK && a.Trusted != nil && a.Trusted(m.CPub)
 		reject := func(t string) {
 			send(authMsg{T: t})
 			a.release(s) // освободить сразу: повтор не должен получить «занят»
 
 			time.AfterFunc(500*time.Millisecond, func() { s.pc.Close() }) // дать дойти ответу
 		}
+		if !trusted && a.locked() { // блокировка (REQ-S-04) — только для чужих: владелец с доверенным ключом входит
+			reject("locked")
+			return
+		}
+		conf, err := pake.HostFinish(cur, m.Msg, m.Conf)
+		if !trusted { // ponytail: опечатки доверенного не считаются — украденный ключ даёт перебор без блокировки; счётчик для доверенных, если понадобится
+			a.authResult(s.cid, err == nil)
+		}
 		if err != nil {
 			reject("fail")
 			return
+		}
+		if keyOK && !trusted && a.Trust != nil { // пароль верный — закрепить ключ клиента
+			a.Trust(m.CPub)
 		}
 		if !a.promote(s) { // пароль верный, но другой вход успел раньше
 			reject("busy")

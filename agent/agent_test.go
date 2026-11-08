@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -117,7 +118,12 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 
 	var m hub.Msg
 	for { // пароль в connect больше не передаётся; ждём регистрации хоста
-		send("connect", struct{}{})
+		var cr connectReq
+		if e2eKey != "" {
+			k, _ := pake.ClientSignB64(e2eSeed(), id, "", "")
+			cr.CPub, _ = base64.StdEncoding.DecodeString(k["pub"])
+		}
+		send("connect", cr)
 		if m = read(); m.Type == "offer" {
 			break
 		}
@@ -169,7 +175,16 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 						return
 					}
 					wantConf = hc
-					out, _ := json.Marshal(authMsg{T: "b", Msg: b, Conf: conf})
+					bm := authMsg{T: "b", Msg: b, Conf: conf}
+					if e2eKey != "" {
+						k, _ := pake.ClientSignB64(e2eSeed(), id, pc.LocalDescription().SDP, pc.RemoteDescription().SDP)
+						bm.CPub, _ = base64.StdEncoding.DecodeString(k["pub"])
+						bm.CSig, _ = base64.StdEncoding.DecodeString(k["sig"])
+						if e2eKey == "bad" {
+							bm.CSig[0] ^= 1
+						}
+					}
+					out, _ := json.Marshal(bm)
 					dc.Send(out)
 				case "ok": // ключ подтверждён CPace, личность хоста — подписью над DTLS-отпечатками (REQ-S-05)
 					sigOK := pake.HostVerify(am.Pub, am.Sig, id, pake.Fingerprint(pc.LocalDescription().SDP), pake.Fingerprint(pc.RemoteDescription().SDP)) == nil
@@ -180,7 +195,7 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 					authed <- bytes.Equal(am.Conf, wantConf) && sigOK
 				case "ask":
 					asked.Store(true)
-				case "fail", "denied":
+				case "fail", "denied", "locked":
 					denied.Store(am.T == "denied")
 					authed <- false
 				}
@@ -227,7 +242,7 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 	case <-ctx.Done():
 		t.Fatal("вход не завершился за 20 с")
 	}
-	if pass != "secret123" || e2eDeny { // ошибочный путь: отказ и никакого видео
+	if pass != "secret123" || e2eDeny || e2eKey == "bad" { // ошибочный путь: отказ и никакого видео
 		if ok {
 			t.Fatal("неверный пароль принят или отказ на хосте не сработал")
 		}
@@ -375,7 +390,8 @@ var (
 	e2eAgent func(*Agent)
 	e2eDeny  bool // ожидать отказ человека на хосте (REQ-F-03)
 	e2eCtl   func(*testing.T, *webrtc.DataChannel, chan ctlMsg)
-	e2eSquat int // столько клиентов до настоящего шлют connect и молчат (У3, У9)
+	e2eSquat int    // столько клиентов до настоящего шлют connect и молчат (У3, У9)
+	e2eKey   string // seed ключа клиента (base64): заявить в connect и подписать в «b» (У3); "bad" — заявить, подпись испортить
 )
 
 // squat — клиент, который получил offer и не отвечает: раньше одного такого хватало, чтобы хост 20 с был «занят».
@@ -396,6 +412,44 @@ func squat(t *testing.T, ctx context.Context, url, id string) {
 	}
 	<-ctx.Done()
 	c.CloseNow()
+}
+
+// e2eSeed — постоянный seed ключа клиента для тестов У3.
+func e2eSeed() string { return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32)) }
+
+// TestTrustedLocked — У3: при блокировке перебора владелец с закреплённым ключом входит (с паролем);
+// заявка того же ключа без верной подписи — отказ, и не считается.
+func TestTrustedLocked(t *testing.T) {
+	k, _ := pake.ClientSignB64(e2eSeed(), "", "", "")
+	pub, _ := base64.StdEncoding.DecodeString(k["pub"])
+	var trusted atomic.Bool
+	e2eAgent = func(a *Agent) {
+		a.fails, a.lockUntil = 9, time.Now().Add(time.Hour)
+		a.Trusted = func(p []byte) bool { return trusted.Load() && bytes.Equal(p, pub) }
+		a.Trust = func(p []byte) { trusted.Store(bytes.Equal(p, pub)) }
+	}
+	defer func() { e2eAgent, e2eKey = nil, "" }()
+	trusted.Store(true)
+	e2eKey = "ok"
+	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "secret123")
+	e2eKey = "bad"
+	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "secret123")
+}
+
+// TestTrustEnroll — верный пароль с подписью ключа закрепляет ключ; неверный — нет.
+func TestTrustEnroll(t *testing.T) {
+	var got atomic.Bool
+	e2eAgent = func(a *Agent) { a.Trust = func([]byte) { got.Store(true) } }
+	defer func() { e2eAgent, e2eKey = nil, "" }()
+	e2eKey = "ok"
+	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "wrong-pass")
+	if got.Load() {
+		t.Fatal("ключ закреплён при неверном пароле")
+	}
+	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "secret123")
+	if !got.Load() {
+		t.Fatal("ключ не закреплён после входа")
+	}
 }
 
 // TestPendingSquat — молчащие клиенты (меньше maxPending) не мешают войти владельцу.

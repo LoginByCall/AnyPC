@@ -78,3 +78,27 @@ func TestServerRename(t *testing.T) {
 		}
 	}
 }
+
+// TestTrusted — ключи клиентов: не больше maxTrusted (уходят давние), повтор не дублирует, смена пароля сбрасывает.
+func TestTrusted(t *testing.T) {
+	c, err := loadConfig(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := func(i int) []byte { return bytes.Repeat([]byte{byte(i)}, 32) }
+	for i := range maxTrusted + 2 {
+		c.trust(key(i))
+	}
+	c.trust(key(5))
+	if len(c.Trusted) != maxTrusted || c.trusted(key(0)) || c.trusted(key(1)) || !c.trusted(key(2)) || !c.trusted(key(5)) {
+		t.Fatalf("доверенных %d", len(c.Trusted))
+	}
+	c2, _ := loadConfig(c.path)
+	if !c2.trusted(key(5)) {
+		t.Fatal("не сохранилось")
+	}
+	c.setPassword("новый-пароль")
+	if c.trusted(key(5)) {
+		t.Fatal("смена пароля не сбросила доверие")
+	}
+}

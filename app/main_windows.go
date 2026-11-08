@@ -94,7 +94,7 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	a := &agent.Agent{
-		Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, Key: cfg.key(), FPS: 30, Stderr: logf,
+		Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, Key: cfg.key(), FPS: 30, Stderr: logf, Trusted: cfg.trusted, Trust: cfg.trust,
 		Bitrate: agent.Kbps(cfg.Bitrate),
 		Confirm: func(cid, peer string) bool { return !cfg.confirm() || agent.AskAccept(cid, peer) },
 		Capture: func(ctx context.Context, mon, kbps, fps int) (*exec.Cmd, error) { // выход DXGI mon

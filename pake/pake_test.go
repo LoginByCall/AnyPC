@@ -2,6 +2,7 @@ package pake
 
 import (
 	"bytes"
+	"encoding/base64"
 	"testing"
 )
 
@@ -67,5 +68,30 @@ func TestFingerprint(t *testing.T) {
 		if got := Fingerprint(bad); got != "" {
 			t.Errorf("%q → %q, ждали пусто", bad, got)
 		}
+	}
+}
+
+// TestClientKey — подпись клиента привязана к ID хоста и к обоим DTLS-отпечаткам; seed сохраняет ключ.
+func TestClientKey(t *testing.T) {
+	sdp := func(fp string) string { return "a=fingerprint:sha-256 " + fp + "\r\n" }
+	k, err := ClientSignB64("", "123456789", sdp("AA"), sdp("BB"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	k2, _ := ClientSignB64(k["seed"], "123456789", sdp("AA"), sdp("BB"))
+	if k2["pub"] != k["pub"] {
+		t.Fatal("seed не восстановил ключ")
+	}
+	pub, _ := base64.StdEncoding.DecodeString(k["pub"])
+	sig, _ := base64.StdEncoding.DecodeString(k["sig"])
+	fa, fb := Fingerprint(sdp("AA")), Fingerprint(sdp("BB"))
+	if !ClientVerify(pub, sig, "123456789", fa, fb) {
+		t.Fatal("верная подпись не прошла")
+	}
+	if ClientVerify(pub, sig, "987654321", fa, fb) || ClientVerify(pub, sig, "123456789", fb, fa) || ClientVerify(pub, sig, "123456789", "", "") {
+		t.Fatal("подпись прошла для чужого хоста, обмена отпечатками или пустых отпечатков")
+	}
+	if HostVerify(pub, sig, "123456789", fa, fb) == nil {
+		t.Fatal("подпись клиента принята как подпись хоста")
 	}
 }
