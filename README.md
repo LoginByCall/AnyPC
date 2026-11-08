@@ -24,7 +24,7 @@ Requires Go (toolchain auto-download), `curl`, `unzip`; `node` optional (transla
 Hub, relay (TURN) and web client on your server; who connected to whom stays with you.
 1. DNS: an A record `my.example.com` → the VPS IP (Cloudflare: grey cloud, DNS only).
 2. Open ports: 80, 443/tcp; 3478/tcp+udp; 49152–65535/udp (ufw is opened by the script; a hoster firewall — by you).
-3. `curl -fsSL https://hk.anypc.org/download/install.sh | sudo sh -s my.example.com` — downloads `anypc-server`, checks it against `SHA256SUMS`, sets up coturn and a Let's Encrypt certificate. Update: the same command.
+3. `curl -fsSL https://raw.githubusercontent.com/LoginByCall/AnyPC/main/deploy/setup.sh | sudo sh -s my.example.com` — downloads `anypc-server`, verifies the release signature on `SHA256SUMS` and the checksum, sets up coturn and a Let's Encrypt certificate. Update: the same command.
    Without `curl | sh`: download `install.sh`, `anypc-server`, `SHA256SUMS` from the release, `sha256sum -c --ignore-missing SHA256SUMS`, `sudo sh install.sh my.example.com`.
 
 In AnyPC: “Own server” = `my.example.com` → Save. The PC re-registers on your node (the ID stays); tick “also stay on the AnyPC network” to be reachable both ways.
@@ -44,7 +44,7 @@ docker compose up -d
 - hosts: anypc
   become: true
   tasks:
-    - ansible.builtin.shell: curl -fsSL https://hk.anypc.org/download/install.sh | sh -s {{ inventory_hostname }}
+    - ansible.builtin.shell: curl -fsSL https://raw.githubusercontent.com/LoginByCall/AnyPC/main/deploy/setup.sh | sh -s {{ inventory_hostname }}
 ```
 
 ```sh
@@ -67,3 +67,20 @@ No Ctrl+Alt+Del / UAC / lock screen yet (needs service mode); bitrate adapts to 
 
 ## License
 MIT — see `LICENSE`. FFmpeg is not bundled: on first launch the Windows app downloads FFmpeg 9.0.2 (GPLv3) from the gyan.dev builds and verifies its SHA-256; on Linux the system ffmpeg is used.
+
+## Verifying downloads
+
+`SHA256SUMS` of every release is signed with the AnyPC release key (Ed25519). Take the key from here, not from a download mirror:
+
+```
+-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAEtMc223pBHlegIQtFumvKY0PBHohIXYMzwMw8bR9bJs=
+-----END PUBLIC KEY-----
+```
+
+Save it as `release.pub` next to the downloaded files, `SHA256SUMS` and `SHA256SUMS.sig`, then (OpenSSL 3):
+
+```
+openssl pkeyutl -verify -pubin -inkey release.pub -rawin -in SHA256SUMS -sigfile SHA256SUMS.sig
+sha256sum -c --ignore-missing SHA256SUMS
+```

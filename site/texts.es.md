@@ -66,7 +66,7 @@
 - `srvS`: En el servidor
 - `srvC`: En el cliente
 - `n2`: En el DNS, añade un registro A: dominio → IP del servidor (en Cloudflare, solo DNS, «nube gris»).
-- `n3`: Ejecuta en el servidor: el script descarga anypc-server, comprueba su suma, abre los puertos en ufw, configura el relé coturn y un certificado de Let’s Encrypt. Si tu proveedor tiene un cortafuegos en su panel de control, abre allí 80 y 443/tcp, 3478/tcp y udp, 49152–65535/udp. Para actualizar, el mismo comando:
+- `n3`: Ejecuta en el servidor: el script descarga anypc-server, verifica la firma de la versión, abre los puertos en ufw, configura el relé coturn y un certificado de Let’s Encrypt. Si tu proveedor tiene un cortafuegos en su panel de control, abre allí 80 y 443/tcp, 3478/tcp y udp, 49152–65535/udp. Para actualizar, el mismo comando:
 - `n4`: En AnyPC en tus PC: «Servidor propio» = tu dominio → «Guardar». El ID no cambia; con «seguir también en la red AnyPC» marcado, el PC también es accesible por los servidores de AnyPC.
 - `n5`: Para conectar por otro nodo sin cambiar los ajustes, escribe ID@dominio en el campo ID, p. ej. 123456789@my.example.com. El cliente web del nodo está en https://tu-dominio/.
 - `n6`: O, en lugar del paso 2, con Docker (un NAS, un servidor que ya usa Docker): en una carpeta vacía ejecuta los comandos con tu dominio y la IP del servidor, y abre tú mismo los mismos puertos. Si los puertos 80 y 443 los usa tu proxy inverso, consulta el README en GitHub.

@@ -5,22 +5,32 @@
 # скопированный с основного сервера (учётки TURN выдаёт его хаб).
 # Файлы для скачивания с лендинга кладутся в /srv/anypc/dl (AnyPC.exe, SHA256SUMS).
 # Свой узел одной командой (бинарника рядом нет — скачивается и сверяется с SHA256SUMS; обновление — та же команда):
-#   curl -fsSL https://hk.anypc.org/download/install.sh | sudo sh -s my.example.com
+#   curl -fsSL https://raw.githubusercontent.com/LoginByCall/AnyPC/main/deploy/setup.sh | sudo sh -s my.example.com
+# Скрипт — с GitHub, файлы — с зеркал: подменённое зеркало не подменит и проверку (П1).
 set -eu
 DOMAIN=${1:?"использование: install.sh <домен узла>   (запись A домена → IP этого сервера)"}
 SITE=${2:-}
-mkdir -p /srv/anypc/dl
 cd "$(dirname "$0")"
 if [ ! "${TURN_ONLY:-}" ] && [ ! -f anypc-server ]; then
-  # ponytail: сумма — с того же зеркала, что и файл (защита от порчи, не от подмены); подпись выпуска — П1, SHARED-NODES.md
+  # П1: SHA256SUMS подписан ключом выпуска (deploy/publish.sh); сумма с того же зеркала без подписи защищала бы
+  # только от порчи, не от подмены. Открытый ключ — здесь; закрытый — у владельца (~/.config/anypc/release-ed25519.pem).
   cd "$(mktemp -d)"
+  cat > release.pub <<'KEY'
+-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAEtMc223pBHlegIQtFumvKY0PBHohIXYMzwMw8bR9bJs=
+-----END PUBLIC KEY-----
+KEY
   for u in ${ANYPC_DL:-https://hk.anypc.org/download https://ru.anypc.org/download https://github.com/LoginByCall/AnyPC/releases/latest/download}; do
-    curl -fsSL -o anypc-server "$u/anypc-server" && curl -fsSL -o SHA256SUMS "$u/SHA256SUMS" &&
+    curl -fsSL -o anypc-server "$u/anypc-server" && curl -fsSL -o SHA256SUMS "$u/SHA256SUMS" && curl -fsSL -o SHA256SUMS.sig "$u/SHA256SUMS.sig" &&
+      openssl pkeyutl -verify -pubin -inkey release.pub -rawin -in SHA256SUMS -sigfile SHA256SUMS.sig >/dev/null &&
       grep ' anypc-server$' SHA256SUMS | sha256sum -c - && break
-    rm -f anypc-server SHA256SUMS
+    echo "зеркало $u: файл или подпись не прошли проверку" >&2
+    rm -f anypc-server SHA256SUMS SHA256SUMS.sig
   done
   [ -f anypc-server ] || { echo "не удалось скачать anypc-server ни с одного зеркала" >&2; exit 1; }
 fi
+[ "${ANYPC_DL_ONLY:-}" ] && exit 0 # тест проверки скачивания (server/install_test.go)
+mkdir -p /srv/anypc/dl
 
 apt-get update -q
 DEBIAN_FRONTEND=noninteractive apt-get install -yq coturn
