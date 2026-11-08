@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
@@ -21,10 +22,11 @@ type config struct {
 	Enc     string            `json:"enc"`     // libx264 | h264_nvenc | h264_qsv | h264_amf | h264_mf
 	Bitrate string            `json:"bitrate"` // ffmpeg: 4M, 1500k…
 	Salt    []byte            `json:"salt,omitempty"`
-	Hash    []byte            `json:"hash,omitempty"`  // Argon2id (REQ-S-03); сам пароль не хранится
-	Key     []byte            `json:"key"`             // Ed25519 ключ хоста (REQ-F-01); не покидает ПК
-	Known   map[string]string `json:"known,omitempty"` // ID удалённого ПК → отпечаток его ключа (TOFU, REQ-S-05)
-	Confirm *bool             `json:"confirm"`         // REQ-F-03: окно «Разрешить / Отклонить» на каждое подключение
+	Hash    []byte            `json:"hash,omitempty"`    // Argon2id (REQ-S-03); сам пароль не хранится
+	Key     []byte            `json:"key"`               // Ed25519 ключ хоста (REQ-F-01); не покидает ПК
+	Known   map[string]string `json:"known,omitempty"`   // ID удалённого ПК → отпечаток его ключа (TOFU, REQ-S-05)
+	Confirm *bool             `json:"confirm"`           // REQ-F-03: окно «Разрешить / Отклонить» на каждое подключение
+	Trusted [][]byte          `json:"trusted,omitempty"` // У3: ключи клиентов, входивших по паролю (старые — в начале); сброс при смене пароля
 
 	mu   sync.Mutex
 	path string
@@ -94,6 +96,7 @@ func (c *config) setPassword(p string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.Salt, c.Hash = salt, pake.KDF(p, salt)
+	c.Trusted = nil // новый пароль — доверие заново
 	return c.save()
 }
 
@@ -139,6 +142,26 @@ func (c *config) knownSet(id, fp string) error {
 	}
 	c.Known[id] = fp
 	return c.save()
+}
+
+// maxTrusted — доверенных ключей клиентов; лишние — самые давние.
+const maxTrusted = 20
+
+func (c *config) trusted(pub []byte) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.ContainsFunc(c.Trusted, func(k []byte) bool { return bytes.Equal(k, pub) })
+}
+
+func (c *config) trust(pub []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Trusted = slices.DeleteFunc(c.Trusted, func(k []byte) bool { return bytes.Equal(k, pub) })
+	c.Trusted = append(c.Trusted, bytes.Clone(pub))
+	if n := len(c.Trusted) - maxTrusted; n > 0 {
+		c.Trusted = c.Trusted[n:]
+	}
+	c.save()
 }
 
 // secret — соль и KDF(пароль, соль) для CPace (agent.Agent.Secret).

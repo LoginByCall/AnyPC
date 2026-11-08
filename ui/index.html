@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="ru">
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-SjyJQXs4WnKCpZiI4qjPkDYXArbxn+RlNdyqI7BNVVo=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-OKYfLta3TMyN6Lp5TToaPw7mEhT7brTBOz/eKCvXcks=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AnyPC</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26'><style>.a{stroke:%2317181c}.b{fill:%23d2452d}@media(prefers-color-scheme:dark){.a{stroke:%23eceae4}.b{fill:%23ef6a52}}</style><rect class='a' x='1.5' y='3' width='15' height='11' rx='2' fill='none' stroke-width='2.6'/><rect class='b' x='10' y='12' width='15' height='11' rx='2'/></svg>">
@@ -340,7 +340,7 @@ $('go').onclick = async () => {
       const m = JSON.parse(e.data);
       if (m.type === 'hello' && !m.from) { // Д-4: hello — только от самого хаба
         ice = m.data.ice || [];
-        w.send(JSON.stringify({ v: 1, type: 'connect', to: host, data: { turn: turnSel, rtt: Object.fromEntries(Object.entries(rttMe).filter(([, v]) => v != null)) } }));
+        w.send(JSON.stringify({ v: 1, type: 'connect', to: host, data: { turn: turnSel, rtt: Object.fromEntries(Object.entries(rttMe).filter(([, v]) => v != null)), cpub: ckeys()[host]?.pub } }));
         $('msg').textContent = t('waiting');
       }
       else if (m.type === 'error') { const msg = t('err') + (L[lang]['e_' + m.data] || m.data); ws === w ? end(msg) : fail(msg); }
@@ -424,6 +424,7 @@ function redial() {
   $('id').value = p.host; $('pw').value = p.pw;
   setTimeout(async () => { await $('go').onclick(); if ($('msg').textContent === t('connecting')) $('msg').textContent = t('redial'); }, 1500);
 }
+function ckeys() { try { return JSON.parse(localStorage.getItem('ckeys')) || {}; } catch { return {}; } }
 async function onAuth(ch, e, mine) {
   const m = JSON.parse(e.data);
   if (m.t === 'a') {
@@ -435,7 +436,10 @@ async function onAuth(ch, e, mine) {
     try {
       const r = await pakeRespond($('pw').value, m.salt, m.msg, host, pc.localDescription.sdp, pc.remoteDescription.sdp);
       expect = r.expect;
-      ch.send(JSON.stringify({ t: 'b', msg: r.msg, conf: r.conf }));
+      // У3: свой ключ на этот хост — после входа по паролю хост его закрепит, и блокировка перебора владельца не запрёт
+      const ks = ckeys(), k = typeof clientSign === 'function' && clientSign(ks[host]?.seed || '', host, pc.localDescription.sdp, pc.remoteDescription.sdp);
+      if (k) { ks[host] = { seed: k.seed, pub: k.pub }; try { localStorage.setItem('ckeys', JSON.stringify(ks)); } catch {} }
+      ch.send(JSON.stringify({ t: 'b', msg: r.msg, conf: r.conf, cpub: k?.pub, csig: k?.sig }));
     } catch (err) { end(t('err') + err); }
   } else if (m.t === 'ok') {
     if (!expect || m.conf !== expect) return end(t('err') + t('e_hostauth')); // Д-1: «ok» без обмена CPace — подмена // ответил не тот хост или соединение подменено
@@ -459,6 +463,7 @@ async function onAuth(ch, e, mine) {
   else if (m.t === 'denied') end(t('err') + t('e_denied'));
   else if (m.t === 'fail') end(t('err') + t('e_auth'));
   else if (m.t === 'busy') end(t('err') + t('e_busy')); // пароль верный, но другой вход успел раньше
+  else if (m.t === 'locked') end(t('err') + t('e_locked'));
 }
 
 // ---------- Буфер обмена (REQ-F-11): текст, в обе стороны, без эха ----------

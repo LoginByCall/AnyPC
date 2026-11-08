@@ -43,5 +43,22 @@ func main() {
 		}
 		return js.Global().Get("Promise").Call("resolve", fp)
 	}))
+	js.Global().Set("clientSign", js.FuncOf(func(_ js.Value, a []js.Value) any { // (seed, host, localSDP, remoteSDP) → {seed, pub, sig}
+		args := make([]string, 4)
+		for i := range args {
+			if i < len(a) && a[i].Type() == js.TypeString {
+				args[i] = a[i].String()
+			}
+		}
+		r, err := pake.ClientSignB64(args[0], args[1], args[2], args[3])
+		if err != nil {
+			return nil
+		}
+		o := js.Global().Get("Object").New()
+		for k, v := range r {
+			o.Set(k, v)
+		}
+		return o
+	}))
 	select {}
 }

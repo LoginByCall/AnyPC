@@ -113,7 +113,14 @@ func TestBrowserClient(t *testing.T) {
 	a.Capture = func(ctx context.Context, _, kbps, fps int) (*exec.Cmd, error) {
 		return exec.CommandContext(ctx, "ffmpeg", FFArgs("test", "libx264", fps, fmt.Sprintf("%dk", kbps))...), nil
 	}
-	var twcc atomic.Bool
+	var twcc, claimed atomic.Bool
+	var enrolled atomic.Value // У3: ключ браузера, закреплённый после входа; при переподключении он приходит заявкой
+	a.Trust = func(p []byte) { enrolled.Store(string(p)) }
+	a.Trusted = func(p []byte) bool {
+		k, _ := enrolled.Load().(string)
+		claimed.Store(claimed.Load() || k == string(p))
+		return k == string(p)
+	}
 	log.SetOutput(io.MultiWriter(os.Stderr, logSeen{"клиент шлёт TWCC", &twcc}))
 	defer log.SetOutput(os.Stderr)
 	go a.Run(ctx)
@@ -137,6 +144,9 @@ func TestBrowserClient(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "reads=0\n") {
 		t.Error("без разрешения clipboard-read буфер опрашивается (Firefox: плашка «Вставить» каждую секунду)")
+	}
+	if enrolled.Load() == nil || !claimed.Load() {
+		t.Errorf("ключ браузера: закреплён %v, заявлен при переподключении %v", enrolled.Load() != nil, claimed.Load())
 	}
 	if !twcc.Load() {
 		t.Error("Chrome не прислал TWCC — оценка полосы GCC не работает")

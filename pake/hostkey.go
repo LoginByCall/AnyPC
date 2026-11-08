@@ -2,6 +2,7 @@ package pake
 
 import (
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -63,4 +64,31 @@ func HostVerifyB64(pubB64, sigB64, hostID, localSDP, remoteSDP string) (string, 
 		return "", err
 	}
 	return KeyFingerprint(pub), nil
+}
+
+// Доверенный клиент (У3): клиент держит свой ключ Ed25519 на каждый хост и подписывает им те же DTLS-отпечатки.
+// Хост закрепляет ключ после входа по паролю; с ним блокировка перебора и лимит незавершённых входов не мешают
+// владельцу (пароль всё равно нужен). Подпись привязана к DTLS — повтор в другом соединении не пройдёт.
+func clientMsg(hostID, fpClient, fpHost string) []byte {
+	return []byte("anypc-client-v1\n" + hostID + "\n" + fpClient + "\n" + fpHost)
+}
+
+// ClientVerify — подпись клиента над DTLS-отпечатками (fpClient — его, fpHost — хоста).
+func ClientVerify(pub, sig []byte, hostID, fpClient, fpHost string) bool {
+	return len(pub) == ed25519.PublicKeySize && fpClient != "" && fpHost != "" && ed25519.Verify(pub, clientMsg(hostID, fpClient, fpHost), sig)
+}
+
+// ClientSignB64 — для веб-клиента (wasm): seed "" → новый ключ. Ответ: seed (хранит клиент), pub, sig — base64.
+func ClientSignB64(seedB64, hostID, localSDP, remoteSDP string) (map[string]string, error) {
+	b64 := base64.StdEncoding
+	seed, err := b64.DecodeString(seedB64)
+	if err != nil || len(seed) != ed25519.SeedSize {
+		seed = make([]byte, ed25519.SeedSize)
+		if _, err := rand.Read(seed); err != nil {
+			return nil, err
+		}
+	}
+	k := ed25519.NewKeyFromSeed(seed)
+	sig := ed25519.Sign(k, clientMsg(hostID, Fingerprint(localSDP), Fingerprint(remoteSDP)))
+	return map[string]string{"seed": b64.EncodeToString(seed), "pub": b64.EncodeToString(k.Public().(ed25519.PublicKey)), "sig": b64.EncodeToString(sig)}, nil
 }
