@@ -63,8 +63,10 @@
 - `mchk`: Verify the file — the checksum must match the one above:
 - `tab_srv`: Own server
 - `n1`: Your own AnyPC node on your VPS: signaling, relay and web client on your domain — only your server knows who connected and when. You need a VPS running Ubuntu or Debian with a public IP, and a domain.
-- `n2`: In DNS, add an A record: domain → server IP (on Cloudflare — DNS only, “grey cloud”). Open ports 80 and 443/tcp, 3478/tcp and udp, 49152–65535/udp.
-- `n3`: Run on the server — the script downloads anypc-server, checks its checksum, sets up the coturn relay and a Let’s Encrypt certificate. To update, run the same command:
+- `srvS`: On the server
+- `srvC`: On the client
+- `n2`: In DNS, add an A record: domain → server IP (on Cloudflare — DNS only, “grey cloud”).
+- `n3`: Run on the server — the script downloads anypc-server, checks its checksum, opens the ports in ufw, sets up the coturn relay and a Let’s Encrypt certificate. If your hoster has a firewall in its control panel, open 80 and 443/tcp, 3478/tcp and udp, 49152–65535/udp there. To update, run the same command:
 - `n4`: In AnyPC on your PCs: “Own server” = your domain → “Save”. The ID stays the same; with “also stay on the AnyPC network” ticked, the PC is reachable through the AnyPC servers too.
 - `n5`: To connect through another node without changing settings, type ID@domain in the ID field, e.g. 123456789@my.example.com. The node’s web client is at https://your-domain/.
-- `n6`: Or, instead of step 3, use Docker (a NAS, a server already running Docker): in an empty folder run the commands below with your domain and server IP. If ports 80 and 443 are taken by your reverse proxy, see the README on GitHub.
+- `n6`: Or, instead of step 2, use Docker (a NAS, a server already running Docker): in an empty folder run the commands below with your domain and server IP, and open the same ports yourself. If ports 80 and 443 are taken by your reverse proxy, see the README on GitHub.

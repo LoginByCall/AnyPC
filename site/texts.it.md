@@ -63,8 +63,10 @@
 - `mchk`: Verifica il file: la somma deve coincidere con quella sopra:
 - `tab_srv`: Server proprio
 - `n1`: Il tuo nodo AnyPC sul tuo VPS: segnalazione, relay e client web sul tuo dominio; solo il tuo server sa chi si è collegato e quando. Servono un VPS con Ubuntu o Debian con IP pubblico e un dominio.
-- `n2`: Nel DNS aggiungi un record A: dominio → IP del server (su Cloudflare solo DNS, «nuvola grigia»). Apri le porte 80 e 443/tcp, 3478/tcp e udp, 49152–65535/udp.
-- `n3`: Esegui sul server: lo script scarica anypc-server, ne verifica la somma, configura il relay coturn e un certificato Let’s Encrypt. Per aggiornare, lo stesso comando:
+- `srvS`: Sul server
+- `srvC`: Sul client
+- `n2`: Nel DNS aggiungi un record A: dominio → IP del server (su Cloudflare solo DNS, «nuvola grigia»).
+- `n3`: Esegui sul server: lo script scarica anypc-server, ne verifica la somma, apre le porte in ufw, configura il relay coturn e un certificato Let’s Encrypt. Se il tuo hoster ha un firewall nel pannello di controllo, apri lì 80 e 443/tcp, 3478/tcp e udp, 49152–65535/udp. Per aggiornare, lo stesso comando:
 - `n4`: In AnyPC sui tuoi PC: «Server proprio» = il tuo dominio → «Salva». L’ID non cambia; con «restare anche nella rete AnyPC» selezionato, il PC è raggiungibile anche dai server AnyPC.
 - `n5`: Per collegarti tramite un altro nodo senza cambiare le impostazioni, scrivi ID@dominio nel campo ID, ad es. 123456789@my.example.com. Il client web del nodo è su https://tuo-dominio/.
-- `n6`: Oppure, al posto del passo 3, con Docker (un NAS, un server che usa già Docker): in una cartella vuota esegui i comandi con il tuo dominio e l’IP del server. Se le porte 80 e 443 sono occupate dal tuo reverse proxy, vedi il README su GitHub.
+- `n6`: Oppure, al posto del passo 2, con Docker (un NAS, un server che usa già Docker): in una cartella vuota esegui i comandi con il tuo dominio e l’IP del server, e apri tu stesso le stesse porte. Se le porte 80 e 443 sono occupate dal tuo reverse proxy, vedi il README su GitHub.
