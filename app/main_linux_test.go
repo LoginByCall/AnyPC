@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"io"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,7 +18,7 @@ func TestLocalAPI(t *testing.T) {
 	if err != nil || !strings.Contains(string(page), `const T = "tok123"`) || strings.Count(string(page), "<script>") < 2 {
 		t.Fatalf("страница без привязок: %v", err)
 	}
-	h := handler("127.0.0.1:5000", "tok123", page, cfg, &agent.Agent{}, nil, func() map[string]any { return map[string]any{"id": cfg.ID} }, newFiles(t.TempDir()))
+	h := handler("127.0.0.1:5000", "tok123", page, cfg, &agent.Agent{}, nil, func() map[string]any { return map[string]any{"id": cfg.ID} }, newFiles(t.TempDir()), nil)
 	do := func(method, host, path, token string) (int, string) {
 		r := httptest.NewRequest(method, path, strings.NewReader("[]"))
 		r.Host = host
@@ -53,24 +52,27 @@ func TestLocalAPI(t *testing.T) {
 	}
 }
 
-// TestPageLink: браузер открывается ссылкой на файл 0600 — токена нет в аргументах (/proc/*/cmdline).
-func TestPageLink(t *testing.T) {
-	dir := t.TempDir()
-	url := "http://127.0.0.1:5000/?t=tok123"
-	link, p, err := pageLink(filepath.Join(dir, "AnyPC Cfg"), url)
-	if err != nil {
-		t.Fatal(err)
+// TestOnceCode: браузер открывается одноразовым кодом (токена нет в аргументах, /proc/*/cmdline): первый заход —
+// переадресация на страницу с токеном, повторный и чужой код — отказ.
+func TestOnceCode(t *testing.T) {
+	cfg, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
+	once := &onceCode{code: "abc123"}
+	h := handler("127.0.0.1:5000", "tok123", []byte("page"), cfg, &agent.Agent{}, nil, nil, newFiles(t.TempDir()), once)
+	get := func(path string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", path, nil)
+		r.Host = "127.0.0.1:5000"
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
 	}
-	if strings.Contains(link, "tok123") || !strings.HasPrefix(link, "file:///") || !strings.Contains(link, "AnyPC%20Cfg") {
-		t.Errorf("аргумент для браузера: %q", link)
+	if w := get("/?n=wrong"); w.Code != 403 {
+		t.Errorf("чужой код: %d", w.Code)
 	}
-	st, err := os.Stat(p)
-	if err != nil || st.Mode().Perm() != 0o600 {
-		t.Fatalf("права файла: %v %v", st.Mode(), err)
+	if w := get("/?n=abc123"); w.Code != 303 || w.Header().Get("Location") != "/?t=tok123" {
+		t.Errorf("первый заход: %d %q", w.Code, w.Header().Get("Location"))
 	}
-	b, _ := os.ReadFile(p)
-	if !strings.Contains(string(b), `content="0;url=`+url+`"`) || !strings.Contains(string(b), `location.replace("`+url+`")`) {
-		t.Errorf("переадресация: %s", b)
+	if w := get("/?n=abc123"); w.Code != 403 {
+		t.Errorf("повторный заход: %d", w.Code)
 	}
 }
 

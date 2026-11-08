@@ -30,6 +30,7 @@ if [ "${ANYPC_MAC:-}" ]; then # macOS: ввод через CoreGraphics (cgo) �
   scp "$ANYPC_MAC:anypc-src/AnyPC-macos" bin/
 fi
 cp deploy/setup.sh bin/install.sh # свой узел одной командой: скачивает anypc-server и сверяет с SHA256SUMS
-(cd bin && sha256sum AnyPC.exe AnyPC-linux-amd64 $(ls AnyPC-macos 2>/dev/null) anypc-server install.sh > SHA256SUMS)
 echo "$V" > bin/VERSION # проверка обновлений в программе (app/update.go): выпуском считается только чистый тег
+# VERSION — в подписанном списке: install.sh отвергает подписанный, но старый выпуск (откат версии)
+(cd bin && sha256sum AnyPC.exe AnyPC-linux-amd64 $(ls AnyPC-macos 2>/dev/null) anypc-server install.sh VERSION > SHA256SUMS)
 ls -la bin

@@ -472,29 +472,39 @@ func (a *Agent) onConnect(ctx context.Context, c *websocket.Conn, m hub.Msg) {
 	s, err := a.newSession(ctx, c, m.From, ice, offerMsg{TURN: turn, RTT: rtt})
 	a.mu.Lock()
 	a.starting--
+	var dup *session                  // два connect одного клиента, пока первый ещё слал offer: оставить последний
 	if err == nil && !s.gone.Load() { // gone: сессия кончилась, пока шёл offer
 		if a.pend == nil {
 			a.pend = map[*session]bool{}
 		}
+		for p := range a.pend {
+			if p.cid == s.cid {
+				dup = p
+				delete(a.pend, p)
+			}
+		}
 		a.pend[s] = true
 	}
 	a.mu.Unlock()
+	if dup != nil {
+		dup.gone.Store(true)
+		dup.pc.Close()
+	}
 	if err != nil {
 		log.Printf("сессия: %v", err)
 		a.send(ctx, c, "error", m.From, "internal")
 	}
 }
 
-func (a *Agent) locked() bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return time.Now().Before(a.lockUntil)
-}
-
 // authResult учитывает попытку входа для блокировки перебора.
 func (a *Agent) authResult(cid string, ok bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.countAuth(cid, ok)
+}
+
+// countAuth — то же под уже взятым a.mu.
+func (a *Agent) countAuth(cid string, ok bool) {
 	if ok {
 		a.fails = 0
 		return
@@ -767,27 +777,33 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 
 			time.AfterFunc(500*time.Millisecond, func() { s.pc.Close() }) // дать дойти ответу
 		}
-		if !trusted && a.locked() { // блокировка (REQ-S-04) — только для чужих: владелец с доверенным ключом входит
+		// блокировка (REQ-S-04) — только для чужих; проверка и счёт под одним a.mu: параллельные входы
+		// не проскочат блокировку все сразу (HostFinish дешёвый — KDF посчитан заранее)
+		a.mu.Lock()
+		if !trusted && time.Now().Before(a.lockUntil) {
+			a.mu.Unlock()
 			reject("locked")
 			return
 		}
 		conf, err := pake.HostFinish(cur, m.Msg, m.Conf)
 		if !trusted { // ponytail: опечатки доверенного не считаются — украденный ключ даёт перебор без блокировки; счётчик для доверенных, если понадобится
-			a.authResult(s.cid, err == nil)
+			a.countAuth(s.cid, err == nil)
 		}
+		a.mu.Unlock()
 		if err != nil {
 			reject("fail")
 			return
 		}
-		if keyOK && !trusted && a.Trust != nil { // пароль верный — закрепить ключ клиента
-			a.Trust(m.CPub)
+		var pin []byte // закрепить ключ клиента — только когда вход разрешён (и человеком на хосте, REQ-F-03)
+		if keyOK && !trusted {
+			pin = m.CPub
 		}
 		if !a.promote(s) { // пароль верный, но другой вход успел раньше
 			reject("busy")
 			return
 		}
 		if a.Confirm == nil {
-			a.accept(ctx, s, track, send, conf, fpc, fph)
+			a.accept(ctx, s, track, send, conf, fpc, fph, pin)
 			return
 		}
 		// REQ-F-03: пароль верный — теперь спросить человека на хосте (до 30 с; ответ не держит канал)
@@ -802,7 +818,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 			switch {
 			case ctx.Err() != nil: // клиент ушёл, пока ждали ответа
 			case ok:
-				a.accept(ctx, s, track, send, conf, fpc, fph)
+				a.accept(ctx, s, track, send, conf, fpc, fph, pin)
 			default:
 				log.Printf("сессия %s: отклонена на хосте", s.cid)
 				reject("denied")
@@ -818,8 +834,11 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 }
 
 // accept — вход разрешён: подпись хоста, плашка сессии, видео.
-func (a *Agent) accept(ctx context.Context, s *session, track *webrtc.TrackLocalStaticSample, send func(authMsg), conf []byte, fpc, fph string) {
+func (a *Agent) accept(ctx context.Context, s *session, track *webrtc.TrackLocalStaticSample, send func(authMsg), conf []byte, fpc, fph string, pin []byte) {
 	s.authed.Store(true)
+	if pin != nil && a.Trust != nil {
+		a.Trust(pin)
+	}
 	send(authMsg{T: "ok", Conf: conf, Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph)})
 	log.Printf("сессия %s: вход выполнен", s.cid)
 	s.sendMonitors()
