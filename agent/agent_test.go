@@ -536,6 +536,28 @@ func TestConfirm(t *testing.T) {
 	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "secret123")
 }
 
+// TestTrustDenied — ключ клиента закрепляется только после «Разрешить»: отклонённый на хосте (REQ-F-03)
+// с верным паролем не становится доверенным (иначе проходил бы блокировку).
+func TestTrustDenied(t *testing.T) {
+	var pinned atomic.Bool
+	answer := false
+	e2eAgent = func(a *Agent) {
+		a.Confirm = func(string, string) bool { return answer }
+		a.Trust = func([]byte) { pinned.Store(true) }
+	}
+	defer func() { e2eAgent, e2eDeny, e2eKey = nil, false, "" }()
+	e2eDeny, e2eKey = true, "ok"
+	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "secret123")
+	if pinned.Load() {
+		t.Fatal("ключ закреплён, хотя вход отклонён на хосте")
+	}
+	answer, e2eDeny = true, false
+	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "secret123")
+	if !pinned.Load() {
+		t.Fatal("ключ не закреплён после «Разрешить»")
+	}
+}
+
 // TestDeadProxy — регрессия: мёртвый прокси из окружения (HTTPS_PROXY на закрытый порт) не мешает
 // подключиться к сигнализации напрямую; живой прокси по-прежнему используется.
 func TestDeadProxy(t *testing.T) {

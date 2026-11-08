@@ -1,6 +1,8 @@
 #!/bin/sh
 # Развёртывание сервера AnyPC на Ubuntu (root). Повторный запуск безопасен.
-# Использование: [TURN=a,b HUBS=wss://a/ws,wss://b/ws] sh setup.sh <домен клиента> [домен лендинга]   (рядом — бинарник anypc-server)
+# Использование: [TURN=a,b HUBS=wss://a/ws,wss://b/ws] [ANYPC_LOCAL=1] sh setup.sh <домен клиента> [домен лендинга]
+# ANYPC_LOCAL=1 — взять anypc-server, лежащий рядом со скриптом (своя сборка); без него — всегда скачать и проверить подпись:
+# при `curl … | sh` «рядом» — это текущий каталог, и случайный или подброшенный файл встал бы без проверки.
 # Второй TURN без сигнализации: TURN_ONLY=1 [TURN_MIN=50000 TURN_MAX=50999] sh setup.sh <домен TURN> — нужен /etc/anypc/turn-secret,
 # скопированный с основного сервера (учётки TURN выдаёт его хаб).
 # Файлы для скачивания с лендинга кладутся в /srv/anypc/dl (AnyPC.exe, SHA256SUMS).
@@ -11,7 +13,10 @@ set -eu
 DOMAIN=${1:?"использование: install.sh <домен узла>   (запись A домена → IP этого сервера)"}
 SITE=${2:-}
 cd "$(dirname "$0")"
-if [ ! "${TURN_ONLY:-}" ] && [ ! -f anypc-server ]; then
+# MIN_VERSION — не ниже этого выпуска: подписанный, но старый (уязвимый) набор с зеркала — отказ.
+# Поднимается в коммите каждого выпуска (deploy/publish.sh не выкладывает, если он не равен версии).
+MIN_VERSION=v0.1.9
+if [ ! "${TURN_ONLY:-}" ] && ! { [ "${ANYPC_LOCAL:-}" ] && [ -f anypc-server ]; }; then
   # П1: SHA256SUMS подписан ключом выпуска (deploy/publish.sh); сумма с того же зеркала без подписи защищала бы
   # только от порчи, не от подмены. Открытый ключ — здесь; закрытый — у владельца (~/.config/anypc/release-ed25519.pem).
   cd "$(mktemp -d)"
@@ -21,11 +26,13 @@ MCowBQYDK2VwAyEAEtMc223pBHlegIQtFumvKY0PBHohIXYMzwMw8bR9bJs=
 -----END PUBLIC KEY-----
 KEY
   for u in ${ANYPC_DL:-https://hk.anypc.org/download https://ru.anypc.org/download https://github.com/LoginByCall/AnyPC/releases/latest/download}; do
-    curl -fsSL -o anypc-server "$u/anypc-server" && curl -fsSL -o SHA256SUMS "$u/SHA256SUMS" && curl -fsSL -o SHA256SUMS.sig "$u/SHA256SUMS.sig" &&
+    curl -fsSL -o anypc-server "$u/anypc-server" && curl -fsSL -o VERSION "$u/VERSION" &&
+      curl -fsSL -o SHA256SUMS "$u/SHA256SUMS" && curl -fsSL -o SHA256SUMS.sig "$u/SHA256SUMS.sig" &&
       openssl pkeyutl -verify -pubin -inkey release.pub -rawin -in SHA256SUMS -sigfile SHA256SUMS.sig >/dev/null &&
-      grep ' anypc-server$' SHA256SUMS | sha256sum -c - && break
-    echo "зеркало $u: файл или подпись не прошли проверку" >&2
-    rm -f anypc-server SHA256SUMS SHA256SUMS.sig
+      [ "$(grep -cE ' (anypc-server|VERSION)$' SHA256SUMS)" = 2 ] && grep -E ' (anypc-server|VERSION)$' SHA256SUMS | sha256sum -c - &&
+      [ "$(printf '%s\n%s\n' "$MIN_VERSION" "$(cat VERSION)" | sort -V | head -1)" = "$MIN_VERSION" ] && break
+    echo "зеркало $u: файл, подпись или версия (нужна не ниже $MIN_VERSION) не прошли проверку" >&2
+    rm -f anypc-server VERSION SHA256SUMS SHA256SUMS.sig
   done
   [ -f anypc-server ] || { echo "не удалось скачать anypc-server ни с одного зеркала" >&2; exit 1; }
 fi

@@ -8,24 +8,24 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"html"
 	"io"
 	"io/fs"
 	"log"
 	"net"
 	"net/http"
-	neturl "net/url"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -83,52 +83,36 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	rand.Read(tok)
+	once := &onceCode{code: hex.EncodeToString(tok)}
 	run := &runner{a: a, ctx: ctx}
-	h := handler(addr, token, page, cfg, a, run, info, newFiles(downloads()))
+	h := handler(addr, token, page, cfg, a, run, info, newFiles(downloads()), once)
 	go http.Serve(l, h)
-	url := "http://" + addr + "/?t=" + token
-	log.Printf("AnyPC запущен (%s), ID %s. Окно: %s", platformKind(), cfg.ID, url)
-	if !*noBrowser {
-		if link, p, err := pageLink(filepath.Join(cfgDir, "AnyPC"), url); err != nil {
-			log.Print("ссылка для браузера: ", err)
-		} else {
-			exec.Command(openCmd, link).Start()
-			time.AfterFunc(time.Minute, func() { os.Remove(p) }) // браузер к этому времени уже прочитал
-			defer os.Remove(p)
-		}
+	log.Printf("AnyPC запущен (%s), ID %s. Окно: http://%s/?t=%s", platformKind(), cfg.ID, addr, token)
+	if !*noBrowser { // аргументы браузера видны всем пользователям ПК (/proc/*/cmdline) — в них одноразовый код, не токен
+		exec.Command(openCmd, "http://"+addr+"/?n="+once.code).Start()
 	}
 	run.start(cfg.Server)
 	run.wait()
 }
 
-// pageLink — файл в dir (права 0600) с переадресацией на url с токеном; возвращает file://-ссылку на него
-// и путь. Аргументы xdg-open/open видны всем пользователям ПК (/proc/*/cmdline), поэтому токена в них нет.
-func pageLink(dir, url string) (link, path string, err error) {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", "", err
-	}
-	f, err := os.CreateTemp(dir, "open-*.html")
-	if err != nil {
-		return "", "", err
-	}
-	defer f.Close()
-	if err := f.Chmod(0o600); err != nil {
-		os.Remove(f.Name())
-		return "", "", err
-	}
-	u, _ := json.Marshal(url)
-	_, err = fmt.Fprintf(f, `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=%s"><script>location.replace(%s)</script>`+"\n", html.EscapeString(url), u)
-	if err != nil {
-		os.Remove(f.Name())
-		return "", "", err
-	}
-	return (&neturl.URL{Scheme: "file", Path: f.Name()}).String(), f.Name(), nil
+// onceCode — код для первого открытия окна. Токен в аргументах xdg-open/open читал бы любой пользователь ПК;
+// код годен один раз, и браузер тратит его сразу. Файл со ссылкой не годится: Firefox из snap (Ubuntu) не читает ~/.config.
+// ponytail: локальный пользователь, опрашивающий /proc в цикле, может успеть раньше браузера — тогда окно владельца
+// покажет «ссылка уже использована» (заметно); закрыть совсем — ключ через stdin браузера, которого у xdg-open нет.
+type onceCode struct {
+	code string
+	used atomic.Bool
+}
+
+func (o *onceCode) use(c string) bool {
+	return o != nil && c != "" && subtle.ConstantTimeCompare([]byte(c), []byte(o.code)) == 1 && o.used.CompareAndSwap(false, true)
 }
 
 // handler — интерфейс и API. Чужие страницы не могут ни прочитать токен, ни вызвать API:
 // страница отдаётся только с ?t=токен, API требует заголовок X-Token (кросс-доменный запрос с ним
 // упирается в CORS), Host проверяется против DNS rebinding.
-func handler(addr, token string, page []byte, cfg *config, a *agent.Agent, run *runner, info func() map[string]any, fl *files) http.Handler {
+func handler(addr, token string, page []byte, cfg *config, a *agent.Agent, run *runner, info func() map[string]any, fl *files, once *onceCode) http.Handler {
 	files := http.FileServer(http.FS(ui.FS))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Host != addr {
@@ -142,6 +126,12 @@ func handler(addr, token string, page []byte, cfg *config, a *agent.Agent, run *
 				return
 			}
 			api(w, r, strings.TrimPrefix(r.URL.Path, "/api/"), cfg, a, run, info, fl)
+		case r.URL.Path == "/" && r.URL.Query().Has("n"): // одноразовый код из аргументов браузера → страница с токеном
+			if !once.use(r.URL.Query().Get("n")) {
+				http.Error(w, "Ссылка уже использована — откройте адрес из журнала AnyPC", http.StatusForbidden)
+				return
+			}
+			http.Redirect(w, r, "/?t="+token, http.StatusSeeOther)
 		case r.URL.Path == "/" || r.URL.Path == "/index.html":
 			if r.URL.Query().Get("t") != token {
 				http.Error(w, "Откройте ссылку, которую напечатал AnyPC в терминале", http.StatusForbidden)

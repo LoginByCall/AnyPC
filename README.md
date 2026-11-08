@@ -49,7 +49,7 @@ docker compose up -d
 
 ```sh
 scp bin/anypc-server deploy/setup.sh root@VPS:/root/anypc-deploy/
-ssh root@VPS sh /root/anypc-deploy/setup.sh any.example.com www.example.com
+ssh root@VPS ANYPC_LOCAL=1 sh /root/anypc-deploy/setup.sh any.example.com www.example.com
 scp bin/AnyPC.exe bin/SHA256SUMS root@VPS:/srv/anypc/dl/
 ```
 Later updates: `ANYPC_VPS=root@VPS deploy/publish.sh` (uploads only if `build.sh` passed).
