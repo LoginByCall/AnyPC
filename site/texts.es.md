@@ -52,8 +52,8 @@
 - `foot`: AnyPC beta. En el primer inicio, la versión para Windows descarga FFmpeg (GPLv3) de las compilaciones de gyan.dev. Se ofrece «tal cual», sin garantía.
 - `f5t`: Funciona con tu propio servidor
 - `f5d`: Instala tu propio nodo en un VPS con un solo comando y cambia el programa a él: los datos de conexión se quedan contigo.
-- `f6t`: Todos los sistemas principales
-- `f6d`: Windows, Linux y macOS: el mismo programa para ambos papeles en cada sistema; también puedes conectarte desde el navegador, sin instalar nada.
+- `f6t`: Varios servidores de relé
+- `f6d`: Servidores de relé en Hong Kong, Moscú y EE. UU. Si la conexión directa no es posible, el programa elige la ruta más rápida según el ping sumado de ambos lados, o puedes elegir el servidor tú mismo.
 - `tab_mac`: macOS
 - `dl_mac`: Descargar para macOS
 - `sys_mac`: macOS 12 o posterior, Intel y Apple Silicon · beta
