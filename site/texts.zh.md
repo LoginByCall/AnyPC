@@ -69,4 +69,4 @@
 - `n3`: 在服务器上运行——脚本会下载 anypc-server、验证发布签名、在 ufw 中开放端口，并配置 coturn 中继和 Let’s Encrypt 证书。如果主机商在控制面板中设有防火墙，请在那里开放 80 和 443/tcp、3478/tcp 和 udp、49152–65535/udp。更新时运行同一命令：
 - `n4`: 在您各台电脑的 AnyPC 中：“自有服务器”填写您的域名 → “保存”。ID 不变；勾选“同时保留在 AnyPC 网络中”后，也可通过 AnyPC 服务器访问这台电脑。
 - `n5`: 不改设置、临时通过其他节点连接：在 ID 栏输入 ID@域名，例如 123456789@my.example.com。节点的网页客户端位于 https://您的域名/。
-- `n6`: 或者用 Docker 代替第 2 步（NAS、已在用 Docker 的服务器）：在空目录中运行以下命令，替换为您的域名和服务器 IP，并自行开放相同的端口。如果 80 和 443 端口已被您的反向代理占用，请参阅 GitHub 上的 README。
+- `n6`: 或者用 Docker 代替第 2 步（NAS、已在用 Docker 的服务器）：在空目录中运行以下命令，替换为您的域名和服务器 IP，并自行开放相同的端口。如果 80 和 443 端口已被您的反向代理占用，请参阅 [GitHub 上的 README](https://github.com/LoginByCall/AnyPC#your-own-node-vps-ubuntudebian)。
