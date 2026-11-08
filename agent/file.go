@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -82,6 +83,23 @@ func freePath(dir, name string) string {
 	}
 }
 
+// place переносит part в свободное имя dir/name. Link, в отличие от Rename, не перезаписывает файл,
+// появившийся между проверкой freePath и переносом (другой приём, пользователь): занято → следующее имя.
+func place(part, dir, name string) (string, error) {
+	for range 100 {
+		dst := freePath(dir, name)
+		err := os.Link(part, dst)
+		if err == nil {
+			os.Remove(part) // не удалилась — уберёт cleanParts
+			return dst, nil
+		}
+		if !errors.Is(err, os.ErrExist) { // FAT/exFAT, SMB без жёстких ссылок — как раньше
+			return dst, os.Rename(part, dst)
+		}
+	}
+	return "", errors.New("нет свободного имени")
+}
+
 func (a *Agent) fileDir() string {
 	if a.FileDir != "" {
 		return a.FileDir
@@ -124,6 +142,9 @@ func (r *Receiver) Open(name string, size int64, id string) (offset int64, err e
 	}
 	r.name, r.size, r.h = safeName(name), size, sha256.New()
 	r.part = filepath.Join(r.dir, ".anypc-"+id+".part")
+	if err := r.room(); err != nil {
+		return 0, err
+	}
 	if r.f, err = os.OpenFile(r.part, os.O_RDWR|os.O_CREATE, 0o644); err != nil {
 		return 0, err
 	}
@@ -136,6 +157,25 @@ func (r *Receiver) Open(name string, size int64, id string) (offset int64, err e
 	}
 	r.got = n
 	return n, nil
+}
+
+// diskReserve — сколько места оставить на диске после приёма: заполненный диск ломает ОС и программы.
+const diskReserve = 1 << 30
+
+// room — отказ до приёма, если файл (без уже принятой части) не помещается с запасом diskReserve.
+func (r *Receiver) room() error {
+	free, err := diskFree(r.dir)
+	if err != nil {
+		return nil // не узнали — не мешаем; Write всё равно остановится на ошибке записи
+	}
+	need := r.size
+	if st, err := os.Stat(r.part); err == nil && st.Size() <= need {
+		need -= st.Size()
+	}
+	if need > int64(free)-diskReserve {
+		return fmt.Errorf("мало места на диске: файл %.1f ГБ, свободно %.1f ГБ (1 ГБ должен остаться)", float64(r.size)/(1<<30), float64(free)/(1<<30))
+	}
+	return nil
 }
 
 func (r *Receiver) Write(b []byte) error {
@@ -161,8 +201,7 @@ func (r *Receiver) Finish() (dst, sum string, err error) {
 		err = fmt.Errorf("получено %d из %d байт", r.got, r.size)
 	}
 	if err == nil {
-		r.dst = freePath(r.dir, r.name)
-		err = os.Rename(r.part, r.dst)
+		r.dst, err = place(r.part, r.dir, r.name)
 	}
 	if err != nil {
 		os.Remove(r.part)
@@ -205,15 +244,24 @@ func fileID(path string, st os.FileInfo) string {
 	return hex.EncodeToString(h[:16])
 }
 
-// receiveFile принимает файл от клиента в папку загрузок хоста.
-func (a *Agent) receiveFile(dc *webrtc.DataChannel) {
+// maxRecv — сколько файлов сессия принимает одновременно: каждый держит открытый файл и место на диске.
+const maxRecv = 4
+
+// receiveFile принимает файл от клиента в папку загрузок хоста; active — идущие приёмы этой сессии.
+func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32) {
 	r := NewReceiver(a.fileDir())
 	var mu sync.Mutex
-	state := "new" // new → open → finished
+	state := "new" // new → open → finished; в open занято место в active
+	end := func() {
+		if state == "open" {
+			active.Add(-1)
+		}
+		state = "finished"
+	}
 	fail := func(msg string) {
 		log.Printf("файл %q: %s", r.name, msg)
 		r.Abort(false)
-		state = "finished"
+		end()
 		sendJSON(dc, fileMsg{T: "err", Msg: msg})
 		dc.Close()
 	}
@@ -235,8 +283,14 @@ func (a *Agent) receiveFile(dc *webrtc.DataChannel) {
 		json.Unmarshal(m.Data, &fm)
 		switch {
 		case fm.T == "meta" && state == "new":
+			if active.Add(1) > maxRecv {
+				active.Add(-1)
+				fail(fmt.Sprintf("одновременно принимается не больше %d файлов — дождитесь окончания", maxRecv))
+				return
+			}
 			off, err := r.Open(fm.Name, fm.Size, fm.ID)
 			if err != nil {
+				active.Add(-1)
 				fail(err.Error())
 				return
 			}
@@ -251,12 +305,12 @@ func (a *Agent) receiveFile(dc *webrtc.DataChannel) {
 				fail(err.Error())
 				return
 			}
-			state = "finished"
+			end()
 			log.Printf("файл принят: %s (%d байт, SHA-256 %s)", dst, r.size, sum)
 			sendJSON(dc, fileMsg{T: "done", SHA256: sum})
 		case fm.T == "cancel":
 			r.Abort(false)
-			state = "finished"
+			end()
 			dc.Close()
 		default:
 			fail("неожиданное сообщение")
@@ -269,7 +323,7 @@ func (a *Agent) receiveFile(dc *webrtc.DataChannel) {
 			r.Abort(true)
 			log.Printf("файл %q: передача прервана, принято %d из %d байт — докачается при повторной отправке", r.name, r.got, r.size)
 		}
-		state = "finished"
+		end()
 	})
 }
 

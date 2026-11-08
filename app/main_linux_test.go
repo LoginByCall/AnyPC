@@ -1,8 +1,11 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"io"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -47,5 +50,43 @@ func TestLocalAPI(t *testing.T) {
 	}
 	if code, body := do("GET", "127.0.0.1:5000", "/?t=tok123", ""); code != 200 || !strings.Contains(body, "pakeRespond") {
 		t.Errorf("страница: %d", code)
+	}
+}
+
+// TestPageLink: браузер открывается ссылкой на файл 0600 — токена нет в аргументах (/proc/*/cmdline).
+func TestPageLink(t *testing.T) {
+	dir := t.TempDir()
+	url := "http://127.0.0.1:5000/?t=tok123"
+	link, p, err := pageLink(filepath.Join(dir, "AnyPC Cfg"), url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(link, "tok123") || !strings.HasPrefix(link, "file:///") || !strings.Contains(link, "AnyPC%20Cfg") {
+		t.Errorf("аргумент для браузера: %q", link)
+	}
+	st, err := os.Stat(p)
+	if err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("права файла: %v %v", st.Mode(), err)
+	}
+	b, _ := os.ReadFile(p)
+	if !strings.Contains(string(b), `content="0;url=`+url+`"`) || !strings.Contains(string(b), `location.replace("`+url+`")`) {
+		t.Errorf("переадресация: %s", b)
+	}
+}
+
+// TestShimCSP: скрипт привязок (с токеном) разрешён в CSP страницы своим хэшем.
+func TestShimCSP(t *testing.T) {
+	page, err := shimmed("wss://example/ws", "tok123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(page)
+	i, j := strings.Index(s, "<script>"), strings.Index(s, "</script>")
+	if !strings.Contains(s[i:j], "tok123") {
+		t.Fatal("первый скрипт — не привязки")
+	}
+	sum := sha256.Sum256([]byte(s[i+len("<script>") : j]))
+	if !strings.Contains(s, "'sha256-"+base64.StdEncoding.EncodeToString(sum[:])+"'") {
+		t.Error("хэша скрипта привязок нет в CSP — браузер его не выполнит")
 	}
 }

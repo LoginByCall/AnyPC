@@ -628,9 +628,11 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 		go s.watchClip(sctx, func(b []byte) { ctl.SendText(string(b)) })
 		s.sendMonitors()
 	})
+	recv := new(atomic.Int32) // идущие приёмы файлов этой сессии (не больше maxRecv)
+
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) { // каналы от клиента — только файлы и только после входа
 		if dc.Label() == "file" && s.authed.Load() {
-			a.receiveFile(dc)
+			a.receiveFile(dc, recv)
 			return
 		}
 		dc.OnOpen(func() { dc.Close() })

@@ -62,7 +62,7 @@ no-dtls
 no-cli
 no-multicast-peers
 user-quota=4
-total-quota=40
+total-quota=1000
 no-tcp-relay
 max-bps=1250000
 denied-peer-ip=0.0.0.0-0.255.255.255

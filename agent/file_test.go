@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -131,9 +132,10 @@ func hostWith(t *testing.T) (*webrtc.PeerConnection, string) {
 	client, host := pair(t)
 	dir := t.TempDir()
 	a := &Agent{FileDir: dir}
+	recv := new(atomic.Int32) // как в agent.go: один счётчик на сессию
 	host.OnDataChannel(func(dc *webrtc.DataChannel) {
 		if dc.Label() == "file" {
-			a.receiveFile(dc)
+			a.receiveFile(dc, recv)
 		}
 	})
 	return client, dir
@@ -270,5 +272,112 @@ func TestReceiver(t *testing.T) {
 	r.Abort(false)
 	if p, _ := filepath.Glob(filepath.Join(dir, ".anypc-*")); len(p) != 0 {
 		t.Fatalf("отмена оставила %v", p)
+	}
+}
+
+// TestFinishNoOverwrite — приёмы с одним именем завершаются одновременно: между проверкой
+// свободного имени и переносом другой приём занимает его, но ни один файл не перезаписан.
+func TestFinishNoOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	const n = 30
+	rs := make([]*Receiver, n)
+	for i := range rs {
+		rs[i] = NewReceiver(dir)
+		if _, err := rs[i].Open("same.txt", 2, ""); err != nil {
+			t.Fatal(err)
+		}
+		rs[i].Write([]byte{'a' + byte(i/26), 'a' + byte(i%26)})
+	}
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for _, r := range rs {
+		wg.Go(func() {
+			<-start
+			if _, _, err := r.Finish(); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+	got := map[string]bool{}
+	files, _ := filepath.Glob(filepath.Join(dir, "same*.txt"))
+	for _, f := range files {
+		b, _ := os.ReadFile(f)
+		got[string(b)] = true
+	}
+	if len(got) != n {
+		t.Fatalf("целых файлов %d из %d (%d имён)", len(got), n, len(files))
+	}
+}
+
+// TestDiskRoom — файл, после которого на диске останется меньше 1 ГБ, не принимается.
+func TestDiskRoom(t *testing.T) {
+	dir := t.TempDir()
+	free, err := diskFree(dir)
+	if err != nil || free == 0 {
+		t.Fatal(free, err)
+	}
+	r := NewReceiver(dir)
+	if _, err := r.Open("big.bin", int64(free), ""); err == nil || !strings.Contains(err.Error(), "мало места") {
+		t.Fatalf("файл размером со всё свободное место принят: %v", err)
+	}
+	if p, _ := filepath.Glob(filepath.Join(dir, ".anypc-*")); len(p) != 0 {
+		t.Fatalf("отказ оставил %v", p)
+	}
+	if free > 2<<30 {
+		if _, err := r.Open("small.bin", 1, ""); err != nil {
+			t.Fatal(err)
+		}
+		r.Abort(false)
+	}
+}
+
+// TestRecvLimit — пятый одновременный приём в сессии отклоняется; когда один закончился — снова можно.
+func TestRecvLimit(t *testing.T) {
+	client, _ := hostWith(t)
+	start := func(name string) (*webrtc.DataChannel, fileMsg, chan fileMsg) {
+		dc, _ := client.CreateDataChannel("file", nil)
+		res := make(chan fileMsg, 4)
+		dc.OnMessage(func(m webrtc.DataChannelMessage) {
+			var fm fileMsg
+			json.Unmarshal(m.Data, &fm)
+			res <- fm
+		})
+		dc.OnOpen(func() { sendJSON(dc, fileMsg{T: "meta", Name: name, Size: 1}) })
+		select {
+		case r := <-res:
+			return dc, r, res
+		case <-time.After(10 * time.Second):
+			t.Fatal("нет ответа хоста")
+		}
+		return nil, fileMsg{}, nil
+	}
+	var first *webrtc.DataChannel
+	var firstRes chan fileMsg
+	for i := range maxRecv {
+		dc, r, res := start(string(rune('a'+i)) + ".bin")
+		if r.T != "resume" {
+			t.Fatalf("приём %d: %+v", i+1, r)
+		}
+		if i == 0 {
+			first, firstRes = dc, res
+		}
+	}
+	if _, r, _ := start("e.bin"); r.T != "err" || !strings.Contains(r.Msg, "не больше 4") {
+		t.Fatalf("пятый приём: %+v", r)
+	}
+	first.Send([]byte{1})
+	sendJSON(first, fileMsg{T: "end"})
+	select {
+	case r := <-firstRes:
+		if r.T != "done" {
+			t.Fatalf("первый приём: %+v", r)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("первый приём не закончился")
+	}
+	if _, r, _ := start("f.bin"); r.T != "resume" {
+		t.Fatalf("после окончания одного: %+v", r)
 	}
 }
