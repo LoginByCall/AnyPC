@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/pion/logging"
+	"github.com/pion/rtcp"
 	"github.com/pion/transport/v5/vnet"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
@@ -54,13 +55,7 @@ func TestGCCLink(t *testing.T) {
 
 	track, _ := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264, ClockRate: 90000}, "video", "t")
 	sender, _ := host.AddTrack(track)
-	go func() {
-		for {
-			if _, _, err := sender.ReadRTCP(); err != nil {
-				return
-			}
-		}
-	}()
+	go readRTCP(sender, func([]rtcp.Packet) {}) // тот же читатель, что у сессии
 	client.OnTrack(func(tr *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
 		for {
 			if _, _, err := tr.ReadRTP(); err != nil {
@@ -92,6 +87,14 @@ func TestGCCLink(t *testing.T) {
 	case <-up:
 	case <-time.After(10 * time.Second):
 		t.Fatal("нет соединения")
+	}
+	// битый RTCP в начале: читатель RTCP хоста обязан пережить ошибку разбора, иначе TWCC дальше никто не читает
+	// и оценка остаётся на 3000
+	// рамка и SSRC верные (srtcp пропускает), тело TWCC битое: 100 статусов без единого чанка
+	ms := uint32(sender.GetParameters().Encodings[0].SSRC)
+	bad := rtcp.RawPacket{0x8f, 205, 0, 4, 0, 0, 0, 1, byte(ms >> 24), byte(ms >> 16), byte(ms >> 8), byte(ms), 0, 1, 0, 100, 0, 0, 0, 1}
+	if err := client.WriteRTCP([]rtcp.Packet{&bad}); err != nil {
+		t.Fatal(err)
 	}
 
 	frame := make([]byte, 3_000_000/8/30) // 3 Мбит/с при 30 к/с

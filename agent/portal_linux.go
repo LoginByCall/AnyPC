@@ -183,7 +183,9 @@ func (p *portal) parseStream(v any) error {
 func (p *portal) alive() bool { return !p.closed.Load() }
 
 func (p *portal) capture(ctx context.Context, fps int, bitrate, _ string, _ *Monitor) (*exec.Cmd, error) {
+	deskMu.Lock()                 // getDesktop закрывает fd мёртвого портала — номер не должен уйти чужому сокету до Dup
 	dup, err := syscall.Dup(p.fd) // свой экземпляр fd на каждый запуск захвата
+	deskMu.Unlock()
 	if err != nil {
 		return nil, err
 	}
@@ -220,17 +222,11 @@ func (p *portal) input(e event, _ *Monitor) error {
 	case f&mMove != 0:
 		return p.notify("NotifyPointerMotionAbsolute", p.node, float64(e.x)*p.w/65535, float64(e.y)*p.h/65535)
 	case f&mWheel != 0: // ось 0; положительные шаги — вниз, а у нас +120 — вверх
-		p.wheelV += e.data
-		steps := p.wheelV / 120
-		p.wheelV -= steps * 120
-		if steps != 0 {
+		if steps := notches(&p.wheelV, e.data); steps != 0 {
 			return p.notify("NotifyPointerAxisDiscrete", uint32(0), -steps)
 		}
 	case f&mHWheel != 0:
-		p.wheelH += e.data
-		steps := p.wheelH / 120
-		p.wheelH -= steps * 120
-		if steps != 0 {
+		if steps := notches(&p.wheelH, e.data); steps != 0 {
 			return p.notify("NotifyPointerAxisDiscrete", uint32(1), steps)
 		}
 	default:

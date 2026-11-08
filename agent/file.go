@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/pion/webrtc/v4"
 )
@@ -46,14 +47,14 @@ const (
 	fileHigh  = 4 << 20  // ждать, если в буфере канала больше
 )
 
-var reserved = map[string]bool{"CON": true, "PRN": true, "AUX": true, "NUL": true,
-	"COM1": true, "COM2": true, "COM3": true, "COM4": true, "LPT1": true, "LPT2": true, "LPT3": true}
+// reserved — имена устройств Windows (с любым расширением и пробелами перед ним).
+var reserved = regexp.MustCompile(`^(CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|(COM|LPT)[0-9¹²³]) *$`)
 
 // safeName — имя файла от другой стороны без путей, управляющих и запрещённых в Windows символов.
 func safeName(name string) string {
 	name = name[strings.LastIndexAny(name, `/\`)+1:]
 	name = strings.Map(func(r rune) rune {
-		if r < 32 || strings.ContainsRune(`<>:"/\|?*`, r) {
+		if r < 32 || strings.ContainsRune(`<>:"/\|?*`, r) || unicode.Is(unicode.Cf, r) { // Cf: U+202E подделывает расширение («фото‮gpj.exe»)
 			return '_'
 		}
 		return r
@@ -62,7 +63,7 @@ func safeName(name string) string {
 	if r := []rune(name); len(r) > 200 {
 		name = string(r[len(r)-200:])
 	}
-	if base := strings.ToUpper(strings.SplitN(name, ".", 2)[0]); name == "" || reserved[base] {
+	if base := strings.ToUpper(strings.SplitN(name, ".", 2)[0]); name == "" || reserved.MatchString(base) {
 		name = "_" + name
 	}
 	return name

@@ -241,3 +241,11 @@ func primaryIndex(ms []Monitor) int {
 	}
 	return 0
 }
+
+// notches — целые щелчки колеса (WHEEL_DELTA = 120) из накопленного; остаток копится в acc.
+func notches(acc *int32, d int32) int32 {
+	*acc += d
+	n := *acc / 120
+	*acc -= n * 120
+	return n
+}

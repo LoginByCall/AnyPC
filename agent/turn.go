@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -36,7 +37,7 @@ func turnHost(u string) string {
 func turnHosts(ice []webrtc.ICEServer) (hs []string) {
 	for _, s := range ice {
 		for _, u := range s.URLs {
-			if h := turnHost(u); h != "" && !contains(hs, h) {
+			if h := turnHost(u); h != "" && !slices.Contains(hs, h) {
 				hs = append(hs, h)
 			}
 		}
@@ -44,19 +45,10 @@ func turnHosts(ice []webrtc.ICEServer) (hs []string) {
 	return hs
 }
 
-func contains(xs []string, x string) bool {
-	for _, y := range xs {
-		if y == x {
-			return true
-		}
-	}
-	return false
-}
-
 // pickTURN — выбор клиента, если он есть в списке; иначе минимум (клиент + хост) по серверам,
 // доступным обоим. "" — выбирать не из чего (старый клиент без замеров): ICE получает все серверы.
 func pickTURN(req connectReq, mine map[string]int, hosts []string) string {
-	if req.TURN != "" && req.TURN != "auto" && contains(hosts, req.TURN) {
+	if req.TURN != "" && req.TURN != "auto" && slices.Contains(hosts, req.TURN) {
 		return req.TURN
 	}
 	best, bestV := "", 0

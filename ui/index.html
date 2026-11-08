@@ -358,7 +358,7 @@ $('go').onclick = async () => {
       pc.ondatachannel = ev => {
         if (ev.channel.label === 'input') dc = ev.channel;
         if (ev.channel.label === 'ctl') { ctl = ev.channel; ctl.onmessage = onCtl; }
-        if (ev.channel.label === 'auth') ev.channel.onmessage = e => onAuth(ev.channel, e);
+        if (ev.channel.label === 'auth') ev.channel.onmessage = e => onAuth(ev.channel, e, mine);
         if (ev.channel.label === 'file') authed ? recvFile(ev.channel) : ev.channel.close(); // Д-2: файлы — только после входа
       };
       pc.onicecandidate = ev => ev.candidate && sig('ice', ev.candidate.toJSON());
@@ -423,9 +423,14 @@ function redial() {
   $('id').value = p.host; $('pw').value = p.pw;
   setTimeout(async () => { await $('go').onclick(); if ($('msg').textContent === t('connecting')) $('msg').textContent = t('redial'); }, 1500);
 }
-async function onAuth(ch, e) {
+async function onAuth(ch, e, mine) {
   const m = JSON.parse(e.data);
   if (m.t === 'a') {
+    // один обмен CPace на соединение: иначе поддельный хост (хаб) шлёт «a» с новой догадкой пароля раз за разом
+    // и по ответу проверяет каждую — перебор мимо блокировки на хосте (REQ-S-04)
+    if (mine !== pc) return; // сообщение старой попытки
+    if (mine.cpace) return end(t('err') + t('e_hostauth'));
+    mine.cpace = true;
     try {
       const r = await pakeRespond($('pw').value, m.salt, m.msg, host, pc.localDescription.sdp, pc.remoteDescription.sdp);
       expect = r.expect;

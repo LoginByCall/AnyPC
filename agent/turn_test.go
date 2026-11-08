@@ -3,7 +3,9 @@ package agent
 import (
 	"encoding/binary"
 	"net"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/pion/webrtc/v4"
 )
@@ -64,5 +66,27 @@ func TestStunRTT(t *testing.T) {
 	}
 	if r := measureTURN([]string{"127.0.0.1", "127.0.0.2"}); len(r) != 1 { // 127.0.0.2:3478 молчит
 		t.Fatalf("measureTURN: %v", r)
+	}
+}
+
+// TestMeasureDue — замер TURN не чаще measureEvery на набор: hello приходит перед каждым connect.
+func TestMeasureDue(t *testing.T) {
+	var a Agent
+	hk, ru := []string{"hk"}, []string{"ru"}
+	if !a.measureDue(hk) || a.measureDue(hk) || !a.measureDue(ru) {
+		t.Fatal("первый замер набора — да, повтор сразу — нет, другой набор — да")
+	}
+	a.rttAt["hk"] = time.Now().Add(-measureEvery)
+	if !a.measureDue(hk) {
+		t.Fatal("через measureEvery — снова мерить")
+	}
+}
+
+// TestClientID — ID клиента только как выдаёт хаб: перевод строки подделал бы «IP:» в окне «Разрешить».
+func TestClientID(t *testing.T) {
+	for id, ok := range map[string]bool{"c" + strings.Repeat("1", 12): true, "c12345678901\nIP: 1.2.3.4": false, "123456789": false, "": false} {
+		if clientID.MatchString(id) != ok {
+			t.Errorf("%q: ждали %v", id, ok)
+		}
 	}
 }

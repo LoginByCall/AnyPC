@@ -7,6 +7,7 @@ import (
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -184,5 +185,70 @@ func TestIDsAndTurn(t *testing.T) {
 	}
 	if (&Hub{}).ICEServers("c1") != nil {
 		t.Fatal("без TurnHosts серверов быть не должно")
+	}
+}
+
+// TestRegisterLimit — новых ID с одного IP не больше NewPerHour в час; уже привязанный ID входит и сверх лимита.
+func TestRegisterLimit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	srv := httptest.NewServer(&Hub{})
+	defer srv.Close()
+	url := "ws" + strings.TrimPrefix(srv.URL, "http")
+	_, key, _ := ed25519.GenerateKey(nil)
+	for i := range NewPerHour {
+		c, m := dialHost(t, ctx, url, fmt.Sprint(100000000+i), key, true)
+		if m.Type != "hello" {
+			t.Fatalf("регистрация %d: %+v", i, m)
+		}
+		c.Close(websocket.StatusNormalClosure, "")
+	}
+	if _, m := dialHost(t, ctx, url, "999999999", key, true); string(m.Data) != `"limit"` {
+		t.Fatalf("сверх лимита: %+v", m)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if _, m := dialHost(t, ctx, url, "100000000", key, true); m.Type != "hello" {
+		t.Fatalf("привязанный ID сверх лимита не вошёл: %+v", m)
+	}
+}
+
+// TestKeepalive — хост, переставший отвечать (обрыв сети), снимается с хаба за ~PingEvery·4/3, а не через минуты:
+// после переподключения ID свободен.
+func TestKeepalive(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	srv := httptest.NewServer(&Hub{Ping: 300 * time.Millisecond})
+	defer srv.Close()
+	url := "ws" + strings.TrimPrefix(srv.URL, "http")
+	_, key, _ := ed25519.GenerateKey(nil)
+	dead, m := dialHost(t, ctx, url, "123456789", key, true) // дальше не читает — на ping не отвечает
+	if m.Type != "hello" {
+		t.Fatalf("регистрация: %+v", m)
+	}
+	defer dead.CloseNow()
+	time.Sleep(600 * time.Millisecond)
+	if _, m := dialHost(t, ctx, url, "123456789", key, true); m.Type != "hello" {
+		t.Fatalf("мёртвое соединение держит ID: %+v", m)
+	}
+}
+
+// TestRemoteIP — лимит регистраций: за прокси на loopback — адрес из X-Forwarded-For, IPv6 — по /64,
+// а заголовок от внешнего адреса не принимается (иначе лимит обходится подделкой).
+func TestRemoteIP(t *testing.T) {
+	for _, c := range []struct{ addr, xff, want string }{
+		{"203.0.113.5:1234", "", "203.0.113.5"},
+		{"203.0.113.5:1234", "198.51.100.1", "203.0.113.5"},
+		{"127.0.0.1:1234", "10.0.0.1, 198.51.100.7", "198.51.100.7"},
+		{"[2001:db8:1:2:3:4:5:6]:1234", "", "2001:db8:1:2::/64"},
+		{"127.0.0.1:1234", "", "127.0.0.1"},
+	} {
+		r := httptest.NewRequest("GET", "/ws", nil)
+		r.RemoteAddr = c.addr
+		if c.xff != "" {
+			r.Header.Set("X-Forwarded-For", c.xff)
+		}
+		if got := remoteIP(r); got != c.want {
+			t.Errorf("%s + %q: %s, ждали %s", c.addr, c.xff, got, c.want)
+		}
 	}
 }
