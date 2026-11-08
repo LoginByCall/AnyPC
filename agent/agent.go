@@ -76,7 +76,8 @@ type session struct {
 	picking atomic.Bool // открыто окно выбора файла
 	asking  atomic.Bool // на хосте открыто окно «Разрешить / Отклонить»
 	gone    atomic.Bool // сессия освобождена (release) — в pend не возвращать
-	peer    string      // адрес клиента по выбранной паре ICE — для окна подтверждения
+	ctl     *webrtc.DataChannel
+	peer    string // адрес клиента по выбранной паре ICE — для окна подтверждения
 
 	mu        sync.Mutex
 	closeInd  func() // закрыть плашку сессии
@@ -622,12 +623,10 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 			}()
 		}
 	})
+	s.ctl = ctl
 	ctl.OnOpen(func() {
 		go s.watchClip(sctx, func(b []byte) { ctl.SendText(string(b)) })
-		s.mu.Lock()
-		b, _ := json.Marshal(ctlMsg{T: "monitors", List: s.mons, Cur: s.mon})
-		s.mu.Unlock()
-		ctl.SendText(string(b))
+		s.sendMonitors()
 	})
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) { // каналы от клиента — только файлы и только после входа
 		if dc.Label() == "file" && s.authed.Load() {
@@ -795,17 +794,45 @@ func (a *Agent) accept(ctx context.Context, s *session, track *webrtc.TrackLocal
 	s.authed.Store(true)
 	send(authMsg{T: "ok", Conf: conf, Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph)})
 	log.Printf("сессия %s: вход выполнен", s.cid)
-	closeInd, err := showIndicator(s.cid, a.Disconnect) // REQ-F-15
-	if err != nil {                                     // REQ-S-08: без видимой плашки сессии нет
+	s.sendMonitors()
+	closeInd, err := showIndicator(s.cid, a.userClose(s)) // REQ-F-15
+	if err != nil {                                       // REQ-S-08: без видимой плашки сессии нет
 		log.Printf("плашка сессии: %v — сессия закрыта", err)
 		s.pc.Close()
 		return
 	}
 	s.mu.Lock()
 	s.closeInd = closeInd
+	if ctx.Err() != nil || s.gone.Load() { // сессия кончилась, пока открывалась плашка: ended её уже не закроет
+		s.closeInd = nil
+		s.mu.Unlock()
+		closeInd()
+		return
+	}
 	s.mu.Unlock()
 	a.notify()
 	go a.stream(ctx, s, track)
+}
+
+// userClose — человек закрыл плашку сессии s: разорвать её, но не следующую (плашка могла пережить свою сессию).
+func (a *Agent) userClose(s *session) func() {
+	return func() {
+		if a.byCID(s.cid) == s {
+			a.Disconnect()
+		}
+	}
+}
+
+// sendMonitors — список мониторов клиенту: только после входа (имена и разрешения — тоже сведения о хосте)
+// и когда канал ctl открыт; зовут оба события, повтор безвреден.
+func (s *session) sendMonitors() {
+	if !s.authed.Load() || s.ctl == nil || s.ctl.ReadyState() != webrtc.DataChannelStateOpen {
+		return
+	}
+	s.mu.Lock()
+	b, _ := json.Marshal(ctlMsg{T: "monitors", List: s.mons, Cur: s.mon})
+	s.mu.Unlock()
+	s.ctl.SendText(string(b))
 }
 
 // clipSeq, clipText — системный буфер (подменяются в тестах).
