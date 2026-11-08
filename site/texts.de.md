@@ -63,8 +63,10 @@
 - `mchk`: Datei prüfen – die Prüfsumme muss mit der obigen übereinstimmen:
 - `tab_srv`: Eigener Server
 - `n1`: Ihr eigener AnyPC-Knoten auf Ihrem VPS: Signalisierung, Relay und Web-Client unter Ihrer Domain – nur Ihr Server weiß, wer sich wann verbunden hat. Sie brauchen einen VPS mit Ubuntu oder Debian und öffentlicher IP sowie eine Domain.
-- `n2`: Legen Sie im DNS einen A-Eintrag an: Domain → Server-IP (bei Cloudflare nur DNS, „graue Wolke“). Öffnen Sie die Ports 80 und 443/tcp, 3478/tcp und udp, 49152–65535/udp.
-- `n3`: Auf dem Server ausführen – das Skript lädt anypc-server herunter, prüft die Prüfsumme, richtet das coturn-Relay und ein Let’s-Encrypt-Zertifikat ein. Aktualisieren mit demselben Befehl:
+- `srvS`: Auf dem Server
+- `srvC`: Auf dem Client
+- `n2`: Legen Sie im DNS einen A-Eintrag an: Domain → Server-IP (bei Cloudflare nur DNS, „graue Wolke“).
+- `n3`: Auf dem Server ausführen – das Skript lädt anypc-server herunter, prüft die Prüfsumme, öffnet die Ports in ufw, richtet das coturn-Relay und ein Let’s-Encrypt-Zertifikat ein. Hat Ihr Hoster eine Firewall im Kundenpanel, öffnen Sie dort 80 und 443/tcp, 3478/tcp und udp, 49152–65535/udp. Aktualisieren mit demselben Befehl:
 - `n4`: In AnyPC auf Ihren PCs: „Eigener Server“ = Ihre Domain → „Speichern“. Die ID bleibt; mit „auch im AnyPC-Netz bleiben“ ist der PC auch über die AnyPC-Server erreichbar.
 - `n5`: Über einen anderen Knoten verbinden, ohne die Einstellungen zu ändern: ID@Domain ins ID-Feld, z. B. 123456789@my.example.com. Der Web-Client des Knotens liegt unter https://Ihre-Domain/.
-- `n6`: Oder statt Schritt 3 mit Docker (NAS, Server mit Docker): Führen Sie in einem leeren Ordner die folgenden Befehle mit Ihrer Domain und Server-IP aus. Sind die Ports 80 und 443 durch Ihren Reverse Proxy belegt, siehe README auf GitHub.
+- `n6`: Oder statt Schritt 2 mit Docker (NAS, Server mit Docker): Führen Sie in einem leeren Ordner die folgenden Befehle mit Ihrer Domain und Server-IP aus und öffnen Sie dieselben Ports selbst. Sind die Ports 80 und 443 durch Ihren Reverse Proxy belegt, siehe README auf GitHub.
