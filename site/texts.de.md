@@ -52,8 +52,8 @@
 - `foot`: AnyPC Beta. Die Windows-Version lädt beim ersten Start FFmpeg (GPLv3) aus den Builds von gyan.dev herunter. Bereitgestellt „wie besehen“, ohne Gewährleistung.
 - `f5t`: Auch mit eigenem Server
 - `f5d`: Richten Sie mit einem Befehl einen eigenen Knoten auf einem VPS ein und stellen Sie das Programm darauf um – die Verbindungsdaten bleiben bei Ihnen.
-- `f6t`: Mehrere Relay-Server
-- `f6d`: Relay-Server in Hongkong, Moskau und den USA. Klappt keine direkte Verbindung, wählt das Programm die schnellste Route anhand des Gesamtpings beider Seiten – oder Sie wählen den Server selbst.
+- `f6t`: Mehrere eigene Knoten
+- `f6d`: Mit AnyPC können Sie mehrere eigene Relay-Knoten betreiben und zwischen ihnen wechseln – automatisch über die schnellste Route anhand des Pings beider Seiten oder von Hand.
 - `tab_mac`: macOS
 - `dl_mac`: Für macOS herunterladen
 - `sys_mac`: macOS 12 oder neuer, Intel und Apple Silicon · Beta

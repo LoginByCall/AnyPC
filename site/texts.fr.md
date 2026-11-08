@@ -52,8 +52,8 @@
 - `foot`: AnyPC bêta. Au premier lancement, la version Windows télécharge FFmpeg (GPLv3) depuis les builds de gyan.dev. Fourni « tel quel », sans garantie.
 - `f5t`: Possible avec votre propre serveur
 - `f5d`: Installez votre propre nœud sur un VPS en une commande et basculez le programme dessus — les données de connexion restent chez vous.
-- `f6t`: Plusieurs serveurs relais
-- `f6d`: Des serveurs relais à Hong Kong, Moscou et aux États-Unis. Si la connexion directe échoue, le programme choisit la route la plus rapide d’après le ping cumulé des deux côtés — ou choisissez le serveur vous-même.
+- `f6t`: Plusieurs nœuds à vous
+- `f6d`: AnyPC vous permet de déployer plusieurs nœuds relais à vous et de passer de l’un à l’autre — automatiquement, par la route la plus rapide selon le ping des deux côtés, ou à la main.
 - `tab_mac`: macOS
 - `dl_mac`: Télécharger pour macOS
 - `sys_mac`: macOS 12 ou ultérieur, Intel et Apple Silicon · bêta
