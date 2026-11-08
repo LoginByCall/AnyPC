@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -97,6 +98,17 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 	}
 	var hello struct{ ICE []webrtc.ICEServer }
 	json.Unmarshal(read().Data, &hello)
+	if e2eSquat > 0 {
+		sctx, stop := context.WithCancel(ctx)
+		defer stop()
+		var wg sync.WaitGroup
+		for range e2eSquat {
+			wg.Go(func() { squat(t, sctx, url[strings.LastIndex(url, ",")+1:], id) })
+		}
+		time.Sleep(2 * time.Second) // молчуны получили offer раньше настоящего клиента
+		defer wg.Wait()
+		defer stop()
+	}
 
 	var m hub.Msg
 	for { // пароль в connect больше не передаётся; ждём регистрации хоста
@@ -281,8 +293,8 @@ func TestLockout(t *testing.T) { // REQ-S-04: 5 неудачных входов 
 	for i := 0; i < 5; i++ {
 		a.authResult("c1", false)
 	}
-	a.onConnect(ctx, c, hub.Msg{From: "c1"})
-	if a.sess != nil || time.Until(a.lockUntil) < 50*time.Second {
+	a.onConnect(ctx, c, hub.Msg{From: "c000000000001"})
+	if a.sess != nil || len(a.pend) > 0 || time.Until(a.lockUntil) < 50*time.Second {
 		t.Fatalf("блокировка не сработала: sess=%v lock=%v", a.sess, a.lockUntil)
 	}
 }
@@ -354,7 +366,35 @@ var (
 	e2eAgent func(*Agent)
 	e2eDeny  bool // ожидать отказ человека на хосте (REQ-F-03)
 	e2eCtl   func(*testing.T, *webrtc.DataChannel, chan ctlMsg)
+	e2eSquat int // столько клиентов до настоящего шлют connect и молчат (У3, У9)
 )
+
+// squat — клиент, который получил offer и не отвечает: раньше одного такого хватало, чтобы хост 20 с был «занят».
+func squat(t *testing.T, ctx context.Context, url, id string) {
+	c, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	var m hub.Msg
+	wsjson.Read(ctx, c, &m) // hello
+	for ctx.Err() == nil {
+		wsjson.Write(ctx, c, hub.Msg{V: 1, Type: "connect", To: id, Data: json.RawMessage(`{}`)})
+		if wsjson.Read(ctx, c, &m) != nil || m.Type == "offer" {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	<-ctx.Done()
+	c.CloseNow()
+}
+
+// TestPendingSquat — молчащие клиенты (меньше maxPending) не мешают войти владельцу.
+func TestPendingSquat(t *testing.T) {
+	e2eSquat = 2 // < maxPending
+	defer func() { e2eSquat = 0 }()
+	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "secret123")
+}
 
 // TestMonitorSwitch — REQ-F-09: хост присылает список мониторов, выбор второго перезапускает захват на нём.
 func TestMonitorSwitch(t *testing.T) {

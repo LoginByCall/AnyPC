@@ -160,15 +160,11 @@ func sendInput(e event, m *Monitor) error {
 		}
 		C.anyMouse(typ, C.double(mac.x), C.double(mac.y), btn, 0, C.ulonglong(mac.flags))
 	case f&mWheel != 0: // строка на щелчок (WHEEL_DELTA = 120); вверх — положительно и там, и тут
-		mac.wheelV += e.data
-		if n := mac.wheelV / 120; n != 0 {
-			mac.wheelV -= n * 120
+		if n := notches(&mac.wheelV, e.data); n != 0 {
 			C.anyScroll(C.int(n), 0)
 		}
 	case f&mHWheel != 0: // у Windows вправо — плюс, у macOS — минус
-		mac.wheelH += e.data
-		if n := mac.wheelH / 120; n != 0 {
-			mac.wheelH -= n * 120
+		if n := notches(&mac.wheelH, e.data); n != 0 {
 			C.anyScroll(0, C.int(-n))
 		}
 	default:

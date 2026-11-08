@@ -90,3 +90,12 @@ func TestClientID(t *testing.T) {
 		}
 	}
 }
+
+func TestNotches(t *testing.T) {
+	var acc int32
+	for _, c := range []struct{ d, want, rest int32 }{{60, 0, 60}, {60, 1, 0}, {-250, -2, -10}, {130, 1, 0}, {-119, 0, -119}} {
+		if n := notches(&acc, c.d); n != c.want || acc != c.rest {
+			t.Fatalf("+%d: %d ост %d, ждал %d ост %d", c.d, n, acc, c.want, c.rest)
+		}
+	}
+}
