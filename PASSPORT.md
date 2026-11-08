@@ -17,7 +17,7 @@
 - Сигнализация §7 (`hub.Msg`) — внутренний, `v: 1`.
 
 ## Состояние (2026-11-07)
-- Выпущен v0.1.9 (2026-11-08: GitHub pre-release с SHA256SUMS.sig + HK и RU; образ ghcr.io/loginbycall/anypc-server:v0.1.9, amd64+arm64). Теги v0.1.6, v0.1.8 — без релиза. Хабы: hk.anypc.org (170.168.24.45, + лендинг anypc.org/www), ru.anypc.org (170.168.5.86); us.anypc.org (netcup, почтовый) — только coturn. Доступ — см. память.
+- Выпущен v0.1.10 (2026-11-08: GitHub pre-release с SHA256SUMS.sig + HK и RU; образ ghcr.io/loginbycall/anypc-server:v0.1.10, amd64+arm64); v0.1.9 — тот же день, основной пакет. Теги v0.1.6, v0.1.8 — без релиза. Хабы: hk.anypc.org (170.168.24.45, + лендинг anypc.org/www), ru.anypc.org (170.168.5.86); us.anypc.org (netcup, почтовый) — только coturn. Доступ — см. память.
 - Программы: AnyPC.exe (FFmpeg качается при первом запуске, SHA-256 закреплён), AnyPC-linux-amd64, AnyPC-macos (x86_64+arm64, ad-hoc), anypc-server, install.sh.
 
 ## Лог решений
