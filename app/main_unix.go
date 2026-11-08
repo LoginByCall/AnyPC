@@ -7,15 +7,19 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"html"
 	"io"
 	"io/fs"
 	"log"
 	"net"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -85,10 +89,40 @@ func main() {
 	url := "http://" + addr + "/?t=" + token
 	log.Printf("AnyPC запущен (%s), ID %s. Окно: %s", platformKind(), cfg.ID, url)
 	if !*noBrowser {
-		exec.Command(openCmd, url).Start()
+		if link, p, err := pageLink(filepath.Join(cfgDir, "AnyPC"), url); err != nil {
+			log.Print("ссылка для браузера: ", err)
+		} else {
+			exec.Command(openCmd, link).Start()
+			time.AfterFunc(time.Minute, func() { os.Remove(p) }) // браузер к этому времени уже прочитал
+			defer os.Remove(p)
+		}
 	}
 	run.start(cfg.Server)
 	run.wait()
+}
+
+// pageLink — файл в dir (права 0600) с переадресацией на url с токеном; возвращает file://-ссылку на него
+// и путь. Аргументы xdg-open/open видны всем пользователям ПК (/proc/*/cmdline), поэтому токена в них нет.
+func pageLink(dir, url string) (link, path string, err error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", "", err
+	}
+	f, err := os.CreateTemp(dir, "open-*.html")
+	if err != nil {
+		return "", "", err
+	}
+	defer f.Close()
+	if err := f.Chmod(0o600); err != nil {
+		os.Remove(f.Name())
+		return "", "", err
+	}
+	u, _ := json.Marshal(url)
+	_, err = fmt.Fprintf(f, `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=%s"><script>location.replace(%s)</script>`+"\n", html.EscapeString(url), u)
+	if err != nil {
+		os.Remove(f.Name())
+		return "", "", err
+	}
+	return (&neturl.URL{Scheme: "file", Path: f.Name()}).String(), f.Name(), nil
 }
 
 // handler — интерфейс и API. Чужие страницы не могут ни прочитать токен, ни вызвать API:
@@ -130,7 +164,7 @@ func shimmed(server, token string) ([]byte, error) {
 	}
 	ws, _ := json.Marshal(server)
 	t, _ := json.Marshal(token)
-	shim := fmt.Sprintf(`<script>
+	js := fmt.Sprintf(`
 window.ANYPC = {ws: %s};
 (() => {
   const T = %s;
@@ -140,9 +174,11 @@ window.ANYPC = {ws: %s};
   window.fullscreen = on => on ? document.documentElement.requestFullscreen().then(() => navigator.keyboard?.lock()).catch(() => {})
                                : document.fullscreenElement && document.exitFullscreen();
 })();
-</script>
-<script>`, ws, t)
-	return []byte(strings.Replace(string(b), "<script>", shim, 1)), nil
+`, ws, t)
+	// CSP страницы пускает встроенные скрипты только по хэшу: добавить хэш этого (токен в нём свой на каждый запуск)
+	sum := sha256.Sum256([]byte(js))
+	page := strings.Replace(string(b), "script-src 'self'", "script-src 'self' 'sha256-"+base64.StdEncoding.EncodeToString(sum[:])+"'", 1)
+	return []byte(strings.Replace(page, "<script>", "<script>"+js+"</script>\n<script>", 1)), nil
 }
 
 func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *agent.Agent, run *runner, info func() map[string]any, fl *files) {

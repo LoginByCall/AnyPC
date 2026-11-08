@@ -1,6 +1,7 @@
 # Свой узел AnyPC в Docker. Рядом — файл .env:
 #   DOMAIN=my.example.com        (запись A → IP этого сервера)
 #   PUBLIC_IP=203.0.113.10       (публичный IP сервера: ретранслятору запрещено слать на него — иначе relay достаёт до служб хоста)
+#   PUBLIC_IP6=2001:db8::10      (если у сервера есть IPv6 — тоже запрещается; install.sh запрещает все адреса hostname -I)
 #   TURN_SECRET=...              (openssl rand -base64 32)
 # Запуск: docker compose up -d. Обновление: docker compose pull && docker compose up -d.
 # network_mode: host — у ретранслятора 16 тысяч UDP-портов, проброс портов Docker для этого не годится.
@@ -18,7 +19,7 @@ services:
     volumes:
       - anypc:/data
   coturn:
-    image: coturn/coturn:latest
+    image: coturn/coturn:4.18.0 # закреплено: latest может принести несовместимые ключи (как no-dtls/no-cli в 4.18)
     network_mode: host
     restart: unless-stopped
     # те же настройки, что ставит install.sh (deploy/setup.sh); без no-dtls и no-cli — в coturn 4.18 их нет (CLI выключен по умолчанию), и с ними он не стартует
@@ -35,7 +36,7 @@ services:
       - --no-tls
       - --no-multicast-peers
       - --user-quota=4
-      - --total-quota=40
+      - --total-quota=1000
       - --no-tcp-relay
       - --max-bps=1250000
       - --denied-peer-ip=0.0.0.0-0.255.255.255
@@ -53,5 +54,6 @@ services:
       - --denied-peer-ip=198.18.0.0-198.19.255.255
       - --denied-peer-ip=240.0.0.0-255.255.255.255
       - --denied-peer-ip=${PUBLIC_IP:?}
+      - --denied-peer-ip=${PUBLIC_IP6:-::1}
 volumes:
   anypc:
