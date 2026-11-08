@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -61,6 +62,17 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   console.log('reads=' + await ev("reads"));
   await ev("clipGranted = true; 1");
   await sleep(2500);
+  // Ctrl+V в окне: буфер из события paste (без кнопки Firefox) уходит раньше V; Ctrl, отпущенный до paste, — после V
+  await ev("clipGranted = false; clipBtn(); window.seq = []; const cs = ctl.send.bind(ctl), ds = dc.send.bind(dc);" +
+    "ctl.send = m => (seq.push('clip:' + JSON.parse(m).text), cs(m)); dc.send = m => { const o = JSON.parse(m); if (o.t === 'k') seq.push(o.c + (o.d ? '↓' : '↑')); ds(m); }; 1");
+  await ev("const k = (t, c) => document.dispatchEvent(new KeyboardEvent(t, { code: c, ctrlKey: true, bubbles: true }));" +
+    "k('keydown', 'ControlLeft'); k('keydown', 'KeyV'); k('keyup', 'ControlLeft'); const dt = new DataTransfer(); dt.setData('text/plain', 'pasted-text');" +
+    "document.activeElement.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })); k('keyup', 'KeyV'); 1");
+  await sleep(600);
+  console.log('paste=' + await ev("seq.join(',')") + '|btn=' + await ev("!document.getElementById('clipbtn').classList.contains('hidden')"));
+  await ev("seq = []; document.getElementById('clipbtn').click(); 1");
+  await sleep(300);
+  console.log('clipbtn=' + await ev("seq.join(',')"));
   await ev("sendFile(new File([new Uint8Array(300000).map((_, i) => i % 251)], 'browser.bin'))");
   let x = '';
   for (let i = 0; i < 75 && !/[✓✗]/.test(x); i++) { await sleep(200); x = await ev("document.getElementById('xfers').textContent"); }
@@ -103,8 +115,9 @@ func TestBrowserClient(t *testing.T) {
 	defer srv.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	var gotClip atomic.Value
-	setClip = func(s string) error { gotClip.Store(s); return nil }
+	var clipMu sync.Mutex
+	var clips []string
+	setClip = func(s string) error { clipMu.Lock(); clips = append(clips, s); clipMu.Unlock(); return nil }
 	defer func() { setClip = SetClipText }()
 	a := newAgent(hub2, "123456789", nil)
 	a.FileDir = t.TempDir() // не в настоящие «Загрузки»
@@ -151,8 +164,17 @@ func TestBrowserClient(t *testing.T) {
 	if !twcc.Load() {
 		t.Error("Chrome не прислал TWCC — оценка полосы GCC не работает")
 	}
-	if v, _ := gotClip.Load().(string); v != "from-browser" {
-		t.Errorf("буфер браузера не дошёл до хоста без события focus: %q", v)
+	clipMu.Lock()
+	hostClips := strings.Join(clips, "|")
+	clipMu.Unlock()
+	if !strings.Contains(hostClips, "from-browser") || !strings.Contains(hostClips, "pasted-text") {
+		t.Errorf("буфер браузера на хосте: %q — ждали и опрос (from-browser), и Ctrl+V (pasted-text)", hostClips)
+	}
+	if !strings.Contains(string(out), "paste=ControlLeft↓,clip:pasted-text,KeyV↓,ControlLeft↑,KeyV↑|btn=true") {
+		t.Error("Ctrl+V: буфер должен уйти раньше V, а Ctrl отпуститься после V; кнопка «Передать буфер» видна без разрешения")
+	}
+	if !strings.Contains(string(out), "clipbtn=clip:from-browser") {
+		t.Error("кнопка «Передать буфер» не отправила буфер")
 	}
 	got, err := os.ReadFile(filepath.Join(a.FileDir, "browser.bin")) // отправка файла из браузера (докачка-протокол)
 	if err != nil || len(got) != 300000 || got[251] != 0 || got[252] != 1 {
