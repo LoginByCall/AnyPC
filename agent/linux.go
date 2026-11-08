@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -44,6 +45,10 @@ func getDesktop() (desktop, error) {
 	defer deskMu.Unlock()
 	if desk != nil && desk.alive() {
 		return desk, nil
+	}
+	if p, ok := desk.(*portal); ok { // закрытый сеанс: dbus-соединение и fd PipeWire иначе висят до выхода
+		p.conn.Close()
+		syscall.Close(p.fd)
 	}
 	var err error
 	if Wayland {

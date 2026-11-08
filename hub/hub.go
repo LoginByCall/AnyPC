@@ -3,6 +3,7 @@
 package hub
 
 import (
+	"cmp"
 	"context"
 	"crypto/ed25519"
 	"crypto/hmac"
@@ -12,8 +13,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"net"
 	"net/http"
+	"net/netip"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,17 +46,25 @@ type ICEServer struct {
 const TurnTTL = 24 * time.Hour
 
 type Hub struct {
-	TurnHosts  []string // STUN/TURN по порядку предпочтения (общий TurnSecret); пусто — без них (локальная отладка)
-	TurnSecret string   // static-auth-secret coturn; "" — только STUN
-	Keys       string   // файл привязок ID → ключ хоста (JSON); "" — только в памяти
+	TurnHosts  []string      // STUN/TURN по порядку предпочтения (общий TurnSecret); пусто — без них (локальная отладка)
+	TurnSecret string        // static-auth-secret coturn; "" — только STUN
+	Keys       string        // файл привязок ID → ключ хоста (JSON); "" — только в памяти
+	Ping       time.Duration // проверка живости соединений; 0 — PingEvery
 
 	mu    sync.Mutex
 	peers map[string]*websocket.Conn
 	keys  map[string]string // ID → публичный ключ (base64url)
+	news  map[string]int    // новых привязок с IP за текущий час
+	newAt time.Time
 }
 
+// NewPerHour — новых ID с одного IP в час. Привязка вечная, файл переписывается целиком:
+// без лимита поток регистраций случайных ID раздувает hosts.json и память хаба.
+// ponytail: файл O(n) на каждую новую привязку — дозапись, если узел вырастет до сотен тысяч хостов.
+const NewPerHour = 20
+
 // bind закрепляет ID за ключом при первой регистрации (REQ-F-01); чужой ключ для занятого ID — отказ.
-func (h *Hub) bind(id, key string) bool {
+func (h *Hub) bind(id, key, ip string) string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.keys == nil {
@@ -62,8 +74,18 @@ func (h *Hub) bind(id, key string) bool {
 		}
 	}
 	if k, ok := h.keys[id]; ok {
-		return k == key
+		if k != key {
+			return "id_taken"
+		}
+		return ""
 	}
+	if time.Since(h.newAt) > time.Hour {
+		h.news, h.newAt = map[string]int{}, time.Now()
+	}
+	if h.news[ip] >= NewPerHour {
+		return "limit"
+	}
+	h.news[ip]++
 	h.keys[id] = key
 	if h.Keys != "" {
 		b, _ := json.Marshal(h.keys)
@@ -72,11 +94,11 @@ func (h *Hub) bind(id, key string) bool {
 			os.Rename(tmp, h.Keys)
 		}
 	}
-	return true
+	return ""
 }
 
 // register: вызов → подпись ключом хоста (proof of possession), затем привязка ID.
-func (h *Hub) register(ctx context.Context, c *websocket.Conn, id string, pub ed25519.PublicKey) string {
+func (h *Hub) register(ctx context.Context, c *websocket.Conn, id, ip string, pub ed25519.PublicKey) string {
 	nb := make([]byte, 32)
 	rand.Read(nb)
 	nonce := base64.RawURLEncoding.EncodeToString(nb)
@@ -90,10 +112,28 @@ func (h *Hub) register(ctx context.Context, c *websocket.Conn, id string, pub ed
 		!ed25519.Verify(pub, pake.RegisterMsg(id, nonce), reg.Sig) {
 		return "bad_sig"
 	}
-	if !h.bind(id, base64.RawURLEncoding.EncodeToString(pub)) {
-		return "id_taken"
+	return h.bind(id, base64.RawURLEncoding.EncodeToString(pub), ip)
+}
+
+// remoteIP — адрес для лимита регистраций. За обратным прокси на loopback (README: -addr 127.0.0.1:8080) —
+// последний X-Forwarded-For (его дописал наш прокси); IPv6 — по /64 (внутри префикса адресов без счёта).
+func remoteIP(r *http.Request) string {
+	h, _, _ := net.SplitHostPort(r.RemoteAddr)
+	ip, err := netip.ParseAddr(h)
+	if err != nil {
+		return h
 	}
-	return ""
+	if xff := r.Header.Values("X-Forwarded-For"); ip.IsLoopback() && len(xff) > 0 {
+		all := strings.Split(xff[len(xff)-1], ",")
+		if a, err := netip.ParseAddr(strings.TrimSpace(all[len(all)-1])); err == nil {
+			ip = a
+		}
+	}
+	if ip = ip.Unmap(); ip.Is6() {
+		p, _ := ip.Prefix(64)
+		return p.String()
+	}
+	return ip.String()
 }
 
 // IsHostID: ID хоста — 9 цифр, первая ненулевая. Клиенты получают "c…".
@@ -130,6 +170,32 @@ func send(ctx context.Context, c *websocket.Conn, m Msg) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	_ = wsjson.Write(ctx, c, m)
+}
+
+// PingEvery — проверка живости WebSocket. Без неё обрыв (смена сети, NAT забыл маппинг) виден только
+// по TCP keepalive через минуты: хост «в сети», а клиенты получают not_found, и хаб держит мёртвую запись
+// (хост после переподключения — id_taken).
+const PingEvery = 30 * time.Second
+
+// Keepalive пингует c раз в every, пока жив ctx; нет ответа за every/3 — закрывает c (у читателя — ошибка чтения).
+// Pong обрабатывается только при чтении: вызывать, когда c кто-то читает.
+func Keepalive(ctx context.Context, c *websocket.Conn, every time.Duration) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		pctx, cancel := context.WithTimeout(ctx, every/3)
+		err := c.Ping(pctx)
+		cancel()
+		if err != nil {
+			c.CloseNow()
+			return
+		}
+	}
 }
 
 func (h *Hub) ICEServers(id string) []ICEServer {
@@ -200,7 +266,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if id == "" {
 		id = "c" + RandDigits(12)
-	} else if e := h.register(ctx, c, id, pub); e != "" {
+	} else if e := h.register(ctx, c, id, remoteIP(r), pub); e != "" {
 		send(ctx, c, errMsg(e))
 		return
 	}
@@ -209,6 +275,9 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer h.del(id, c)
+	kctx, stop := context.WithCancel(ctx)
+	defer stop()
+	go Keepalive(kctx, c, cmp.Or(h.Ping, PingEvery))
 
 	hello, _ := json.Marshal(map[string]any{"id": id, "ice": h.ICEServers(id)})
 	send(ctx, c, Msg{V: 1, Type: "hello", Data: hello})

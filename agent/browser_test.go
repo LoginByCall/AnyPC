@@ -213,7 +213,7 @@ func TestBrowserFakeHost(t *testing.T) {
 	defer srv.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
-	go fakeHost(t, ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws", "123456789")
+	go fakeHost(t, ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws", "123456789", nil)
 	out := string(runCDP(t, ctx, chrome, cdpFake, srv.URL+"/"))
 	if !strings.Contains(out, "could not be verified") || !strings.Contains(out, "|false\n") {
 		t.Error("«ok» без CPace принят: ждали ошибку проверки хоста и без сессии")
@@ -224,7 +224,8 @@ func TestBrowserFakeHost(t *testing.T) {
 }
 
 // fakeHost — хост без пароля: регистрируется, на connect шлёт offer, в канале auth сразу «ok» со своей подписью.
-func fakeHost(t *testing.T, ctx context.Context, url, id string) {
+// С guesses — вместо «ok» шлёт «a» на каждую догадку пароля и пишет в guesses, сколько «b» вернул клиент.
+func fakeHost(t *testing.T, ctx context.Context, url, id string, guesses chan<- int) {
 	_, key, _ := ed25519.GenerateKey(nil)
 	pub := key.Public().(ed25519.PublicKey)
 	c, _, err := websocket.Dial(ctx, url+"?host="+id+"&key="+base64.RawURLEncoding.EncodeToString(pub), nil)
@@ -251,6 +252,23 @@ func fakeHost(t *testing.T, ctx context.Context, url, id string) {
 			ctl, _ := pc.CreateDataChannel("ctl", nil)
 			ctl.OnOpen(func() { ctl.SendText(`{"t":"clip","text":"evil"}`) })
 			auth.OnOpen(func() {
+				if guesses != nil {
+					var n atomic.Int32
+					auth.OnMessage(func(m webrtc.DataChannelMessage) {
+						if strings.Contains(string(m.Data), `"t":"b"`) {
+							n.Add(1)
+						}
+					})
+					fpH, fpC := pake.Fingerprint(pc.LocalDescription().SDP), pake.Fingerprint(pc.RemoteDescription().SDP)
+					for _, g := range []string{"guess1", "guess2", "guess3"} {
+						salt := []byte("0123456789abcdef")
+						msgA, _, _ := pake.HostStart(pake.KDF(g, salt), id, fpC, fpH)
+						d, _ := json.Marshal(authMsg{T: "a", Salt: salt, Msg: msgA})
+						auth.SendText(string(d))
+					}
+					time.AfterFunc(4*time.Second, func() { guesses <- int(n.Load()) })
+					return
+				}
 				fpH, fpC := pake.Fingerprint(pc.LocalDescription().SDP), pake.Fingerprint(pc.RemoteDescription().SDP)
 				sig := base64.StdEncoding.EncodeToString(pake.HostSign(key, id, fpC, fpH))
 				auth.SendText(`{"t":"ok","conf":"","pub":"` + base64.StdEncoding.EncodeToString(pub) + `","sig":"` + sig + `"}`)
@@ -277,6 +295,42 @@ func fakeHost(t *testing.T, ctx context.Context, url, id string) {
 			json.Unmarshal(m.Data, &ci)
 			pc.AddICECandidate(ci)
 		}
+	}
+}
+
+// TestBrowserGuessHost — поддельный хост (хаб) шлёт несколько «a» с разными догадками пароля:
+// клиент отвечает только на первое, на повтор рвёт вход — иначе перебор пароля мимо блокировки хоста.
+func TestBrowserGuessHost(t *testing.T) {
+	chrome, err := exec.LookPath("google-chrome")
+	if err != nil {
+		t.Skip("нет google-chrome")
+	}
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("нет node")
+	}
+	if _, err := fs.Stat(ui.FS, "pake.wasm"); err != nil {
+		t.Skip("нет ui/pake.wasm — собрать через build.sh")
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/ws", &hub.Hub{})
+	mux.Handle("/", http.FileServer(http.FS(ui.FS)))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+	guesses := make(chan int, 1)
+	go fakeHost(t, ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws", "123456789", guesses)
+	out := string(runCDP(t, ctx, chrome, cdpFake, srv.URL+"/"))
+	select {
+	case n := <-guesses:
+		if n > 1 {
+			t.Errorf("клиент ответил на %d догадок пароля из 3 — перебор возможен", n)
+		}
+	case <-ctx.Done():
+		t.Fatal("поддельный хост не дождался ответов")
+	}
+	if !strings.Contains(out, "could not be verified") || !strings.Contains(out, "|false\n") {
+		t.Errorf("повторный обмен CPace не оборвал вход: %s", out)
 	}
 }
 

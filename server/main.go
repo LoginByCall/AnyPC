@@ -79,15 +79,22 @@ func main() {
 	mux := newMux(h, list(*siteHost), *dl, h.TurnHosts, list(*hubs))
 	if *domain == "" {
 		log.Println("HTTP", *addr)
-		log.Fatal(http.ListenAndServe(*addr, mux))
+		log.Fatal(serve(*addr, mux).ListenAndServe())
 	}
 	hosts := list(*domain)
 	hosts = append(hosts, list(*siteHost)...)
 	m := &autocert.Manager{Prompt: autocert.AcceptTOS, HostPolicy: autocert.HostWhitelist(hosts...), Cache: autocert.DirCache(*certs)}
-	go func() { log.Fatal(http.ListenAndServe(":80", m.HTTPHandler(nil))) }()
-	srv := &http.Server{Addr: ":443", Handler: mux, TLSConfig: m.TLSConfig(), ReadHeaderTimeout: 10 * time.Second}
+	go func() { log.Fatal(serve(":80", m.HTTPHandler(nil)).ListenAndServe()) }()
+	srv := serve(":443", mux)
+	srv.TLSConfig = m.TLSConfig()
 	log.Println("AnyPC server", version, "HTTPS", hosts)
 	log.Fatal(srv.ListenAndServeTLS("", ""))
+}
+
+// serve — сервер с таймаутами: без них простаивающие и медленные (slowloris) соединения копятся до OOM на VPS 1 ГБ.
+// WebSocket после Upgrade таймауты http.Server не трогают — его живость проверяет hub.Keepalive.
+func serve(addr string, h http.Handler) *http.Server {
+	return &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}
 }
 
 // list — "a, b,,c,a" → [a b c]: пустые и повторы отбрасываются (повторный запуск sed по флагам дал дубль, 2026-11-06).

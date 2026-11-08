@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,6 +32,7 @@ import (
 	"github.com/pion/interceptor"
 	"github.com/pion/interceptor/pkg/cc"
 	"github.com/pion/interceptor/pkg/gcc"
+	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
 	"github.com/pion/webrtc/v4/pkg/media/h264reader"
@@ -43,7 +45,6 @@ type Agent struct {
 	ID      string                       // 9 цифр
 	Secret  func() (salt, secret []byte) // соль и KDF(пароль, соль) из настроек; пустой secret — пароль не задан
 	Key     ed25519.PrivateKey           // ключ хоста: за ним закреплён ID (REQ-F-01), им хост подтверждает себя клиенту
-	FFmpeg  string                       // путь к ffmpeg
 	FF      []string                     // аргументы ffmpeg, см. FFArgs
 	FPS     int
 	Stderr  io.Writer                                                        // вывод ffmpeg; nil — os.Stderr
@@ -55,7 +56,8 @@ type Agent struct {
 
 	mu        sync.Mutex
 	ice       []webrtc.ICEServer
-	rtt       map[string]int // мс от хоста до каждого TURN (замер при каждом hello)
+	rtt       map[string]int       // мс от хоста до каждого TURN (замер по hello, не чаще measureEvery)
+	rttAt     map[string]time.Time // когда мерили этот набор TURN
 	sess      *session
 	fails     int
 	lockUntil time.Time
@@ -231,6 +233,51 @@ func (a *Agent) send(ctx context.Context, c *websocket.Conn, typ, to string, v a
 	_ = wsjson.Write(ctx, c, hub.Msg{V: 1, Type: typ, To: to, Data: d})
 }
 
+const measureEvery = time.Minute
+
+// measureDue — пора ли мерить набор TURN hs (и отметка, что замер начат).
+func (a *Agent) measureDue(hs []string) bool {
+	k := strings.Join(hs, " ")
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if time.Since(a.rttAt[k]) < measureEvery {
+		return false
+	}
+	if a.rttAt == nil {
+		a.rttAt = map[string]time.Time{}
+	}
+	a.rttAt[k] = time.Now()
+	return true
+}
+
+// readRTCP — до закрытия sender: RTCP нужно вычитывать, иначе не работают интерсепторы (NACK, TWCC → GCC);
+// отчёты о потерях — битрейту.
+func readRTCP(sender *webrtc.RTPSender, on func([]rtcp.Packet)) {
+	b := make([]byte, 1500) // = receiveMTU pion
+	for {
+		n, _, err := sender.Read(b)
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) {
+			return
+		}
+		if err != nil { // битый RTCP/TWCC от клиента: интерсепторы отдают ошибку разбора из Read — пропустить,
+			time.Sleep(10 * time.Millisecond) // а не терять NACK и битрейт до конца сессии; пауза — от 100 % CPU на устойчивой ошибке
+			continue
+		}
+		if pkts, err := rtcp.Unmarshal(b[:n]); err == nil {
+			on(pkts)
+		}
+	}
+}
+
+// release — освободить слот сессии, если он ещё за s.
+func (a *Agent) release(s *session) {
+	a.mu.Lock()
+	if a.sess == s {
+		a.sess = nil
+	}
+	a.mu.Unlock()
+}
+
 // proxy — прокси из окружения (HTTPS_PROXY…); переменная — для теста.
 var proxy = http.ProxyFromEnvironment
 
@@ -258,6 +305,9 @@ func (a *Agent) run(ctx context.Context, server string) error {
 	}
 	defer c.CloseNow()
 	c.SetReadLimit(64 << 10)
+	kctx, stop := context.WithCancel(ctx)
+	defer stop()
+	go hub.Keepalive(kctx, c, hub.PingEvery) // обрыв по смене сети — переподключение за ~40 с, а не по TCP keepalive через минуты
 	for {
 		var m hub.Msg
 		if err := wsjson.Read(ctx, c, &m); err != nil {
@@ -273,17 +323,16 @@ func (a *Agent) run(ctx context.Context, server string) error {
 		case "challenge": // REQ-F-01: доказать серверу владение ключом, за которым закреплён ID
 			var nonce string
 			json.Unmarshal(m.Data, &nonce)
-			d, _ := json.Marshal(map[string][]byte{"sig": ed25519.Sign(a.Key, pake.RegisterMsg(a.ID, nonce))})
-			wctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			wsjson.Write(wctx, c, hub.Msg{V: 1, Type: "register", Data: d})
-			cancel()
+			a.send(ctx, c, "register", "", map[string][]byte{"sig": ed25519.Sign(a.Key, pake.RegisterMsg(a.ID, nonce))})
 		case "hello":
 			var d struct{ ICE []webrtc.ICEServer }
 			json.Unmarshal(m.Data, &d)
 			a.mu.Lock()
 			a.ice = d.ICE
 			a.mu.Unlock()
-			go func(hs []string) { r := measureTURN(hs); a.mu.Lock(); a.rtt = r; a.mu.Unlock() }(turnHosts(d.ICE))
+			if hs := turnHosts(d.ICE); a.measureDue(hs) { // hello приходит перед каждым connect — без лимита спам connect плодит пробы
+				go func() { r := measureTURN(hs); a.mu.Lock(); a.rtt = r; a.mu.Unlock() }()
+			}
 			log.Printf("зарегистрирован как %s, ICE-серверов: %d", a.ID, len(d.ICE))
 			a.setOnline(server, true)
 		case "error":
@@ -291,6 +340,8 @@ func (a *Agent) run(ctx context.Context, server string) error {
 			switch string(m.Data) {
 			case `"id_taken"`:
 				return errors.New("ID занят: в сети другой экземпляр или ID закреплён за другим ключом")
+			case `"limit"`:
+				return errors.New("хаб: с этого адреса за час зарегистрировано слишком много новых ID — повтор позже")
 			case `"bad_sig"`:
 				return errors.New("сервер не принял подпись ключа хоста")
 			}
@@ -300,6 +351,7 @@ func (a *Agent) run(ctx context.Context, server string) error {
 			if s == nil || s.cid != m.From || s.conn != c { // ответ клиента — только по хабу его сессии
 				continue
 			}
+			var err error
 			switch m.Type {
 			case "answer":
 				var sd webrtc.SessionDescription
@@ -313,11 +365,7 @@ func (a *Agent) run(ctx context.Context, server string) error {
 				}
 			case "bye":
 				log.Printf("клиент %s завершил сессию", s.cid)
-				a.mu.Lock() // свободен сразу: колбэк pion о закрытии асинхронный, а следующий connect уже в пути
-				if a.sess == s {
-					a.sess = nil
-				}
-				a.mu.Unlock()
+				a.release(s) // свободен сразу: колбэк pion о закрытии асинхронный, а следующий connect уже в пути
 				s.pc.Close()
 			}
 			if err != nil {
@@ -330,7 +378,15 @@ func (a *Agent) run(ctx context.Context, server string) error {
 // onConnect: блокировка перебора (REQ-S-04), занятость, наличие пароля. Сам пароль проверяется
 // позже, по CPace внутри DTLS (REQ-S-02) — через сервер он не идёт.
 // ponytail: блокировка общая на хост, не по клиенту — злоумышленник со знанием ID может мешать входу.
+// clientID — ID клиента от хаба (hub.go: "c" + 12 цифр). Другое — подлог хаба: cid идёт в окно «Разрешить»
+// и в плашку, и перевод строки в нём подделал бы строку «IP:».
+var clientID = regexp.MustCompile(`^c[0-9]{12}$`)
+
 func (a *Agent) onConnect(ctx context.Context, c *websocket.Conn, m hub.Msg) {
+	if !clientID.MatchString(m.From) {
+		log.Printf("connect с неверным ID клиента %q — пропущен", m.From)
+		return
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	switch {
@@ -450,18 +506,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 		default:
 		}
 	}
-	go func() { // RTCP нужно вычитывать, иначе не работают интерсепторы; отчёты о потерях — битрейту
-		for {
-			pkts, _, err := sender.ReadRTCP()
-			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) {
-				return
-			}
-			if err != nil { // битый RTCP/TWCC от клиента — пропустить, а не терять NACK и битрейт до конца сессии
-				continue
-			}
-			s.onRTCP(pkts)
-		}
-	}()
+	go readRTCP(sender, s.onRTCP)
 	s.mon = primaryIndex(s.mons)
 	sctx, cancel := context.WithCancel(ctx)
 	fail = func(err error) (*session, error) { cancel(); pc.Close(); return nil, err }
@@ -579,11 +624,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 				}
 				s.mu.Unlock()
 				go pc.Close()
-				a.mu.Lock()
-				if a.sess == s {
-					a.sess = nil
-				}
-				a.mu.Unlock()
+				a.release(s)
 				a.notify()
 			})
 		}
@@ -647,11 +688,8 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		a.authResult(s.cid, err == nil)
 		reject := func(t string) {
 			send(authMsg{T: t})
-			a.mu.Lock() // освободить сразу: повтор не должен получить «занят»
-			if a.sess == s {
-				a.sess = nil
-			}
-			a.mu.Unlock()
+			a.release(s) // освободить сразу: повтор не должен получить «занят»
+
 			time.AfterFunc(500*time.Millisecond, func() { s.pc.Close() }) // дать дойти ответу
 		}
 		if err != nil {
@@ -773,11 +811,7 @@ func (a *Agent) streamOnce(ctx context.Context, s *session, track *webrtc.TrackL
 			return
 		}
 	} else {
-		bin := a.FFmpeg
-		if bin == "" {
-			bin = "ffmpeg"
-		}
-		cmd = exec.CommandContext(ctx, bin, a.FF...)
+		cmd = exec.CommandContext(ctx, "ffmpeg", a.FF...)
 	}
 	hideWindow(cmd)
 	cmd.Stderr = a.Stderr
@@ -792,7 +826,7 @@ func (a *Agent) streamOnce(ctx context.Context, s *session, track *webrtc.TrackL
 		log.Printf("ffmpeg: %v", err)
 		return
 	}
-	defer cmd.Wait()
+	defer func() { cancel(); cmd.Wait() }() // сначала убить: при выходе по ошибке записи ffmpeg жив, а пайп никто не читает
 	r, err := h264reader.NewReader(out)
 	if err != nil {
 		log.Printf("h264: %v", err)

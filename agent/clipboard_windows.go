@@ -20,6 +20,7 @@ var (
 	pGLock       = kernel32.NewProc("GlobalLock")
 	pGUnlock     = kernel32.NewProc("GlobalUnlock")
 	pGFree       = kernel32.NewProc("GlobalFree")
+	pGSize       = kernel32.NewProc("GlobalSize")
 )
 
 const cfUnicodeText = 13
@@ -56,8 +57,9 @@ func ClipText() (string, error) {
 		return "", errors.New("GlobalLock")
 	}
 	defer pGUnlock.Call(h)
-	n := 0
-	for n < ClipMax+1 && *(*uint16)(unsafe.Add(ptr(p), n*2)) != 0 {
+	size, _, _ := pGSize.Call(h) // текст без NUL (его кладёт любое приложение) — не читать за блоком
+	n, lim := 0, min(ClipMax+1, int(size/2))
+	for n < lim && *(*uint16)(unsafe.Add(ptr(p), n*2)) != 0 {
 		n++
 	}
 	return syscall.UTF16ToString(unsafe.Slice((*uint16)(ptr(p)), n)), nil

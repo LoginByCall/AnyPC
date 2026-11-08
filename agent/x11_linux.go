@@ -111,21 +111,13 @@ func (x *x11) input(e event, m *Monitor) error {
 		px, py := monPoint(m, e.x, e.y)
 		x.fake(xMotion, 0, int16(px), int16(py))
 	case f&mWheel != 0: // кнопки 4/5 — щелчок вверх/вниз (WHEEL_DELTA = 120)
-		x.wheelV += e.data
-		for ; x.wheelV >= 120; x.wheelV -= 120 {
-			x.click(4, 1)
-		}
-		for ; x.wheelV <= -120; x.wheelV += 120 {
-			x.click(5, 1)
-		}
+		n := notches(&x.wheelV, e.data)
+		x.click(4, n)
+		x.click(5, -n)
 	case f&mHWheel != 0: // 6/7 — влево/вправо
-		x.wheelH += e.data
-		for ; x.wheelH >= 120; x.wheelH -= 120 {
-			x.click(7, 1)
-		}
-		for ; x.wheelH <= -120; x.wheelH += 120 {
-			x.click(6, 1)
-		}
+		n := notches(&x.wheelH, e.data)
+		x.click(7, n)
+		x.click(6, -n)
 	default:
 		for i, b := range []byte{1, 2, 3} { // левая, средняя, правая — как btnFlags
 			if f&btnFlags[i][1] != 0 {

@@ -26,6 +26,12 @@ func TestSafeName(t *testing.T) {
 		"name. . ":            "name",
 		"":                    "_",
 		"a\x01b":              "a_b",
+		"COM9.log":            "_COM9.log",
+		"lpt¹":                "_lpt¹",
+		"CONOUT$":             "_CONOUT$",
+		"con .txt":            "_con .txt",
+		"COM10.txt":           "COM10.txt",
+		"фото\u202egpj.exe":   "фото_gpj.exe",
 	} {
 		if got := safeName(in); got != want {
 			t.Errorf("safeName(%q) = %q, ждали %q", in, got, want)
