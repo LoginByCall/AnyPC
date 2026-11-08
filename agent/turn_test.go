@@ -99,3 +99,13 @@ func TestNotches(t *testing.T) {
 		}
 	}
 }
+
+// TestUserClose — закрытие плашки старой сессии не рвёт текущую (раньше плашка звала a.Disconnect без разбора).
+func TestUserClose(t *testing.T) {
+	old, cur := &session{cid: "c000000000001"}, &session{cid: "c000000000002"} // у cur нет conn: Disconnect упал бы
+	a := &Agent{sess: cur}
+	a.userClose(old)()
+	if a.sess != cur {
+		t.Fatal("текущая сессия задета")
+	}
+}

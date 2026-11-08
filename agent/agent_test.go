@@ -72,7 +72,12 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	sessions := make(chan string, 10)
-	var asked, denied atomic.Bool
+	var asked, denied, gotOK, gotMons atomic.Bool
+	defer func() { // каналы ctl и auth не упорядочены между собой — проверяем итог: без входа списка нет
+		if !gotOK.Load() && gotMons.Load() {
+			t.Error("список мониторов ушёл без входа")
+		}
+	}()
 	a := newAgent(url, id, ff)
 	if e2eAgent != nil {
 		e2eAgent(a)
@@ -139,6 +144,9 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 			dc.OnMessage(func(m webrtc.DataChannelMessage) {
 				var cm ctlMsg
 				if json.Unmarshal(m.Data, &cm) == nil {
+					if cm.T == "monitors" {
+						gotMons.Store(true)
+					}
 					ctlMsgs <- cm
 				}
 			})
@@ -168,6 +176,7 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 					if !sigOK {
 						t.Error("подпись хоста не прошла проверку")
 					}
+					gotOK.Store(true)
 					authed <- bytes.Equal(am.Conf, wantConf) && sigOK
 				case "ask":
 					asked.Store(true)
