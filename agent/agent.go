@@ -1053,8 +1053,8 @@ func (a *Agent) streamOnce(ctx context.Context, s *session, track *webrtc.TrackL
 	s.capCancel, s.capStart = cancel, time.Now()
 	c := Cap{Mon: s.mon, Kbps: s.rate.cur, FPS: s.rate.fps(), Video: s.rate.video, Cursor: cursorInfo == nil, VP9: s.vp9}
 	s.mu.Unlock()
-	if c.FPS <= 0 { // без адаптации (FF из тестов) — как задано
-		c.FPS = a.FPS
+	if c.FPS <= 0 || s.vp9 { // без адаптации (FF из тестов) — как задано; VP9: источник всегда на полной частоте,
+		c.FPS = a.FPS // до rate.fps() прореживает streamVP9 — иначе после перезапуска источник застревал на 5 к/с
 	}
 	var cmd *exec.Cmd
 	if a.Capture != nil {
