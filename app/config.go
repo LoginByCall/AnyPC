@@ -1,7 +1,6 @@
 package main
 
 import (
-	"anypc/agent"
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -20,7 +19,7 @@ import (
 type config struct {
 	ID      string            `json:"id"`
 	Server  string            `json:"server"`
-	Enc     string            `json:"enc"`     // libx264 | h264_nvenc | h264_qsv | h264_amf | h264_mf | vp9 (кодер в процессе, если собрано с ним)
+	Enc     string            `json:"enc"`     // кодер H.264 в ffmpeg: libx264 | h264_nvenc | h264_qsv | h264_amf | h264_mf (VP9 выбирает клиент — «Турбо»)
 	Bitrate string            `json:"bitrate"` // ffmpeg: 4M, 1500k…
 	Salt    []byte            `json:"salt,omitempty"`
 	Hash    []byte            `json:"hash,omitempty"`    // Argon2id (REQ-S-03); сам пароль не хранится
@@ -105,31 +104,6 @@ func (c *config) confirm() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.Confirm == nil || *c.Confirm
-}
-
-// setCodec — VP9 в процессе (true) или H.264 через ffmpeg (libx264; аппаратные h264_* правятся в файле вручную).
-func (c *config) setCodec(vp9 bool) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if vp9 {
-		c.Enc = "vp9"
-	} else if c.Enc == "vp9" {
-		c.Enc = "libx264"
-	}
-	return c.save()
-}
-
-// vp9 — кодер VP9 для новых сессий: выбран в настройках и есть в этой сборке.
-func (c *config) vp9() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.Enc == "vp9" && agent.VP9Built
-}
-
-func (c *config) enc() string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.Enc
 }
 
 func (c *config) setConfirm(on bool) error {

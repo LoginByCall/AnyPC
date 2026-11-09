@@ -97,7 +97,6 @@ func main() {
 		Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, Key: cfg.key(), FPS: 30, Stderr: logf, Trusted: cfg.trusted, Trust: cfg.trust,
 		Bitrate: agent.Kbps(cfg.Bitrate),
 		Confirm: func(cid, peer string) bool { return !cfg.confirm() || agent.AskAccept(cid, peer) },
-		VP9:     cfg.vp9,
 		Capture: func(ctx context.Context, c agent.Cap) (*exec.Cmd, error) { // выход DXGI c.Mon
 			ffMu.Lock()
 			ff := ff
@@ -114,7 +113,7 @@ func main() {
 		node, pub := cfg.node()
 		mu.Lock()
 		defer mu.Unlock()
-		return map[string]any{"id": cfg.ID, "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "version": version, "ffmpeg": ffSnap(&ffMu, &ffState), "update": update, "node": node, "nodePub": pub, "server": cfg.Server, "enc": cfg.enc(), "vp9Built": agent.VP9Built}
+		return map[string]any{"id": cfg.ID, "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "version": version, "ffmpeg": ffSnap(&ffMu, &ffState), "update": update, "node": node, "nodePub": pub, "server": cfg.Server}
 	}
 	go watchUpdates(func(v string) { mu.Lock(); update = v; mu.Unlock() }) // окно опрашивает hostInfo
 	a.OnState = func(on bool, s string) {
@@ -128,7 +127,6 @@ func main() {
 	w.Bind("openUpdate", func() { exec.Command("rundll32", "url.dll,FileProtocolHandler", updateSite).Start() }) // адрес фиксирован: странице не открыть произвольный
 	w.Bind("setPassword", cfg.setPassword)
 	w.Bind("setConfirm", cfg.setConfirm)
-	w.Bind("setCodec", cfg.setCodec)
 	run := &runner{a: a, ctx: ctx}
 	w.Bind("setNode", func(node string, public bool) (string, error) { return setNode(cfg, run, node, public) })
 	w.Bind("hostDisconnect", a.Disconnect)
