@@ -49,10 +49,13 @@ h264reader добавляет кадр задержки. Кодер в проц�
 - [2026-11-09] NOTIFY — локальная сборка libvpx/nasm/zig заблокирована классификатором (внешний код) — сборку библиотек запускает владелец (deploy/libvpx.sh).
 
 ## Верификация
-- V0 ✓ vet linux/windows без тега; vet -tags vp9 с заголовками libvpx ✓ (линковки нет). V1 ✓ TestY4M, rate, FFArgs. V1 TestVP9/TestE2EVP9 — ЖДУТ libvpx. V2/V3 — нет.
+- V0 ✓ vet linux/windows без тега; vet -tags vp9 с заголовками ✓; Мак: vet -tags vp9 ✓, universal-бинарник x86_64+arm64 с VP9 собран (2026-11-09).
+- V1 ✓ TestY4M, rate, FFArgs; Мак: TestVP9 ✓ (ключевой 15 КБ, далее 40–150 байт на статике), TestE2EVP9 ✓ (клиент pion получил трек VP9 через ffmpeg Y4M → libvpx). Linux: ждёт libvpx (nasm/mingw у владельца).
+- V2 (Мак, Xeon E3-1270 v2 2012, 4 ядра): BenchmarkVP9 1080p шум+движение — 7,0 мс на кадр стеной при 4 потоках → 1080p30 с запасом; CPU в процентах ядер — замерить на Windows-хосте (V3).
+- V3 — нет.
 
 ## СЛЕДУЮЩИЙ ШАГ
-- Владелец: `sudo apt install nasm gcc-mingw-w64-x86-64` → `deploy/libvpx.sh` (linux-amd64 windows-amd64); на Маке в anypc-src: `deploy/libvpx.sh darwin-amd64 darwin-arm64`. Затем я: `go test -tags vp9`, замер CPU/задержки, выпуск с `enc: vp9` по умолчанию после V3.
+- Владелец: в терминале `sudo apt install -y nasm gcc-mingw-w64-x86-64`, затем `deploy/libvpx.sh` (linux-amd64 windows-amd64). Мак готов (darwin-arm64 собран, darwin-amd64 — Homebrew 1.17.0). Затем я: тесты -tags vp9 на Linux, сборка Windows, выпуск; владелец ставит `"enc": "vp9"` в config.json на Windows-хосте → V3 (CPU, задержка, картинка в Chrome/Edge/Firefox); после V3 — vp9 по умолчанию.
 
 ## Ожидает человека
 - Установка nasm и mingw (sudo) и запуск deploy/libvpx.sh — или разрешение мне запускать скачанные сборочные инструменты.
