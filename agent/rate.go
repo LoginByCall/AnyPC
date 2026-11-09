@@ -20,9 +20,10 @@ import (
 // Качество кадра важнее плавности (решение владельца 2026-11-07): частота кадров падает вместе с битрейтом,
 // бит на кадр остаётся прежним, пока частота не дойдёт до fpsMin; дальше снижается только битрейт.
 type rate struct {
-	max, cur   int // кбит/с
-	fpsMax     int // кадров/с при max; 0 — частота не меняется
-	low        int // отчётов подряд с оценкой GCC ниже 0.8 текущего
+	max, cur   int  // кбит/с
+	fpsMax     int  // кадров/с при max; 0 — частота не меняется
+	video      bool // профиль «видео» (клиент, ctl quality): частота кадров не снижается, падает только битрейт
+	low        int  // отчётов подряд с оценкой GCC ниже 0.8 текущего
 	last, good time.Time
 }
 
@@ -34,7 +35,7 @@ const (
 
 // fps — частота кадров для текущего битрейта.
 func (r *rate) fps() int {
-	if r.fpsMax == 0 || r.max == 0 {
+	if r.fpsMax == 0 || r.max == 0 || r.video {
 		return r.fpsMax
 	}
 	return max(fpsMin, min(r.fpsMax, (r.fpsMax*r.cur+r.max/2)/r.max))
@@ -77,6 +78,21 @@ func (r *rate) report(now time.Time, loss float64, est int) int {
 		r.good = time.Time{}
 	}
 	return 0
+}
+
+// setVideo — профиль «видео» (true) или «текст»; смена перезапускает захват (другие к/с и масштаб).
+func (s *session) setVideo(v bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rate.video == v {
+		return false
+	}
+	s.rate.video = v
+	s.switched.Store(true)
+	if s.capCancel != nil {
+		s.capCancel()
+	}
+	return true
 }
 
 // onRTCP — отчёты клиента о приёме видео; при смене битрейта захват перезапускается сразу.

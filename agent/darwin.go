@@ -31,6 +31,17 @@ static void anyScroll(int v, int h) {
 	CGEventPost(kCGHIDEventTap, e);
 	CFRelease(e);
 }
+// anyCursor — позиция курсора в точках (как CGDisplayBounds и CGEvent).
+// ponytail: форма не определяется — NSCursor.currentSystemCursor отдаёт копию, сравнивать пришлось бы картинки;
+// клиент показывает стрелку. Когда понадобится I-beam: при смене размера/горячей точки сравнивать TIFF со стандартными.
+static int anyCursor(double *x, double *y) {
+	CGEventRef e = CGEventCreate(NULL);
+	if (!e) return 0;
+	CGPoint p = CGEventGetLocation(e);
+	CFRelease(e);
+	*x = p.x; *y = p.y;
+	return 1;
+}
 static int anyDisplays(CGDirectDisplayID *ids, int max) {
 	uint32_t n = 0;
 	if (CGGetActiveDisplayList(max, ids, &n) != kCGErrorSuccess) return 0;
@@ -71,11 +82,21 @@ func Permissions(ask bool) (screen, input bool) {
 	return C.anyScreenOK(a) != 0, C.anyInputOK(a) != 0
 }
 
-// MacCapture — Agent.Capture для macOS: экран mon (порядок — как в CGGetActiveDisplayList, его же берёт avfoundation).
-func MacCapture(enc string) func(ctx context.Context, mon, kbps, fps int) (*exec.Cmd, error) {
-	return func(ctx context.Context, mon, kbps, fps int) (*exec.Cmd, error) {
-		return exec.CommandContext(ctx, "ffmpeg", FFArgs("avf:"+strconv.Itoa(max(mon, 0)), enc, fps, strconv.Itoa(kbps)+"k")...), nil
+// MacCapture — Agent.Capture для macOS: экран c.Mon (порядок — как в CGGetActiveDisplayList, его же берёт avfoundation).
+func MacCapture(enc string) func(ctx context.Context, c Cap) (*exec.Cmd, error) {
+	return func(ctx context.Context, c Cap) (*exec.Cmd, error) {
+		return exec.CommandContext(ctx, "ffmpeg", FFArgs("avf:"+strconv.Itoa(max(c.Mon, 0)), enc, c)...), nil
 	}
+}
+
+func init() { cursorInfo = macCursor }
+
+func macCursor() (int, int, string, bool) {
+	var x, y C.double
+	if fakeDesktop || C.anyCursor(&x, &y) == 0 {
+		return 0, 0, "", false
+	}
+	return int(x), int(y), "default", true
 }
 
 func monitors() []Monitor {

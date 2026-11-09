@@ -53,7 +53,7 @@ func TestFirefoxPaste(t *testing.T) {
 	var clips []string
 	setClip = func(s string) error { clipMu.Lock(); clips = append(clips, s); clipMu.Unlock(); return nil }
 	defer func() { setClip = SetClipText }()
-	a := newAgent("ws"+strings.TrimPrefix(srv.URL, "http")+"/ws", "123456789", FFArgs("test", "libx264", 30, "1M"))
+	a := newAgent("ws"+strings.TrimPrefix(srv.URL, "http")+"/ws", "123456789", FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000}))
 	go a.Run(ctx)
 
 	l, _ := net.Listen("tcp", "127.0.0.1:0")

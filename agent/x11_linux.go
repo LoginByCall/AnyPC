@@ -12,6 +12,7 @@ import (
 
 	"github.com/jezek/xgb"
 	"github.com/jezek/xgb/randr"
+	"github.com/jezek/xgb/xfixes"
 	"github.com/jezek/xgb/xproto"
 	"github.com/jezek/xgb/xtest"
 )
@@ -24,6 +25,7 @@ type x11 struct {
 	w, h   int
 	wheelV int32 // остаток прокрутки меньше одного щелчка
 	wheelH int32
+	xfixes int8 // XFixes ≥ 2 для курсора: 0 — не проверяли, 1 — есть, -1 — нет
 }
 
 func newX11() (desktop, error) {
@@ -41,7 +43,29 @@ func newX11() (desktop, error) {
 
 func (x *x11) alive() bool { return true }
 
-func (x *x11) capture(ctx context.Context, fps int, bitrate, enc string, m *Monitor) (*exec.Cmd, error) {
+// cursor — позиция и форма курсора по XFixes GetCursorImageAndName (имя из темы курсоров → CSS).
+func (x *x11) cursor() (int, int, string, bool) {
+	x.mu.Lock()
+	if x.xfixes == 0 {
+		x.xfixes = -1
+		if xfixes.Init(x.c) == nil {
+			if _, err := xfixes.QueryVersion(x.c, 2, 0).Reply(); err == nil {
+				x.xfixes = 1
+			}
+		}
+	}
+	x.mu.Unlock()
+	if x.xfixes < 0 {
+		return 0, 0, "", false
+	}
+	r, err := xfixes.GetCursorImageAndName(x.c).Reply()
+	if err != nil {
+		return 0, 0, "", false
+	}
+	return int(r.X), int(r.Y), cssCursor(r.Name), true
+}
+
+func (x *x11) capture(ctx context.Context, c Cap, enc string, m *Monitor) (*exec.Cmd, error) {
 	disp := os.Getenv("DISPLAY")
 	if disp == "" {
 		disp = ":0"
@@ -50,7 +74,7 @@ func (x *x11) capture(ctx context.Context, fps int, bitrate, enc string, m *Moni
 	if m != nil { // один монитор: размер и смещение в общем экране X
 		src = fmt.Sprintf("x11:%dx%d@%s+%d,%d", m.W&^1, m.H&^1, disp, m.X, m.Y) // libx264: чётные размеры
 	}
-	return exec.CommandContext(ctx, "ffmpeg", FFArgs(src, enc, fps, bitrate)...), nil
+	return exec.CommandContext(ctx, "ffmpeg", FFArgs(src, enc, c)...), nil
 }
 
 // monitors — мониторы по RandR 1.5 (основной отмечен); нет RandR — nil (весь экран).

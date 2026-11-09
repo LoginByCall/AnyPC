@@ -28,7 +28,7 @@ var Wayland = os.Getenv("XDG_SESSION_TYPE") == "wayland" || (os.Getenv("WAYLAND_
 var fakeDesktop bool
 
 type desktop interface {
-	capture(ctx context.Context, fps int, bitrate, enc string, m *Monitor) (*exec.Cmd, error)
+	capture(ctx context.Context, c Cap, enc string, m *Monitor) (*exec.Cmd, error)
 	input(e event, m *Monitor) error
 	alive() bool
 }
@@ -63,18 +63,35 @@ func getDesktop() (desktop, error) {
 }
 
 // LinuxCapture — Agent.Capture для Linux.
-func LinuxCapture(enc string) func(ctx context.Context, mon, kbps, fps int) (*exec.Cmd, error) {
-	return func(ctx context.Context, mon, kbps, fps int) (*exec.Cmd, error) {
+func LinuxCapture(enc string) func(ctx context.Context, c Cap) (*exec.Cmd, error) {
+	return func(ctx context.Context, c Cap) (*exec.Cmd, error) {
 		d, err := getDesktop()
 		if err != nil {
 			return nil, err
 		}
 		var m *Monitor
-		if ms := monitors(); mon >= 0 && mon < len(ms) {
-			m = &ms[mon]
+		if ms := monitors(); c.Mon >= 0 && c.Mon < len(ms) {
+			m = &ms[c.Mon]
 		}
-		return d.capture(ctx, fps, strconv.Itoa(kbps)+"k", enc, m)
+		return d.capture(ctx, c, enc, m)
 	}
+}
+
+func init() {
+	if !Wayland { // Wayland: курсор рисует портал (cursor_mode 2), отдельно его не отдать
+		cursorInfo = x11Cursor
+	}
+}
+
+func x11Cursor() (int, int, string, bool) {
+	if fakeDesktop {
+		return 0, 0, "", false
+	}
+	d, err := getDesktop()
+	if err != nil {
+		return 0, 0, "", false
+	}
+	return d.(*x11).cursor()
 }
 
 func sendInput(e event, m *Monitor) error {

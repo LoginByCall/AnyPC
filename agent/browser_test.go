@@ -6,7 +6,6 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"io"
 	"io/fs"
 	"log"
@@ -123,8 +122,8 @@ func TestBrowserClient(t *testing.T) {
 	a.FileDir = t.TempDir() // не в настоящие «Загрузки»
 	// адаптивный битрейт с GCC: Chrome обязан слать TWCC на наше расширение заголовка
 	a.Bitrate = 1000
-	a.Capture = func(ctx context.Context, _, kbps, fps int) (*exec.Cmd, error) {
-		return exec.CommandContext(ctx, "ffmpeg", FFArgs("test", "libx264", fps, fmt.Sprintf("%dk", kbps))...), nil
+	a.Capture = func(ctx context.Context, c Cap) (*exec.Cmd, error) {
+		return exec.CommandContext(ctx, "ffmpeg", FFArgs("test", "libx264", c)...), nil
 	}
 	var twcc, claimed atomic.Bool
 	var enrolled atomic.Value // У3: ключ браузера, закреплённый после входа; при переподключении он приходит заявкой
@@ -413,7 +412,7 @@ func TestBrowserNode(t *testing.T) {
 	defer srv.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	go newAgent("ws"+strings.TrimPrefix(own.URL, "http")+"/ws", "123456789", FFArgs("test", "libx264", 30, "1M")).Run(ctx)
+	go newAgent("ws"+strings.TrimPrefix(own.URL, "http")+"/ws", "123456789", FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000})).Run(ctx)
 	node := strings.TrimPrefix(own.URL, "http://")
 	out := string(runCDP(t, ctx, chrome, strings.Replace(cdpNode, "NODE", node, 1), srv.URL+"/"))
 	if !strings.Contains(out, "plain=Error: ") || !strings.Contains(out, "|false\n") {

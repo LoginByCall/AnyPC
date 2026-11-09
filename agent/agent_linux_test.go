@@ -89,7 +89,7 @@ func TestX11(t *testing.T) {
 	// захват: ffmpeg x11grab отдаёт H.264 Annex-B
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd, _ := d.capture(ctx, 30, "1M", "libx264", nil)
+	cmd, _ := d.capture(ctx, Cap{FPS: 30, Kbps: 1000, Cursor: true}, "libx264", nil)
 	out, _ := cmd.StdoutPipe()
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
