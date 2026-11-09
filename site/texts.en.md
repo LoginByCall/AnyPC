@@ -14,7 +14,7 @@
 - `f3t`: A single executable
 - `f3d`: One program shows your ID and password and connects to other PCs. Nothing to install.
 - `f4t`: Smooth and responsive
-- `f4d`: H.264 video up to 1080p at 30 fps; quality adapts to your connection, with live connection statistics.
+- `f4d`: VP9 (or H.264) video up to 1080p at 30 fps; bitrate and frame rate adapt to your connection on the fly, with no pauses; live connection statistics.
 - `getT`: Download AnyPC
 - `tab_win`: Windows
 - `tab_lin`: Linux

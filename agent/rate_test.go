@@ -62,6 +62,14 @@ func TestRateRestartsCapture(t *testing.T) {
 	if cancelled != 1 || off.switched.Load() {
 		t.Fatal("адаптация без потолка (тестовый FF) не должна трогать захват")
 	}
+	// кодер в процессе: битрейт меняется в rate, PLI → keyReq, захват не трогается
+	in := &session{cid: "c2", rate: rate{max: 4000, cur: 4000}, capCancel: func() { cancelled++ }, capStart: time.Now().Add(-time.Minute)}
+	in.inproc.Store(true)
+	in.onRTCP(rr)
+	in.onRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{}})
+	if in.rate.cur != 2400 || cancelled != 1 || in.switched.Load() || !in.keyReq.Load() {
+		t.Fatalf("в процессе: cur=%d cancel=%d switched=%v keyReq=%v", in.rate.cur, cancelled, in.switched.Load(), in.keyReq.Load())
+	}
 }
 
 // TestRateFPS — качество кадра важнее плавности: частота падает пропорционально битрейту (бит на кадр — как при max),

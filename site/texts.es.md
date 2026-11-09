@@ -14,7 +14,7 @@
 - `f3t`: Un único ejecutable
 - `f3d`: Un mismo programa muestra tu ID y tu contraseña y se conecta a otros PC. No requiere instalación.
 - `f4t`: Fluido y ágil
-- `f4d`: Vídeo H.264 hasta 1080p a 30 fps; la calidad se adapta a la conexión y las estadísticas de conexión se muestran en tiempo real.
+- `f4d`: Vídeo VP9 (o H.264) hasta 1080p a 30 fps; la tasa de bits y los fotogramas por segundo se adaptan a la conexión al vuelo, sin pausas; estadísticas de conexión en tiempo real.
 - `getT`: Descargar AnyPC
 - `tab_win`: Windows
 - `tab_lin`: Linux

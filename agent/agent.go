@@ -50,7 +50,8 @@ type Agent struct {
 	Stderr  io.Writer                                           // вывод ffmpeg; nil — os.Stderr
 	OnState func(online bool, session string)                   // session "" — сессии нет
 	FileDir string                                              // куда принимать файлы; "" — %USERPROFILE%\Downloads
-	Capture func(ctx context.Context, c Cap) (*exec.Cmd, error) // захват по Cap (H.264 Annex-B в stdout); nil — FFmpeg + FF
+	Capture func(ctx context.Context, c Cap) (*exec.Cmd, error) // захват по Cap (H.264 Annex-B или Y4M в stdout); nil — FFmpeg + FF
+	VP9     bool                                                // кодер VP9 в процессе (vp9.go): Capture отдаёт кадры Y4M (FFArgs с enc "vp9")
 	Bitrate int                                                 // кбит/с — потолок адаптивного битрейта (REQ-N-03); 0 — постоянный
 	Confirm func(cid, peer string) bool                         // REQ-F-03: спросить человека на хосте после верного пароля; nil — не спрашивать (unattended)
 	Trusted func(pub []byte) bool                               // У3: ключ клиента закреплён (вход с ним был); nil — без доверенных
@@ -87,6 +88,8 @@ type session struct {
 	mon       int                   // выбранный монитор (индекс в mons)
 	capCancel context.CancelFunc    // остановить текущий процесс захвата
 	capStart  time.Time             // старт текущего захвата — PLI раньше pliHold после него не перезапускает
+	inproc    atomic.Bool           // кодер в процессе работает: битрейт, к/с и ключевой кадр меняются без перезапуска захвата
+	keyReq    atomic.Bool           // кодеру в процессе: следующий кадр — ключевой (PLI)
 	switched  atomic.Bool           // захват остановлен ради смены монитора/битрейта — перезапуск без паузы
 	rate      rate                  // адаптивный битрейт; max == 0 — выключен
 	bwe       cc.BandwidthEstimator // оценка полосы GCC по TWCC клиента; nil — без неё
@@ -159,6 +162,7 @@ type Cap struct {
 	Video, Cursor  bool
 }
 
+// enc "vp9" — ffmpeg не кодирует: кадры Y4M (yuv420p, чётные размеры) в stdout для кодера в процессе (vp9.go).
 func FFArgs(src, enc string, c Cap) []string {
 	fps, br, cur := c.FPS, strconv.Itoa(c.Kbps)+"k", "0"
 	if c.Cursor {
@@ -186,11 +190,16 @@ func FFArgs(src, enc string, c Cap) []string {
 		a = append(a, "-f", "lavfi", "-i", fmt.Sprintf("ddagrab=output_idx=%d:framerate=%d:draw_mouse=%s", out, fps, cur))
 		vf = append(vf, "hwdownload", "format=bgra")
 	}
-	if c.Video && c.Kbps < 2000 { // профиль «видео» на узком канале: 720p (не растягивать меньшие экраны), ширина чётная
+	if c.Video && c.Kbps < 2000 { // профиль «скорость» на узком канале: 720p (не растягивать меньшие экраны), ширина чётная
 		vf = append(vf, "scale=-2:'min(720,ih)'")
+	} else if enc == "vp9" {
+		vf = append(vf, "scale=trunc(iw/2)*2:trunc(ih/2)*2") // Y4M 4:2:0 — чётные размеры
 	}
 	if len(vf) > 0 {
 		a = append(a, "-vf", strings.Join(vf, ","))
+	}
+	if enc == "vp9" {
+		return append(a, "-pix_fmt", "yuv420p", "-f", "yuv4mpegpipe", "-")
 	}
 	// Статика не деградирует вместе с каналом (LOGBOOK 2026-11-09: текст 1080p на 500 кбит/с):
 	// libx264 — CRF 20 с потолком VBV (битрейт из rate — только -maxrate/-bufsize) и без периодических I-кадров:
@@ -608,10 +617,14 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 		return nil, err
 	}
 	fail := func(err error) (*session, error) { pc.Close(); return nil, err }
-	track, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{
+	codec := webrtc.RTPCodecCapability{
 		MimeType: webrtc.MimeTypeH264, ClockRate: 90000,
 		SDPFmtpLine: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f",
-	}, "video", "anypc")
+	}
+	if a.VP9 {
+		codec = webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP9, ClockRate: 90000, SDPFmtpLine: "profile-id=0"}
+	}
+	track, err := webrtc.NewTrackLocalStaticSample(codec, "video", "anypc")
 	if err != nil {
 		return fail(err)
 	}
@@ -968,7 +981,60 @@ func (a *Agent) stream(ctx context.Context, s *session, track *webrtc.TrackLocal
 	}
 }
 
-// streamOnce: ffmpeg пишет H.264 Annex-B в stdout, NAL-юниты уходят в трек.
+// streamVP9 — кадры Y4M из ffmpeg → libvpx в процессе → трек. Битрейт и частота кадров берутся из rate на каждом
+// кадре (прореживание кадров источника), ключевой кадр — по keyReq (PLI): ничего из этого не перезапускает ffmpeg.
+func (a *Agent) streamVP9(ctx context.Context, s *session, out io.Reader, track *webrtc.TrackLocalStaticSample, c Cap) {
+	y, err := newY4M(out)
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Printf("%v", err)
+		}
+		return
+	}
+	enc, err := newVP9(y.w, y.h, c.Kbps)
+	if err != nil {
+		log.Printf("%v", err)
+		return
+	}
+	defer enc.close()
+	s.inproc.Store(true)
+	defer s.inproc.Store(false)
+	log.Printf("vp9: %d×%d, источник %d к/с", y.w, y.h, y.fps)
+	acc := 0.0 // прореживание: кадр уходит, когда накопилась единица целевой частоты
+	for {
+		frame, err := y.next()
+		if err != nil {
+			if ctx.Err() == nil {
+				log.Printf("поток: %v", err)
+			}
+			return
+		}
+		s.mu.Lock()
+		kbps, fps := s.rate.cur, s.rate.fps()
+		s.mu.Unlock()
+		if fps <= 0 || fps > y.fps {
+			fps = y.fps
+		}
+		if acc += float64(fps) / float64(y.fps); acc < 1 {
+			continue
+		}
+		acc--
+		if err := enc.setBitrate(kbps); err != nil {
+			log.Printf("%v", err)
+		}
+		dur := time.Second / time.Duration(fps)
+		data, _, err := enc.encode(frame, dur, s.keyReq.Swap(false))
+		if err != nil {
+			log.Printf("%v", err)
+			return
+		}
+		if err := track.WriteSample(media.Sample{Data: data, Duration: dur}); err != nil {
+			return
+		}
+	}
+}
+
+// streamOnce: ffmpeg пишет H.264 Annex-B в stdout, NAL-юниты уходят в трек (или Y4M → streamVP9).
 // ponytail: h264reader отдаёт NAL только по старт-коду следующего → +1 кадр задержки (33 мс при 30 к/с);
 // убрать — читать пакеты из контейнера (nut/mkv) или кодировать в процессе.
 func (a *Agent) streamOnce(ctx context.Context, s *session, track *webrtc.TrackLocalStaticSample) {
@@ -1005,6 +1071,10 @@ func (a *Agent) streamOnce(ctx context.Context, s *session, track *webrtc.TrackL
 		return
 	}
 	defer func() { cancel(); cmd.Wait() }() // сначала убить: при выходе по ошибке записи ffmpeg жив, а пайп никто не читает
+	if a.VP9 {
+		a.streamVP9(ctx, s, out, track, c)
+		return
+	}
 	r, err := h264reader.NewReader(out)
 	if err != nil {
 		log.Printf("h264: %v", err)

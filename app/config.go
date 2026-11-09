@@ -1,11 +1,13 @@
 package main
 
 import (
+	"anypc/agent"
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"slices"
@@ -19,7 +21,7 @@ import (
 type config struct {
 	ID      string            `json:"id"`
 	Server  string            `json:"server"`
-	Enc     string            `json:"enc"`     // libx264 | h264_nvenc | h264_qsv | h264_amf | h264_mf
+	Enc     string            `json:"enc"`     // libx264 | h264_nvenc | h264_qsv | h264_amf | h264_mf | vp9 (кодер в процессе, если собрано с ним)
 	Bitrate string            `json:"bitrate"` // ffmpeg: 4M, 1500k…
 	Salt    []byte            `json:"salt,omitempty"`
 	Hash    []byte            `json:"hash,omitempty"`    // Argon2id (REQ-S-03); сам пароль не хранится
@@ -50,6 +52,10 @@ func loadConfig(path string) (*config, error) {
 		err = json.Unmarshal(b, c)
 	} else if errors.Is(err, os.ErrNotExist) {
 		err = nil
+	}
+	if c.Enc == "vp9" && !agent.VP9Built {
+		log.Printf("enc vp9: программа собрана без кодера VP9 — используется libx264")
+		c.Enc = "libx264"
 	}
 	if err != nil {
 		return nil, err
