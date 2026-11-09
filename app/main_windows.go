@@ -97,6 +97,7 @@ func main() {
 		Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, Key: cfg.key(), FPS: 30, Stderr: logf, Trusted: cfg.trusted, Trust: cfg.trust,
 		Bitrate: agent.Kbps(cfg.Bitrate),
 		Confirm: func(cid, peer string) bool { return !cfg.confirm() || agent.AskAccept(cid, peer) },
+		VP9:     cfg.Enc == "vp9",
 		Capture: func(ctx context.Context, c agent.Cap) (*exec.Cmd, error) { // выход DXGI c.Mon
 			ffMu.Lock()
 			ff := ff

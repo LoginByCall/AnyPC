@@ -29,6 +29,7 @@
 - V3 — НЕ ПОДТВЕРЖДЕНЫ: CRF+VBV без периодических IDR и PLI-восстановление в Chrome/Edge/Firefox на реальном канале (визуально: статичный текст на 0,5–1 Мбит/с дорисовывается, после потерь картинка восстанавливается); курсор отдельно от видео на Windows-хосте (форма I-beam над текстом, нет двойного курсора, при движении одной мыши битрейт ≈ 0) и на Маке (позиция, масштаб Retina); профиль «видео» на 1 Мбит/с (30 к/с, 720p); AnyPC.exe на Windows (окно, ввод, полный экран, плашка), Мак (мышь, клавиатура, второй монитор), установка узла на свежий VPS, compose с Let's Encrypt, замер Томск↔Шэньчжэнь.
 
 ## СЛЕДУЮЩИЙ ШАГ
+- Кодер в процессе (ENCODER.md): владелец ставит nasm + mingw и запускает deploy/libvpx.sh (Linux: linux-amd64 windows-amd64; Мак: darwin-amd64 darwin-arm64), затем `go test -tags vp9 ./agent`, замер CPU, выпуск с enc vp9 по умолчанию после V3.
 - V3 v0.1.13 на Windows-хосте: I-beam над текстом, нет двойного курсора, битрейт ≈ 0 при движении одной мыши, кнопка «Текст / Видео».
 - Владелец: резервная копия ключа выпуска ~/.config/anypc/release-ed25519.pem; команда total-quota=1000 на HK/RU/US; V3 нового входа (доверенный ключ, «занят» только после пароля) и окна на Linux/Mac (одноразовый код).
 - Каждый выпуск: поднять MIN_VERSION в deploy/setup.sh до версии в том же коммите, что и тег (publish.sh иначе откажет); в GitHub-релиз — SHA256SUMS.sig и VERSION.
@@ -36,6 +37,7 @@
 - Выкладка (разрешена правилом): `env -u HTTPS_PROXY -u HTTP_PROXY -u ALL_PROXY -u https_proxy -u http_proxy BUILDX_BUILDER=anypc ANYPC_MAC=alexander@192.168.88.250 ANYPC_DOCKER=1 ANYPC_VPS='root@170.168.24.45 root@170.168.5.86' deploy/publish.sh` — дословно, иначе классификатор.
 
 ## Ожидает человека
+- `sudo apt install nasm gcc-mingw-w64-x86-64 && deploy/libvpx.sh` на этой машине; на Маке в ~/anypc-src: `deploy/libvpx.sh darwin-amd64 darwin-arm64` (ENCODER.md).
 - V3 из списка выше.
 - Перевод лендинга через DeepL — нужен ключ API Free (сейчас переводит Claude).
 

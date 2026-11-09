@@ -4,3 +4,4 @@ anypc-id.txt
 certs/
 ui/pake.wasm
 ui/wasm_exec.js
+third_party/

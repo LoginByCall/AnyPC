@@ -265,7 +265,7 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 	}
 	select {
 	case mt := <-got:
-		if mt != webrtc.MimeTypeH264 {
+		if mt != e2eMime {
 			t.Fatalf("кодек %s", mt)
 		}
 	case <-ctx.Done():
@@ -392,6 +392,7 @@ func TestClipEcho(t *testing.T) {
 // Крючки e2e для отдельных тестов (по умолчанию nil).
 var (
 	e2eAgent func(*Agent)
+	e2eMime  = webrtc.MimeTypeH264                                         // кодек видео, который ждёт клиент
 	e2eTrack func(*testing.T, *webrtc.PeerConnection, *webrtc.TrackRemote) // после 300 RTP видео у клиента
 	e2eDeny  bool                                                          // ожидать отказ человека на хосте (REQ-F-03)
 	e2eCtl   func(*testing.T, *webrtc.DataChannel, chan ctlMsg)
@@ -598,6 +599,10 @@ func TestMonitorHelpers(t *testing.T) {
 	}
 	if a := join(FFArgs("desktop", "libx264", Cap{FPS: 30, Kbps: 4000, Video: true})); strings.Contains(a, "scale=") {
 		t.Errorf("видео 4 Мбит/с без масштаба: %s", a)
+	}
+	// vp9: ffmpeg не кодирует — Y4M чётного размера в stdout, без параметров кодера
+	if a := join(FFArgs("desktop", "vp9", sep)); !strings.HasSuffix(a, "-pix_fmt yuv420p -f yuv4mpegpipe -") || !strings.Contains(a, "trunc(iw/2)*2") || strings.Contains(a, "-c:v") || strings.Contains(a, "-crf") {
+		t.Errorf("vp9: %s", a)
 	}
 	cancelled := false
 	s := &session{mons: []Monitor{{}, {}}, capCancel: func() { cancelled = true }}

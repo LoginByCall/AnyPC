@@ -102,8 +102,12 @@ func (s *session) onRTCP(pkts []rtcp.Packet) {
 			log.Printf("сессия %s: клиент шлёт TWCC — оценка полосы GCC работает", s.cid)
 		}
 		switch p.(type) {
-		case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest: // клиент потерял опорный кадр — IDR даёт только новый ffmpeg
-			s.mu.Lock()
+		case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest: // клиент потерял опорный кадр
+			if s.inproc.Load() { // кодер в процессе: ключевой кадр следующим, без перезапуска
+				s.keyReq.Store(true)
+				continue
+			}
+			s.mu.Lock()                                                  // ffmpeg: IDR даёт только новый процесс
 			if time.Since(s.capStart) >= pliHold && s.capCancel != nil { // PLI в начале потока (до первого IDR) и шторм после потерь — один перезапуск
 				log.Printf("сессия %s: PLI — перезапуск захвата ради IDR", s.cid)
 				s.capStart = time.Now()
@@ -127,9 +131,11 @@ func (s *session) onRTCP(pkts []rtcp.Packet) {
 				}
 				if n := s.rate.report(time.Now(), float64(r.FractionLost)/256, est); n > 0 {
 					log.Printf("сессия %s: битрейт %d кбит/с, %d к/с (потери %d %%, оценка GCC %d кбит/с)", s.cid, n, s.rate.fps(), int(r.FractionLost)*100/256, est)
-					s.switched.Store(true)
-					if s.capCancel != nil {
-						s.capCancel()
+					if !s.inproc.Load() { // кодер в процессе применит сам; ffmpeg — только перезапуском
+						s.switched.Store(true)
+						if s.capCancel != nil {
+							s.capCancel()
+						}
 					}
 				}
 			}
