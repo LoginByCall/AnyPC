@@ -18,7 +18,7 @@ for T in ${@:-linux-amd64 windows-amd64}; do
   esac
   OUT=$PWD/third_party/libvpx/$T; B=$PWD/third_party/libvpx/build-$T
   rm -rf "$B" "$OUT"; mkdir -p "$B"
-  (cd "$B" && "$SRC/configure" --target=$TGT ${CROSS:+--cross=$CROSS} --prefix="$OUT" \
+  (cd "$B" && CROSS=$CROSS "$SRC/configure" --target=$TGT --prefix="$OUT" \
      --enable-vp9 --disable-vp8 --disable-vp9-decoder --enable-static --disable-shared --enable-pic \
      --disable-examples --disable-tools --disable-docs --disable-unit-tests --disable-install-bins --disable-install-docs >/dev/null \
    && make -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)" >/dev/null && make install >/dev/null)
