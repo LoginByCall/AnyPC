@@ -513,13 +513,13 @@ func TestPLI(t *testing.T) {
 	e2eTrack = func(t *testing.T, pc *webrtc.PeerConnection, tr *webrtc.TrackRemote) {
 		first := <-calls
 		pli := []rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: uint32(tr.SSRC())}}
-		if time.Since(first) < pliHold-300*time.Millisecond { // 300 RTP обычно приходят за ~2 с — ранний PLI проверяем, только если успели
+		if time.Since(first) < pliHold-300*time.Millisecond { // 300 RTP приходят за ~2 с — ранний PLI шлём, только если успели
 			pc.WriteRTCP(pli)
-			select {
-			case <-calls:
-				t.Fatal("перезапуск по PLI раньше pliHold")
-			case <-time.After(time.Until(first.Add(pliHold + 100*time.Millisecond))):
-			}
+		}
+		select { // в любом случае дождаться pliHold: иначе второй PLI тоже «ранний» (на Маке 300 RTP за 1,7 с — тест падал)
+		case <-calls:
+			t.Fatal("перезапуск по PLI раньше pliHold")
+		case <-time.After(time.Until(first.Add(pliHold + 100*time.Millisecond))):
 		}
 		pc.WriteRTCP(pli)
 		select {
