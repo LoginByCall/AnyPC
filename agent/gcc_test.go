@@ -38,7 +38,7 @@ func TestGCCLink(t *testing.T) {
 	var hse, cse webrtc.SettingEngine
 	hse.SetNet(hostNet)
 	cse.SetNet(cliNet)
-	api, bwe, err := newAPI(hse, 3000)
+	api, bwe, _, err := newAPI(hse, 3000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestGCCLink(t *testing.T) {
 	default:
 		t.Fatal("оценщик GCC не создан")
 	}
-	capi, _, _ := newAPI(cse, 0)
+	capi, _, _, _ := newAPI(cse, 0)
 	client, _ := capi.NewPeerConnection(webrtc.Configuration{})
 	t.Cleanup(func() { host.Close(); client.Close() })
 

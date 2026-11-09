@@ -126,3 +126,21 @@ func TestRateGCC(t *testing.T) {
 		}
 	}
 }
+
+// TestRateFast — кодер в процессе: после падения рост через rateHoldFast без потерь, а не через 20 с.
+func TestRateFast(t *testing.T) {
+	r := rate{max: 4000, cur: 1000, fast: true}
+	t0 := time.Unix(1000, 0)
+	r.report(t0, 0, 0)
+	if n := r.report(t0.Add(rateHoldFast-time.Second), 0, 0); n != 0 {
+		t.Fatalf("рост раньше rateHoldFast: %d", n)
+	}
+	if n := r.report(t0.Add(rateHoldFast), 0, 0); n != 1300 {
+		t.Fatalf("рост через rateHoldFast: %d, ждали 1300", n)
+	}
+	slow := rate{max: 4000, cur: 1000}
+	slow.report(t0, 0, 0)
+	if n := slow.report(t0.Add(rateHoldFast), 0, 0); n != 0 {
+		t.Fatalf("ffmpeg: рост через %v — ждали %v", rateHoldFast, rateHold)
+	}
+}

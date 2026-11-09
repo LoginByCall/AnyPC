@@ -23,14 +23,17 @@ type rate struct {
 	max, cur   int  // кбит/с
 	fpsMax     int  // кадров/с при max; 0 — частота не меняется
 	video      bool // профиль «видео» (клиент, ctl quality): частота кадров не снижается, падает только битрейт
+	fast       bool // кодер в процессе (VP9): шаг битрейта бесплатен — рост после rateHoldFast хорошего канала, а не 20 с
 	low        int  // отчётов подряд с оценкой GCC ниже 0.8 текущего
 	last, good time.Time
 }
 
 const (
-	pliHold = 2 * time.Second // PLI раньше этого после старта захвата не перезапускает его (новый IDR ещё в пути)
-	rateMin = 300             // кбит/с — ниже картинка рабочего стола уже нечитаема
-	fpsMin  = 5               // кадров/с — ниже курсор и ввод «прыгают»
+	pliHold      = 2 * time.Second  // PLI раньше этого после старта захвата не перезапускает его (новый IDR ещё в пути)
+	rateHold     = 20 * time.Second // столько без потерь до шага вверх, когда шаг = перезапуск ffmpeg (пауза и IDR)
+	rateHoldFast = 3 * time.Second  // то же для кодера в процессе: 300 → 4000 кбит/с за ≈ 30 с, а не за 3 мин
+	rateMin      = 300              // кбит/с — ниже картинка рабочего стола уже нечитаема
+	fpsMin       = 5                // кадров/с — ниже курсор и ввод «прыгают»
 )
 
 // fps — частота кадров для текущего битрейта.
@@ -70,7 +73,11 @@ func (r *rate) report(now time.Time, loss float64, est int) int {
 		if est > 0 {
 			n = min(n, est)
 		}
-		if n >= r.cur*11/10 && now.Sub(r.good) >= 20*time.Second && now.Sub(r.last) >= 3*time.Second {
+		hold := rateHold
+		if r.fast {
+			hold = rateHoldFast
+		}
+		if n >= r.cur*11/10 && now.Sub(r.good) >= hold && now.Sub(r.last) >= 3*time.Second {
 			r.cur, r.last, r.good = n, now, now
 			return n
 		}
@@ -131,6 +138,9 @@ func (s *session) onRTCP(pkts []rtcp.Packet) {
 				}
 				if n := s.rate.report(time.Now(), float64(r.FractionLost)/256, est); n > 0 {
 					log.Printf("сессия %s: битрейт %d кбит/с, %d к/с (потери %d %%, оценка GCC %d кбит/с)", s.cid, n, s.rate.fps(), int(r.FractionLost)*100/256, est)
+					if s.pace != nil {
+						s.pace.kbps.Store(int64(n))
+					}
 					if !s.inproc.Load() { // кодер в процессе применит сам; ffmpeg — только перезапуском
 						s.switched.Store(true)
 						if s.capCancel != nil {
