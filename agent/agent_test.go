@@ -43,17 +43,17 @@ func local(t *testing.T) string {
 
 // TestE2E: сигнализация + пароль + ICE + DTLS + ffmpeg (testsrc) → видео H.264 и канал ввода; bye закрывает сессию.
 func TestE2E(t *testing.T) {
-	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "secret123")
+	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000}), "secret123")
 }
 
 // TestWrongPassword: CPace с неверным паролем → отказ, видео не идёт (REQ-S-02).
 func TestWrongPassword(t *testing.T) {
-	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "wrong-pass")
+	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000}), "wrong-pass")
 }
 
 // TestCaptureRestart — регрессия 887a0026: ffmpeg завершается через 0,5 с, видео должно идти дальше.
 func TestCaptureRestart(t *testing.T) {
-	ff := FFArgs("test", "libx264", 30, "1M")
+	ff := FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000})
 	ff = append(ff[:len(ff)-3:len(ff)-3], "-t", "0.5", "-f", "h264", "-")
 	e2e(t, local(t), "123456789", false, ff, "secret123")
 }
@@ -64,7 +64,7 @@ func TestLive(t *testing.T) {
 	if url == "" {
 		t.Skip("ANYPC_LIVE не задан")
 	}
-	e2e(t, url, hub.RandDigits(9), true, FFArgs("test", "libx264", 30, "1M"), "secret123")
+	e2e(t, url, hub.RandDigits(9), true, FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000}), "secret123")
 }
 
 func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
@@ -436,9 +436,9 @@ func TestTrustedLocked(t *testing.T) {
 	defer func() { e2eAgent, e2eKey = nil, "" }()
 	trusted.Store(true)
 	e2eKey = "ok"
-	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "secret123")
+	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000}), "secret123")
 	e2eKey = "bad"
-	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "secret123")
+	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000}), "secret123")
 }
 
 // TestTrustEnroll — верный пароль с подписью ключа закрепляет ключ; неверный — нет.
@@ -447,11 +447,11 @@ func TestTrustEnroll(t *testing.T) {
 	e2eAgent = func(a *Agent) { a.Trust = func([]byte) { got.Store(true) } }
 	defer func() { e2eAgent, e2eKey = nil, "" }()
 	e2eKey = "ok"
-	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "wrong-pass")
+	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000}), "wrong-pass")
 	if got.Load() {
 		t.Fatal("ключ закреплён при неверном пароле")
 	}
-	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "secret123")
+	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000}), "secret123")
 	if !got.Load() {
 		t.Fatal("ключ не закреплён после входа")
 	}
@@ -461,7 +461,7 @@ func TestTrustEnroll(t *testing.T) {
 func TestPendingSquat(t *testing.T) {
 	e2eSquat = 2 // < maxPending
 	defer func() { e2eSquat = 0 }()
-	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "secret123")
+	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000}), "secret123")
 }
 
 // TestMonitorSwitch — REQ-F-09: хост присылает список мониторов, выбор второго перезапускает захват на нём.
@@ -470,9 +470,9 @@ func TestMonitorSwitch(t *testing.T) {
 	listMonitors = func() []Monitor { return two }
 	calls := make(chan int, 10)
 	e2eAgent = func(a *Agent) {
-		a.Capture = func(ctx context.Context, mon, _, _ int) (*exec.Cmd, error) {
-			calls <- mon
-			return exec.CommandContext(ctx, "ffmpeg", FFArgs("test", "libx264", 30, "1M")...), nil
+		a.Capture = func(ctx context.Context, c Cap) (*exec.Cmd, error) {
+			calls <- c.Mon
+			return exec.CommandContext(ctx, "ffmpeg", FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000})...), nil
 		}
 	}
 	e2eCtl = func(t *testing.T, ctl *webrtc.DataChannel, msgs chan ctlMsg) {
@@ -505,9 +505,9 @@ func TestMonitorSwitch(t *testing.T) {
 func TestPLI(t *testing.T) {
 	calls := make(chan time.Time, 10)
 	e2eAgent = func(a *Agent) {
-		a.Capture = func(ctx context.Context, _, _, _ int) (*exec.Cmd, error) {
+		a.Capture = func(ctx context.Context, _ Cap) (*exec.Cmd, error) {
 			calls <- time.Now()
-			return exec.CommandContext(ctx, "ffmpeg", FFArgs("test", "libx264", 30, "1M")...), nil
+			return exec.CommandContext(ctx, "ffmpeg", FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000})...), nil
 		}
 	}
 	e2eTrack = func(t *testing.T, pc *webrtc.PeerConnection, tr *webrtc.TrackRemote) {
@@ -532,24 +532,72 @@ func TestPLI(t *testing.T) {
 	e2e(t, local(t), "123456789", false, nil, "secret123")
 }
 
+// TestQuality — клиент переключает профиль: {"t":"quality","p":"video"} перезапускает захват с Cap.Video.
+func TestQuality(t *testing.T) {
+	calls := make(chan Cap, 10)
+	e2eAgent = func(a *Agent) {
+		a.Capture = func(ctx context.Context, c Cap) (*exec.Cmd, error) {
+			calls <- c
+			return exec.CommandContext(ctx, "ffmpeg", FFArgs("test", "libx264", c)...), nil
+		}
+	}
+	e2eCtl = func(t *testing.T, ctl *webrtc.DataChannel, _ chan ctlMsg) {
+		if c := <-calls; c.Video {
+			t.Fatal("первый захват — уже «видео»")
+		}
+		ctl.SendText(`{"t":"quality","p":"video"}`)
+		select {
+		case c := <-calls:
+			if !c.Video {
+				t.Fatalf("после переключения захват без Video: %+v", c)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("захват не перезапустился после смены профиля")
+		}
+		ctl.SendText(`{"t":"quality","p":"video"}`) // повтор того же — без перезапуска
+		select {
+		case c := <-calls:
+			t.Fatalf("лишний перезапуск: %+v", c)
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	defer func() { e2eAgent, e2eCtl = nil, nil }()
+	e2e(t, local(t), "123456789", false, nil, "secret123")
+}
+
 func TestMonitorHelpers(t *testing.T) {
 	m := &Monitor{X: 1920, Y: -200, W: 1280, H: 720}
 	if x, y := monPoint(m, 0, 65535); x != 1920 || y != 519 {
 		t.Errorf("monPoint: %d,%d", x, y)
 	}
 	join := func(a []string) string { return strings.Join(a, " ") }
-	if a := join(FFArgs("desktop:2", "libx264", 30, "1M")); !strings.Contains(a, "ddagrab=output_idx=2:framerate=30") {
+	c := Cap{FPS: 30, Kbps: 1000, Cursor: true}
+	if a := join(FFArgs("desktop:2", "libx264", c)); !strings.Contains(a, "ddagrab=output_idx=2:framerate=30:draw_mouse=1") || !strings.Contains(a, "-vf hwdownload,format=bgra ") {
 		t.Errorf("ddagrab: %s", a)
 	}
-	if a := join(FFArgs("x11:1280x720@:0+1920,0", "libx264", 30, "1M")); !strings.Contains(a, "-video_size 1280x720 -i :0+1920,0") {
+	if a := join(FFArgs("x11:1280x720@:0+1920,0", "libx264", c)); !strings.Contains(a, "-draw_mouse 1 -video_size 1280x720 -i :0+1920,0") {
 		t.Errorf("x11grab: %s", a)
 	}
 	// статика не деградирует: x264 — CRF с потолком, без -b:v и периодических I-кадров; аппаратный — ABR, IDR раз в секунду
-	if a := join(FFArgs("desktop", "libx264", 30, "1M")); !strings.Contains(a, "-maxrate 1M -bufsize 1M") || !strings.Contains(a, "-crf 20") || strings.Contains(a, "-g ") || strings.Contains(a, "-b:v") || !strings.Contains(a, "keyint=infinite") {
+	if a := join(FFArgs("desktop", "libx264", c)); !strings.Contains(a, "-maxrate 1000k -bufsize 1000k") || !strings.Contains(a, "-crf 20") || strings.Contains(a, "-g ") || strings.Contains(a, "-b:v") || !strings.Contains(a, "keyint=infinite") {
 		t.Errorf("x264: %s", a)
 	}
-	if a := join(FFArgs("desktop", "h264_nvenc", 30, "1M")); !strings.Contains(a, "-b:v 1M -g 30") || strings.Contains(a, "-crf") {
+	if a := join(FFArgs("desktop", "h264_nvenc", c)); !strings.Contains(a, "-b:v 1000k -g 30") || strings.Contains(a, "-crf") {
 		t.Errorf("nvenc: %s", a)
+	}
+	// курсор отдельно: не рисуется в кадр; профиль «видео» ужимает до 720p только на канале < 2 Мбит/с
+	sep := Cap{FPS: 30, Kbps: 1000}
+	if a := join(FFArgs("desktop", "libx264", sep)); !strings.Contains(a, "draw_mouse=0") || strings.Contains(a, "scale=") {
+		t.Errorf("без курсора: %s", a)
+	}
+	if a := join(FFArgs("avf:0", "libx264", sep)); !strings.Contains(a, "-capture_cursor 0") || !strings.Contains(a, "-vf fps=30 ") {
+		t.Errorf("avf без курсора: %s", a)
+	}
+	if a := join(FFArgs("x11::0", "libx264", Cap{FPS: 30, Kbps: 1500, Video: true})); !strings.Contains(a, "-draw_mouse 0") || !strings.Contains(a, "-vf scale=-2:'min(720,ih)' ") {
+		t.Errorf("видео 1,5 Мбит/с: %s", a)
+	}
+	if a := join(FFArgs("desktop", "libx264", Cap{FPS: 30, Kbps: 4000, Video: true})); strings.Contains(a, "scale=") {
+		t.Errorf("видео 4 Мбит/с без масштаба: %s", a)
 	}
 	cancelled := false
 	s := &session{mons: []Monitor{{}, {}}, capCancel: func() { cancelled = true }}
@@ -571,12 +619,12 @@ func TestConfirm(t *testing.T) {
 	}
 	defer func() { e2eAgent, e2eDeny = nil, false }()
 	e2eDeny = true
-	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "secret123")
+	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000}), "secret123")
 	if p, _ := gotPeer.Load().(string); !strings.HasPrefix(p, "c") || strings.HasSuffix(p, "|") {
 		t.Fatalf("окну не передан клиент и адрес: %q", p)
 	}
 	answer, e2eDeny = true, false
-	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "secret123")
+	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000}), "secret123")
 }
 
 // TestTrustDenied — ключ клиента закрепляется только после «Разрешить»: отклонённый на хосте (REQ-F-03)
@@ -590,12 +638,12 @@ func TestTrustDenied(t *testing.T) {
 	}
 	defer func() { e2eAgent, e2eDeny, e2eKey = nil, false, "" }()
 	e2eDeny, e2eKey = true, "ok"
-	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "secret123")
+	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000}), "secret123")
 	if pinned.Load() {
 		t.Fatal("ключ закреплён, хотя вход отклонён на хосте")
 	}
 	answer, e2eDeny = true, false
-	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "secret123")
+	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000}), "secret123")
 	if !pinned.Load() {
 		t.Fatal("ключ не закреплён после «Разрешить»")
 	}
@@ -622,11 +670,11 @@ func TestDeadProxy(t *testing.T) {
 // TestTwoHubs — резервная сигнализация: хост в сети на двух хабах сразу, клиент входит через второй
 // (первый мог бы быть недоступен из его сети); видео, ввод и вход по паролю — как через один хаб.
 func TestTwoHubs(t *testing.T) {
-	e2e(t, local(t)+","+local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "secret123")
+	e2e(t, local(t)+","+local(t), "123456789", false, FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000}), "secret123")
 	l, _ := net.Listen("tcp", "127.0.0.1:0")
 	dead := "ws://" + l.Addr().String() + "/ws"
 	l.Close() // недоступный хаб не мешает живому
-	e2e(t, dead+","+local(t), "123456789", false, FFArgs("test", "libx264", 30, "1M"), "secret123")
+	e2e(t, dead+","+local(t), "123456789", false, FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000}), "secret123")
 }
 
 // TestHubSpoof — Д-4: хаб пересылает сообщения с From отправителя. Поддельные error id_taken (выкидывал хост

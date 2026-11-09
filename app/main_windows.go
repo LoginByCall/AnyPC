@@ -97,14 +97,14 @@ func main() {
 		Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, Key: cfg.key(), FPS: 30, Stderr: logf, Trusted: cfg.trusted, Trust: cfg.trust,
 		Bitrate: agent.Kbps(cfg.Bitrate),
 		Confirm: func(cid, peer string) bool { return !cfg.confirm() || agent.AskAccept(cid, peer) },
-		Capture: func(ctx context.Context, mon, kbps, fps int) (*exec.Cmd, error) { // выход DXGI mon
+		Capture: func(ctx context.Context, c agent.Cap) (*exec.Cmd, error) { // выход DXGI c.Mon
 			ffMu.Lock()
 			ff := ff
 			ffMu.Unlock()
 			if ff == "" {
 				return nil, errors.New("FFmpeg ещё загружается")
 			}
-			return exec.CommandContext(ctx, ff, agent.FFArgs(fmt.Sprintf("desktop:%d", max(mon, 0)), cfg.Enc, fps, fmt.Sprintf("%dk", kbps))...), nil
+			return exec.CommandContext(ctx, ff, agent.FFArgs(fmt.Sprintf("desktop:%d", max(c.Mon, 0)), cfg.Enc, c)...), nil
 		},
 	}
 	var mu sync.Mutex

@@ -47,14 +47,14 @@ type Agent struct {
 	Key     ed25519.PrivateKey           // ключ хоста: за ним закреплён ID (REQ-F-01), им хост подтверждает себя клиенту
 	FF      []string                     // аргументы ffmpeg, см. FFArgs
 	FPS     int
-	Stderr  io.Writer                                                        // вывод ffmpeg; nil — os.Stderr
-	OnState func(online bool, session string)                                // session "" — сессии нет
-	FileDir string                                                           // куда принимать файлы; "" — %USERPROFILE%\Downloads
-	Capture func(ctx context.Context, mon, kbps, fps int) (*exec.Cmd, error) // захват монитора mon: битрейт kbps, fps кадров/с (H.264 Annex-B в stdout); nil — FFmpeg + FF
-	Bitrate int                                                              // кбит/с — потолок адаптивного битрейта (REQ-N-03); 0 — постоянный
-	Confirm func(cid, peer string) bool                                      // REQ-F-03: спросить человека на хосте после верного пароля; nil — не спрашивать (unattended)
-	Trusted func(pub []byte) bool                                            // У3: ключ клиента закреплён (вход с ним был); nil — без доверенных
-	Trust   func(pub []byte)                                                 // закрепить ключ клиента после входа по паролю
+	Stderr  io.Writer                                           // вывод ffmpeg; nil — os.Stderr
+	OnState func(online bool, session string)                   // session "" — сессии нет
+	FileDir string                                              // куда принимать файлы; "" — %USERPROFILE%\Downloads
+	Capture func(ctx context.Context, c Cap) (*exec.Cmd, error) // захват по Cap (H.264 Annex-B в stdout); nil — FFmpeg + FF
+	Bitrate int                                                 // кбит/с — потолок адаптивного битрейта (REQ-N-03); 0 — постоянный
+	Confirm func(cid, peer string) bool                         // REQ-F-03: спросить человека на хосте после верного пароля; nil — не спрашивать (unattended)
+	Trusted func(pub []byte) bool                               // У3: ключ клиента закреплён (вход с ним был); nil — без доверенных
+	Trust   func(pub []byte)                                    // закрепить ключ клиента после входа по паролю
 
 	mu        sync.Mutex
 	ice       []webrtc.ICEServer
@@ -136,34 +136,61 @@ type authMsg struct {
 // ctlMsg — канал "ctl": {"t":"clip","text":"…"} — буфер обмена в обе стороны (REQ-F-11);
 // {"t":"pick"} от клиента — открыть на хосте окно выбора файла и отправить выбранный (REQ-F-12);
 // хост → {"t":"monitors","list":[…],"cur":i}, клиент → {"t":"monitor","i":N} — выбор монитора (REQ-F-09).
+// Клиент → {"t":"quality","p":"text"|"video"} — профиль картинки (Cap.Video);
+// хост → {"t":"cur","x":…,"y":…,"c":"text"} — курсор хоста: точка 0..65535 в текущем мониторе и форма именем CSS,
+// {"t":"cur","c":"none"} — скрыт или вне монитора (cursor.go).
 type ctlMsg struct {
 	T    string    `json:"t"`
 	Text string    `json:"text,omitempty"`
 	List []Monitor `json:"list,omitempty"`
 	Cur  int       `json:"cur"`
 	I    int       `json:"i"`
+	P    string    `json:"p,omitempty"`
+	X    int       `json:"x,omitempty"`
+	Y    int       `json:"y,omitempty"`
+	C    string    `json:"c,omitempty"`
 }
 
-func FFArgs(src, enc string, fps int, br string) []string {
+// Cap — параметры захвата: монитор, потолок битрейта (кбит/с), кадров/с; Video — профиль «видео» (частота кадров
+// важнее чёткости: к/с не снижается, на канале < 2 Мбит/с картинка ужимается до 720p); Cursor — рисовать курсор
+// в кадр (false — хост шлёт его отдельно по ctl, см. cursor.go: кадр при движении одной мыши остаётся статичным).
+type Cap struct {
+	Mon, Kbps, FPS int
+	Video, Cursor  bool
+}
+
+func FFArgs(src, enc string, c Cap) []string {
+	fps, br, cur := c.FPS, strconv.Itoa(c.Kbps)+"k", "0"
+	if c.Cursor {
+		cur = "1"
+	}
 	a := []string{"-hide_banner", "-loglevel", "warning"}
+	var vf []string
 	if src == "test" {
 		a = append(a, "-re", "-f", "lavfi", "-i", fmt.Sprintf("testsrc2=size=1280x720:rate=%d", fps))
-	} else if in, ok := strings.CutPrefix(src, "x11:"); ok { // Linux X11, с курсором: "x11::0" или "x11:WxH@:0+X,Y"
-		a = append(a, "-f", "x11grab", "-framerate", strconv.Itoa(fps), "-draw_mouse", "1")
+	} else if in, ok := strings.CutPrefix(src, "x11:"); ok { // Linux X11: "x11::0" или "x11:WxH@:0+X,Y"
+		a = append(a, "-f", "x11grab", "-framerate", strconv.Itoa(fps), "-draw_mouse", cur)
 		if size, disp, ok := strings.Cut(in, "@"); ok {
 			a = append(a, "-video_size", size)
 			in = disp
 		}
 		a = append(a, "-i", in)
-	} else if n, ok := strings.CutPrefix(src, "avf:"); ok { // macOS: экран N по avfoundation, с курсором
-		a = append(a, "-f", "avfoundation", "-capture_cursor", "1", "-framerate", strconv.Itoa(fps), "-pixel_format", "uyvy422", "-i", "Capture screen "+n+":none",
-			"-vf", fmt.Sprintf("fps=%d", fps)) // экран avfoundation -framerate не слушает («Configuration … failed»): без фильтра — тысячи кадров/с и серый экран у клиента
-	} else { // Windows 8+, ffmpeg ≥ 6.0, курсор рисуется: "desktop" или "desktop:N" (N — выход DXGI)
+	} else if n, ok := strings.CutPrefix(src, "avf:"); ok { // macOS: экран N по avfoundation
+		a = append(a, "-f", "avfoundation", "-capture_cursor", cur, "-framerate", strconv.Itoa(fps), "-pixel_format", "uyvy422", "-i", "Capture screen "+n+":none")
+		vf = append(vf, fmt.Sprintf("fps=%d", fps)) // экран avfoundation -framerate не слушает («Configuration … failed»): без фильтра — тысячи кадров/с и серый экран у клиента
+	} else { // Windows 8+, ffmpeg ≥ 6.0: "desktop" или "desktop:N" (N — выход DXGI)
 		out := 0
 		if n, ok := strings.CutPrefix(src, "desktop:"); ok {
 			out, _ = strconv.Atoi(n)
 		}
-		a = append(a, "-f", "lavfi", "-i", fmt.Sprintf("ddagrab=output_idx=%d:framerate=%d", out, fps), "-vf", "hwdownload,format=bgra")
+		a = append(a, "-f", "lavfi", "-i", fmt.Sprintf("ddagrab=output_idx=%d:framerate=%d:draw_mouse=%s", out, fps, cur))
+		vf = append(vf, "hwdownload", "format=bgra")
+	}
+	if c.Video && c.Kbps < 2000 { // профиль «видео» на узком канале: 720p (не растягивать меньшие экраны), ширина чётная
+		vf = append(vf, "scale=-2:'min(720,ih)'")
+	}
+	if len(vf) > 0 {
+		a = append(a, "-vf", strings.Join(vf, ","))
 	}
 	// Статика не деградирует вместе с каналом (LOGBOOK 2026-11-09: текст 1080p на 500 кбит/с):
 	// libx264 — CRF 20 с потолком VBV (битрейт из rate — только -maxrate/-bufsize) и без периодических I-кадров:
@@ -645,6 +672,10 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 			if s.selectMonitor(m.I) {
 				log.Printf("сессия %s: монитор %d", s.cid, m.I+1)
 			}
+		case m.T == "quality":
+			if s.setVideo(m.P == "video") {
+				log.Printf("сессия %s: профиль «%s»", s.cid, m.P)
+			}
 		case m.T == "pick" && s.picking.CompareAndSwap(false, true): // одно окно выбора за раз
 			go func() {
 				path, ok := pickFile()
@@ -660,6 +691,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 	s.ctl = ctl
 	ctl.OnOpen(func() {
 		go s.watchClip(sctx, func(b []byte) { ctl.SendText(string(b)) })
+		go s.watchCursor(sctx, func(b []byte) { ctl.SendText(string(b)) })
 		s.sendMonitors()
 	})
 	recv := new(atomic.Int32) // идущие приёмы файлов этой сессии (не больше maxRecv)
@@ -944,15 +976,15 @@ func (a *Agent) streamOnce(ctx context.Context, s *session, track *webrtc.TrackL
 	defer cancel()
 	s.mu.Lock()
 	s.capCancel, s.capStart = cancel, time.Now()
-	mon, kbps, fps := s.mon, s.rate.cur, s.rate.fps()
+	c := Cap{Mon: s.mon, Kbps: s.rate.cur, FPS: s.rate.fps(), Video: s.rate.video, Cursor: cursorInfo == nil}
 	s.mu.Unlock()
-	if fps <= 0 { // без адаптации (FF из тестов) — как задано
-		fps = a.FPS
+	if c.FPS <= 0 { // без адаптации (FF из тестов) — как задано
+		c.FPS = a.FPS
 	}
 	var cmd *exec.Cmd
 	if a.Capture != nil {
 		var err error
-		if cmd, err = a.Capture(ctx, mon, kbps, fps); err != nil {
+		if cmd, err = a.Capture(ctx, c); err != nil {
 			log.Printf("захват: %v", err)
 			return
 		}
@@ -978,7 +1010,7 @@ func (a *Agent) streamOnce(ctx context.Context, s *session, track *webrtc.TrackL
 		log.Printf("h264: %v", err)
 		return
 	}
-	frame := time.Second / time.Duration(fps)
+	frame := time.Second / time.Duration(c.FPS)
 	for {
 		nal, err := r.NextNAL()
 		if err != nil {

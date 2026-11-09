@@ -17,7 +17,38 @@ var (
 	procMessageBox = user32.NewProc("MessageBoxW")
 	procFindWindow = user32.NewProc("FindWindowW")
 	procPostMsg    = user32.NewProc("PostMessageW")
+	procCursorInfo = user32.NewProc("GetCursorInfo")
+	procLoadCursor = user32.NewProc("LoadCursorW")
+	winCursors     = map[uintptr]string{} // дескриптор системного курсора → имя CSS (общие для всех процессов)
 )
+
+func init() {
+	for id, name := range map[uintptr]string{32512: "default", 32513: "text", 32514: "wait", 32515: "crosshair", 32642: "nwse-resize",
+		32643: "nesw-resize", 32644: "ew-resize", 32645: "ns-resize", 32646: "move", 32648: "not-allowed", 32649: "pointer", 32650: "progress", 32651: "help"} {
+		if h, _, _ := procLoadCursor.Call(0, id); h != 0 { // IDC_ARROW … IDC_HELP
+			winCursors[h] = name
+		}
+	}
+	cursorInfo = winCursor
+}
+
+// winCursor — GetCursorInfo: позиция в физических пикселях (процесс Per-Monitor DPI aware v2 — как DXGI) и форма;
+// курсор приложения (не системный) — default.
+func winCursor() (x, y int, shape string, ok bool) {
+	var ci struct {
+		size, flags uint32
+		cursor      uintptr
+		x, y        int32
+	}
+	ci.size = uint32(unsafe.Sizeof(ci))
+	if r, _, _ := procCursorInfo.Call(uintptr(unsafe.Pointer(&ci))); r == 0 || ci.flags&1 == 0 { // CURSOR_SHOWING
+		return 0, 0, "", false
+	}
+	if shape = winCursors[ci.cursor]; shape == "" {
+		shape = "default"
+	}
+	return int(ci.x), int(ci.y), shape, true
+}
 
 // INPUT для x64: 40 байт, union выровнен на 8.
 type mouseInput struct {

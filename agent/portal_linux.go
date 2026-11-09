@@ -182,7 +182,9 @@ func (p *portal) parseStream(v any) error {
 
 func (p *portal) alive() bool { return !p.closed.Load() }
 
-func (p *portal) capture(ctx context.Context, fps int, bitrate, _ string, _ *Monitor) (*exec.Cmd, error) {
+// ponytail: профиль «видео» (масштаб 720p) в конвейере GStreamer не реализован — только к/с из c.
+func (p *portal) capture(ctx context.Context, c Cap, _ string, _ *Monitor) (*exec.Cmd, error) {
+	fps := c.FPS
 	deskMu.Lock()                 // getDesktop закрывает fd мёртвого портала — номер не должен уйти чужому сокету до Dup
 	dup, err := syscall.Dup(p.fd) // свой экземпляр fd на каждый запуск захвата
 	deskMu.Unlock()
@@ -193,7 +195,7 @@ func (p *portal) capture(ctx context.Context, fps int, bitrate, _ string, _ *Mon
 	go func() { <-ctx.Done(); f.Close() }()
 	pipeline := fmt.Sprintf("pipewiresrc fd=3 path=%d do-timestamp=true keepalive-time=1000 ! videoconvert ! videorate"+
 		" ! video/x-raw,format=I420,framerate=%d/1 ! x264enc tune=zerolatency speed-preset=ultrafast bitrate=%d key-int-max=%d bframes=0 byte-stream=true"+
-		" ! video/x-h264,profile=constrained-baseline,stream-format=byte-stream ! fdsink fd=1", p.node, fps, Kbps(bitrate), fps)
+		" ! video/x-h264,profile=constrained-baseline,stream-format=byte-stream ! fdsink fd=1", p.node, fps, c.Kbps, fps)
 	cmd := exec.CommandContext(ctx, "gst-launch-1.0", append([]string{"-q"}, strings.Fields(pipeline)...)...)
 	cmd.ExtraFiles = []*os.File{f} // станет fd 3 в дочернем процессе
 	return cmd, nil

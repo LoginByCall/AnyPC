@@ -35,7 +35,7 @@ func TestMacKeys(t *testing.T) {
 
 // TestMacArgs — захват экрана N через avfoundation с курсором; частота — фильтром fps (регрессия: тысячи кадров/с, серый экран).
 func TestMacArgs(t *testing.T) {
-	a := FFArgs("avf:1", "libx264", 30, "4000k")
+	a := FFArgs("avf:1", "libx264", Cap{FPS: 30, Kbps: 4000, Cursor: true})
 	if i := slices.Index(a, "-i"); i < 0 || a[i+1] != "Capture screen 1:none" || !slices.Contains(a, "avfoundation") || !slices.Contains(a, "fps=30") {
 		t.Fatal(a)
 	}
