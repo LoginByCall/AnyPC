@@ -60,7 +60,7 @@ func main() {
 	a := &agent.Agent{Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, Key: cfg.key(), FPS: 30, Trusted: cfg.trusted, Trust: cfg.trust,
 		Bitrate: agent.Kbps(cfg.Bitrate),
 		Confirm: func(cid, peer string) bool { return !cfg.confirm() || agent.AskAccept(cid, peer) }, Capture: hostCapture(cfg.Enc), FileDir: downloads(), Stderr: logw,
-		VP9: cfg.Enc == "vp9"}
+		VP9: cfg.vp9}
 	var mu sync.Mutex
 	online, session, update := false, "", ""
 	a.OnState = func(on bool, s string) { mu.Lock(); online, session = on, s; mu.Unlock() }
@@ -68,7 +68,7 @@ func main() {
 		node, pub := cfg.node()
 		mu.Lock()
 		defer mu.Unlock()
-		return map[string]any{"id": cfg.ID, "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "version": version, "update": update, "node": node, "nodePub": pub, "server": cfg.Server}
+		return map[string]any{"id": cfg.ID, "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "version": version, "update": update, "node": node, "nodePub": pub, "server": cfg.Server, "enc": cfg.enc(), "vp9Built": agent.VP9Built}
 	}
 	go watchUpdates(func(v string) { mu.Lock(); update = v; mu.Unlock() })
 
@@ -161,7 +161,7 @@ window.ANYPC = {ws: %s};
   const T = %s;
   const api = (n, ...a) => fetch('/api/' + n, {method: 'POST', headers: {'X-Token': T, 'Content-Type': 'application/json'}, body: JSON.stringify(a)})
     .then(async r => { const j = await r.json(); if (!r.ok) throw j.error; return j.result; });
-  for (const n of ['hostInfo', 'setPassword', 'setConfirm', 'setNode', 'quit', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'hostVerify', 'knownGet', 'knownSet', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort']) window[n] = (...a) => api(n, ...a);
+  for (const n of ['hostInfo', 'setPassword', 'setConfirm', 'setCodec', 'setNode', 'quit', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'hostVerify', 'knownGet', 'knownSet', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort']) window[n] = (...a) => api(n, ...a);
   window.fullscreen = on => on ? document.documentElement.requestFullscreen().then(() => navigator.keyboard?.lock()).catch(() => {})
                                : document.fullscreenElement && document.exitFullscreen();
 })();
@@ -214,6 +214,12 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 			json.Unmarshal(args[0], &on)
 		}
 		err = cfg.setConfirm(on)
+	case "setCodec":
+		var on bool
+		if len(args) > 0 {
+			json.Unmarshal(args[0], &on)
+		}
+		err = cfg.setCodec(on)
 	case "setNode":
 		var pub bool
 		if len(args) > 1 {

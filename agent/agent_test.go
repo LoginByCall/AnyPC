@@ -600,9 +600,12 @@ func TestMonitorHelpers(t *testing.T) {
 	if a := join(FFArgs("desktop", "libx264", Cap{FPS: 30, Kbps: 4000, Video: true})); strings.Contains(a, "scale=") {
 		t.Errorf("видео 4 Мбит/с без масштаба: %s", a)
 	}
-	// vp9: ffmpeg не кодирует — Y4M чётного размера в stdout, без параметров кодера
-	if a := join(FFArgs("desktop", "vp9", sep)); !strings.HasSuffix(a, "-pix_fmt yuv420p -f yuv4mpegpipe -") || !strings.Contains(a, "trunc(iw/2)*2") || strings.Contains(a, "-c:v") || strings.Contains(a, "-crf") {
+	// vp9 (Cap.VP9): ffmpeg не кодирует — Y4M чётного размера в stdout, без параметров кодера; enc "vp9" без Cap.VP9 → libx264
+	if a := join(FFArgs("desktop", "libx264", Cap{FPS: 30, Kbps: 1000, VP9: true})); !strings.HasSuffix(a, "-pix_fmt yuv420p -f yuv4mpegpipe -") || !strings.Contains(a, "trunc(iw/2)*2") || strings.Contains(a, "-c:v") || strings.Contains(a, "-crf") {
 		t.Errorf("vp9: %s", a)
+	}
+	if a := join(FFArgs("desktop", "vp9", sep)); !strings.Contains(a, "-c:v libx264 ") || strings.Contains(a, "yuv4mpegpipe") {
+		t.Errorf("enc vp9 без кодера: %s", a)
 	}
 	cancelled := false
 	s := &session{mons: []Monitor{{}, {}}, capCancel: func() { cancelled = true }}

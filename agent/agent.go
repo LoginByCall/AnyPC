@@ -51,7 +51,7 @@ type Agent struct {
 	OnState func(online bool, session string)                   // session "" — сессии нет
 	FileDir string                                              // куда принимать файлы; "" — %USERPROFILE%\Downloads
 	Capture func(ctx context.Context, c Cap) (*exec.Cmd, error) // захват по Cap (H.264 Annex-B или Y4M в stdout); nil — FFmpeg + FF
-	VP9     bool                                                // кодер VP9 в процессе (vp9.go): Capture отдаёт кадры Y4M (FFArgs с enc "vp9")
+	VP9     func() bool                                         // кодер VP9 в процессе (vp9.go) для новых сессий; nil — H.264 через ffmpeg
 	Bitrate int                                                 // кбит/с — потолок адаптивного битрейта (REQ-N-03); 0 — постоянный
 	Confirm func(cid, peer string) bool                         // REQ-F-03: спросить человека на хосте после верного пароля; nil — не спрашивать (unattended)
 	Trusted func(pub []byte) bool                               // У3: ключ клиента закреплён (вход с ним был); nil — без доверенных
@@ -88,6 +88,7 @@ type session struct {
 	mon       int                   // выбранный монитор (индекс в mons)
 	capCancel context.CancelFunc    // остановить текущий процесс захвата
 	capStart  time.Time             // старт текущего захвата — PLI раньше pliHold после него не перезапускает
+	vp9       bool                  // кодек сессии выбран при её создании (Agent.VP9) и не меняется до конца
 	inproc    atomic.Bool           // кодер в процессе работает: битрейт, к/с и ключевой кадр меняются без перезапуска захвата
 	keyReq    atomic.Bool           // кодеру в процессе: следующий кадр — ключевой (PLI)
 	switched  atomic.Bool           // захват остановлен ради смены монитора/битрейта — перезапуск без паузы
@@ -160,10 +161,18 @@ type ctlMsg struct {
 type Cap struct {
 	Mon, Kbps, FPS int
 	Video, Cursor  bool
+	VP9            bool // кодер VP9 в процессе: ffmpeg отдаёт Y4M, enc игнорируется (см. FFArgs)
 }
 
-// enc "vp9" — ffmpeg не кодирует: кадры Y4M (yuv420p, чётные размеры) в stdout для кодера в процессе (vp9.go).
+// c.VP9 — ffmpeg не кодирует: кадры Y4M (yuv420p, чётные размеры) в stdout для кодера в процессе (vp9.go); enc тогда
+// не важен. Без c.VP9 enc "vp9" (настройка при сборке без кодера) → libx264.
 func FFArgs(src, enc string, c Cap) []string {
+	switch {
+	case c.VP9:
+		enc = "vp9"
+	case enc == "vp9":
+		enc = "libx264"
+	}
 	fps, br, cur := c.FPS, strconv.Itoa(c.Kbps)+"k", "0"
 	if c.Cursor {
 		cur = "1"
@@ -621,7 +630,8 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 		MimeType: webrtc.MimeTypeH264, ClockRate: 90000,
 		SDPFmtpLine: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f",
 	}
-	if a.VP9 {
+	vp9 := a.VP9 != nil && a.VP9()
+	if vp9 {
 		codec = webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP9, ClockRate: 90000, SDPFmtpLine: "profile-id=0"}
 	}
 	track, err := webrtc.NewTrackLocalStaticSample(codec, "video", "anypc")
@@ -632,7 +642,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 	if err != nil {
 		return fail(err)
 	}
-	s := &session{cid: cid, conn: c, pc: pc, mons: listMonitors()}
+	s := &session{cid: cid, conn: c, pc: pc, mons: listMonitors(), vp9: vp9}
 	if kbps > 0 {
 		s.rate = rate{max: kbps, cur: kbps, fpsMax: a.FPS}
 		select { // фабрика интерсептора вызывается внутри NewPeerConnection — оценщик уже здесь
@@ -1042,7 +1052,7 @@ func (a *Agent) streamOnce(ctx context.Context, s *session, track *webrtc.TrackL
 	defer cancel()
 	s.mu.Lock()
 	s.capCancel, s.capStart = cancel, time.Now()
-	c := Cap{Mon: s.mon, Kbps: s.rate.cur, FPS: s.rate.fps(), Video: s.rate.video, Cursor: cursorInfo == nil}
+	c := Cap{Mon: s.mon, Kbps: s.rate.cur, FPS: s.rate.fps(), Video: s.rate.video, Cursor: cursorInfo == nil, VP9: s.vp9}
 	s.mu.Unlock()
 	if c.FPS <= 0 { // без адаптации (FF из тестов) — как задано
 		c.FPS = a.FPS
@@ -1071,7 +1081,7 @@ func (a *Agent) streamOnce(ctx context.Context, s *session, track *webrtc.TrackL
 		return
 	}
 	defer func() { cancel(); cmd.Wait() }() // сначала убить: при выходе по ошибке записи ffmpeg жив, а пайп никто не читает
-	if a.VP9 {
+	if s.vp9 {
 		a.streamVP9(ctx, s, out, track, c)
 		return
 	}

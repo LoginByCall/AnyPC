@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
-	"log"
 	"os"
 	"path/filepath"
 	"slices"
@@ -52,10 +51,6 @@ func loadConfig(path string) (*config, error) {
 		err = json.Unmarshal(b, c)
 	} else if errors.Is(err, os.ErrNotExist) {
 		err = nil
-	}
-	if c.Enc == "vp9" && !agent.VP9Built {
-		log.Printf("enc vp9: программа собрана без кодера VP9 — используется libx264")
-		c.Enc = "libx264"
 	}
 	if err != nil {
 		return nil, err
@@ -110,6 +105,31 @@ func (c *config) confirm() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.Confirm == nil || *c.Confirm
+}
+
+// setCodec — VP9 в процессе (true) или H.264 через ffmpeg (libx264; аппаратные h264_* правятся в файле вручную).
+func (c *config) setCodec(vp9 bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if vp9 {
+		c.Enc = "vp9"
+	} else if c.Enc == "vp9" {
+		c.Enc = "libx264"
+	}
+	return c.save()
+}
+
+// vp9 — кодер VP9 для новых сессий: выбран в настройках и есть в этой сборке.
+func (c *config) vp9() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Enc == "vp9" && agent.VP9Built
+}
+
+func (c *config) enc() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Enc
 }
 
 func (c *config) setConfirm(on bool) error {
