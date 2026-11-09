@@ -51,7 +51,6 @@ type Agent struct {
 	OnState func(online bool, session string)                   // session "" — сессии нет
 	FileDir string                                              // куда принимать файлы; "" — %USERPROFILE%\Downloads
 	Capture func(ctx context.Context, c Cap) (*exec.Cmd, error) // захват по Cap (H.264 Annex-B или Y4M в stdout); nil — FFmpeg + FF
-	VP9     func() bool                                         // кодер VP9 в процессе (vp9.go) для новых сессий; nil — H.264 через ffmpeg
 	Bitrate int                                                 // кбит/с — потолок адаптивного битрейта (REQ-N-03); 0 — постоянный
 	Confirm func(cid, peer string) bool                         // REQ-F-03: спросить человека на хосте после верного пароля; nil — не спрашивать (unattended)
 	Trusted func(pub []byte) bool                               // У3: ключ клиента закреплён (вход с ним был); nil — без доверенных
@@ -523,7 +522,7 @@ func (a *Agent) onConnect(ctx context.Context, c *websocket.Conn, m hub.Msg) {
 	if turn != "" {
 		log.Printf("сессия %s: TURN %s (выбор клиента %q; клиент %v, хост %v мс)", m.From, turn, req.TURN, req.RTT, rtt)
 	}
-	s, err := a.newSession(ctx, c, m.From, ice, offerMsg{TURN: turn, RTT: rtt})
+	s, err := a.newSession(ctx, c, m.From, ice, offerMsg{TURN: turn, RTT: rtt}, req.VP9 && VP9Built)
 	a.mu.Lock()
 	a.starting--
 	var dup *session                  // два connect одного клиента, пока первый ещё слал offer: оставить последний
@@ -607,7 +606,8 @@ func newAPI(se webrtc.SettingEngine, kbps int) (*webrtc.API, chan cc.BandwidthEs
 	return webrtc.NewAPI(webrtc.WithMediaEngine(m), webrtc.WithInterceptorRegistry(ir), webrtc.WithSettingEngine(se)), bwe, nil
 }
 
-func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, ice []webrtc.ICEServer, om offerMsg) (*session, error) {
+// vp9 — кодер VP9 в процессе (по запросу клиента и если собран), иначе H.264 через ffmpeg.
+func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, ice []webrtc.ICEServer, om offerMsg, vp9 bool) (*session, error) {
 	kbps := 0
 	if a.Capture != nil {
 		kbps = a.Bitrate
@@ -630,7 +630,6 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 		MimeType: webrtc.MimeTypeH264, ClockRate: 90000,
 		SDPFmtpLine: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f",
 	}
-	vp9 := a.VP9 != nil && a.VP9()
 	if vp9 {
 		codec = webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP9, ClockRate: 90000, SDPFmtpLine: "profile-id=0"}
 	}

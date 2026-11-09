@@ -32,7 +32,7 @@ h264reader добавляет кадр задержки. Кодер в проц�
 - agent/y4m.go — парсер YUV4MPEG2; agent/vp9.go — кодер (cgo, тег vp9), vp9_stub.go — заглушка без тега.
 - agent.go: Agent.VP9, трек VP9, FFArgs(enc "vp9") → Y4M чётного размера, streamVP9 (прореживание до rate.fps(), setBitrate на кадре, keyReq → ключевой).
 - rate.go: при inproc смена битрейта и PLI не перезапускают захват. Тесты: TestY4M, TestRateRestartsCapture (ветка inproc), FFArgs vp9; под тегом — TestVP9, TestE2EVP9.
-- app: enc "vp9" → Agent.VP9; собрано без VP9 → откат на libx264 с записью в журнал.
+- Выбор кодека — у клиента: галочка «Турбо (VP9)» рядом с «только через TURN», запоминается в браузере; в connect уходит `vp9: true`, хост даёт VP9, если собран с ним (VP9Built), иначе H.264; кодек фиксируется на сессию (session.vp9, Cap.VP9); строка статистики показывает VP9 или H.264. Галочка в окне хоста убрана (решение владельца 2026-11-09). `enc` в config.json — только выбор кодера H.264 в ffmpeg.
 - deploy/libvpx.sh — статическая libvpx v1.15.2 для linux-amd64, windows-amd64, darwin-amd64/arm64; build.sh подхватывает при наличии third_party/libvpx/<цель>.
 - Лендинг: карточка «Плавно и отзывчиво» упоминает VP9 (7 языков) — уйдёт на сайт со следующим выпуском сервера.
 
@@ -50,12 +50,12 @@ h264reader добавляет кадр задержки. Кодер в проц�
 
 ## Верификация
 - V0 ✓ vet linux/windows без тега; vet -tags vp9 с заголовками ✓; Мак: vet -tags vp9 ✓, universal-бинарник x86_64+arm64 с VP9 собран (2026-11-09).
-- V1 ✓ TestY4M, rate, FFArgs; Мак: TestVP9 ✓ (ключевой 15 КБ, далее 40–150 байт на статике), TestE2EVP9 ✓ (клиент pion получил трек VP9 через ffmpeg Y4M → libvpx). Linux: ждёт libvpx (nasm/mingw у владельца).
-- V2 (Мак, Xeon E3-1270 v2 2012, 4 ядра): BenchmarkVP9 1080p шум+движение — 7,0 мс на кадр стеной при 4 потоках → 1080p30 с запасом; CPU в процентах ядер — замерить на Windows-хосте (V3).
+- V1 ✓ TestY4M, rate, FFArgs; Linux (libvpx 1.15.2 из deploy/libvpx.sh): `go test -tags vp9 ./agent` все ✓, статический бинарник с -extldflags -static собирается; Мак: TestVP9 ✓ (ключевой 15 КБ, далее 40–150 байт на статике), TestE2EVP9 ✓ (клиент pion получил трек VP9 через ffmpeg Y4M → libvpx). Linux: ждёт libvpx (nasm/mingw у владельца).
+- V2: BenchmarkVP9 1080p шум+движение — Мак Xeon E3-1270 v2 (2012, 4 ядра) 7,0 мс/кадр, Linux 16 ядер 3,6 мс/кадр, стеной при 4 потоках → 1080p30 с запасом; CPU в процентах ядер — замерить на Windows-хосте (V3).
 - V3 — нет.
 
 ## СЛЕДУЮЩИЙ ШАГ
-- Владелец: в терминале `sudo apt install -y nasm gcc-mingw-w64-x86-64`, затем `deploy/libvpx.sh` (linux-amd64 windows-amd64). Мак готов (darwin-arm64 собран, darwin-amd64 — Homebrew 1.17.0). Затем я: тесты -tags vp9 на Linux, сборка Windows, выпуск; владелец ставит `"enc": "vp9"` в config.json на Windows-хосте → V3 (CPU, задержка, картинка в Chrome/Edge/Firefox); после V3 — vp9 по умолчанию.
+- Мак готов (darwin-arm64 собран, darwin-amd64 — Homebrew 1.17.0). Затем я: тесты -tags vp9 на Linux, сборка Windows, выпуск; владелец ставит `"enc": "vp9"` в config.json на Windows-хосте → V3 (CPU, задержка, картинка в Chrome/Edge/Firefox); после V3 — vp9 по умолчанию.
 
 ## Ожидает человека
 - Установка nasm и mingw (sudo) и запуск deploy/libvpx.sh — или разрешение мне запускать скачанные сборочные инструменты.

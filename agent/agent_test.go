@@ -124,6 +124,7 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 			k, _ := pake.ClientSignB64(e2eSeed(), id, "", "")
 			cr.CPub, _ = base64.StdEncoding.DecodeString(k["pub"])
 		}
+		cr.VP9 = e2eVP9
 		send("connect", cr)
 		if m = read(); m.Type == "offer" {
 			break
@@ -393,6 +394,7 @@ func TestClipEcho(t *testing.T) {
 var (
 	e2eAgent func(*Agent)
 	e2eMime  = webrtc.MimeTypeH264                                         // кодек видео, который ждёт клиент
+	e2eVP9   bool                                                          // клиент просит VP9 в connect
 	e2eTrack func(*testing.T, *webrtc.PeerConnection, *webrtc.TrackRemote) // после 300 RTP видео у клиента
 	e2eDeny  bool                                                          // ожидать отказ человека на хосте (REQ-F-03)
 	e2eCtl   func(*testing.T, *webrtc.DataChannel, chan ctlMsg)
