@@ -23,6 +23,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
+	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -210,6 +211,9 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 			}
 		}
 		t.Logf("300 RTP за %v", time.Since(t0))
+		if e2eTrack != nil {
+			e2eTrack(t, pc, tr)
+		}
 		got <- tr.Codec().MimeType
 	})
 	pc.OnICECandidate(func(ci *webrtc.ICECandidate) {
@@ -388,7 +392,8 @@ func TestClipEcho(t *testing.T) {
 // Крючки e2e для отдельных тестов (по умолчанию nil).
 var (
 	e2eAgent func(*Agent)
-	e2eDeny  bool // ожидать отказ человека на хосте (REQ-F-03)
+	e2eTrack func(*testing.T, *webrtc.PeerConnection, *webrtc.TrackRemote) // после 300 RTP видео у клиента
+	e2eDeny  bool                                                          // ожидать отказ человека на хосте (REQ-F-03)
 	e2eCtl   func(*testing.T, *webrtc.DataChannel, chan ctlMsg)
 	e2eSquat int    // столько клиентов до настоящего шлют connect и молчат (У3, У9)
 	e2eKey   string // seed ключа клиента (base64): заявить в connect и подписать в «b» (У3); "bad" — заявить, подпись испортить
@@ -496,6 +501,37 @@ func TestMonitorSwitch(t *testing.T) {
 	e2e(t, local(t), "123456789", false, nil, "secret123")
 }
 
+// TestPLI — потеря опорного кадра у клиента: PLI перезапускает захват (новый IDR), не раньше pliHold после старта.
+func TestPLI(t *testing.T) {
+	calls := make(chan time.Time, 10)
+	e2eAgent = func(a *Agent) {
+		a.Capture = func(ctx context.Context, _, _, _ int) (*exec.Cmd, error) {
+			calls <- time.Now()
+			return exec.CommandContext(ctx, "ffmpeg", FFArgs("test", "libx264", 30, "1M")...), nil
+		}
+	}
+	e2eTrack = func(t *testing.T, pc *webrtc.PeerConnection, tr *webrtc.TrackRemote) {
+		first := <-calls
+		pli := []rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: uint32(tr.SSRC())}}
+		if time.Since(first) < pliHold-300*time.Millisecond { // 300 RTP обычно приходят за ~2 с — ранний PLI проверяем, только если успели
+			pc.WriteRTCP(pli)
+			select {
+			case <-calls:
+				t.Fatal("перезапуск по PLI раньше pliHold")
+			case <-time.After(time.Until(first.Add(pliHold + 100*time.Millisecond))):
+			}
+		}
+		pc.WriteRTCP(pli)
+		select {
+		case <-calls:
+		case <-time.After(2 * time.Second):
+			t.Fatal("захват не перезапустился по PLI")
+		}
+	}
+	defer func() { e2eAgent, e2eTrack = nil, nil }()
+	e2e(t, local(t), "123456789", false, nil, "secret123")
+}
+
 func TestMonitorHelpers(t *testing.T) {
 	m := &Monitor{X: 1920, Y: -200, W: 1280, H: 720}
 	if x, y := monPoint(m, 0, 65535); x != 1920 || y != 519 {
@@ -507,6 +543,13 @@ func TestMonitorHelpers(t *testing.T) {
 	}
 	if a := join(FFArgs("x11:1280x720@:0+1920,0", "libx264", 30, "1M")); !strings.Contains(a, "-video_size 1280x720 -i :0+1920,0") {
 		t.Errorf("x11grab: %s", a)
+	}
+	// статика не деградирует: x264 — CRF с потолком, без -b:v и периодических I-кадров; аппаратный — ABR, IDR раз в секунду
+	if a := join(FFArgs("desktop", "libx264", 30, "1M")); !strings.Contains(a, "-maxrate 1M -bufsize 1M") || !strings.Contains(a, "-crf 20") || strings.Contains(a, "-g ") || strings.Contains(a, "-b:v") || !strings.Contains(a, "keyint=infinite") {
+		t.Errorf("x264: %s", a)
+	}
+	if a := join(FFArgs("desktop", "h264_nvenc", 30, "1M")); !strings.Contains(a, "-b:v 1M -g 30") || strings.Contains(a, "-crf") {
+		t.Errorf("nvenc: %s", a)
 	}
 	cancelled := false
 	s := &session{mons: []Monitor{{}, {}}, capCancel: func() { cancelled = true }}

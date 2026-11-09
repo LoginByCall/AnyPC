@@ -27,8 +27,9 @@ type rate struct {
 }
 
 const (
-	rateMin = 300 // кбит/с — ниже картинка рабочего стола уже нечитаема
-	fpsMin  = 5   // кадров/с — ниже курсор и ввод «прыгают»
+	pliHold = 2 * time.Second // PLI раньше этого после старта захвата не перезапускает его (новый IDR ещё в пути)
+	rateMin = 300             // кбит/с — ниже картинка рабочего стола уже нечитаема
+	fpsMin  = 5               // кадров/с — ниже курсор и ввод «прыгают»
 )
 
 // fps — частота кадров для текущего битрейта.
@@ -83,6 +84,18 @@ func (s *session) onRTCP(pkts []rtcp.Packet) {
 	for _, p := range pkts {
 		if _, ok := p.(*rtcp.TransportLayerCC); ok && s.bwe != nil && !s.twcc.Swap(true) {
 			log.Printf("сессия %s: клиент шлёт TWCC — оценка полосы GCC работает", s.cid)
+		}
+		switch p.(type) {
+		case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest: // клиент потерял опорный кадр — IDR даёт только новый ffmpeg
+			s.mu.Lock()
+			if time.Since(s.capStart) >= pliHold && s.capCancel != nil { // PLI в начале потока (до первого IDR) и шторм после потерь — один перезапуск
+				log.Printf("сессия %s: PLI — перезапуск захвата ради IDR", s.cid)
+				s.capStart = time.Now()
+				s.switched.Store(true)
+				s.capCancel()
+			}
+			s.mu.Unlock()
+			continue
 		}
 		rr, ok := p.(*rtcp.ReceiverReport)
 		if !ok {
