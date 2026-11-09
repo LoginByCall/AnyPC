@@ -29,14 +29,13 @@
 - V3 — НЕ ПОДТВЕРЖДЕНЫ: CRF+VBV без периодических IDR и PLI-восстановление в Chrome/Edge/Firefox на реальном канале (визуально: статичный текст на 0,5–1 Мбит/с дорисовывается, после потерь картинка восстанавливается); курсор отдельно от видео на Windows-хосте (форма I-beam над текстом, нет двойного курсора, при движении одной мыши битрейт ≈ 0) и на Маке (позиция, масштаб Retina); профиль «видео» на 1 Мбит/с (30 к/с, 720p); AnyPC.exe на Windows (окно, ввод, полный экран, плашка), Мак (мышь, клавиатура, второй монитор), установка узла на свежий VPS, compose с Let's Encrypt, замер Томск↔Шэньчжэнь.
 
 ## СЛЕДУЮЩИЙ ШАГ
-- GitHub-релиз v0.1.13 создаёт владелец (см. «Ожидает человека»); затем V3 курсора и профиля на Windows-хосте.
+- V3 v0.1.13 на Windows-хосте: I-beam над текстом, нет двойного курсора, битрейт ≈ 0 при движении одной мыши, кнопка «Текст / Видео».
 - Владелец: резервная копия ключа выпуска ~/.config/anypc/release-ed25519.pem; команда total-quota=1000 на HK/RU/US; V3 нового входа (доверенный ключ, «занят» только после пароля) и окна на Linux/Mac (одноразовый код).
 - Каждый выпуск: поднять MIN_VERSION в deploy/setup.sh до версии в том же коммите, что и тег (publish.sh иначе откажет); в GitHub-релиз — SHA256SUMS.sig и VERSION.
 - Проверить гипотезу «зависание ICE на Маке = LuLu»: LuLu выключен/Passive → `go test -count=4 -run '^(TestE2E|TestMonitorSwitch|TestConfirm)$' ./agent` на Маке. Все прошли → вернуть тесты в build.sh (убрать -skip) и обход loopback в file_test.go; нет → на Маке гонять только тесты macOS.
 - Выкладка (разрешена правилом): `env -u HTTPS_PROXY -u HTTP_PROXY -u ALL_PROXY -u https_proxy -u http_proxy BUILDX_BUILDER=anypc ANYPC_MAC=alexander@192.168.88.250 ANYPC_DOCKER=1 ANYPC_VPS='root@170.168.24.45 root@170.168.5.86' deploy/publish.sh` — дословно, иначе классификатор.
 
 ## Ожидает человека
-- GitHub-релиз v0.1.13 (классификатор не дал): из каталога bin — `gh release create v0.1.13 --prerelease --title v0.1.13 --notes "…" AnyPC.exe AnyPC-linux-amd64 AnyPC-macos anypc-server install.sh SHA256SUMS SHA256SUMS.sig VERSION` без прокси (env -u HTTPS_PROXY …); без релиза запасное зеркало install.sh (releases/latest) отдаёт v0.1.12.
 - V3 из списка выше.
 - Перевод лендинга через DeepL — нужен ключ API Free (сейчас переводит Claude).
 
