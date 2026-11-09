@@ -86,6 +86,7 @@ type session struct {
 	mons      []Monitor
 	mon       int                   // выбранный монитор (индекс в mons)
 	capCancel context.CancelFunc    // остановить текущий процесс захвата
+	capStart  time.Time             // старт текущего захвата — PLI раньше pliHold после него не перезапускает
 	switched  atomic.Bool           // захват остановлен ради смены монитора/битрейта — перезапуск без паузы
 	rate      rate                  // адаптивный битрейт; max == 0 — выключен
 	bwe       cc.BandwidthEstimator // оценка полосы GCC по TWCC клиента; nil — без неё
@@ -164,10 +165,18 @@ func FFArgs(src, enc string, fps int, br string) []string {
 		}
 		a = append(a, "-f", "lavfi", "-i", fmt.Sprintf("ddagrab=output_idx=%d:framerate=%d", out, fps), "-vf", "hwdownload,format=bgra")
 	}
-	// ponytail: GOP = 1 с вместо реакции на PLI — потеря кадра лечится ≤ 1 с; PLI → когда упрёмся
-	a = append(a, "-c:v", enc, "-b:v", br, "-maxrate", br, "-bufsize", br, "-g", strconv.Itoa(fps), "-bf", "0", "-pix_fmt", "yuv420p")
+	// Статика не деградирует вместе с каналом (LOGBOOK 2026-11-09: текст 1080p на 500 кбит/с):
+	// libx264 — CRF 20 с потолком VBV (битрейт из rate — только -maxrate/-bufsize) и без периодических I-кадров:
+	// I-кадр раз в секунду упирался в VBV одной секунды битрейта и каждый раз перерисовывал неизменную картинку
+	// (PSNR пилой 23–34 дБ); теперь неизменные блоки дорисовываются P-кадрами до CRF (28 → 48 дБ за 6 с),
+	// статика стоит 11–66 байт/кадр, при движении VBV держит потолок (4175 кбит/с при 4M). intra-refresh отвергнут:
+	// каждая новая волна перекодирует хорошую картинку при QP 39–44 (45 → 30 дБ). Смена сцены — IDR по scenecut.
+	// Потеря кадра лечится PLI (onRTCP) → перезапуск захвата. Аппаратные кодеры — как раньше: ABR, IDR раз в секунду.
+	a = append(a, "-c:v", enc, "-maxrate", br, "-bufsize", br, "-bf", "0", "-pix_fmt", "yuv420p")
 	if enc == "libx264" { // один слайс на кадр — длительность сэмпла ставится на слайс
-		a = append(a, "-preset", "ultrafast", "-tune", "zerolatency", "-profile:v", "baseline", "-x264-params", "sliced-threads=0")
+		a = append(a, "-crf", "20", "-preset", "ultrafast", "-tune", "zerolatency", "-profile:v", "baseline", "-x264-params", "sliced-threads=0:keyint=infinite")
+	} else {
+		a = append(a, "-b:v", br, "-g", strconv.Itoa(fps))
 	}
 	return append(a, "-flush_packets", "1", "-f", "h264", "-")
 }
@@ -934,7 +943,7 @@ func (a *Agent) streamOnce(ctx context.Context, s *session, track *webrtc.TrackL
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	s.mu.Lock()
-	s.capCancel = cancel
+	s.capCancel, s.capStart = cancel, time.Now()
 	mon, kbps, fps := s.mon, s.rate.cur, s.rate.fps()
 	s.mu.Unlock()
 	if fps <= 0 { // без адаптации (FF из тестов) — как задано
