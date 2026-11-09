@@ -38,9 +38,9 @@ if [ "${ANYPC_MAC:-}" ]; then # macOS: ввод через CoreGraphics (cgo) �
   git ls-files -co --exclude-standard | grep -vE '^(bin|\.claude)/' | { cat; printf 'ui/pake.wasm\nui/wasm_exec.js\n'; } | rsync -a --files-from=- ./ "$ANYPC_MAC:anypc-src/"
   ssh "$ANYPC_MAC" "set -e; cd anypc-src; export PATH=\$HOME/.local/go/bin:/usr/local/bin:/opt/homebrew/bin:\$PATH GOTOOLCHAIN=local CGO_ENABLED=1
     # ponytail: e2e через en0 на Маке плавает и на v0.1.5 (ICE pion зависает в WriteTo) — пропуск до разбора; на Linux идут все
-    go vet ./app ./agent; go test -count=1 -skip '^(TestE2E|TestWrongPassword|TestCaptureRestart)\$' ./agent ./app
-    for a in amd64 arm64; do T=; L=third_party/libvpx/darwin-\$a; [ -f \$L/lib/libvpx.a ] && T=-tags=vp9 && export CGO_CFLAGS=-I\$PWD/\$L/include CGO_LDFLAGS=-L\$PWD/\$L/lib
-      GOARCH=\$a go build \$T -ldflags='-s -w -X main.version=$V' -o AnyPC-macos-\$a ./app; done # libvpx на Маке: deploy/libvpx.sh darwin-amd64 darwin-arm64 (там же, в anypc-src)
+    vpx() { L=third_party/libvpx/darwin-\$1; [ -f \$L/lib/libvpx.a ] && export CGO_CFLAGS=-I\$PWD/\$L/include CGO_LDFLAGS=-L\$PWD/\$L/lib && echo -tags=vp9; } # libvpx на Маке: deploy/libvpx.sh darwin-amd64 darwin-arm64 (в anypc-src)
+    T=\$(vpx \$(uname -m | sed s/x86_64/amd64/)); go vet \$T ./app ./agent; go test -count=1 \$T -skip '^(TestE2E|TestWrongPassword|TestCaptureRestart)\$' ./agent ./app
+    for a in amd64 arm64; do GOARCH=\$a go build \$(vpx \$a) -ldflags='-s -w -X main.version=$V' -o AnyPC-macos-\$a ./app; done
     lipo -create -output AnyPC-macos AnyPC-macos-amd64 AnyPC-macos-arm64; codesign -s - -f AnyPC-macos; lipo -info AnyPC-macos"
   scp "$ANYPC_MAC:anypc-src/AnyPC-macos" bin/
 fi

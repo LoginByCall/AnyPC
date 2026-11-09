@@ -42,3 +42,31 @@ func TestVP9(t *testing.T) {
 	}
 	t.Logf("размеры кадров: %v", sizes)
 }
+
+// BenchmarkVP9 — 1080p, синтетическое движение (бегущая полоса на шуме): CPU на кадр при настройках хоста.
+func BenchmarkVP9(b *testing.B) {
+	w, h := 1920, 1080
+	e, err := newVP9(w, h, 4000)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer e.close()
+	frame := make([]byte, w*h*3/2)
+	for i := range frame {
+		frame[i] = byte(i * 7)
+	}
+	b.ResetTimer()
+	total := 0
+	for i := 0; b.Loop(); i++ {
+		x := (i * 16) % w
+		for y := 0; y < h; y++ {
+			frame[y*w+x] = 0xff
+		}
+		out, _, err := e.encode(frame, 33*time.Millisecond, false)
+		if err != nil {
+			b.Fatal(err)
+		}
+		total += len(out)
+	}
+	b.ReportMetric(float64(total)*8/1000/float64(b.N)*30, "kbit/s")
+}
