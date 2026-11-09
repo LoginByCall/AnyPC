@@ -87,7 +87,8 @@ type session struct {
 	mon       int                   // выбранный монитор (индекс в mons)
 	capCancel context.CancelFunc    // остановить текущий процесс захвата
 	capStart  time.Time             // старт текущего захвата — PLI раньше pliHold после него не перезапускает
-	vp9       bool                  // кодек сессии выбран при её создании (Agent.VP9) и не меняется до конца
+	vp9       bool                  // кодек сессии выбран при её создании (connect.vp9) и не меняется до конца
+	pace      *pacer                // темп отправки видео (pace.go): битрейт — из rate
 	inproc    atomic.Bool           // кодер в процессе работает: битрейт, к/с и ключевой кадр меняются без перезапуска захвата
 	keyReq    atomic.Bool           // кодеру в процессе: следующий кадр — ключевой (PLI)
 	switched  atomic.Bool           // захват остановлен ради смены монитора/битрейта — перезапуск без паузы
@@ -574,10 +575,10 @@ func (a *Agent) countAuth(cid string, ok bool) {
 // отчётами о времени прихода, GCC видит рост очереди до потерь. Оценщик сессии приходит в канал.
 // ponytail: без пейсера — ключевой кадр уходит пачкой, как и раньше; с пейсером он ждал бы в очереди
 // на скорости оценки (+сотни мс). Пейсер — если пачки IDR будут переполнять буферы на узких каналах.
-func newAPI(se webrtc.SettingEngine, kbps int) (*webrtc.API, chan cc.BandwidthEstimator, error) {
+func newAPI(se webrtc.SettingEngine, kbps int) (*webrtc.API, chan cc.BandwidthEstimator, *pacer, error) {
 	m := &webrtc.MediaEngine{}
 	if err := m.RegisterDefaultCodecs(); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	ir := &interceptor.Registry{}
 	bwe := make(chan cc.BandwidthEstimator, 1)
@@ -587,7 +588,7 @@ func newAPI(se webrtc.SettingEngine, kbps int) (*webrtc.API, chan cc.BandwidthEs
 				gcc.SendSideBWEMinBitrate(rateMin*1000), gcc.SendSideBWEPacer(gcc.NewNoOpPacer()))
 		})
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		f.OnNewPeerConnection(func(_ string, e cc.BandwidthEstimator) {
 			select {
@@ -597,13 +598,16 @@ func newAPI(se webrtc.SettingEngine, kbps int) (*webrtc.API, chan cc.BandwidthEs
 		})
 		ir.Add(f)
 		if err := webrtc.ConfigureTWCCHeaderExtensionSender(m, ir); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 	}
 	if err := webrtc.RegisterDefaultInterceptors(m, ir); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return webrtc.NewAPI(webrtc.WithMediaEngine(m), webrtc.WithInterceptorRegistry(ir), webrtc.WithSettingEngine(se)), bwe, nil
+	pace := &pacer{} // последним — ближе всех к приложению (pace.go)
+	pace.kbps.Store(int64(kbps))
+	ir.Add(pace)
+	return webrtc.NewAPI(webrtc.WithMediaEngine(m), webrtc.WithInterceptorRegistry(ir), webrtc.WithSettingEngine(se)), bwe, pace, nil
 }
 
 // vp9 — кодер VP9 в процессе (по запросу клиента и если собран), иначе H.264 через ffmpeg.
@@ -612,7 +616,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 	if a.Capture != nil {
 		kbps = a.Bitrate
 	}
-	api, bwe, err := newAPI(webrtc.SettingEngine{}, kbps)
+	api, bwe, pace, err := newAPI(webrtc.SettingEngine{}, kbps)
 	if err != nil {
 		return nil, err
 	}
@@ -641,7 +645,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 	if err != nil {
 		return fail(err)
 	}
-	s := &session{cid: cid, conn: c, pc: pc, mons: listMonitors(), vp9: vp9}
+	s := &session{cid: cid, conn: c, pc: pc, mons: listMonitors(), vp9: vp9, pace: pace}
 	if kbps > 0 {
 		s.rate = rate{max: kbps, cur: kbps, fpsMax: a.FPS}
 		select { // фабрика интерсептора вызывается внутри NewPeerConnection — оценщик уже здесь
@@ -1007,9 +1011,13 @@ func (a *Agent) streamVP9(ctx context.Context, s *session, out io.Reader, track 
 	}
 	defer enc.close()
 	s.inproc.Store(true)
-	defer s.inproc.Store(false)
+	s.mu.Lock()
+	s.rate.fast = true
+	s.mu.Unlock()
+	defer func() { s.inproc.Store(false); s.mu.Lock(); s.rate.fast = false; s.mu.Unlock() }()
 	log.Printf("vp9: %d×%d, источник %d к/с", y.w, y.h, y.fps)
-	acc := 0.0 // прореживание: кадр уходит, когда накопилась единица целевой частоты
+	acc := 0.0                // прореживание: кадр уходит, когда накопилась единица целевой частоты
+	var skipped time.Duration // длительность кадров с последней отправки (пропущенные кодером + текущий)
 	for {
 		frame, err := y.next()
 		if err != nil {
@@ -1028,18 +1036,25 @@ func (a *Agent) streamVP9(ctx context.Context, s *session, out io.Reader, track 
 			continue
 		}
 		acc--
-		if err := enc.setBitrate(kbps); err != nil {
+		if err := enc.setRate(kbps, fps); err != nil {
 			log.Printf("%v", err)
 		}
 		dur := time.Second / time.Duration(fps)
-		data, _, err := enc.encode(frame, dur, s.keyReq.Swap(false))
+		key := s.keyReq.Swap(false)
+		data, _, err := enc.encode(frame, dur, key)
 		if err != nil {
 			log.Printf("%v", err)
 			return
 		}
-		if err := track.WriteSample(media.Sample{Data: data, Duration: dur}); err != nil {
+		skipped += dur
+		if data == nil { // пропущен кодером: время кадра уходит в метку следующего
+			s.keyReq.CompareAndSwap(false, key)
+			continue
+		}
+		if err := track.WriteSample(media.Sample{Data: data, Duration: skipped}); err != nil {
 			return
 		}
+		skipped = 0
 	}
 }
 
