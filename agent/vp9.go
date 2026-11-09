@@ -8,8 +8,7 @@ package agent
 // даёт +1 дБ при 72 % битрейта (LOGBOOK 2026-11-09).
 
 /*
-#cgo LDFLAGS: -lvpx -lm
-#cgo linux LDFLAGS: -lpthread
+#cgo LDFLAGS: -lvpx -lm -lpthread
 #include <stdlib.h>
 #include <string.h>
 #include <vpx/vpx_encoder.h>
