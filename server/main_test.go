@@ -1,14 +1,18 @@
 package main
 
 import (
+	"context"
+	"flag"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"anypc/site"
 )
@@ -149,5 +153,27 @@ func TestServe(t *testing.T) {
 	}
 	if c := req(64 << 10); c != http.StatusRequestHeaderFieldsTooLarge {
 		t.Fatalf("заголовки 64 КБ: %d, ждали 431", c)
+	}
+}
+
+// TestMaxConnsFlag — D5: -maxconns < 0 принимался, и хаб отвечал 503 на всё (cmp.Or подменяет только 0).
+// Теперь — ошибка при старте. main запускается в дочернем процессе (тот же тестовый бинарник).
+func TestMaxConnsFlag(t *testing.T) {
+	if args := os.Getenv("ANYPC_SERVER_ARGS"); args != "" {
+		flag.CommandLine = flag.NewFlagSet("server", flag.ExitOnError)
+		os.Args = append([]string{"server"}, strings.Fields(args)...)
+		main()
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestMaxConnsFlag$")
+	cmd.Env = append(os.Environ(), "ANYPC_SERVER_ARGS=-addr 127.0.0.1:0 -maxconns -1 -certs "+filepath.Join(t.TempDir(), "certs"))
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatal("-maxconns -1: сервер запустился (отвечал бы 503 на всё)")
+	}
+	if err == nil || !strings.Contains(string(out), "-maxconns") {
+		t.Fatalf("-maxconns -1: ждали ошибку при старте, получили %v: %s", err, out)
 	}
 }
