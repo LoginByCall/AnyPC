@@ -63,7 +63,8 @@ type Hub struct {
 	conns   map[string]int     // открытых соединений по адресу IPv4 / префиксу IPv6
 	total   int                // всех открытых соединений
 	nf      map[string]*bucket // not_found по адресу
-	nfSweep time.Time
+	fresh   map[string]*bucket // новые клиентские WS по адресу
+	sweepAt time.Time
 }
 
 // NewPerHour — новых ID с одного IP в час. Привязка вечная, файл переписывается целиком:
@@ -278,6 +279,11 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if id == "" && !h.notFound(addr, false) {
 		w.Header().Set("Retry-After", "60")
 		http.Error(w, "too many not_found", http.StatusTooManyRequests)
+		return
+	}
+	if id == "" && !h.newClient(addr) {
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "too many new connections", http.StatusTooManyRequests)
 		return
 	}
 	if code := h.acquire(addr); code != 0 {

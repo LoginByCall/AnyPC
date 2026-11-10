@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -475,14 +476,23 @@ func TestConnLimit(t *testing.T) {
 	defer cancel()
 	h := &Hub{}
 	url, _ := limHub(t, ctx, h)
-	var keep []*websocket.Conn
-	for i := range ConnsPerIP {
-		c, _, code := dialFrom(t, ctx, url, "203.0.113.5")
-		if code != 0 {
+	// ConnsPerIP настоящих WS упёрлись бы в NewClientBurst — первые ConnsPerIP-1 занимают счётчик напрямую
+	a5 := netip.MustParseAddr("203.0.113.5")
+	for i := range ConnsPerIP - 1 {
+		if code := h.acquire(a5); code != 0 {
 			t.Fatalf("соединение %d: %d", i, code)
 		}
-		keep = append(keep, c)
 	}
+	defer func() {
+		for range ConnsPerIP - 1 {
+			h.release(a5)
+		}
+	}()
+	c, _, code := dialFrom(t, ctx, url, "203.0.113.5")
+	if code != 0 {
+		t.Fatalf("соединение %d: %d", ConnsPerIP, code)
+	}
+	keep := []*websocket.Conn{c}
 	if _, _, code := dialFrom(t, ctx, url, "203.0.113.5"); code != http.StatusTooManyRequests {
 		t.Fatalf("соединение %d с IP: %d, ждали 429", ConnsPerIP+1, code)
 	}
@@ -536,12 +546,90 @@ func TestConnLimit(t *testing.T) {
 	// общий потолок — 503 и для loopback
 	small := &Hub{MaxConns: 2}
 	url, _ = limHub(t, ctx, small) // хост — первое соединение
-	c, _, code := dialFrom(t, ctx, url, "")
+	c, _, code = dialFrom(t, ctx, url, "")
 	if code != 0 {
 		t.Fatalf("второе соединение: %d", code)
 	}
 	defer c.CloseNow()
 	if _, _, code := dialFrom(t, ctx, url, ""); code != http.StatusServiceUnavailable {
 		t.Fatalf("сверх MaxConns: %d, ждали 503", code)
+	}
+}
+
+// TestNewClientLimit — D1: ведро connect живёт в соединении, и раньше «WS → 5 connect → закрыть → повторить» с одного IP
+// доносило до хоста ≈7000 connect/с (опыт A приёмки). Теперь новых клиентских WS с адреса — NewClientBurst и
+// NewClientRate в секунду, сверх — 429 до Upgrade; уже открытое WS, соседний IP, loopback и хост не задеты.
+func TestNewClientLimit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	url, host := limHub(t, ctx, &Hub{})
+	var got atomic.Int64
+	others := make(chan string, 16)
+	go func() {
+		for {
+			var m Msg
+			if wsjson.Read(ctx, host, &m) != nil {
+				return
+			}
+			if m.Type == "connect" {
+				got.Add(1)
+				if !strings.HasPrefix(m.From, "c") {
+					t.Errorf("connect от %q", m.From)
+				}
+				select {
+				case others <- m.From:
+				default:
+				}
+			}
+		}
+	}()
+	const ip = "203.0.113.50"
+	spare, sid, _ := dialFrom(t, ctx, url, ip) // открыто до исчерпания
+	start := time.Now()
+	ok, refused := 1, 0
+	for range 3 * NewClientBurst {
+		c, _, code := dialFrom(t, ctx, url, ip)
+		if code == http.StatusTooManyRequests {
+			refused++
+			continue
+		}
+		if code != 0 {
+			t.Fatalf("dial: %d", code)
+		}
+		ok++
+		for range ConnectBurst {
+			wsjson.Write(ctx, c, Msg{Type: "connect", To: "123456789"})
+		}
+		wsjson.Write(ctx, c, Msg{Type: "bye", To: "123456789"})
+		c.Close(websocket.StatusNormalClosure, "")
+	}
+	if most := NewClientBurst + int(time.Since(start).Seconds()*NewClientRate) + 1; ok > most || refused == 0 {
+		t.Fatalf("клиентских WS с одного IP открыто %d (ждали ≤ %d), отказов 429: %d", ok, most, refused)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if n := got.Load(); n > int64(ok*ConnectBurst) {
+		t.Fatalf("до хоста дошло connect: %d, ждали ≤ %d", n, ok*ConnectBurst)
+	}
+	for len(others) > 0 {
+		<-others
+	}
+	want := map[string]bool{sid: true} // уже открытое WS, соседний IP и loopback не задеты
+	wsjson.Write(ctx, spare, Msg{Type: "connect", To: "123456789"})
+	for _, from := range []string{"203.0.113.51", ""} {
+		c, id, code := dialFrom(t, ctx, url, from)
+		if code != 0 {
+			t.Fatalf("с %q: %d", from, code)
+		}
+		defer c.CloseNow()
+		want[id] = true
+		wsjson.Write(ctx, c, Msg{Type: "connect", To: "123456789"})
+	}
+	for len(want) > 0 {
+		select {
+		case from := <-others:
+			delete(want, from)
+		case <-ctx.Done():
+			t.Fatalf("до хоста не дошли connect от %v", want)
+		}
 	}
 }

@@ -21,6 +21,7 @@ const (
 	HostByteBurst, HostByteRate     = 2 << 20, 256 << 10  // байт хоста; сверх — так же
 	NotFoundPerConn                 = 5                   // not_found клиенту на соединение; следующий — закрыть
 	NotFoundPerMin                  = 30                  // not_found на IP (/64) в минуту; сверх — закрыть и 429 новым клиентским WS
+	NewClientBurst, NewClientRate   = 60, 1               // новых клиентских WS с адреса (IPv4, /64; /48 — ×10): всплеск, в секунду; сверх — 429 до Upgrade
 	ConnsPerIP                      = 100                 // соединений с адреса IPv4 или /64 (офис, школа, CGNAT); сверх — 429 до Upgrade
 	ConnsPer48                      = 1000                // соединений с /48 (у владельца /48 — 65 536 разных /64)
 	MaxConnsDefault                 = 5000                // всех соединений (≈55 КБ на WS по TLS → ≈280 МБ); сверх — 503
@@ -134,14 +135,7 @@ func (h *Hub) notFound(a netip.Addr, take bool) bool {
 	}
 	h.lim.Lock()
 	defer h.lim.Unlock()
-	if time.Since(h.nfSweep) > time.Minute { // полные вёдра не нужны: память — только под недавних нарушителей
-		for k, b := range h.nf {
-			if b.fill(); b.tokens >= b.burst {
-				delete(h.nf, k)
-			}
-		}
-		h.nfSweep = time.Now()
-	}
+	h.sweep()
 	b, ok := h.nf[ks[0].key]
 	if !ok {
 		if !take {
@@ -159,4 +153,64 @@ func (h *Hub) notFound(a netip.Addr, take bool) bool {
 	}
 	b.fill()
 	return b.tokens >= 1
+}
+
+// sweep — раз в минуту убрать полные вёдра «на адрес»: память — только под недавних клиентов. Под h.lim.
+func (h *Hub) sweep() {
+	if time.Since(h.sweepAt) < time.Minute {
+		return
+	}
+	for _, m := range []map[string]*bucket{h.nf, h.fresh} {
+		for k, b := range m {
+			if b.fill(); b.tokens >= b.burst {
+				delete(m, k)
+			}
+		}
+	}
+	h.sweepAt = time.Now()
+}
+
+// perAddr снимает маркер со всех вёдер адреса a в *m (все или ничего; take == false — только проверить запас).
+// Ключи — как у соединений (limKeys): IPv4 — адрес, IPv6 — /64 и /48; ведро /48 в ConnsPer48/ConnsPerIP раз шире,
+// иначе у владельца /48 65 536 независимых вёдер /64. Нет записи — ведро полное. Loopback и частные — без лимита.
+func (h *Hub) perAddr(m *map[string]*bucket, a netip.Addr, burst, rate float64, take bool) bool {
+	ks := limKeys(a)
+	if ks == nil {
+		return true
+	}
+	h.lim.Lock()
+	defer h.lim.Unlock()
+	h.sweep()
+	var bs []*bucket
+	for _, k := range ks {
+		b := (*m)[k.key]
+		if b == nil {
+			if !take {
+				continue
+			}
+			if *m == nil {
+				*m = map[string]*bucket{}
+			}
+			f := float64(k.max) / ConnsPerIP
+			nb := newBucket(burst*f, rate*f)
+			b = &nb
+			(*m)[k.key] = b
+		}
+		if b.fill(); b.tokens < 1 {
+			return false
+		}
+		bs = append(bs, b)
+	}
+	if take {
+		for _, b := range bs {
+			b.tokens--
+		}
+	}
+	return true
+}
+
+// newClient — можно ли открыть ещё одно клиентское WS с адреса a (D1). Ведро connect живёт в соединении:
+// без этого WS → 5 connect → закрыть → повторить давало тысячи connect в секунду до хоста с одного IP.
+func (h *Hub) newClient(a netip.Addr) bool {
+	return h.perAddr(&h.fresh, a, NewClientBurst, NewClientRate, true)
 }
