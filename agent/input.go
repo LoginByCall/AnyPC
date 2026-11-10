@@ -160,14 +160,14 @@ var scancodes = map[string]uint16{
 }
 
 // plaques — плашка сессии (REQ-F-15): заголовок, текст, подсказка; ключ — язык интерфейса ОС.
-var plaques = map[string][3]string{
-	"en": {"remote session", "A remote session is in progress.", "Click “OK” to disconnect."},
-	"ru": {"удалённая сессия", "Идёт удалённая сессия.", "Нажмите «ОК», чтобы разорвать."},
-	"zh": {"远程会话", "正在进行远程会话。", "点击“确定”断开连接。"},
-	"es": {"sesión remota", "Hay una sesión remota en curso.", "Pulse «Aceptar» para desconectar."},
-	"de": {"Fernsitzung", "Eine Fernsitzung ist aktiv.", "Klicken Sie auf „OK“, um zu trennen."},
-	"fr": {"session à distance", "Une session à distance est en cours.", "Cliquez sur « OK » pour déconnecter."},
-	"it": {"sessione remota", "È in corso una sessione remota.", "Fai clic su «OK» per disconnettere."},
+var plaques = map[string][4]string{
+	"en": {"remote session", "A remote session is in progress.", "Click “OK” to disconnect.", "Disconnect"},
+	"ru": {"удалённая сессия", "Идёт удалённая сессия.", "Нажмите «ОК», чтобы разорвать.", "Разорвать"},
+	"zh": {"远程会话", "正在进行远程会话。", "点击“确定”断开连接。", "断开"},
+	"es": {"sesión remota", "Hay una sesión remota en curso.", "Pulse «Aceptar» para desconectar.", "Desconectar"},
+	"de": {"Fernsitzung", "Eine Fernsitzung ist aktiv.", "Klicken Sie auf „OK“, um zu trennen.", "Trennen"},
+	"fr": {"session à distance", "Une session à distance est en cours.", "Cliquez sur « OK » pour déconnecter.", "Déconnecter"},
+	"it": {"sessione remota", "È in corso una sessione remota.", "Fai clic su «OK» per disconnettere.", "Disconnetti"},
 }
 
 // asks — окно «Разрешить / Отклонить» (REQ-F-03): заголовок, вопрос, сноска, кнопки.
@@ -190,6 +190,15 @@ func askText(lang, cid, peer string) (title, text, yes, no string) {
 		q = asks["en"]
 	}
 	return "AnyPC — " + q[0], q[1] + "\n\nID: " + cid + "\nIP: " + peer + "\n\n" + q[2], q[3], q[4]
+}
+
+// plaqueBar — однострочная плашка (Windows): подпись и кнопка «Разорвать».
+func plaqueBar(lang, cid string) (label, btn string) {
+	pl, ok := plaques[lang]
+	if !ok {
+		pl = plaques["en"]
+	}
+	return "AnyPC: " + pl[0] + " " + cid, pl[3]
 }
 
 func plaqueText(lang, cid string) (title, text string) {

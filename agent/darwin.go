@@ -228,7 +228,8 @@ func osa(script string, args ...string) *exec.Cmd {
 	return exec.Command("osascript", append([]string{"-e", "on run argv", "-e", script, "-e", "end run"}, args...)...)
 }
 
-// plaqueJS — плашка REQ-F-15: обычное окно macOS (закрыть, свернуть, развернуть) поверх остальных, со значком в Dock.
+// plaqueJS — плашка REQ-F-15: окно macOS поверх остальных, со значком в Dock; только «закрыть» (= разорвать):
+// «свернуть» оператор нажал бы сам и спрятал плашку.
 // Закрыли окно или нажали «OK» → osascript выходит → сессия рвётся. JXA: окно Cocoa без своего приложения.
 const plaqueJS = `ObjC.import('Cocoa'); ObjC.import('stdlib');
 function run(argv) {
@@ -238,7 +239,7 @@ function run(argv) {
     'windowWillClose:': { types: ['void', ['id']], implementation: function () { $.exit(0); } },
     'ok:': { types: ['void', ['id']], implementation: function () { $.exit(0); } } } });
   const d = $.AnyPCPlaque.alloc.init;
-  const w = $.NSWindow.alloc.initWithContentRectStyleMaskBackingDefer($.NSMakeRect(0, 0, 440, 160), 15, 2, false);
+  const w = $.NSWindow.alloc.initWithContentRectStyleMaskBackingDefer($.NSMakeRect(0, 0, 440, 160), 3, 2, false);
   w.title = argv[0]; w.delegate = d; w.releasedWhenClosed = false; w.level = 3;
   const t = $.NSTextField.wrappingLabelWithString(argv[1]); t.frame = $.NSMakeRect(20, 56, 400, 90);
   const b = $.NSButton.buttonWithTitleTargetAction('OK', d, 'ok:'); b.frame = $.NSMakeRect(330, 14, 90, 32); b.keyEquivalent = '\r';
