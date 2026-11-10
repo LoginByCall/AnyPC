@@ -249,11 +249,11 @@ function run(argv) {
 }`
 
 // showIndicator — плашка; закрыл её человек (или osascript упал — тогда без плашки сессии не быть) → разорвать сессию.
-func showIndicator(cid string, onUserClose func()) (func(), error) {
+func showIndicator(cid string, view bool, onUserClose func()) (func(), error) {
 	if fakeDesktop {
 		return func() {}, nil
 	}
-	title, text := plaqueText(sysLang(), cid)
+	title, text := plaqueText(sysLang(), cid, view)
 	cmd := exec.Command("osascript", "-l", "JavaScript", "-e", plaqueJS, title, text)
 	var errb strings.Builder
 	cmd.Stderr = &errb
@@ -274,16 +274,20 @@ func showIndicator(cid string, onUserClose func()) (func(), error) {
 }
 
 // AskAccept — окно «Разрешить / Отклонить» (REQ-F-03); без ответа AskTimeout или ошибка → отказ.
-func AskAccept(cid, peer string) bool {
+func AskAccept(cid, peer string) Answer {
 	if fakeDesktop {
-		return true
+		return Allow
 	}
-	title, text, yes, no := askText(sysLang(), cid, peer)
-	out, err := osa(`set r to display dialog (item 2 of argv) with title (item 1 of argv) buttons {item 4 of argv, item 3 of argv} default button 2 cancel button 1 giving up after ((item 5 of argv) as integer) with icon caution
+	title, text, yes, no, view := askText(sysLang(), cid, peer)
+	out, err := osa(`set r to display dialog (item 2 of argv) with title (item 1 of argv) buttons {item 4 of argv, item 6 of argv, item 3 of argv} default button 3 cancel button 1 giving up after ((item 5 of argv) as integer) with icon caution
 if gave up of r then return "no"
 if button returned of r is (item 3 of argv) then return "yes"
-return "no"`, title, text, yes, no, strconv.Itoa(int(AskTimeout.Seconds()))).Output()
-	return err == nil && strings.TrimSpace(string(out)) == "yes"
+if button returned of r is (item 6 of argv) then return "view"
+return "no"`, title, text, yes, no, strconv.Itoa(int(AskTimeout.Seconds())), view).Output()
+	if err != nil {
+		return Deny
+	}
+	return map[string]Answer{"yes": Allow, "view": ViewOnly}[strings.TrimSpace(string(out))]
 }
 
 func pickFile() (string, bool) {

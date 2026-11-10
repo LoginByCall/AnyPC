@@ -13,11 +13,11 @@ func TestPlaqueBar(t *testing.T) {
 				t.Errorf("%s: пустая строка %d", lang, i)
 			}
 		}
-		if l, b := plaqueBar(lang, "c123456789012"); !strings.Contains(l, "c123456789012") || b != pl[3] {
+		if l, b := plaqueBar(lang, "c123456789012", false); !strings.Contains(l, "c123456789012") || b != pl[3] {
 			t.Errorf("%s: %q %q", lang, l, b)
 		}
 	}
-	if _, b := plaqueBar("xx", "c1"); b != "Disconnect" {
+	if _, b := plaqueBar("xx", "c1", false); b != "Disconnect" {
 		t.Errorf("запасной язык: %q", b)
 	}
 }

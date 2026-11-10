@@ -52,7 +52,7 @@ type Agent struct {
 	FileDir string                                              // куда принимать файлы; "" — %USERPROFILE%\Downloads
 	Capture func(ctx context.Context, c Cap) (*exec.Cmd, error) // захват по Cap (H.264 Annex-B или Y4M в stdout); nil — FFmpeg + FF
 	Bitrate int                                                 // кбит/с — потолок адаптивного битрейта (REQ-N-03); 0 — постоянный
-	Confirm func(cid, peer string) bool                         // REQ-F-03: спросить человека на хосте после верного пароля; nil — не спрашивать (unattended)
+	Confirm func(cid, peer string) Answer                       // REQ-F-03: спросить человека на хосте после верного пароля; nil — не спрашивать (unattended)
 	Trusted func(pub []byte) bool                               // У3: ключ клиента закреплён (вход с ним был); nil — без доверенных
 	Trust   func(pub []byte)                                    // закрепить ключ клиента после входа по паролю
 
@@ -75,6 +75,7 @@ type session struct {
 	keys    held
 	clip    clipSync
 	authed  atomic.Bool // до успешного CPace ни видео, ни ввод, ни буфер обмена, ни файлы не работают
+	view    atomic.Bool // REQ-F-20 «только просмотр»: от клиента — ни ввода, ни буфера, ни файлов; буфер хоста ему не уходит
 	picking atomic.Bool // открыто окно выбора файла
 	asking  atomic.Bool // на хосте открыто окно «Разрешить / Отклонить»
 	gone    atomic.Bool // сессия освобождена (release) — в pend не возвращать
@@ -133,6 +134,7 @@ type authMsg struct {
 	Conf []byte `json:"conf,omitempty"`
 	Pub  []byte `json:"pub,omitempty"` // в "ok": ключ хоста и подпись над DTLS-отпечатками (REQ-S-05)
 	Sig  []byte `json:"sig,omitempty"`
+	View bool   `json:"view,omitempty"` // в "ok": сессия «только просмотр» (REQ-F-20)
 	CPub []byte `json:"cpub,omitempty"` // в "b": ключ клиента и его подпись над DTLS-отпечатками (У3)
 	CSig []byte `json:"csig,omitempty"`
 }
@@ -523,7 +525,7 @@ func (a *Agent) onConnect(ctx context.Context, c *websocket.Conn, m hub.Msg) {
 	if turn != "" {
 		log.Printf("сессия %s: TURN %s (выбор клиента %q; клиент %v, хост %v мс)", m.From, turn, req.TURN, req.RTT, rtt)
 	}
-	s, err := a.newSession(ctx, c, m.From, ice, offerMsg{TURN: turn, RTT: rtt}, req.VP9 && VP9Built)
+	s, err := a.newSession(ctx, c, m.From, ice, offerMsg{TURN: turn, RTT: rtt}, req.VP9 && VP9Built, req.View)
 	a.mu.Lock()
 	a.starting--
 	var dup *session                  // два connect одного клиента, пока первый ещё слал offer: оставить последний
@@ -611,7 +613,7 @@ func newAPI(se webrtc.SettingEngine, kbps int) (*webrtc.API, chan cc.BandwidthEs
 }
 
 // vp9 — кодер VP9 в процессе (по запросу клиента и если собран), иначе H.264 через ffmpeg.
-func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, ice []webrtc.ICEServer, om offerMsg, vp9 bool) (*session, error) {
+func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, ice []webrtc.ICEServer, om offerMsg, vp9, view bool) (*session, error) {
 	kbps := 0
 	if a.Capture != nil {
 		kbps = a.Bitrate
@@ -646,6 +648,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 		return fail(err)
 	}
 	s := &session{cid: cid, conn: c, pc: pc, mons: listMonitors(), vp9: vp9, pace: pace}
+	s.view.Store(view)
 	if kbps > 0 {
 		s.rate = rate{max: kbps, cur: kbps, fpsMax: a.FPS}
 		select { // фабрика интерсептора вызывается внутри NewPeerConnection — оценщик уже здесь
@@ -666,7 +669,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 	}
 	bad := 0
 	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-		if !s.authed.Load() {
+		if !s.control() {
 			return
 		}
 		e, err := decode(msg.Data)
@@ -690,7 +693,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 			return
 		}
 		switch {
-		case m.T == "clip" && s.clip.fromRemote(m.Text):
+		case m.T == "clip" && s.control() && s.clip.fromRemote(m.Text):
 			if err := setClip(m.Text); err != nil {
 				log.Printf("буфер обмена: %v", err)
 			}
@@ -702,7 +705,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 			if s.setVideo(m.P == "video") {
 				log.Printf("сессия %s: профиль «%s»", s.cid, m.P)
 			}
-		case m.T == "pick" && s.picking.CompareAndSwap(false, true): // одно окно выбора за раз
+		case m.T == "pick" && s.control() && s.picking.CompareAndSwap(false, true): // одно окно выбора за раз
 			go func() {
 				path, ok := pickFile()
 				s.picking.Store(false)
@@ -723,7 +726,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 	recv := new(atomic.Int32) // идущие приёмы файлов этой сессии (не больше maxRecv)
 
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) { // каналы от клиента — только файлы и только после входа
-		if dc.Label() == "file" && s.authed.Load() {
+		if dc.Label() == "file" && s.control() {
 			a.receiveFile(dc, recv)
 			return
 		}
@@ -880,11 +883,14 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 			s.mu.Lock()
 			peer := s.peer
 			s.mu.Unlock()
-			ok := a.Confirm(s.cid, peer)
+			ans := a.Confirm(s.cid, peer)
 			s.asking.Store(false)
 			switch {
 			case ctx.Err() != nil: // клиент ушёл, пока ждали ответа
-			case ok:
+			case ans != Deny:
+				if ans == ViewOnly { // человек на хосте может только сузить права, не расширить
+					s.view.Store(true)
+				}
 				a.accept(ctx, s, track, send, conf, fpc, fph, pin)
 			default:
 				log.Printf("сессия %s: отклонена на хосте", s.cid)
@@ -906,11 +912,12 @@ func (a *Agent) accept(ctx context.Context, s *session, track *webrtc.TrackLocal
 	if pin != nil && a.Trust != nil {
 		a.Trust(pin)
 	}
-	send(authMsg{T: "ok", Conf: conf, Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph)})
-	log.Printf("сессия %s: вход выполнен", s.cid)
+	view := s.view.Load()
+	send(authMsg{T: "ok", Conf: conf, Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph), View: view})
+	log.Printf("сессия %s: вход выполнен%s", s.cid, map[bool]string{true: " (только просмотр)"}[view])
 	s.sendMonitors()
-	closeInd, err := showIndicator(s.cid, a.userClose(s)) // REQ-F-15
-	if err != nil {                                       // REQ-S-08: без видимой плашки сессии нет
+	closeInd, err := showIndicator(s.cid, view, a.userClose(s)) // REQ-F-15
+	if err != nil {                                             // REQ-S-08: без видимой плашки сессии нет
 		log.Printf("плашка сессии: %v — сессия закрыта", err)
 		s.pc.Close()
 		return
@@ -927,6 +934,18 @@ func (a *Agent) accept(ctx context.Context, s *session, track *webrtc.TrackLocal
 	a.notify()
 	go a.stream(ctx, s, track)
 }
+
+// Answer — ответ человека на хосте в окне «Разрешить» (REQ-F-03).
+type Answer int
+
+const (
+	Deny     Answer = iota
+	Allow           // полное управление
+	ViewOnly        // REQ-F-20: только просмотр
+)
+
+// control — от клиента можно принимать ввод, буфер обмена и файлы: вход выполнен и сессия не «только просмотр».
+func (s *session) control() bool { return s.authed.Load() && !s.view.Load() }
 
 // userClose — человек закрыл плашку сессии s: разорвать её, но не следующую (плашка могла пережить свою сессию).
 func (a *Agent) userClose(s *session) func() {
@@ -966,7 +985,7 @@ func (s *session) watchClip(ctx context.Context, send func([]byte)) {
 		}
 		if n := clipSeq(); n != seq {
 			seq = n
-			if !s.authed.Load() {
+			if !s.authed.Load() || s.view.Load() {
 				continue
 			}
 			if text, err := clipText(); err == nil && s.clip.toRemote(text) {

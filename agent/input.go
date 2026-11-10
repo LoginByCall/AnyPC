@@ -160,51 +160,73 @@ var scancodes = map[string]uint16{
 }
 
 // plaques — плашка сессии (REQ-F-15): заголовок, текст, подсказка; ключ — язык интерфейса ОС.
-var plaques = map[string][4]string{
-	"en": {"remote session", "A remote session is in progress.", "Click “OK” to disconnect.", "Disconnect"},
-	"ru": {"удалённая сессия", "Идёт удалённая сессия.", "Нажмите «ОК», чтобы разорвать.", "Разорвать"},
-	"zh": {"远程会话", "正在进行远程会话。", "点击“确定”断开连接。", "断开"},
-	"es": {"sesión remota", "Hay una sesión remota en curso.", "Pulse «Aceptar» para desconectar.", "Desconectar"},
-	"de": {"Fernsitzung", "Eine Fernsitzung ist aktiv.", "Klicken Sie auf „OK“, um zu trennen.", "Trennen"},
-	"fr": {"session à distance", "Une session à distance est en cours.", "Cliquez sur « OK » pour déconnecter.", "Déconnecter"},
-	"it": {"sessione remota", "È in corso una sessione remota.", "Fai clic su «OK» per disconnettere.", "Disconnetti"},
+var plaques = map[string][5]string{
+	"en": {"remote session", "A remote session is in progress.", "Click “OK” to disconnect.", "Disconnect", "view only"},
+	"ru": {"удалённая сессия", "Идёт удалённая сессия.", "Нажмите «ОК», чтобы разорвать.", "Разорвать", "только просмотр"},
+	"zh": {"远程会话", "正在进行远程会话。", "点击“确定”断开连接。", "断开", "仅查看"},
+	"es": {"sesión remota", "Hay una sesión remota en curso.", "Pulse «Aceptar» para desconectar.", "Desconectar", "solo ver"},
+	"de": {"Fernsitzung", "Eine Fernsitzung ist aktiv.", "Klicken Sie auf „OK“, um zu trennen.", "Trennen", "nur ansehen"},
+	"fr": {"session à distance", "Une session à distance est en cours.", "Cliquez sur « OK » pour déconnecter.", "Déconnecter", "affichage seul"},
+	"it": {"sessione remota", "È in corso una sessione remota.", "Fai clic su «OK» per disconnettere.", "Disconnetti", "solo visualizzazione"},
 }
 
-// asks — окно «Разрешить / Отклонить» (REQ-F-03): заголовок, вопрос, сноска, кнопки.
-var asks = map[string][5]string{
-	"en": {"incoming connection", "Allow remote control of this computer?", "No answer within 30 s — rejected.", "Allow", "Deny"},
-	"ru": {"входящее подключение", "Разрешить удалённое управление этим компьютером?", "Без ответа 30 с — отказ.", "Разрешить", "Отклонить"},
-	"zh": {"传入连接", "允许远程控制这台电脑吗？", "30 秒内未响应将自动拒绝。", "允许", "拒绝"},
-	"es": {"conexión entrante", "¿Permitir el control remoto de este equipo?", "Sin respuesta en 30 s — se rechaza.", "Permitir", "Rechazar"},
-	"de": {"eingehende Verbindung", "Fernsteuerung dieses Computers erlauben?", "Ohne Antwort in 30 s — abgelehnt.", "Erlauben", "Ablehnen"},
-	"fr": {"connexion entrante", "Autoriser le contrôle à distance de cet ordinateur ?", "Sans réponse sous 30 s — refusé.", "Autoriser", "Refuser"},
-	"it": {"connessione in arrivo", "Consentire il controllo remoto di questo computer?", "Senza risposta entro 30 s — rifiutata.", "Consenti", "Rifiuta"},
+// asks — окно «Разрешить / Отклонить» (REQ-F-03): заголовок, вопрос, сноска, кнопки (разрешить, отклонить,
+// только просмотр — REQ-F-20), подсказка к системным кнопкам Windows «Да / Нет / Отмена».
+var asks = map[string][7]string{
+	"en": {"incoming connection", "Allow remote control of this computer?", "No answer within 30 s — rejected.", "Allow", "Deny", "View only",
+		"“Yes” — allow control, “No” — view only, “Cancel” — deny."},
+	"ru": {"входящее подключение", "Разрешить удалённое управление этим компьютером?", "Без ответа 30 с — отказ.", "Разрешить", "Отклонить", "Только просмотр",
+		"«Да» — разрешить управление, «Нет» — только просмотр, «Отмена» — отклонить."},
+	"zh": {"传入连接", "允许远程控制这台电脑吗？", "30 秒内未响应将自动拒绝。", "允许", "拒绝", "仅查看",
+		"“是”——允许控制，“否”——仅查看，“取消”——拒绝。"},
+	"es": {"conexión entrante", "¿Permitir el control remoto de este equipo?", "Sin respuesta en 30 s — se rechaza.", "Permitir", "Rechazar", "Solo ver",
+		"«Sí»: permitir el control; «No»: solo ver; «Cancelar»: rechazar."},
+	"de": {"eingehende Verbindung", "Fernsteuerung dieses Computers erlauben?", "Ohne Antwort in 30 s — abgelehnt.", "Erlauben", "Ablehnen", "Nur ansehen",
+		"„Ja“ – Steuerung erlauben, „Nein“ – nur ansehen, „Abbrechen“ – ablehnen."},
+	"fr": {"connexion entrante", "Autoriser le contrôle à distance de cet ordinateur ?", "Sans réponse sous 30 s — refusé.", "Autoriser", "Refuser", "Affichage seul",
+		"« Oui » : autoriser le contrôle, « Non » : affichage seul, « Annuler » : refuser."},
+	"it": {"connessione in arrivo", "Consentire il controllo remoto di questo computer?", "Senza risposta entro 30 s — rifiutata.", "Consenti", "Rifiuta", "Solo visualizzazione",
+		"«Sì»: consenti il controllo, «No»: solo visualizzazione, «Annulla»: rifiuta."},
+}
+
+func winAskHint(lang string) string {
+	q, ok := asks[lang]
+	if !ok {
+		q = asks["en"]
+	}
+	return q[6]
 }
 
 // AskTimeout — REQ-F-03: без ответа на хосте 30 с ± 1 с → отказ.
 const AskTimeout = 30 * time.Second
 
-func askText(lang, cid, peer string) (title, text, yes, no string) {
+func askText(lang, cid, peer string) (title, text, yes, no, view string) {
 	q, ok := asks[lang]
 	if !ok {
 		q = asks["en"]
 	}
-	return "AnyPC — " + q[0], q[1] + "\n\nID: " + cid + "\nIP: " + peer + "\n\n" + q[2], q[3], q[4]
+	return "AnyPC — " + q[0], q[1] + "\n\nID: " + cid + "\nIP: " + peer + "\n\n" + q[2], q[3], q[4], q[5]
 }
 
 // plaqueBar — однострочная плашка (Windows): подпись и кнопка «Разорвать».
-func plaqueBar(lang, cid string) (label, btn string) {
+func plaqueBar(lang, cid string, view bool) (label, btn string) {
 	pl, ok := plaques[lang]
 	if !ok {
 		pl = plaques["en"]
 	}
+	if view {
+		cid += " · " + pl[4]
+	}
 	return "AnyPC: " + pl[0] + " " + cid, pl[3]
 }
 
-func plaqueText(lang, cid string) (title, text string) {
+func plaqueText(lang, cid string, view bool) (title, text string) {
 	pl, ok := plaques[lang]
 	if !ok {
 		pl = plaques["en"]
+	}
+	if view {
+		cid += " · " + pl[4]
 	}
 	return "AnyPC — " + pl[0] + " " + cid, pl[1] + "\n" + cid + "\n\n" + pl[2]
 }

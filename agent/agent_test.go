@@ -623,9 +623,9 @@ func TestMonitorHelpers(t *testing.T) {
 // хост свободен; «Разрешить» → обычная сессия. Окно получает ID клиента и его адрес.
 func TestConfirm(t *testing.T) {
 	var gotPeer atomic.Value
-	answer := false
+	answer := Deny
 	e2eAgent = func(a *Agent) {
-		a.Confirm = func(cid, peer string) bool { gotPeer.Store(cid + "|" + peer); return answer }
+		a.Confirm = func(cid, peer string) Answer { gotPeer.Store(cid + "|" + peer); return answer }
 	}
 	defer func() { e2eAgent, e2eDeny = nil, false }()
 	e2eDeny = true
@@ -633,17 +633,39 @@ func TestConfirm(t *testing.T) {
 	if p, _ := gotPeer.Load().(string); !strings.HasPrefix(p, "c") || strings.HasSuffix(p, "|") {
 		t.Fatalf("окну не передан клиент и адрес: %q", p)
 	}
-	answer, e2eDeny = true, false
+	answer, e2eDeny = Allow, false
 	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000}), "secret123")
+	answer = ViewOnly // REQ-F-20: вход и видео как обычно
+	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000}), "secret123")
+}
+
+// TestViewOnly — REQ-F-20: в «только просмотр» хост не принимает от клиента ни ввода, ни буфера, ни файлов;
+// человек на хосте может сузить права клиента, но не расширить.
+func TestViewOnly(t *testing.T) {
+	s := &session{}
+	if s.control() {
+		t.Fatal("до входа ввод принят")
+	}
+	s.authed.Store(true)
+	if !s.control() {
+		t.Fatal("обычная сессия: ввод не принят")
+	}
+	s.view.Store(true)
+	if s.control() {
+		t.Fatal("только просмотр: ввод принят")
+	}
+	if l, _ := plaqueBar("ru", "c1", true); !strings.Contains(l, "только просмотр") {
+		t.Errorf("плашка без пометки: %q", l)
+	}
 }
 
 // TestTrustDenied — ключ клиента закрепляется только после «Разрешить»: отклонённый на хосте (REQ-F-03)
 // с верным паролем не становится доверенным (иначе проходил бы блокировку).
 func TestTrustDenied(t *testing.T) {
 	var pinned atomic.Bool
-	answer := false
+	answer := Deny
 	e2eAgent = func(a *Agent) {
-		a.Confirm = func(string, string) bool { return answer }
+		a.Confirm = func(string, string) Answer { return answer }
 		a.Trust = func([]byte) { pinned.Store(true) }
 	}
 	defer func() { e2eAgent, e2eDeny, e2eKey = nil, false, "" }()
@@ -652,7 +674,7 @@ func TestTrustDenied(t *testing.T) {
 	if pinned.Load() {
 		t.Fatal("ключ закреплён, хотя вход отклонён на хосте")
 	}
-	answer, e2eDeny = true, false
+	answer, e2eDeny = Allow, false
 	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000}), "secret123")
 	if !pinned.Load() {
 		t.Fatal("ключ не закреплён после «Разрешить»")
