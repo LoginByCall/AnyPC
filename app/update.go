@@ -17,6 +17,9 @@ import (
 // даёт лишь лишнее «обновите». ponytail: без автозамены exe — для неё нужна подпись релиза (SHARED-NODES.md, П1).
 const updateSite = "https://www.anypc.org/#get"
 
+// siteHome — ссылка из справки окна Windows; тоже фиксирована в программе.
+const siteHome = "https://www.anypc.org/"
+
 // updateURLs — VERSION на наших хабах (не на «своём сервере» пользователя): http(s)-адреса из DefaultServer.
 var updateURLs = func() (l []string) {
 	for _, u := range strings.Split(DefaultServer, ",") {
