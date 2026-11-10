@@ -16,7 +16,7 @@ var (
 	cliNode      = flag.String("node", "", "свой узел-хаб (например node.example.com), «-» — вернуть хабы AnyPC; и выйти")
 	cliPublic    = flag.Bool("node-public", false, "вместе с --node: хабы AnyPC остаются запасными")
 	cliStatus    = flag.Bool("status", false, "напечатать настройки и состояние автозапуска и выйти")
-	cliInstall   = flag.Bool("install-service", false, "автозапуск при входе в графический сеанс (systemd --user) и выйти")
+	cliInstall   = flag.Bool("install-service", false, "автозапуск при входе в графический сеанс (Linux: systemd --user, macOS: LaunchAgent) и выйти")
 	cliUninstall = flag.Bool("uninstall-service", false, "убрать автозапуск и выйти")
 )
 
@@ -56,7 +56,7 @@ func runCLI(cfg *config) (done bool, err error) {
 		if err := installService(exe); err != nil {
 			return true, fmt.Errorf("автозапуск: %w", err)
 		}
-		fmt.Printf("автозапуск включён: %s\nПереместите файл — повторите --install-service. Журнал: journalctl --user -u anypc\n", exe)
+		fmt.Printf("автозапуск включён: %s\nПереместите файл — повторите --install-service. %s\n", exe, serviceHint)
 	case *cliUninstall:
 		if err := uninstallService(); err != nil {
 			return true, fmt.Errorf("автозапуск: %w", err)
