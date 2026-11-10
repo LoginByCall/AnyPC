@@ -51,7 +51,7 @@ type Hub struct {
 	TurnSecret string        // static-auth-secret coturn; "" — только STUN
 	Keys       string        // файл привязок ID → ключ хоста (JSON); "" — только в памяти
 	Ping       time.Duration // проверка живости соединений; 0 — PingEvery
-	MaxConns   int           // потолок всех соединений; 0 — MaxConnsDefault
+	MaxConns   int           // потолок всех соединений; 0 — MaxConnsDefault; < 0 — ошибка конфигурации (server не стартует)
 
 	mu    sync.Mutex
 	peers map[string]*websocket.Conn

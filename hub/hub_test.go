@@ -761,3 +761,28 @@ func TestSlowHost(t *testing.T) {
 		}
 	}
 }
+
+// TestNotFound48 — D5: ведро not_found ключевалось только по /64 — у владельца /48 65 536 независимых вёдер по
+// NotFoundPerMin. Теперь, как у соединений, ещё и ведро /48 (в ConnsPer48/ConnsPerIP раз шире); соседний /48 не задет.
+func TestNotFound48(t *testing.T) {
+	h := &Hub{}
+	per48 := NotFoundPerMin * ConnsPer48 / ConnsPerIP
+	for i := range per48 { // каждая проба — с нового /64 того же /48
+		if !h.notFound(netip.MustParseAddr(fmt.Sprintf("2001:db8:7:%x::1", i)), true) {
+			t.Fatalf("not_found %d из %d с /48 отклонён", i, per48)
+		}
+	}
+	fresh := netip.MustParseAddr("2001:db8:7:ffff::1") // новый /64, ведро /48 пусто
+	if h.notFound(fresh, false) || h.notFound(fresh, true) {
+		t.Fatalf("not_found сверх %d с /48 пропущен", per48)
+	}
+	if !h.notFound(netip.MustParseAddr("2001:db8:8::1"), true) {
+		t.Fatal("соседний /48 задет")
+	}
+	for range NotFoundPerMin { // /64 — своё ведро, как раньше
+		h.notFound(netip.MustParseAddr("2001:db8:9::1"), true)
+	}
+	if h.notFound(netip.MustParseAddr("2001:db8:9::2"), true) {
+		t.Fatalf("not_found сверх %d с /64 пропущен", NotFoundPerMin)
+	}
+}

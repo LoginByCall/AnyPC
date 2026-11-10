@@ -24,7 +24,7 @@ const (
 	HostByteBurst, HostByteRate     = 2 << 20, 256 << 10  // байт хоста; сверх — так же
 	ToHostBurst, ToHostRate         = 256 << 10, 64 << 10 // байт всех клиентов вместе одному хосту (попытка ≈20 КБ); сверх — молча отбросить
 	NotFoundPerConn                 = 5                   // not_found клиенту на соединение; следующий — закрыть
-	NotFoundPerMin                  = 30                  // not_found на IP (/64) в минуту; сверх — закрыть и 429 новым клиентским WS
+	NotFoundPerMin                  = 30                  // not_found на IPv4 и /64 (/48 — ×10) в минуту; сверх — закрыть и 429 новым клиентским WS
 	NewClientBurst, NewClientRate   = 60, 1               // новых клиентских WS с адреса (IPv4, /64; /48 — ×10): всплеск, в секунду; сверх — 429 до Upgrade
 	ConnsPerIP                      = 100                 // соединений с адреса IPv4 или /64 (офис, школа, CGNAT); сверх — 429 до Upgrade
 	ConnsPer48                      = 1000                // соединений с /48 (у владельца /48 — 65 536 разных /64)
@@ -131,32 +131,9 @@ func (h *Hub) release(a netip.Addr) {
 }
 
 // notFound считает not_found для адреса a (take) или только проверяет, остался ли запас (для отказа новым WS).
-// Счёт на соединение перечислению ID не мешает (новое WS на каждую пробу) — поэтому ещё и на IP.
+// Счёт на соединение перечислению ID не мешает (новое WS на каждую пробу) — поэтому ещё и на адрес: IPv4, /64 и /48 (D5).
 func (h *Hub) notFound(a netip.Addr, take bool) bool {
-	ks := limKeys(a)
-	if ks == nil {
-		return true
-	}
-	h.lim.Lock()
-	defer h.lim.Unlock()
-	h.sweep()
-	b, ok := h.nf[ks[0].key]
-	if !ok {
-		if !take {
-			return true
-		}
-		if h.nf == nil {
-			h.nf = map[string]*bucket{}
-		}
-		nb := newBucket(NotFoundPerMin, NotFoundPerMin/60.0)
-		b = &nb
-		h.nf[ks[0].key] = b
-	}
-	if take {
-		return b.take(1)
-	}
-	b.fill()
-	return b.tokens >= 1
+	return h.perAddr(&h.nf, a, NotFoundPerMin, NotFoundPerMin/60.0, take)
 }
 
 // sweep — раз в минуту убрать полные вёдра «на адрес»: память — только под недавних клиентов. Под h.lim.
