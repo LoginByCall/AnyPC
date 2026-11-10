@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"testing"
 
 	"anypc/agent"
+	"anypc/pake"
 )
 
 func TestLocalAPI(t *testing.T) {
@@ -114,6 +116,23 @@ func TestCLI(t *testing.T) {
 	}
 	if out := strings.TrimSpace(run("--id")); len(out) != 9 || strings.Trim(out, "0123456789") != "" {
 		t.Errorf("--id: %q", out)
+	}
+	pw := func(in string) (string, error) {
+		c := exec.Command(bin, "--password-stdin")
+		c.Env = append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+home+"/.config", "XDG_CACHE_HOME="+home+"/.cache")
+		c.Stdin = strings.NewReader(in)
+		out, err := c.CombinedOutput()
+		return string(out), err
+	}
+	if out, err := pw("short\n"); err == nil {
+		t.Errorf("короткий пароль принят: %q", out)
+	}
+	if out, err := pw("secret123\n"); err != nil {
+		t.Errorf("--password-stdin: %v %q", err, out)
+	}
+	cfg, err := loadConfig(filepath.Join(home, ".config", "AnyPC", "config.json"))
+	if err != nil || !cfg.hasPass() || !bytes.Equal(cfg.Hash, pake.KDF("secret123", cfg.Salt)) {
+		t.Errorf("пароль не записан: %v", err)
 	}
 	if out := run("--help"); !strings.Contains(out, "-no-browser") || !strings.Contains(out, "-version") || !strings.Contains(out, "v9.9.9") {
 		t.Errorf("--help: %q", out)
