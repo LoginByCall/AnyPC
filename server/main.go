@@ -55,11 +55,30 @@ func newMux(h http.Handler, siteHosts []string, dlDir string, turns, hubs []stri
 			host = hp
 		}
 		if slices.ContainsFunc(siteHosts, func(s string) bool { return strings.EqualFold(host, s) }) {
+			secure(w, r, site.CSP)
 			www.ServeHTTP(w, r)
 			return
 		}
+		// Клиенту — только frame-ancestors: полная политика у него в <meta> (ui/index.html), а две полные
+		// действовали бы обе, и расхождение хешей убило бы страницу; окно программы отдаёт ту же страницу без заголовка.
+		secure(w, r, "frame-ancestors 'none'")
 		app.ServeHTTP(w, r)
 	})
+}
+
+// secure — заголовки безопасности на каждый ответ (обоим mux, включая /ws: в ответе 101 они безвредны).
+// HSTS — только по TLS и без includeSubDomains/preload: с апекса он накрыл бы us.anypc.org:8080 (HTTP),
+// а свой узел за обратным прокси (-addr без TLS) не должен навязывать HSTS домену оператора.
+// max-age=86400 — первая неделя (сутки обратимы); год (31536000) — после недели без жалоб.
+func secure(w http.ResponseWriter, r *http.Request, csp string) {
+	h := w.Header()
+	h.Set("X-Frame-Options", "DENY")
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Referrer-Policy", "no-referrer") // Origin у WebSocket и CORS от этого не обнуляется
+	h.Set("Content-Security-Policy", csp)
+	if r.TLS != nil {
+		h.Set("Strict-Transport-Security", "max-age=86400")
+	}
 }
 
 // version — из git-тега при сборке (build.sh).
@@ -73,9 +92,10 @@ func main() {
 	turn := flag.String("turn", "", "хосты STUN/TURN через запятую")
 	hubs := flag.String("hubs", "", "все хабы сигнализации через запятую (wss://…/ws), для веб-клиента; пусто — только этот")
 	certs := flag.String("certs", "certs", "каталог кэша сертификатов")
+	maxConns := flag.Int("maxconns", hub.MaxConnsDefault, "потолок соединений сигнализации (≈55 КБ на WS по TLS); сверх — 503")
 	flag.Parse()
 
-	h := &hub.Hub{TurnHosts: list(*turn), TurnSecret: os.Getenv("ANYPC_TURN_SECRET"), Keys: filepath.Join(filepath.Dir(*certs), "hosts.json")}
+	h := &hub.Hub{TurnHosts: list(*turn), TurnSecret: os.Getenv("ANYPC_TURN_SECRET"), Keys: filepath.Join(filepath.Dir(*certs), "hosts.json"), MaxConns: *maxConns}
 	mux := newMux(h, list(*siteHost), *dl, h.TurnHosts, list(*hubs))
 	if *domain == "" {
 		log.Println("HTTP", *addr)
@@ -92,9 +112,12 @@ func main() {
 }
 
 // serve — сервер с таймаутами: без них простаивающие и медленные (slowloris) соединения копятся до OOM на VPS 1 ГБ.
-// WebSocket после Upgrade таймауты http.Server не трогают — его живость проверяет hub.Keepalive.
+// ReadHeaderTimeout и IdleTimeout WebSocket после Upgrade не трогают — его живость проверяет hub.Keepalive.
+// ReadTimeout/WriteTimeout не ставить: дедлайн остаётся на захваченном соединении и рвёт WS через N секунд.
+// MaxHeaderBytes 16 КБ (по умолчанию 1 МБ): наши запросы — сотни байт, а мегабайт заголовков на каждое
+// из тысяч соединений — память VPS.
 func serve(addr string, h http.Handler) *http.Server {
-	return &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}
+	return &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 16 << 10}
 }
 
 // list — "a, b,,c,a" → [a b c]: пустые и повторы отбрасываются (повторный запуск sed по флагам дал дубль, 2026-11-06).
