@@ -74,7 +74,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   console.log('clipbtn=' + await ev("seq.join(',')"));
   await ev("sendFile(new File([new Uint8Array(300000).map((_, i) => i % 251)], 'browser.bin'))");
   let x = '';
-  for (let i = 0; i < 75 && !/[✓✗]/.test(x); i++) { await sleep(200); x = await ev("document.getElementById('xfers').textContent"); }
+  for (let i = 0; i < 75 && !/[✓✗]/.test(x); i++) { await sleep(200); x = await ev("document.getElementById('dlpop').textContent"); }
   console.log('file=' + x);
   // регрессия: обрыв через relay завершал сессию насовсем → автопереподключение, хост не отвечает «занят»
   await ev("const p = pc; Object.defineProperty(p, 'connectionState', { get: () => 'failed' }); p.onconnectionstatechange(); 1");

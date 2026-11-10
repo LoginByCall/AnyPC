@@ -133,12 +133,36 @@ func hostWith(t *testing.T) (*webrtc.PeerConnection, string) {
 	dir := t.TempDir()
 	a := &Agent{FileDir: dir}
 	recv := new(atomic.Int32) // как в agent.go: один счётчик на сессию
-	host.OnDataChannel(func(dc *webrtc.DataChannel) {
-		if dc.Label() == "file" {
-			a.receiveFile(dc, recv)
-		}
-	})
+	s := &session{}
+	s.authed.Store(true)
+	s.view.Store(hostView)
+	host.OnDataChannel(func(dc *webrtc.DataChannel) { a.clientChannel(s, dc, recv) })
 	return client, dir
+}
+
+var hostView bool // hostWith: сессия «только просмотр»
+
+// TestUploadViewOnly — REQ-F-20: в «только просмотр» хост отвечает отказом с причиной (а не молча закрывает канал,
+// что старый клиент показывал как обрыв «отправьте ещё раз»), файлов в папке нет.
+func TestUploadViewOnly(t *testing.T) {
+	hostView = true
+	defer func() { hostView = false }()
+	client, dir := hostWith(t)
+	dc, _ := client.CreateDataChannel("file", nil)
+	res := make(chan fileMsg, 1)
+	dc.OnMessage(func(m webrtc.DataChannelMessage) { var fm fileMsg; json.Unmarshal(m.Data, &fm); res <- fm })
+	dc.OnOpen(func() { sendJSON(dc, fileMsg{T: "meta", Name: "x.bin", Size: 1}) })
+	select {
+	case r := <-res:
+		if r.T != "err" || !strings.Contains(r.Msg, "только просмотр") {
+			t.Fatalf("ответ: %+v", r)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("нет ответа хоста")
+	}
+	if left, _ := os.ReadDir(dir); len(left) != 0 {
+		t.Fatalf("в папке: %v", left)
+	}
 }
 
 func waitParts(t *testing.T, dir string, want int) {
@@ -364,8 +388,15 @@ func TestRecvLimit(t *testing.T) {
 			first, firstRes = dc, res
 		}
 	}
-	if _, r, _ := start("e.bin"); r.T != "err" || !strings.Contains(r.Msg, "не больше 4") {
-		t.Fatalf("пятый приём: %+v", r)
+	// пятый ждёт очереди (раньше — отказ, а клиент шлёт все выбранные файлы разом)
+	fifth, _ := client.CreateDataChannel("file", nil)
+	res5 := make(chan fileMsg, 4)
+	fifth.OnMessage(func(m webrtc.DataChannelMessage) { var fm fileMsg; json.Unmarshal(m.Data, &fm); res5 <- fm })
+	fifth.OnOpen(func() { sendJSON(fifth, fileMsg{T: "meta", Name: "e.bin", Size: 1}) })
+	select {
+	case r := <-res5:
+		t.Fatalf("пятый приём не ждёт: %+v", r)
+	case <-time.After(700 * time.Millisecond):
 	}
 	first.Send([]byte{1})
 	sendJSON(first, fileMsg{T: "end"})
@@ -377,7 +408,12 @@ func TestRecvLimit(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("первый приём не закончился")
 	}
-	if _, r, _ := start("f.bin"); r.T != "resume" {
-		t.Fatalf("после окончания одного: %+v", r)
+	select {
+	case r := <-res5:
+		if r.T != "resume" {
+			t.Fatalf("пятый после окончания первого: %+v", r)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("пятый не дождался очереди")
 	}
 }
