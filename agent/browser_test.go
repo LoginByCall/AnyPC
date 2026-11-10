@@ -195,7 +195,19 @@ func runCDP(t *testing.T, ctx context.Context, chrome, script, url string, flags
 		t.Fatal(err)
 	}
 	defer func() { ch.Process.Kill(); ch.Wait() }()
-	time.Sleep(2 * time.Second)
+	// порт CDP — опросом: фиксированные 2 с под нагрузкой не хватало (node получал ECONNREFUSED, 1 прогон из 4)
+	for end := time.Now().Add(15 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+		r, err := http.Get("http://127.0.0.1:" + port + "/json/version")
+		if err == nil {
+			r.Body.Close()
+			if r.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		if time.Now().After(end) {
+			t.Fatalf("Chrome не открыл порт CDP за 15 с: %v", err)
+		}
+	}
 	js := filepath.Join(t.TempDir(), "cdp.js")
 	os.WriteFile(js, []byte(script), 0o600)
 	out, err := exec.CommandContext(ctx, "node", js, port, url).CombinedOutput()
@@ -265,6 +277,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   let id = 0; const wait = {};
   ws.onmessage = e => { const m = JSON.parse(e.data); if (m.id && wait[m.id]) wait[m.id](m); };
   const ev = x => new Promise(r => { const i = ++id; wait[i] = m => r(m.result?.result?.value); ws.send(JSON.stringify({ id: i, method: 'Runtime.evaluate', params: { expression: x, awaitPromise: true, returnByValue: true } })); });
+  for (let i = 0; i < 75 && await ev("document.readyState === 'complete' && typeof onCtl === 'function'") !== true; i++) await sleep(200);
   // pake.wasm грузится при подключении и ставит hostVerify сам — обёртка через свойство окна
   await ev("let hv; Object.defineProperty(window, 'hostVerify', { configurable: true, set: f => hv = f," +
     " get: () => hv && (async (...a) => (await new Promise(r => setTimeout(r, 1500)), hv(...a))) });" +
