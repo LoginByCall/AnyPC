@@ -2,6 +2,7 @@ package main
 
 import (
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -117,5 +118,36 @@ func TestHeaders(t *testing.T) {
 func TestList(t *testing.T) {
 	if got := strings.Join(list(" a,b,,a , c,b"), "|"); got != "a|b|c" {
 		t.Fatalf("list: %q", got)
+	}
+}
+
+// TestServe — F8: потолок заголовков (431 сверх 16 КБ) и таймауты, которые не рвут WebSocket:
+// ReadTimeout/WriteTimeout остались бы дедлайном на захваченном соединении.
+func TestServe(t *testing.T) {
+	s := serve("127.0.0.1:0", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok") }))
+	if s.ReadTimeout != 0 || s.WriteTimeout != 0 || s.ReadHeaderTimeout == 0 || s.IdleTimeout == 0 || s.MaxHeaderBytes != 16<<10 {
+		t.Fatalf("serve: %+v", s)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go s.Serve(ln)
+	defer s.Close()
+	req := func(n int) int {
+		r, _ := http.NewRequest("GET", "http://"+ln.Addr().String()+"/", nil)
+		r.Header.Set("X-Pad", strings.Repeat("a", n))
+		resp, err := http.DefaultClient.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if c := req(8 << 10); c != 200 {
+		t.Fatalf("заголовки 8 КБ: %d", c)
+	}
+	if c := req(64 << 10); c != http.StatusRequestHeaderFieldsTooLarge {
+		t.Fatalf("заголовки 64 КБ: %d, ждали 431", c)
 	}
 }
