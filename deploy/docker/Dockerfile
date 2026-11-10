@@ -2,7 +2,7 @@
 # Образ anypc-server (хаб + веб-клиент; ретранслятор — отдельный контейнер coturn, см. compose.yml).
 # Сборка из корня репозитория: docker build -f deploy/docker/Dockerfile .
 # Кросс-компиляция на платформе сборщика — amd64 и arm64 без эмуляции.
-FROM --platform=$BUILDPLATFORM golang:1.26 AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.10 AS build
 ARG TARGETARCH
 ARG VERSION=dev
 WORKDIR /src

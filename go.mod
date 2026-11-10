@@ -1,6 +1,6 @@
 module anypc
 
-go 1.26.0
+go 1.26.10
 
 require (
 	filippo.io/cpace v0.0.0-20210101143347-24d601e2e469
@@ -32,7 +32,7 @@ require (
 	github.com/pion/stun/v4 v4.0.1 // indirect
 	github.com/pion/turn/v5 v5.1.3 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
-	golang.org/x/net v0.60.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
