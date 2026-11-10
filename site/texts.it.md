@@ -50,6 +50,7 @@
 - `lim2`: Appunti: solo testo; i file si inviano con i pulsanti della barra.
 - `lim3`: Puoi passare da un monitor all’altro dalla barra; su Wayland il monitor si sceglie nella finestra di sistema al momento della connessione.
 - `lim4`: Le versioni per Linux e macOS sono beta e sono state testate meno di quella per Windows.
+- `bug`: Segnala un errore
 - `foot`: AnyPC beta. Al primo avvio, la versione per Windows scarica FFmpeg (GPLv3) dalle build di gyan.dev. Fornito «così com’è», senza garanzia.
 - `f5t`: Anche con il tuo server
 - `f5d`: Installa il tuo nodo su un VPS con un solo comando e passa il programma su di esso: i dati delle connessioni restano a te.
