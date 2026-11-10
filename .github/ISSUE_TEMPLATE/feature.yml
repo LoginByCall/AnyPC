@@ -1,0 +1,24 @@
+name: Предложение / Feature request
+description: Идея, чего не хватает / An idea or a missing feature
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Какую задачу хотите решить / What problem are you solving
+      description: Опишите ситуацию, а не только решение / Describe the situation, not just the solution
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Как это могло бы работать / How it could work
+  - type: dropdown
+    id: role
+    attributes:
+      label: Для кого / For whom
+      multiple: true
+      options:
+        - Управляемый ПК / Host
+        - Управляющий / Client
+        - Свой узел / Self-hosted node

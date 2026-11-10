@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Уязвимость / Security vulnerability
+    url: https://github.com/LoginByCall/AnyPC/security/advisories/new
+    about: Сообщите приватно, не в открытом тикете / Report privately, not in a public issue
