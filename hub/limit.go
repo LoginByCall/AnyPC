@@ -23,6 +23,7 @@ const (
 	HostMsgBurst, HostMsgRate       = 600, 100            // сообщений хоста; сверх — молча отбросить (+ журнал)
 	HostByteBurst, HostByteRate     = 2 << 20, 256 << 10  // байт хоста; сверх — так же
 	ToHostBurst, ToHostRate         = 256 << 10, 64 << 10 // байт всех клиентов вместе одному хосту (попытка ≈20 КБ); сверх — молча отбросить
+	ToHostShare                     = 4                   // одному адресу (IPv4, IPv6 /48) — не больше 1/4 всплеска и пополнения ведра хоста; сверх — так же
 	NotFoundPerConn                 = 5                   // not_found клиенту на соединение; следующий — закрыть
 	NotFoundPerMin                  = 30                  // not_found на IPv4 и /64 (/48 — ×10) в минуту; сверх — закрыть и 429 новым клиентским WS
 	NewClientBurst, NewClientRate   = 60, 1               // новых клиентских WS с адреса (IPv4, /64; /48 — ×10): всплеск, в секунду; сверх — 429 до Upgrade
@@ -202,8 +203,24 @@ func (h *Hub) newClient(a netip.Addr) bool {
 type hostIn struct {
 	c         *websocket.Conn // чья запись: после переподключения хоста старое соединение чужую не снимает
 	b         bucket
+	src       map[string]*bucket // доля ведра на адрес-источник (srcKey)
+	sweepAt   time.Time
 	dropped   int
 	droppedAt time.Time
+}
+
+// srcKey — чья доля ведра хоста (N2): IPv4 — адрес, IPv6 — /48 (у владельца /48 — 65 536 /64, доля на /64
+// не остановила бы его). Loopback и частные — "" (без доли): свой узел за прокси без X-Forwarded-For видит всех
+// пользователей с одного адреса, и общая доля душила бы законных клиентов хоста.
+func srcKey(a netip.Addr) string {
+	if exempt(a) {
+		return ""
+	}
+	if a.Is4() {
+		return a.String()
+	}
+	p, _ := a.Prefix(48)
+	return p.String()
 }
 
 func (h *Hub) hostOpen(id string, c *websocket.Conn) {
@@ -223,13 +240,47 @@ func (h *Hub) hostClose(id string, c *websocket.Conn) {
 	}
 }
 
-// toHost — можно ли переслать хосту id ещё n байт от клиентов. Нет — сообщение отбрасывается молча: ни клиент
-// (законный в общей очереди), ни хост не закрываются; в журнал — не чаще раза в минуту.
-func (h *Hub) toHost(id string, n int) bool {
+// toHost — можно ли переслать хосту id ещё n байт от клиента с адреса from. Нет — сообщение отбрасывается молча:
+// ни клиент (законный в общей очереди), ни хост не закрываются; в журнал — не чаще раза в минуту.
+// Один адрес берёт не больше 1/ToHostShare ведра (N2): иначе ≈80 WS одного IPv4 мелкими ice в пределах своих
+// лимитов держали ведро пустым, и connect/answer всех клиентов хоста отбрасывались. Снимается всё или ничего.
+func (h *Hub) toHost(id string, from netip.Addr, n int) bool {
 	h.lim.Lock()
 	defer h.lim.Unlock()
 	in := h.in[id]
-	if in == nil || in.b.take(float64(n)) { // нет записи — хост уходит или только что пришёл
+	if in == nil { // нет записи — хост уходит или только что пришёл
+		return true
+	}
+	var src *bucket
+	if k := srcKey(from); k != "" {
+		if time.Since(in.sweepAt) > time.Minute { // память — только под недавних отправителей
+			for sk, b := range in.src {
+				if b.fill(); b.tokens >= b.burst {
+					delete(in.src, sk)
+				}
+			}
+			in.sweepAt = time.Now()
+		}
+		if src = in.src[k]; src == nil {
+			if in.src == nil {
+				in.src = map[string]*bucket{}
+			}
+			nb := newBucket(ToHostBurst/ToHostShare, ToHostRate/ToHostShare)
+			src = &nb
+			in.src[k] = src
+		}
+	}
+	in.b.fill()
+	ok := in.b.tokens >= float64(n)
+	if src != nil {
+		src.fill()
+		ok = ok && src.tokens >= float64(n)
+	}
+	if ok {
+		in.b.tokens -= float64(n)
+		if src != nil {
+			src.tokens -= float64(n)
+		}
 		return true
 	}
 	if in.dropped++; time.Since(in.droppedAt) > time.Minute {

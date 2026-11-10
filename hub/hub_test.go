@@ -823,3 +823,103 @@ func TestNoHTMLEscape(t *testing.T) {
 		}
 	}
 }
+
+// TestToHostShare — N2 (опыт E): ведро «клиенты → хост» было общим — ≈80 WS одного IPv4, каждое в пределах своих
+// лимитов (ice ≈200 Б, 10/с, вразнобой), держали его пустым, и connect законного клиента с другого адреса молча
+// отбрасывался (0/10). Теперь одному адресу — не больше 1/ToHostShare ведра.
+func TestToHostShare(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+	url, host := limHub(t, ctx, &Hub{TurnHosts: []string{"hk.example.org", "ru.example.org"}, TurnSecret: "s"})
+	connects := make(chan string, 100)
+	go func() {
+		for {
+			var m Msg
+			if wsjson.Read(ctx, host, &m) != nil {
+				return
+			}
+			if m.Type == "connect" {
+				connects <- m.From
+			}
+		}
+	}()
+	ice, _ := json.Marshal(Msg{Type: "ice", To: "123456789", Data: json.RawMessage(`{"candidate":"` + strings.Repeat("a", 130) + `"}`)})
+	actx, stop := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	var open atomic.Int64
+	for i := range 99 {
+		wg.Go(func() {
+			for actx.Err() == nil {
+				c, _, err := websocket.Dial(actx, url, &websocket.DialOptions{HTTPHeader: http.Header{"X-Forwarded-For": {"203.0.113.62"}}})
+				if err != nil {
+					time.Sleep(50 * time.Millisecond)
+					continue
+				}
+				open.Add(1)
+				time.Sleep(time.Duration(i) * time.Millisecond) // вразнобой: залпами ведро не опустошается
+				for actx.Err() == nil && c.Write(actx, websocket.MessageText, ice) == nil {
+					time.Sleep(time.Duration(100+i%10) * time.Millisecond) // ≈10/с — в пределах ведра клиента
+				}
+				open.Add(-1)
+				c.CloseNow()
+			}
+		})
+	}
+	defer func() { stop(); wg.Wait() }()
+	time.Sleep(5 * time.Second) // без доли ведро хоста к этому времени пусто
+	ok := 0
+	for range 5 {
+		c, cid, code := dialFrom(t, ctx, url, "198.51.100.77")
+		if code != 0 {
+			t.Fatalf("законный клиент: %d", code)
+		}
+		wsjson.Write(ctx, c, Msg{Type: "connect", To: "123456789"})
+		timeout := time.After(2 * time.Second)
+	wait:
+		for {
+			select {
+			case from := <-connects:
+				if from == cid {
+					ok++
+					break wait
+				}
+			case <-timeout:
+				break wait
+			}
+		}
+		c.CloseNow()
+	}
+	if ok != 5 {
+		t.Fatalf("connect законного клиента дошёл до хоста %d раз из 5 (у атакующего открыто %d WS с одного адреса)", ok, open.Load())
+	}
+}
+
+// TestToHostShareKeys — доля N2 по ключам: IPv4 — адрес, IPv6 — /48; loopback и частные (свой узел за прокси) — без доли.
+func TestToHostShareKeys(t *testing.T) {
+	share := ToHostBurst / ToHostShare
+	for _, c := range []struct {
+		a, b string // b после того, как a исчерпал долю
+		same bool   // b делит долю с a
+	}{
+		{"203.0.113.1", "203.0.113.2", false},
+		{"2001:db8:1:1::1", "2001:db8:1:2::1", true}, // разные /64 одного /48
+		{"2001:db8:1::1", "2001:db8:2::1", false},
+	} {
+		h := &Hub{}
+		h.hostOpen("123456789", nil)
+		a, b := netip.MustParseAddr(c.a), netip.MustParseAddr(c.b)
+		if !h.toHost("123456789", a, share) || h.toHost("123456789", a, 1<<10) {
+			t.Errorf("%s: доля %d Б не соблюдена", c.a, share)
+		}
+		if got := h.toHost("123456789", b, 1<<10); got == c.same {
+			t.Errorf("%s после %s: пропущено %v", c.b, c.a, got)
+		}
+	}
+	h := &Hub{}
+	h.hostOpen("123456789", nil)
+	for _, a := range []string{"127.0.0.1", "10.0.0.5"} {
+		if !h.toHost("123456789", netip.MustParseAddr(a), share+1<<10) {
+			t.Errorf("%s: свой узел упёрся в долю", a)
+		}
+	}
+}
