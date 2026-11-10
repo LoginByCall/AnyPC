@@ -150,8 +150,8 @@ func createPlaque(label, btn string) (h, font uintptr, err error) {
 }
 
 // showIndicator — плашка REQ-F-15. Не создалась → ошибка, и сессия не стартует (REQ-S-08).
-func showIndicator(cid string, view bool, onUserClose func()) (closeFn func(), err error) {
-	label, btn := plaqueBar(uiLang(), cid, view)
+func showIndicator(cid string, mode plaqueMode, onUserClose func()) (closeFn func(), err error) {
+	label, btn := plaqueBar(uiLang(), cid, mode)
 	var byUs atomic.Bool
 	ready := make(chan error, 1)
 	var hwnd uintptr

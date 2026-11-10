@@ -249,11 +249,11 @@ function run(argv) {
 }`
 
 // showIndicator — плашка; закрыл её человек (или osascript упал — тогда без плашки сессии не быть) → разорвать сессию.
-func showIndicator(cid string, view bool, onUserClose func()) (func(), error) {
+func showIndicator(cid string, mode plaqueMode, onUserClose func()) (func(), error) {
 	if fakeDesktop {
 		return func() {}, nil
 	}
-	title, text := plaqueText(sysLang(), cid, view)
+	title, text := plaqueText(sysLang(), cid, mode)
 	cmd := exec.Command("osascript", "-l", "JavaScript", "-e", plaqueJS, title, text)
 	var errb strings.Builder
 	cmd.Stderr = &errb

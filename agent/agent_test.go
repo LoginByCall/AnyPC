@@ -654,7 +654,7 @@ func TestViewOnly(t *testing.T) {
 	if s.control() {
 		t.Fatal("только просмотр: ввод принят")
 	}
-	if l, _ := plaqueBar("ru", "c1", true); !strings.Contains(l, "только просмотр") {
+	if l, _ := plaqueBar("ru", "c1", plaqueView); !strings.Contains(l, "только просмотр") {
 		t.Errorf("плашка без пометки: %q", l)
 	}
 }

@@ -160,14 +160,33 @@ var scancodes = map[string]uint16{
 }
 
 // plaques — плашка сессии (REQ-F-15): заголовок, текст, подсказка; ключ — язык интерфейса ОС.
-var plaques = map[string][5]string{
-	"en": {"remote session", "A remote session is in progress.", "Click “OK” to disconnect.", "Disconnect", "view only"},
-	"ru": {"удалённая сессия", "Идёт удалённая сессия.", "Нажмите «ОК», чтобы разорвать.", "Разорвать", "только просмотр"},
-	"zh": {"远程会话", "正在进行远程会话。", "点击“确定”断开连接。", "断开", "仅查看"},
-	"es": {"sesión remota", "Hay una sesión remota en curso.", "Pulse «Aceptar» para desconectar.", "Desconectar", "solo ver"},
-	"de": {"Fernsitzung", "Eine Fernsitzung ist aktiv.", "Klicken Sie auf „OK“, um zu trennen.", "Trennen", "nur ansehen"},
-	"fr": {"session à distance", "Une session à distance est en cours.", "Cliquez sur « OK » pour déconnecter.", "Déconnecter", "affichage seul"},
-	"it": {"sessione remota", "È in corso una sessione remota.", "Fai clic su «OK» per disconnettere.", "Disconnetti", "solo visualizzazione"},
+// plaqueMode — пометки на плашке: только просмотр, включён микрофон этого ПК (REQ-F-22).
+type plaqueMode int
+
+const (
+	plaqueView plaqueMode = 1 << iota
+	plaqueMic
+)
+
+// plaqueTag — пометки режима после ID клиента.
+func plaqueTag(pl [6]string, m plaqueMode) (s string) {
+	if m&plaqueView != 0 {
+		s += " · " + pl[4]
+	}
+	if m&plaqueMic != 0 {
+		s += " · 🎤 " + pl[5]
+	}
+	return s
+}
+
+var plaques = map[string][6]string{
+	"en": {"remote session", "A remote session is in progress.", "Click “OK” to disconnect.", "Disconnect", "view only", "this PC’s microphone is on"},
+	"ru": {"удалённая сессия", "Идёт удалённая сессия.", "Нажмите «ОК», чтобы разорвать.", "Разорвать", "только просмотр", "микрофон этого ПК включён"},
+	"zh": {"远程会话", "正在进行远程会话。", "点击“确定”断开连接。", "断开", "仅查看", "本机麦克风已开启"},
+	"es": {"sesión remota", "Hay una sesión remota en curso.", "Pulse «Aceptar» para desconectar.", "Desconectar", "solo ver", "el micrófono de este PC está activado"},
+	"de": {"Fernsitzung", "Eine Fernsitzung ist aktiv.", "Klicken Sie auf „OK“, um zu trennen.", "Trennen", "nur ansehen", "Mikrofon dieses PCs ist an"},
+	"fr": {"session à distance", "Une session à distance est en cours.", "Cliquez sur « OK » pour déconnecter.", "Déconnecter", "affichage seul", "le micro de ce PC est activé"},
+	"it": {"sessione remota", "È in corso una sessione remota.", "Fai clic su «OK» per disconnettere.", "Disconnetti", "solo visualizzazione", "il microfono di questo PC è attivo"},
 }
 
 // asks — окно «Разрешить / Отклонить» (REQ-F-03): заголовок, вопрос, сноска, кнопки (разрешить, отклонить,
@@ -209,25 +228,21 @@ func askText(lang, cid, peer string) (title, text, yes, no, view string) {
 }
 
 // plaqueBar — однострочная плашка (Windows): подпись и кнопка «Разорвать».
-func plaqueBar(lang, cid string, view bool) (label, btn string) {
+func plaqueBar(lang, cid string, m plaqueMode) (label, btn string) {
 	pl, ok := plaques[lang]
 	if !ok {
 		pl = plaques["en"]
 	}
-	if view {
-		cid += " · " + pl[4]
-	}
+	cid += plaqueTag(pl, m)
 	return "AnyPC: " + pl[0] + " " + cid, pl[3]
 }
 
-func plaqueText(lang, cid string, view bool) (title, text string) {
+func plaqueText(lang, cid string, m plaqueMode) (title, text string) {
 	pl, ok := plaques[lang]
 	if !ok {
 		pl = plaques["en"]
 	}
-	if view {
-		cid += " · " + pl[4]
-	}
+	cid += plaqueTag(pl, m)
 	return "AnyPC — " + pl[0] + " " + cid, pl[1] + "\n" + cid + "\n\n" + pl[2]
 }
 
