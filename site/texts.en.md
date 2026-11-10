@@ -27,6 +27,7 @@
 - `w2`: If you see “Windows protected your PC”, click “More info” → “Run anyway”: the program is not code-signed yet.
 - `w3`: If Windows Firewall asks about network access, allow it; otherwise a direct connection may fail and traffic will go through the relay server.
 - `w4`: To allow connections to this computer, set a password in the “This computer” section.
+- `w5`: If FFmpeg does not download by itself (the window shows a download error), download the archive manually — [ffmpeg-9.0.2-essentials_build.zip](https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip) (~115 MB) — and put it, without unpacking, into your Downloads folder or next to AnyPC.exe. The program picks it up within 30 seconds and verifies its checksum.
 - `wchk`: Verify the file (PowerShell) — the checksum must match the one above:
 - `l1`: Install the dependencies — which ones depends on your graphical session:
 - `l2`: Make the file executable and run it — the AnyPC window opens in a browser tab:

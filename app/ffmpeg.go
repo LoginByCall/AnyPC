@@ -27,6 +27,10 @@ var (
 	ffSHA256 = "3256173f3f8bffd7df12227c68adf68025edb1832273a9530688a7bb1ed8edec"
 )
 
+// ffLocal — где искать архив зеркала (имя как в ffMirrors), если его скачали вручную: Windows — «Загрузки» и папка AnyPC.exe.
+// Имя и версия архива указаны на лендинге (site/texts.*.md, `w5`) — менять вместе с ffMirrors.
+var ffLocal []string
+
 // ensureFFmpeg — путь к проверенному ffmpeg.exe в dir; нет — скачать с первого живого зеркала.
 // progress(done, total) — байты распакованного файла.
 func ensureFFmpeg(dir string, progress func(done, total int64)) (string, error) {
@@ -35,6 +39,21 @@ func ensureFFmpeg(dir string, progress func(done, total int64)) (string, error) 
 		return p, nil
 	}
 	var errs []string
+	for _, l := range ffLocal { // архив, скачанный вручную: тот же файл из zip и тот же хэш, что с зеркала
+		f, err := os.Open(l)
+		if err != nil {
+			continue
+		}
+		st, err := f.Stat()
+		if err == nil {
+			err = extractEntry(f, st.Size(), l, p, progress)
+		}
+		f.Close()
+		if err == nil {
+			return p, nil
+		}
+		errs = append(errs, err.Error())
+	}
 	for _, u := range ffMirrors {
 		err := fetchEntry(u, p, progress)
 		if err == nil {
@@ -51,6 +70,11 @@ func fetchEntry(u, dst string, progress func(done, total int64)) error {
 	if err != nil {
 		return err
 	}
+	return extractEntry(ra, size, u, dst, progress)
+}
+
+// extractEntry — ffEntry из zip (src — для сообщений об ошибке) в dst, только при совпадении SHA-256.
+func extractEntry(ra io.ReaderAt, size int64, u, dst string, progress func(done, total int64)) error {
 	zr, err := zip.NewReader(ra, size)
 	if err != nil {
 		return fmt.Errorf("%s: %w", u, err)

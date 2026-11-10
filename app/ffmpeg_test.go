@@ -72,6 +72,21 @@ func TestEnsureFFmpeg(t *testing.T) {
 	if _, err := ensureFFmpeg(t.TempDir(), nil); err == nil {
 		t.Fatal("сервер без Range: ждали ошибку, а не скачивание всего архива")
 	}
+
+	// архив, скачанный вручную: без сети; чужой хэш — не принят
+	zipFile := t.TempDir() + "/ff.zip"
+	os.WriteFile(zipFile, zb.Bytes(), 0o644)
+	defer func(l []string) { ffLocal = l }(ffLocal)
+	ffLocal, ffMirrors = []string{t.TempDir() + "/нет.zip", zipFile}, []string{dead}
+	if p, err := ensureFFmpeg(t.TempDir(), nil); err != nil {
+		t.Fatalf("ручной архив: %v", err)
+	} else if b, _ := os.ReadFile(p); !bytes.Equal(b, exe) {
+		t.Fatal("ручной архив: не тот ffmpeg.exe")
+	}
+	ffSHA256 = hex.EncodeToString(make([]byte, 32))
+	if _, err := ensureFFmpeg(t.TempDir(), nil); err == nil {
+		t.Fatal("ручной архив с чужим хэшем принят")
+	}
 }
 
 // TestFFmpegMirrors — живые зеркала отдают ровно закреплённую сборку (запуск: ANYPC_FFMIRRORS=1; при смене версии FFmpeg).

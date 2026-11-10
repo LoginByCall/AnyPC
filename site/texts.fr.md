@@ -27,6 +27,7 @@
 - `w2`: Si le message « Windows a protégé votre ordinateur » s’affiche, cliquez sur « Informations complémentaires » → « Exécuter quand même » : le programme n’est pas encore signé.
 - `w3`: Si le pare-feu Windows demande l’accès au réseau, autorisez-le ; sinon, la connexion directe risque d’échouer et le trafic passera par le serveur relais.
 - `w4`: Pour que l’on puisse se connecter à cet ordinateur, définissez un mot de passe dans la section « Cet ordinateur ».
+- `w5`: Si FFmpeg ne se télécharge pas tout seul (la fenêtre affiche une erreur de téléchargement), téléchargez l’archive manuellement — [ffmpeg-9.0.2-essentials_build.zip](https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip) (~115 Mo) — et placez-la, sans la décompresser, dans le dossier Téléchargements ou à côté d’AnyPC.exe. Le programme la détecte en 30 secondes et vérifie sa somme de contrôle.
 - `wchk`: Vérifier le fichier (PowerShell) — la somme doit correspondre à celle indiquée ci-dessus :
 - `l1`: Installez les dépendances ; elles varient selon votre session graphique :
 - `l2`: Rendez le fichier exécutable et lancez-le ; la fenêtre AnyPC s’ouvre dans un onglet du navigateur :
