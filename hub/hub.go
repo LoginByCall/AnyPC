@@ -3,6 +3,7 @@
 package hub
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/ed25519"
@@ -186,10 +187,29 @@ func errMsg(code string) Msg {
 	return Msg{V: 1, Type: "error", Data: d}
 }
 
-func send(ctx context.Context, c *websocket.Conn, m Msg) {
+// encode — JSON без экранирования HTML (N1). По умолчанию encoding/json меняет < > & на \u003c… (1 байт → 6),
+// и сообщение, проверенное хабом по размеру (maxSize, toHost), приходило хосту в 6 раз больше — больше его
+// буфера чтения (agent: 64 КБ): одно answer из «<» выбивало хост. Без экранирования Data (RawMessage) только
+// сжимается (пробелы), так что закодированное сообщение не длиннее принятого плюс from. Ошибка — nil.
+func encode(m Msg) []byte {
+	var b bytes.Buffer
+	e := json.NewEncoder(&b)
+	e.SetEscapeHTML(false)
+	if e.Encode(m) != nil {
+		return nil
+	}
+	return b.Bytes()
+}
+
+func send(ctx context.Context, c *websocket.Conn, m Msg) { sendRaw(ctx, c, encode(m)) }
+
+func sendRaw(ctx context.Context, c *websocket.Conn, b []byte) {
+	if b == nil {
+		return
+	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	_ = wsjson.Write(ctx, c, m)
+	_ = c.Write(ctx, websocket.MessageText, b)
 }
 
 // PingEvery — проверка живости WebSocket. Без неё обрыв (смена сети, NAT забыл маппинг) виден только
@@ -382,16 +402,17 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		var fresh []byte
 		if m.Type == "connect" { // пароль TURN живёт TurnTTL, а хост в сети неделями — свежий перед каждой сессией
-			fresh, _ = json.Marshal(map[string]any{"id": m.To, "ice": h.ICEServers(m.To)})
-		}
-		if !isHost && !h.toHost(m.To, len(b)+len(fresh)) { // D2: медленный хост не выбивается суммой клиентов
-			continue
-		}
-		if fresh != nil {
-			send(ctx, dst, Msg{V: 1, Type: "hello", Data: fresh})
+			d, _ := json.Marshal(map[string]any{"id": m.To, "ice": h.ICEServers(m.To)})
+			fresh = encode(Msg{V: 1, Type: "hello", Data: d})
 		}
 		m.V, m.From = 1, id
-		send(ctx, dst, m)
+		out := encode(m) // ведро считает то, что уйдёт хосту, а не то, что пришло (N1)
+		// D2: медленный хост не выбивается суммой клиентов
+		if !isHost && !h.toHost(m.To, addr, len(out)+len(fresh)) {
+			continue
+		}
+		sendRaw(ctx, dst, fresh)
+		sendRaw(ctx, dst, out)
 	}
 }
 

@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="ru">
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-8TybE4PzEIhh8c6AEq7lZxT/bOzptq8IXTPiXdKOxGk=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-/zYc4gMpuB1WJSprs9OPnAI1/+CfrsXDqFbkwcENRRY=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AnyPC</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26'><style>.a{stroke:%2317181c}.b{fill:%23d2452d}@media(prefers-color-scheme:dark){.a{stroke:%23eceae4}.b{fill:%23ef6a52}}</style><rect class='a' x='1.5' y='3' width='15' height='11' rx='2' fill='none' stroke-width='2.6'/><rect class='b' x='10' y='12' width='15' height='11' rx='2'/></svg>">
@@ -399,7 +399,11 @@ $('go').onclick = async () => {
         $('msg').textContent = t('waiting');
       }
       else if (m.type === 'error') { const msg = t('err') + (L[lang]['e_' + m.data] || m.data); ws === w ? end(msg) : fail(msg); }
-      else if (m.type === 'bye') { if (ws === w) end(t(hostDenied ? 'h_denied' : 'host_bye')); }
+      else if (m.type === 'bye') { // state по ctl и bye через хаб — разные пути: state мог отстать — подождать его
+        if (ws !== w) return;
+        const p = pc;
+        setTimeout(() => { if (cur === att && pc === p) end(t(hostDenied ? 'h_denied' : 'host_bye')); }, hostDenied ? 0 : BYE_WAIT);
+      }
       else if (m.type === 'offer') {
         if (ws) return;
         ws = w; // победитель; остальные хабы больше не нужны
@@ -414,7 +418,7 @@ $('go').onclick = async () => {
       };
       pc.ondatachannel = ev => {
         if (ev.channel.label === 'input') dc = ev.channel;
-        if (ev.channel.label === 'ctl') { ctl = ev.channel; ctl.onmessage = onCtl; }
+        if (ev.channel.label === 'ctl') { ctl = ev.channel; ctl.onmessage = e => onCtl(e, mine); }
         if (ev.channel.label === 'auth') ev.channel.onmessage = e => onAuth(ev.channel, e, mine);
         if (ev.channel.label === 'file') authed ? recvFile(ev.channel) : ev.channel.close(); // Д-2: файлы — только после входа
       };
@@ -584,7 +588,8 @@ $('aplay').onclick = () => { au.el?.play(); $('aplay').classList.add('hidden'); 
 // ---------- Буфер обмена (REQ-F-11): текст, в обе стороны, без эха ----------
 const CLIP_MAX = 60 * 1024; // как agent.ClipMax (в байтах UTF-8)
 const clipOK = x => x && new TextEncoder().encode(x).length <= CLIP_MAX;
-function onCtl(e) {
+function onCtl(e, mine) {
+  if (mine !== pc) return; // канал закрытой попытки: запоздавший state не попадает в следующую сессию
   const m = JSON.parse(e.data);
   if (m.t === 'monitors') return showMonitors(m); // хост шлёт список при открытии канала, до входа
   if (m.t === 'cur') return authed && showCursor(m);
@@ -595,6 +600,7 @@ function onCtl(e) {
   (APP ? setClip(m.text) : navigator.clipboard?.writeText(m.text))?.catch?.(() => {});
 }
 let hostDenied = false; // хост отказал в захвате (Wayland: «Отмена» в окне портала) — следом придёт bye
+const BYE_WAIT = 300; // мс: сколько ждать state после bye, если bye обогнал его (хост шлёт state, через 200 мс — bye)
 let lastState = 'ok'; // последний state хоста: мог прийти по ctl раньше, чем ok входа по auth (D3)
 function hostState(s) {
   hostDenied = s === 'denied';

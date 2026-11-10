@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"log"
@@ -281,7 +282,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   // pake.wasm грузится при подключении и ставит hostVerify сам — обёртка через свойство окна
   await ev("let hv; Object.defineProperty(window, 'hostVerify', { configurable: true, set: f => hv = f," +
     " get: () => hv && (async (...a) => (await new Promise(r => setTimeout(r, 1500)), hv(...a))) });" +
-    " window.early = 0; const oc = onCtl; onCtl = e => (early += !authed && JSON.parse(e.data).t === 'state', oc(e)); 1");
+    " window.early = 0; const oc = onCtl; onCtl = (e, ...r) => (early += !authed && JSON.parse(e.data).t === 'state', oc(e, ...r)); 1");
   await ev("document.getElementById('id').value='123456789'; document.getElementById('pw').value='secret123'; document.getElementById('go').click()");
   let s = '';
   for (let i = 0; i < 75 && !s.endsWith('|true'); i++) { await sleep(200); s = await ev("document.getElementById('msg').textContent + '|' + !document.getElementById('sess').classList.contains('hidden')"); }
@@ -520,4 +521,67 @@ func (l logSeen) Write(p []byte) (int, error) {
 		l.seen.Store(true)
 	}
 	return len(p), nil
+}
+
+// cdpByeFirst — state хоста по ctl задержан на 350 мс: bye через хаб (хост шлёт его через 200 мс после state)
+// приходит первым. Печатает причину конца сессии. Затем — запоздавший state закрытой попытки в onCtl.
+const cdpByeFirst = `
+const [, , port, url] = process.argv;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+(async () => {
+  const tab = await (await fetch('http://127.0.0.1:' + port + '/json/new?' + url, { method: 'PUT' })).json();
+  const ws = new WebSocket(tab.webSocketDebuggerUrl); await new Promise(r => ws.onopen = r);
+  let id = 0; const wait = {};
+  ws.onmessage = e => { const m = JSON.parse(e.data); if (m.id && wait[m.id]) wait[m.id](m); };
+  const ev = x => new Promise(r => { const i = ++id; wait[i] = m => r(m.result?.result?.value); ws.send(JSON.stringify({ id: i, method: 'Runtime.evaluate', params: { expression: x, awaitPromise: true, returnByValue: true } })); });
+  for (let i = 0; i < 75 && await ev("document.readyState === 'complete' && typeof onCtl === 'function'") !== true; i++) await sleep(200);
+  await ev("const t0 = performance.now(), oc = onCtl, oe = end; window.T = { held: 0, log: [], oc };" +
+    " onCtl = (e, ...r) => { const m = JSON.parse(e.data); T.log.push(Math.round(performance.now() - t0) + ':ctl ' + m.t + ' ' + (m.s || '') + ' authed=' + authed);" +
+    " return m.t === 'state' ? (T.held++, setTimeout(() => oc(e, ...r), 350)) : oc(e, ...r); };" +
+    " end = (...a) => (T.log.push(Math.round(performance.now() - t0) + ':end ' + a[0]), oe(...a)); 1");
+  await ev("document.getElementById('id').value='123456789'; document.getElementById('pw').value='secret123'; document.getElementById('go').click()");
+  let s = '';
+  for (let i = 0; i < 100 && !/ended|declined/.test(s); i++) { await sleep(100); s = await ev("document.getElementById('msg').textContent"); }
+  await sleep(500);
+  const late = await ev("T.oc({ data: JSON.stringify({ t: 'state', s: 'locked' }) }, {}); lastState"); // без задержки обёртки
+  console.log('end=' + s + '|held=' + await ev("T.held") + '|late=' + late + '|log=' + await ev("T.log.join('; ')"));
+  process.exit(0);
+})();`
+
+// TestBrowserByeBeforeState — bye через хаб мог обогнать state "denied" по ctl (разные пути), и клиент показывал
+// общее «хост завершил сессию» вместо причины. Теперь клиент после bye ждёт state BYE_WAIT. Заодно: state
+// закрытой попытки (onCtl с чужим pc) не записывается в lastState следующей сессии.
+func TestBrowserByeBeforeState(t *testing.T) {
+	chrome, err := exec.LookPath("google-chrome")
+	if err != nil {
+		t.Skip("нет google-chrome")
+	}
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("нет node")
+	}
+	if _, err := fs.Stat(ui.FS, "pake.wasm"); err != nil {
+		t.Skip("нет ui/pake.wasm — собрать через build.sh")
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/ws", &hub.Hub{})
+	mux.Handle("/", http.FileServer(http.FS(ui.FS)))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+	a := newAgent("ws"+strings.TrimPrefix(srv.URL, "http")+"/ws", "123456789", nil)
+	a.Capture = func(context.Context, Cap) (*exec.Cmd, error) {
+		return nil, fmt.Errorf("портал: %w", ErrCaptureDenied)
+	}
+	go a.Run(ctx)
+	out := string(runCDP(t, ctx, chrome, cdpByeFirst, srv.URL+"/"))
+	if !strings.Contains(out, "|held=") || strings.Contains(out, "|held=0|") {
+		t.Fatal("state denied не пришёл — сценарий не воспроизведён")
+	}
+	if !strings.Contains(out, "end=Screen access was declined on the remote PC|") {
+		t.Error("bye раньше state: причина отказа потеряна")
+	}
+	if !strings.Contains(out, "|late=ok") {
+		t.Error("state закрытой попытки записан в lastState")
+	}
 }
