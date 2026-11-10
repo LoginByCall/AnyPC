@@ -21,6 +21,7 @@ type connectReq struct {
 	RTT  map[string]int `json:"rtt"`  // мс от клиента до каждого TURN
 	CPub []byte         `json:"cpub"` // ключ клиента (У3) — заявка, не доказательство: проверка подписью в auth
 	VP9  bool           `json:"vp9"`  // клиент просит VP9 («Турбо»); хост даёт его, если собран с кодером (VP9Built), иначе H.264
+	View bool           `json:"view"` // клиент просит «только просмотр» (REQ-F-20)
 }
 
 type offerMsg struct {

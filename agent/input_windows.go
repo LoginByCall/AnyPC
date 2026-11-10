@@ -102,16 +102,25 @@ func hideWindow(c *exec.Cmd) {
 
 // AskAccept — окно «Разрешить / Отклонить» (REQ-F-03) поверх всех окон; без ответа AskTimeout → отказ.
 // MessageBoxTimeoutW — недокументированная, но стабильная с Windows XP функция user32; нет её — отказ.
-func AskAccept(cid, peer string) bool {
+// ponytail: подписи кнопок MessageBox системные (Да/Нет/Отмена), их смысл объяснён строкой в тексте (winAskHint);
+// свои подписи — TaskDialog (нужен манифест comctl32 v6), если строка окажется непонятной.
+func AskAccept(cid, peer string) Answer {
 	p := user32.NewProc("MessageBoxTimeoutW")
 	if p.Find() != nil {
 		log.Printf("нет MessageBoxTimeoutW — подключение %s отклонено", cid)
-		return false
+		return Deny
 	}
-	title, text, _, _ := askText(uiLang(), cid, peer)
+	lang := uiLang()
+	title, text, _, _, _ := askText(lang, cid, peer)
 	t, _ := syscall.UTF16PtrFromString(title)
-	m, _ := syscall.UTF16PtrFromString(text)
-	const flags = 0x4 | 0x20 | 0x1000 | 0x10000 | 0x40000 // YESNO | ICONQUESTION | SYSTEMMODAL | SETFOREGROUND | TOPMOST
+	m, _ := syscall.UTF16PtrFromString(text + "\n\n" + winAskHint(lang))
+	const flags = 0x3 | 0x20 | 0x100 | 0x1000 | 0x10000 | 0x40000 // YESNOCANCEL | ICONQUESTION | DEFBUTTON2 | SYSTEMMODAL | SETFOREGROUND | TOPMOST
 	r, _, _ := p.Call(0, uintptr(unsafe.Pointer(m)), uintptr(unsafe.Pointer(t)), flags, 0, uintptr(AskTimeout/time.Millisecond))
-	return r == 6 // IDYES; 32000 — истекло время
+	switch r {
+	case 6: // IDYES
+		return Allow
+	case 7: // IDNO
+		return ViewOnly
+	}
+	return Deny // IDCANCEL, крестик; 32000 — истекло время
 }

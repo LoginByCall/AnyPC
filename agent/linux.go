@@ -133,7 +133,7 @@ func pangoEscape(s string) string {
 }
 
 // showIndicator — плашка REQ-F-15: окно zenity; закрыл человек → разорвать сессию.
-func showIndicator(cid string, onUserClose func()) (func(), error) {
+func showIndicator(cid string, view bool, onUserClose func()) (func(), error) {
 	if fakeDesktop {
 		return func() {}, nil
 	}
@@ -141,7 +141,7 @@ func showIndicator(cid string, onUserClose func()) (func(), error) {
 	if err != nil {
 		return nil, errors.New("нет zenity — установите пакет zenity")
 	}
-	title, text := plaqueText(sysLang(), cid)
+	title, text := plaqueText(sysLang(), cid, view)
 	cmd := exec.Command(bin, "--warning", "--no-wrap", "--title="+title, "--text="+pangoEscape(text))
 	if err := cmd.Start(); err != nil {
 		return nil, err
@@ -212,12 +212,19 @@ func ClipSeq() uint32 {
 }
 
 // AskAccept — окно «Разрешить / Отклонить» (REQ-F-03); без ответа AskTimeout или без zenity → отказ.
-func AskAccept(cid, peer string) bool {
+func AskAccept(cid, peer string) Answer {
 	if fakeDesktop {
-		return true
+		return Allow
 	}
-	title, text, yes, no := askText(sysLang(), cid, peer)
-	err := exec.Command("zenity", "--question", "--no-wrap", "--title="+title, "--text="+pangoEscape(text),
-		"--ok-label="+yes, "--cancel-label="+no, "--timeout="+strconv.Itoa(int(AskTimeout.Seconds()))).Run()
-	return err == nil
+	title, text, yes, no, view := askText(sysLang(), cid, peer)
+	// дополнительная кнопка: zenity печатает её подпись и выходит с кодом 1, как «Отклонить»
+	out, err := exec.Command("zenity", "--question", "--no-wrap", "--title="+title, "--text="+pangoEscape(text),
+		"--ok-label="+yes, "--cancel-label="+no, "--extra-button="+view, "--timeout="+strconv.Itoa(int(AskTimeout.Seconds()))).Output()
+	switch {
+	case err == nil:
+		return Allow
+	case strings.TrimSpace(string(out)) == view:
+		return ViewOnly
+	}
+	return Deny
 }

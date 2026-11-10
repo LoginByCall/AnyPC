@@ -102,7 +102,12 @@ func main() {
 	a := &agent.Agent{
 		Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, Key: cfg.key(), FPS: 30, Stderr: logf, Trusted: cfg.trusted, Trust: cfg.trust,
 		Bitrate: agent.Kbps(cfg.Bitrate),
-		Confirm: func(cid, peer string) bool { return !cfg.confirm() || agent.AskAccept(cid, peer) },
+		Confirm: func(cid, peer string) agent.Answer {
+			if !cfg.confirm() {
+				return agent.Allow
+			}
+			return agent.AskAccept(cid, peer)
+		},
 		Capture: func(ctx context.Context, c agent.Cap) (*exec.Cmd, error) { // выход DXGI c.Mon
 			ffMu.Lock()
 			ff := ff

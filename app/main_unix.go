@@ -59,7 +59,12 @@ func main() {
 	defer stop()
 	a := &agent.Agent{Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, Key: cfg.key(), FPS: 30, Trusted: cfg.trusted, Trust: cfg.trust,
 		Bitrate: agent.Kbps(cfg.Bitrate),
-		Confirm: func(cid, peer string) bool { return !cfg.confirm() || agent.AskAccept(cid, peer) }, Capture: hostCapture(cfg.Enc), FileDir: downloads(), Stderr: logw}
+		Confirm: func(cid, peer string) agent.Answer {
+			if !cfg.confirm() {
+				return agent.Allow
+			}
+			return agent.AskAccept(cid, peer)
+		}, Capture: hostCapture(cfg.Enc), FileDir: downloads(), Stderr: logw}
 	var mu sync.Mutex
 	online, session, update := false, "", ""
 	a.OnState = func(on bool, s string) { mu.Lock(); online, session = on, s; mu.Unlock() }
