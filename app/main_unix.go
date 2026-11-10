@@ -35,8 +35,22 @@ import (
 )
 
 func main() {
-	noBrowser := flag.Bool("no-browser", false, "не открывать браузер, только напечатать адрес")
+	noBrowser := flag.Bool("no-browser", false, "не открывать браузер, только напечатать адрес окна")
+	showVersion := flag.Bool("version", false, "напечатать версию и выйти")
+	showID := flag.Bool("id", false, "напечатать ID этого компьютера и выйти")
+	flag.Usage = func() {
+		fmt.Fprintf(flag.CommandLine.Output(), "AnyPC %s — удалённый доступ к этому компьютеру (https://www.anypc.org)\n\n"+
+			"Запуск: %s [ключи]\n\nКлючи (можно и -ключ, и --ключ):\n", version, filepath.Base(os.Args[0]))
+		flag.PrintDefaults()
+		cfg, _ := os.UserConfigDir()
+		cache, _ := os.UserCacheDir()
+		fmt.Fprintf(flag.CommandLine.Output(), "\nНастройки: %s\nЖурнал: %s\n", filepath.Join(cfg, "AnyPC", "config.json"), filepath.Join(cache, "AnyPC", "anypc.log"))
+	}
 	flag.Parse()
+	if *showVersion {
+		fmt.Println("AnyPC", version)
+		return
+	}
 	cfgDir, _ := os.UserConfigDir()
 	cacheDir, _ := os.UserCacheDir()
 	os.MkdirAll(filepath.Join(cacheDir, "AnyPC"), 0o700)
@@ -48,6 +62,10 @@ func main() {
 	cfg, err := loadConfig(filepath.Join(cfgDir, "AnyPC", "config.json"))
 	if err != nil {
 		log.Fatal("настройки: ", err)
+	}
+	if *showID {
+		fmt.Println(cfg.ID)
+		return
 	}
 	for _, b := range deps() {
 		if _, err := exec.LookPath(b); err != nil {

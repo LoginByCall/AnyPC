@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"io"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -90,5 +92,30 @@ func TestShimCSP(t *testing.T) {
 	sum := sha256.Sum256([]byte(s[i+len("<script>") : j]))
 	if !strings.Contains(s, "'sha256-"+base64.StdEncoding.EncodeToString(sum[:])+"'") {
 		t.Error("хэша скрипта привязок нет в CSP — браузер его не выполнит")
+	}
+}
+
+// TestCLI — ключи командной строки: --version печатает версию из -ldflags, --id — ID из настроек, --help — список ключей;
+// ни один не запускает хост.
+func TestCLI(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "anypc")
+	if out, err := exec.Command("go", "build", "-ldflags=-X main.version=v9.9.9", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("сборка: %v\n%s", err, out)
+	}
+	home := t.TempDir() // свои ~/.config и ~/.cache: не трогать настройки разработчика
+	run := func(arg string) string {
+		c := exec.Command(bin, arg)
+		c.Env = append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+home+"/.config", "XDG_CACHE_HOME="+home+"/.cache")
+		out, _ := c.CombinedOutput()
+		return string(out)
+	}
+	if out := run("--version"); out != "AnyPC v9.9.9\n" {
+		t.Errorf("--version: %q", out)
+	}
+	if out := strings.TrimSpace(run("--id")); len(out) != 9 || strings.Trim(out, "0123456789") != "" {
+		t.Errorf("--id: %q", out)
+	}
+	if out := run("--help"); !strings.Contains(out, "-no-browser") || !strings.Contains(out, "-version") || !strings.Contains(out, "v9.9.9") {
+		t.Errorf("--help: %q", out)
 	}
 }
