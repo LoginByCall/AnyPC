@@ -49,7 +49,7 @@ type Agent struct {
 	FPS     int
 	Stderr  io.Writer                                           // вывод ffmpeg; nil — os.Stderr
 	OnState func(online bool, session string)                   // session "" — сессии нет
-	FileDir string                                              // куда принимать файлы; "" — %USERPROFILE%\Downloads
+	FileDir string                                              // куда принимать файлы; "" — DownloadsDir()
 	Capture func(ctx context.Context, c Cap) (*exec.Cmd, error) // захват по Cap (H.264 Annex-B или Y4M в stdout); nil — FFmpeg + FF
 	Bitrate int                                                 // кбит/с — потолок адаптивного битрейта (REQ-N-03); 0 — постоянный
 	Confirm func(cid, peer string) Answer                       // REQ-F-03: спросить человека на хосте после верного пароля; nil — не спрашивать (unattended)
