@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -12,6 +13,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -38,6 +40,7 @@ func main() {
 	noBrowser := flag.Bool("no-browser", false, "не открывать браузер, только напечатать адрес окна")
 	showVersion := flag.Bool("version", false, "напечатать версию и выйти")
 	showID := flag.Bool("id", false, "напечатать ID этого компьютера и выйти")
+	pwStdin := flag.Bool("password-stdin", false, "задать пароль входа из stdin (первая строка; в терминале — скрытый ввод дважды) и выйти;\nпример: echo 'пароль' | anypc --password-stdin")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "AnyPC %s — удалённый доступ к этому компьютеру (https://www.anypc.org)\n\n"+
 			"Запуск: %s [ключи]\n\nКлючи (можно и -ключ, и --ключ):\n", version, filepath.Base(os.Args[0]))
@@ -65,6 +68,18 @@ func main() {
 	}
 	if *showID {
 		fmt.Println(cfg.ID)
+		return
+	}
+	if *pwStdin {
+		p, err := readPassword(os.Stdin)
+		if err == nil {
+			err = cfg.setPassword(p)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "пароль:", err)
+			os.Exit(1)
+		}
+		fmt.Println("пароль задан; если AnyPC уже запущен — перезапустите его")
 		return
 	}
 	for _, b := range deps() {
@@ -270,4 +285,38 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]any{"result": res})
+}
+
+// readPassword — пароль из stdin, а не из аргументов (их видно в ps любому пользователю ПК).
+// Терминал: ввод без эха (stty), дважды — опечатку вслепую иначе не заметить. Канал: первая строка.
+func readPassword(f *os.File) (string, error) {
+	r := bufio.NewReader(f)
+	line := func() (string, error) {
+		s, err := r.ReadString('\n')
+		if err != nil && (err != io.EOF || s == "") {
+			return "", errors.New("пустой ввод")
+		}
+		return strings.TrimRight(s, "\r\n"), nil
+	}
+	if st, err := f.Stat(); err != nil || st.Mode()&os.ModeCharDevice == 0 {
+		return line()
+	}
+	stty := func(arg string) { c := exec.Command("stty", arg); c.Stdin = f; c.Run() }
+	stty("-echo")
+	defer stty("echo")
+	fmt.Fprint(os.Stderr, "Новый пароль: ")
+	p, err := line()
+	fmt.Fprint(os.Stderr, "\nЕщё раз: ")
+	if err != nil {
+		return "", err
+	}
+	again, err := line()
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return "", err
+	}
+	if p != again {
+		return "", errors.New("пароли не совпали")
+	}
+	return p, nil
 }
