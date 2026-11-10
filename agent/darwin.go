@@ -274,12 +274,13 @@ func showIndicator(cid string, mode plaqueMode, onUserClose func()) (func(), err
 }
 
 // AskAccept — окно «Разрешить / Отклонить» (REQ-F-03); без ответа AskTimeout или ошибка → отказ.
+// Кнопка 1 «Отклонить» — и по умолчанию (Enter), и отмена (Esc): случайный Enter не даёт доступ.
 func AskAccept(cid, peer string) Answer {
 	if fakeDesktop {
 		return Allow
 	}
 	title, text, yes, no, view := askText(sysLang(), cid, peer)
-	out, err := osa(`set r to display dialog (item 2 of argv) with title (item 1 of argv) buttons {item 4 of argv, item 6 of argv, item 3 of argv} default button 3 cancel button 1 giving up after ((item 5 of argv) as integer) with icon caution
+	out, err := osa(`set r to display dialog (item 2 of argv) with title (item 1 of argv) buttons {item 4 of argv, item 6 of argv, item 3 of argv} default button 1 cancel button 1 giving up after ((item 5 of argv) as integer) with icon caution
 if gave up of r then return "no"
 if button returned of r is (item 3 of argv) then return "yes"
 if button returned of r is (item 6 of argv) then return "view"

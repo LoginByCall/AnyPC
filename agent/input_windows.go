@@ -125,7 +125,7 @@ func askMessageBox(cid, peer string) Answer {
 	title, text, _, _, _ := askText(lang, cid, peer)
 	t, _ := syscall.UTF16PtrFromString(title)
 	m, _ := syscall.UTF16PtrFromString(text + "\n\n" + winAskHint(lang))
-	const flags = 0x3 | 0x20 | 0x100 | 0x1000 | 0x10000 | 0x40000 // YESNOCANCEL | ICONQUESTION | DEFBUTTON2 | SYSTEMMODAL | SETFOREGROUND | TOPMOST
+	const flags = 0x3 | 0x20 | 0x200 | 0x1000 | 0x10000 | 0x40000 // YESNOCANCEL | ICONQUESTION | DEFBUTTON3 (Enter = «Отмена» = отказ) | SYSTEMMODAL | SETFOREGROUND | TOPMOST
 	r, _, _ := p.Call(0, uintptr(unsafe.Pointer(m)), uintptr(unsafe.Pointer(t)), flags, 0, uintptr(AskTimeout/time.Millisecond))
 	switch r {
 	case 6: // IDYES
