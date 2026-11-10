@@ -37,7 +37,7 @@ import (
 )
 
 func main() {
-	noBrowser := flag.Bool("no-browser", false, "не открывать браузер, только напечатать адрес окна")
+	noBrowser := flag.Bool("no-browser", false, "не открывать браузер; адрес окна — в терминале и в файле window.url рядом с журналом")
 	showVersion := flag.Bool("version", false, "напечатать версию и выйти")
 	showID := flag.Bool("id", false, "напечатать ID этого компьютера и выйти")
 	pwStdin := flag.Bool("password-stdin", false, "задать пароль входа из stdin (первая строка; в терминале — скрытый ввод дважды) и выйти;\nпример: echo 'пароль' | anypc --password-stdin")
@@ -133,7 +133,14 @@ func main() {
 	run := &runner{a: a, ctx: ctx}
 	h := handler(addr, token, page, cfg, a, run, info, newFiles(downloads()), once)
 	go http.Serve(l, h)
-	log.Printf("AnyPC запущен (%s), ID %s. Окно: http://%s/?t=%s", platformKind(), cfg.ID, addr, token)
+	// токен — ключ к окну (смена пароля): не в журнал (journald читают администраторы, anypc.log прикладывают к тикетам),
+	// а в файл 0600 и, если запущено из терминала, в терминал
+	url, urlFile := "http://"+addr+"/?t="+token, filepath.Join(cacheDir, "AnyPC", "window.url")
+	os.WriteFile(urlFile, []byte(url+"\n"), 0o600)
+	log.Printf("AnyPC запущен (%s), ID %s. Окно: http://%s/ — ссылка с ключом в %s", platformKind(), cfg.ID, addr, urlFile)
+	if st, err := os.Stderr.Stat(); err == nil && st.Mode()&os.ModeCharDevice != 0 {
+		fmt.Fprintln(os.Stderr, "Окно:", url)
+	}
 	if !*noBrowser { // аргументы браузера видны всем пользователям ПК (/proc/*/cmdline) — в них одноразовый код, не токен
 		exec.Command(openCmd, "http://"+addr+"/?n="+once.code).Start()
 	}

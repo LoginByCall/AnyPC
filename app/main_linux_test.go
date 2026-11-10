@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net/http/httptest"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"anypc/agent"
 	"anypc/pake"
@@ -167,5 +169,37 @@ func TestCLI(t *testing.T) {
 	}
 	if out := run("--help"); !strings.Contains(out, "-no-browser") || !strings.Contains(out, "-version") || !strings.Contains(out, "v9.9.9") {
 		t.Errorf("--help: %q", out)
+	}
+	// регрессия: ссылка окна с токеном (ключ к смене пароля) писалась в журнал — journald, anypc.log из тикетов
+	cp := filepath.Join(home, ".config", "AnyPC", "config.json")
+	var m map[string]any
+	b, _ := os.ReadFile(cp)
+	json.Unmarshal(b, &m)
+	m["server"] = "ws://127.0.0.1:9/ws" // без сети: временный ID не регистрировать на настоящих хабах
+	b, _ = json.Marshal(m)
+	os.WriteFile(cp, b, 0o600)
+	c := exec.Command(bin, "--no-browser")
+	c.Env = append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+home+"/.config", "XDG_CACHE_HOME="+home+"/.cache")
+	var stderr bytes.Buffer
+	c.Stderr = &stderr
+	if err := c.Start(); err != nil {
+		t.Fatal(err)
+	}
+	urlFile := filepath.Join(home, ".cache", "AnyPC", "window.url")
+	for i := 0; i < 50; i++ {
+		if _, err := os.Stat(urlFile); err == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	c.Process.Kill()
+	c.Wait()
+	u, err := os.ReadFile(urlFile)
+	if st, _ := os.Stat(urlFile); err != nil || !strings.Contains(string(u), "/?t=") || st.Mode().Perm() != 0o600 {
+		t.Errorf("window.url: %q %v", u, err)
+	}
+	logb, _ := os.ReadFile(filepath.Join(home, ".cache", "AnyPC", "anypc.log"))
+	if !strings.Contains(string(logb), "window.url") || strings.Contains(string(logb), "?t=") || strings.Contains(stderr.String(), "?t=") {
+		t.Errorf("токен окна в журнале:\n%s", logb)
 	}
 }
