@@ -184,7 +184,6 @@ func (p *portal) alive() bool { return !p.closed.Load() }
 
 // ponytail: профиль «видео» (масштаб 720p) в конвейере GStreamer не реализован — только к/с из c.
 func (p *portal) capture(ctx context.Context, c Cap, _ string, _ *Monitor) (*exec.Cmd, error) {
-	fps := c.FPS
 	deskMu.Lock()                 // getDesktop закрывает fd мёртвого портала — номер не должен уйти чужому сокету до Dup
 	dup, err := syscall.Dup(p.fd) // свой экземпляр fd на каждый запуск захвата
 	deskMu.Unlock()
@@ -193,12 +192,23 @@ func (p *portal) capture(ctx context.Context, c Cap, _ string, _ *Monitor) (*exe
 	}
 	f := os.NewFile(uintptr(dup), "pipewire")
 	go func() { <-ctx.Done(); f.Close() }()
-	pipeline := fmt.Sprintf("pipewiresrc fd=3 path=%d do-timestamp=true keepalive-time=1000 ! videoconvert ! videorate"+
-		" ! video/x-raw,format=I420,framerate=%d/1 ! x264enc tune=zerolatency speed-preset=ultrafast bitrate=%d key-int-max=%d bframes=0 byte-stream=true"+
-		" ! video/x-h264,profile=constrained-baseline,stream-format=byte-stream ! fdsink fd=1", p.node, fps, c.Kbps, fps)
+	pipeline := fmt.Sprintf("pipewiresrc fd=3 path=%d do-timestamp=true keepalive-time=1000 ! videoconvert ! videorate ! ", p.node) + gstTail(c)
 	cmd := exec.CommandContext(ctx, "gst-launch-1.0", append([]string{"-q"}, strings.Fields(pipeline)...)...)
 	cmd.ExtraFiles = []*os.File{f} // станет fd 3 в дочернем процессе
 	return cmd, nil
+}
+
+// gstTail — кодирование после videorate: H.264 Annex-B или (c.VP9) Y4M для кодера в процессе — как у ffmpeg (FFArgs).
+//: tune=zerolatency режет кадр на слайсы по числу потоков, а длительность сэмпла ставится на слайс —
+// браузер видел каждый слайс отдельным кадром: цела верхняя полоса, ниже вертикальные полосы (Ubuntu, 3440×1440, 2026-11-10).
+// ponytail: нечётные размеры экрана для Y4M не выравниваются (ffmpeg-ветка делает scale) — мониторы чётные.
+func gstTail(c Cap) string {
+	if c.VP9 {
+		return fmt.Sprintf("video/x-raw,format=I420,framerate=%d/1 ! y4menc ! fdsink fd=1", c.FPS)
+	}
+	return fmt.Sprintf("video/x-raw,format=I420,framerate=%d/1 ! x264enc tune=zerolatency sliced-threads=false speed-preset=ultrafast"+
+		" bitrate=%d key-int-max=%d bframes=0 byte-stream=true ! video/x-h264,profile=constrained-baseline,stream-format=byte-stream ! fdsink fd=1",
+		c.FPS, c.Kbps, c.FPS)
 }
 
 // notify — ввод через портал; без ожидания ответа, порядок сохраняется соединением D-Bus.

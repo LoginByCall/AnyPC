@@ -63,7 +63,7 @@
     <input id="id" data-tp="id_p" inputmode="numeric">
     <input id="pw" type="password" data-tp="pw_p">
     <label class="mut"><input id="relay" type="checkbox"> <span data-t="relay"></span></label>
-    <label class="mut" data-tt="turbo_t"><input id="turbo" type="checkbox"> <span data-t="turbo_l"></span></label>
+    <label class="mut" data-tt="turbo_t"><input id="turbo" type="checkbox" checked> <span data-t="turbo_l"></span></label>
     <label class="mut hidden" id="turnbox" data-tt="turn_t"><span data-t="turn_l"></span> <select id="turn"></select></label>
     <div class="row"><button id="go" class="main" data-t="go"></button></div>
     <div id="msg"></div>
@@ -665,7 +665,7 @@ function showCursor(m) {
   $('cur').style.top = r.top + (r.height - vh * s) / 2 + (m.y || 0) / 65535 * vh * s + 'px';
   $('cur').classList.remove('hidden');
 }
-try { $('turbo').checked = localStorage.getItem('turbo') === '1'; } catch {} // ponytail: запоминаем только в этом браузере
+try { $('turbo').checked = localStorage.getItem('turbo') !== '0'; } catch {} // по умолчанию включено; ponytail: выбор помним только в этом браузере
 $('turbo').onchange = e => { try { localStorage.setItem('turbo', e.target.checked ? '1' : '0'); } catch {} };
 $('mon').onchange = () => { ctl?.readyState === 'open' && ctl.send(JSON.stringify({ t: 'monitor', i: +$('mon').value })); v.focus(); };
 
