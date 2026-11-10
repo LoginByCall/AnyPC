@@ -50,6 +50,7 @@
 - `lim2`: Zwischenablage: nur Text; Dateien werden über die Schaltflächen der Leiste übertragen.
 - `lim3`: Zwischen mehreren Monitoren wechseln Sie in der Leiste; unter Wayland wird der Monitor beim Verbinden im Systemdialog gewählt.
 - `lim4`: Die Versionen für Linux und macOS sind Beta und weniger getestet als die Windows-Version.
+- `bug`: Fehler melden
 - `foot`: AnyPC Beta. Die Windows-Version lädt beim ersten Start FFmpeg (GPLv3) aus den Builds von gyan.dev herunter. Bereitgestellt „wie besehen“, ohne Gewährleistung.
 - `f5t`: Auch mit eigenem Server
 - `f5d`: Richten Sie mit einem Befehl einen eigenen Knoten auf einem VPS ein und stellen Sie das Programm darauf um – die Verbindungsdaten bleiben bei Ihnen.

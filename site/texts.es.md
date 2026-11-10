@@ -50,6 +50,7 @@
 - `lim2`: Portapapeles: solo texto; los archivos se envían con los botones de la barra.
 - `lim3`: Puedes cambiar de monitor desde la barra; en Wayland, el monitor se elige en el diálogo del sistema al conectarte.
 - `lim4`: Las versiones para Linux y macOS son beta y se han probado menos que la de Windows.
+- `bug`: Informar de un error
 - `foot`: AnyPC beta. En el primer inicio, la versión para Windows descarga FFmpeg (GPLv3) de las compilaciones de gyan.dev. Se ofrece «tal cual», sin garantía.
 - `f5t`: Funciona con tu propio servidor
 - `f5d`: Instala tu propio nodo en un VPS con un solo comando y cambia el programa a él: los datos de conexión se quedan contigo.

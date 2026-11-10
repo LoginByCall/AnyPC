@@ -155,4 +155,5 @@ curl -fsSL https://raw.githubusercontent.com/LoginByCall/AnyPC/main/deploy/setup
 
 ## Подвал
 
+- `bug`: Сообщить об ошибке
 - `foot`: AnyPC, бета. Версия для Windows при первом запуске скачивает FFmpeg (GPLv3) из сборок gyan.dev. Предоставляется «как есть», без гарантий.

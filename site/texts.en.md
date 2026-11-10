@@ -50,6 +50,7 @@
 - `lim2`: Clipboard: text only; files are sent with the toolbar buttons.
 - `lim3`: You can switch monitors on the toolbar; on Wayland, the monitor is chosen in the system dialog when you connect.
 - `lim4`: The Linux and macOS versions are in beta and have been tested less than the Windows version.
+- `bug`: Report a bug
 - `foot`: AnyPC beta. On first launch, the Windows version downloads FFmpeg (GPLv3) from the gyan.dev builds. Provided “as is”, without warranty.
 - `f5t`: Works with your own server
 - `f5d`: Set up your own node on a VPS with one command and switch the program to it — connection records stay with you.
