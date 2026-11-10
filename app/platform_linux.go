@@ -103,6 +103,9 @@ func uninstallService() error {
 	return systemctl("daemon-reload")
 }
 
+// serviceHint — что сказать после --install-service.
+const serviceHint = "Журнал: journalctl --user -u anypc"
+
 func serviceState() string {
 	if _, err := os.Stat(unitPath()); err != nil {
 		return "нет"
