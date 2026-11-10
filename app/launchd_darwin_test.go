@@ -2,8 +2,11 @@ package main
 
 import (
 	"encoding/xml"
+	"errors"
+	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestLaunchPlist — LaunchAgent: путь с пробелами, кириллицей и XML-символами экранирован, plist разбирается, ключи на месте.
@@ -51,5 +54,46 @@ func TestBrewPath(t *testing.T) {
 	}
 	if got := brewPath(""); got != "/usr/local/bin:/opt/homebrew/bin" {
 		t.Error("пустой:", got)
+	}
+}
+
+// TestInstallAfterBootout — N4: bootout завершает службу асинхронно, bootstrap сразу за ним launchd отвергает
+// (ошибка 5). Повтор --install-service при работающей службе должен дождаться её ухода и загрузить заново.
+func TestInstallAfterBootout(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	old, oldWait := launchctl, launchWait
+	t.Cleanup(func() { launchctl, launchWait = old, oldWait })
+	launchWait = time.Millisecond
+	for _, c := range []struct {
+		name         string
+		left, refuse int // сколько print ещё находят службу после bootout; сколько bootstrap отказывают и после её ухода
+	}{{"служба уходит не сразу", 3, 0}, {"launchd отказывает и после ухода", 0, 1}} {
+		loaded, left, refuse, boots := true, 0, c.refuse, 0
+		launchctl = func(args ...string) error {
+			switch args[0] {
+			case "bootout":
+				left = c.left
+			case "print":
+				if left > 0 {
+					left--
+					return nil
+				}
+				loaded = false
+			case "bootstrap":
+				boots++
+				if loaded || refuse > 0 {
+					refuse--
+					return errors.New("Bootstrap failed: 5: Input/output error")
+				}
+				loaded = true
+			}
+			return nil
+		}
+		if err := installService("/Applications/AnyPC-macos"); err != nil || !loaded {
+			t.Errorf("%s: %v (bootstrap %d раз)", c.name, err, boots)
+		}
+		if _, err := os.Stat(launchPath()); err != nil {
+			t.Errorf("%s: plist: %v", c.name, err)
+		}
 	}
 }
