@@ -1,0 +1,60 @@
+name: Ошибка / Bug report
+description: Что-то работает не так / Something doesn't work
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Не публикуйте пароли. ID компьютера публиковать не нужно. Уязвимость — не сюда, а через Security → Report a vulnerability.
+        Do not post passwords or PC IDs. Security issues: Security → Report a vulnerability, not here.
+  - type: input
+    id: version
+    attributes:
+      label: Версия AnyPC / Version
+      description: "Внизу окна программы или `AnyPC-linux-amd64 --version`"
+      placeholder: v0.1.16
+    validations:
+      required: true
+  - type: dropdown
+    id: role
+    attributes:
+      label: Где проблема / Where
+      options:
+        - Управляемый ПК (хост) / Host (controlled PC)
+        - Управляющий — программа AnyPC / Client — AnyPC app
+        - Управляющий — браузер / Client — web browser
+        - Свой узел (сервер) / Self-hosted node
+        - Сайт / Website
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: ОС хоста и клиента, браузер / Host and client OS, browser
+      placeholder: "Хост: Windows 11 24H2; клиент: Ubuntu 24.04, Chrome 142"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: Что случилось и что ожидали / What happened, what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Как повторить / Steps to reproduce
+      placeholder: "1. …\n2. …"
+  - type: input
+    id: status
+    attributes:
+      label: Строка статуса клиента / Client status line
+      description: "Например: P2P (host/host) · VP9 · RTT 40 мс · 30 к/с — видна вверху во время сессии"
+  - type: textarea
+    id: log
+    attributes:
+      label: Журнал / Log
+      description: |
+        Windows: %LOCALAPPDATA%\AnyPC\anypc.log · Linux: ~/.cache/AnyPC/anypc.log · macOS: ~/Library/Caches/AnyPC/anypc.log
+        Последние ~50 строк вокруг ошибки / last ~50 lines around the error. Скриншот можно перетащить сюда / screenshots welcome.
+      render: text
