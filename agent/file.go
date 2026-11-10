@@ -104,8 +104,7 @@ func (a *Agent) fileDir() string {
 	if a.FileDir != "" {
 		return a.FileDir
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "Downloads")
+	return DownloadsDir()
 }
 
 func sendJSON(dc *webrtc.DataChannel, m fileMsg) {

@@ -63,7 +63,7 @@ func main() {
 	var ffMu sync.Mutex
 	ff, ffState := "", "0" // путь к ffmpeg.exe; ffState — проценты загрузки, "err" или "" (готов)
 	zipName := path.Base(ffMirrors[0])
-	ffLocal = []string{filepath.Join(os.Getenv("USERPROFILE"), "Downloads", zipName)}
+	ffLocal = []string{filepath.Join(agent.DownloadsDir(), zipName)}
 	if exe, err := os.Executable(); err == nil {
 		ffLocal = append(ffLocal, filepath.Join(filepath.Dir(exe), zipName))
 	}
@@ -147,7 +147,7 @@ func main() {
 	w.Bind("hostVerify", pake.HostVerifyB64)
 	w.Bind("knownGet", cfg.knownGet)
 	w.Bind("knownSet", cfg.knownSet)
-	fl := newFiles(filepath.Join(os.Getenv("USERPROFILE"), "Downloads"))
+	fl := newFiles(agent.DownloadsDir()) // и клиент, и хост — в настоящие «Загрузки» (могут быть перенесены)
 	w.Bind("fileOpen", fl.Open)
 	w.Bind("fileWrite", fl.Write)
 	w.Bind("fileFinish", fl.Finish)
