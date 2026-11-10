@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math/big"
 	"net"
 	"net/http"
@@ -50,12 +51,19 @@ type Hub struct {
 	TurnSecret string        // static-auth-secret coturn; "" — только STUN
 	Keys       string        // файл привязок ID → ключ хоста (JSON); "" — только в памяти
 	Ping       time.Duration // проверка живости соединений; 0 — PingEvery
+	MaxConns   int           // потолок всех соединений; 0 — MaxConnsDefault
 
 	mu    sync.Mutex
 	peers map[string]*websocket.Conn
 	keys  map[string]string // ID → публичный ключ (base64url)
 	news  map[string]int    // новых привязок с IP за текущий час
 	newAt time.Time
+
+	lim     sync.Mutex         // лимиты F4 (limit.go)
+	conns   map[string]int     // открытых соединений по адресу IPv4 / префиксу IPv6
+	total   int                // всех открытых соединений
+	nf      map[string]*bucket // not_found по адресу
+	nfSweep time.Time
 }
 
 // NewPerHour — новых ID с одного IP в час. Привязка вечная, файл переписывается целиком:
@@ -118,10 +126,24 @@ func (h *Hub) register(ctx context.Context, c *websocket.Conn, id, ip string, pu
 // remoteIP — адрес для лимита регистраций. За обратным прокси на loopback (README: -addr 127.0.0.1:8080) —
 // последний X-Forwarded-For (его дописал наш прокси); IPv6 — по /64 (внутри префикса адресов без счёта).
 func remoteIP(r *http.Request) string {
+	ip := clientAddr(r)
+	if !ip.IsValid() {
+		h, _, _ := net.SplitHostPort(r.RemoteAddr)
+		return h
+	}
+	if ip.Is6() {
+		p, _ := ip.Prefix(64)
+		return p.String()
+	}
+	return ip.String()
+}
+
+// clientAddr — адрес клиента по той же логике (X-Forwarded-For — только от loopback); не разобран — нулевой.
+func clientAddr(r *http.Request) netip.Addr {
 	h, _, _ := net.SplitHostPort(r.RemoteAddr)
 	ip, err := netip.ParseAddr(h)
 	if err != nil {
-		return h
+		return netip.Addr{}
 	}
 	if xff := r.Header.Values("X-Forwarded-For"); ip.IsLoopback() && len(xff) > 0 {
 		all := strings.Split(xff[len(xff)-1], ",")
@@ -129,11 +151,7 @@ func remoteIP(r *http.Request) string {
 			ip = a
 		}
 	}
-	if ip = ip.Unmap(); ip.Is6() {
-		p, _ := ip.Prefix(64)
-		return p.String()
-	}
-	return ip.String()
+	return ip.Unmap()
 }
 
 // IsHostID: ID хоста — 9 цифр, первая ненулевая. Клиенты получают "c…".
@@ -255,6 +273,19 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		pub = k
 	}
+	// Лимиты до Upgrade: отказ HTTP-кодом, старые клиенты видят его как «нет связи с сервером».
+	addr := clientAddr(r)
+	if id == "" && !h.notFound(addr, false) {
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "too many not_found", http.StatusTooManyRequests)
+		return
+	}
+	if code := h.acquire(addr); code != 0 {
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "too many connections", code)
+		return
+	}
+	defer h.release(addr)
 	// Origin любой: страница одного хаба ходит в соседние (резервная сигнализация), окно AnyPC.exe — с 127.0.0.1.
 	// У сигнализации нет cookie/полномочий — то же доступно любому клиенту вне браузера; вход защищает CPace.
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
@@ -281,24 +312,60 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	hello, _ := json.Marshal(map[string]any{"id": id, "ice": h.ICEServers(id)})
 	send(ctx, c, Msg{V: 1, Type: "hello", Data: hello})
+	isHost := IsHostID(id)
+	msgs, size := newBucket(ClientMsgBurst, ClientMsgRate), newBucket(ClientByteBurst, ClientByteRate)
+	connects := newBucket(ConnectBurst, 1/ConnectEvery.Seconds())
+	if isHost {
+		msgs, size = newBucket(HostMsgBurst, HostMsgRate), newBucket(HostByteBurst, HostByteRate)
+	}
+	notFound, dropped, droppedAt := 0, 0, time.Time{}
 	for {
+		typ, b, err := c.Read(ctx)
+		if err != nil || typ != websocket.MessageText {
+			return
+		}
+		if !msgs.take(1) || !size.take(float64(len(b))) {
+			if !isHost {
+				c.Close(websocket.StatusPolicyViolation, "rate limit")
+				return
+			}
+			if dropped++; time.Since(droppedAt) > time.Minute { // хост не закрываем: его поток вызывают клиенты
+				log.Printf("hub: хост %s сверх лимита, отброшено %d", id, dropped)
+				dropped, droppedAt = 0, time.Now()
+			}
+			continue
+		}
 		var m Msg
-		if err := wsjson.Read(ctx, c, &m); err != nil {
+		if json.Unmarshal(b, &m) != nil {
+			return
+		}
+		if !isHost && len(b) > maxSize(m.Type) {
+			c.Close(websocket.StatusPolicyViolation, "message too big")
 			return
 		}
 		if m.To == "" {
 			continue
 		}
-		if IsHostID(id) == IsHostID(m.To) { // только хост ↔ клиент
+		if isHost == IsHostID(m.To) { // только хост ↔ клиент
 			send(ctx, c, errMsg("forbidden"))
 			continue
 		}
-		if !relayed(IsHostID(id), m.Type) { // Д-4: служебные типы (hello, challenge, error от клиента) не пересылаются
+		if !relayed(isHost, m.Type) { // Д-4: служебные типы (hello, challenge, error от клиента) не пересылаются
 			send(ctx, c, errMsg("forbidden"))
+			continue
+		}
+		if m.Type == "connect" && !connects.take(1) { // спам connect рождал offer и ice хоста на каждый
+			send(ctx, c, errMsg("busy"))
 			continue
 		}
 		dst := h.get(m.To)
 		if dst == nil {
+			if !isHost { // хост шлёт ушедшему клиенту законно (клиент закрыл вкладку посреди ice)
+				if notFound++; notFound > NotFoundPerConn || !h.notFound(addr, true) {
+					c.Close(websocket.StatusPolicyViolation, "not_found limit")
+					return
+				}
+			}
 			send(ctx, c, errMsg("not_found"))
 			continue
 		}
