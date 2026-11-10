@@ -21,6 +21,9 @@ func hostCapture(enc string) func(ctx context.Context, c agent.Cap) (*exec.Cmd, 
 	return agent.MacCapture(enc)
 }
 
+// hostLocked — заблокированный экран Мака: захват ждёт разблокировки (F7).
+var hostLocked = agent.ScreenLocked
+
 func platformKind() string { return "macOS" }
 
 func downloads() string {

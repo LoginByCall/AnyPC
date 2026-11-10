@@ -104,7 +104,7 @@ func main() {
 				return agent.Allow
 			}
 			return agent.AskAccept(cid, peer)
-		}, Capture: hostCapture(cfg.Enc), FileDir: downloads(), Stderr: logw}
+		}, Capture: hostCapture(cfg.Enc), Locked: hostLocked, FileDir: downloads(), Stderr: logw}
 	var mu sync.Mutex
 	online, session, update := false, "", ""
 	a.OnState = func(on bool, s string) { mu.Lock(); online, session = on, s; mu.Unlock() }

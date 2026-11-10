@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -56,6 +57,80 @@ func TestCaptureRestart(t *testing.T) {
 	ff := FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000})
 	ff = append(ff[:len(ff)-3:len(ff)-3], "-t", "0.5", "-f", "h264", "-")
 	e2e(t, local(t), "123456789", false, ff, "secret123")
+}
+
+// TestCaptureBlocked — F7: экран заблокирован → захват не запускается, клиенту state locked; после разблокировки
+// список мониторов снят заново и ушёл клиенту; захват без единого кадра → пауза noFramePause и state nocapture
+// (раньше перезапуск каждые 300 мс без конца); пошли кадры → state ok.
+func TestCaptureBlocked(t *testing.T) {
+	var unlocked atomic.Bool
+	var mu sync.Mutex
+	var calls []time.Time
+	listMonitors = func() []Monitor { // на заблокированном Маке список пуст
+		if unlocked.Load() {
+			return []Monitor{{Name: "A", W: 1920, H: 1080, Primary: true}}
+		}
+		return nil
+	}
+	e2eAgent = func(a *Agent) {
+		var once sync.Once
+		var t0 time.Time
+		a.Locked = func() bool {
+			once.Do(func() { t0 = time.Now() })
+			if time.Since(t0) < time.Second {
+				return true
+			}
+			unlocked.Store(true)
+			return false
+		}
+		a.Capture = func(ctx context.Context, c Cap) (*exec.Cmd, error) {
+			if !unlocked.Load() {
+				t.Error("захват запущен на заблокированном экране")
+			}
+			mu.Lock()
+			calls = append(calls, time.Now())
+			n := len(calls)
+			mu.Unlock()
+			if n <= 2 { // экран блокировки / UAC: процесс завершается, не дав ни кадра
+				return exec.CommandContext(ctx, "ffmpeg", "-loglevel", "quiet", "-i", "/nonexistent/anypc"), nil
+			}
+			return exec.CommandContext(ctx, "ffmpeg", FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000})...), nil
+		}
+	}
+	e2eCtl = func(t *testing.T, _ *webrtc.DataChannel, msgs chan ctlMsg) {
+		var states []string
+		mons := false
+		deadline := time.After(5 * time.Second)
+		for !mons || !slices.Contains(states, "ok") {
+			select {
+			case m := <-msgs:
+				switch {
+				case m.T == "state":
+					states = append(states, m.S)
+				case m.T == "monitors" && len(m.List) == 1:
+					mons = true
+				}
+			case <-deadline:
+				t.Fatalf("состояния %v, список после разблокировки %v", states, mons)
+			}
+		}
+		if states = slices.Compact(states); !slices.Equal(states, []string{"locked", "nocapture", "ok"}) {
+			t.Errorf("состояния %v, ждали locked → nocapture → ok", states)
+		}
+		mu.Lock()
+		c := slices.Clone(calls)
+		mu.Unlock()
+		if len(c) < 3 {
+			t.Fatalf("запусков захвата %d", len(c))
+		}
+		for i := 1; i < 3; i++ {
+			if d := c[i].Sub(c[i-1]); d < noFramePause-100*time.Millisecond {
+				t.Errorf("повтор захвата без кадров через %v, ждали ≥ %v", d, noFramePause)
+			}
+		}
+	}
+	defer func() { listMonitors, e2eAgent, e2eCtl = monitors, nil, nil }()
+	e2e(t, local(t), "123456789", false, nil, "secret123")
 }
 
 // TestLive: то же через боевой сервер, только TURN. ANYPC_LIVE=wss://hk.anypc.org/ws,wss://ru.anypc.org/ws
@@ -144,7 +219,7 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 	authed := make(chan bool, 1)
 	dcOpen := make(chan *webrtc.DataChannel, 1)
 	ctlOpen := make(chan *webrtc.DataChannel, 1)
-	ctlMsgs := make(chan ctlMsg, 8)
+	ctlMsgs := make(chan ctlMsg, 32) // до e2eCtl копятся: monitors, state (TestCaptureBlocked), cur
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
 		switch dc.Label() {
 		case "ctl":

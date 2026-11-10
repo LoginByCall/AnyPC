@@ -17,6 +17,10 @@ func hostCapture(enc string) func(ctx context.Context, c agent.Cap) (*exec.Cmd, 
 	return agent.LinuxCapture(enc)
 }
 
+// hostLocked — на Linux не проверяется: экран блокировки X11 — обычное окно, захват идёт; отказ портала Wayland
+// ловит общий признак «захват без кадров» (F7).
+var hostLocked func() bool
+
 func platformKind() string {
 	if agent.Wayland {
 		return "Wayland"
