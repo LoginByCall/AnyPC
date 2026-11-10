@@ -65,6 +65,10 @@ Open ports: 80, 443/tcp, 3478/udp+tcp, 49152–65535/udp. The client's default s
 ## Limitations
 No Ctrl+Alt+Del / UAC / lock screen yet (needs service mode); bitrate adapts to packet loss only (RTCP receiver reports; each step restarts the encoder, ~0.5 s pause); monitor switching works on Windows (GPU 0 outputs) and X11, on Wayland the monitor is chosen in the portal dialog; clipboard is text ≤ 60 KB; the browser web client keeps files received from the remote PC in memory and does not resume them (the app writes to disk and resumes).
 
+## Privacy
+
+No accounts, analytics or telemetry; what the servers see and what stays on your PC — [PRIVACY.md](PRIVACY.md) (also at https://www.anypc.org/privacy.html).
+
 ## License
 MIT — see `LICENSE`. FFmpeg is not bundled: on first launch the Windows app downloads FFmpeg 9.0.2 (GPLv3) from the gyan.dev builds and verifies its SHA-256; on Linux the system ffmpeg is used.
 

@@ -52,6 +52,7 @@
 - `lim4`: The Linux and macOS versions are in beta and have been tested less than the Windows version.
 - `bug`: Report a bug
 - `foot`: AnyPC beta. On first launch, the Windows version downloads FFmpeg (GPLv3) from the gyan.dev builds. Provided “as is”, without warranty.
+- `privacy`: Privacy
 - `f5t`: Works with your own server
 - `f5d`: Set up your own node on a VPS with one command and switch the program to it — connection records stay with you.
 - `f6t`: Several nodes of your own

@@ -52,6 +52,7 @@
 - `lim4`: Les versions Linux et macOS sont en bêta et moins testées que la version Windows.
 - `bug`: Signaler un bug
 - `foot`: AnyPC bêta. Au premier lancement, la version Windows télécharge FFmpeg (GPLv3) depuis les builds de gyan.dev. Fourni « tel quel », sans garantie.
+- `privacy`: Confidentialité
 - `f5t`: Possible avec votre propre serveur
 - `f5d`: Installez votre propre nœud sur un VPS en une commande et basculez le programme dessus — les données de connexion restent chez vous.
 - `f6t`: Plusieurs nœuds à vous
