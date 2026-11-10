@@ -917,8 +917,8 @@ func (a *Agent) accept(ctx context.Context, s *session, track *webrtc.TrackLocal
 	send(authMsg{T: "ok", Conf: conf, Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph), View: view, Audio: a.Audio})
 	log.Printf("сессия %s: вход выполнен%s", s.cid, map[bool]string{true: " (только просмотр)"}[view])
 	s.sendMonitors()
-	closeInd, err := showIndicator(s.cid, view, a.userClose(s)) // REQ-F-15
-	if err != nil {                                             // REQ-S-08: без видимой плашки сессии нет
+	closeInd, err := showIndicator(s.cid, s.plaque(), a.userClose(s)) // REQ-F-15
+	if err != nil {                                                   // REQ-S-08: без видимой плашки сессии нет
 		log.Printf("плашка сессии: %v — сессия закрыта", err)
 		s.pc.Close()
 		return

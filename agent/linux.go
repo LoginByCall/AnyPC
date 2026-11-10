@@ -133,7 +133,7 @@ func pangoEscape(s string) string {
 }
 
 // showIndicator — плашка REQ-F-15: окно zenity; закрыл человек → разорвать сессию.
-func showIndicator(cid string, view bool, onUserClose func()) (func(), error) {
+func showIndicator(cid string, mode plaqueMode, onUserClose func()) (func(), error) {
 	if fakeDesktop {
 		return func() {}, nil
 	}
@@ -141,7 +141,7 @@ func showIndicator(cid string, view bool, onUserClose func()) (func(), error) {
 	if err != nil {
 		return nil, errors.New("нет zenity — установите пакет zenity")
 	}
-	title, text := plaqueText(sysLang(), cid, view)
+	title, text := plaqueText(sysLang(), cid, mode)
 	cmd := exec.Command(bin, "--warning", "--no-wrap", "--title="+title, "--text="+pangoEscape(text))
 	if err := cmd.Start(); err != nil {
 		return nil, err

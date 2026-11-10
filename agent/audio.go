@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"slices"
 	"sync"
 	"time"
@@ -86,15 +87,47 @@ func (a *Agent) AudioAnswer(cid, sdp string) error {
 	return nil
 }
 
-// AudioMic — окно хоста включило или выключило свой микрофон (REQ-F-22: это видно на плашке).
-// TODO(REQ-F-22): плашка пока не показывает 🎤 — до этого звук не выпускать.
+// AudioMic — окно хоста включило или выключило свой микрофон. REQ-F-22: пока он включён, это видно на плашке —
+// плашка пересоздаётся с пометкой 🎤 (новая появляется раньше, чем закрывается старая). Не вышло показать — сессия закрыта.
 func (a *Agent) AudioMic(on bool) {
 	a.mu.Lock()
 	s := a.sess
 	a.mu.Unlock()
-	if s != nil {
-		s.audio.mu.Lock()
-		s.audio.mic = on
-		s.audio.mu.Unlock()
+	if s == nil || !s.authed.Load() {
+		return
 	}
+	s.audio.mu.Lock()
+	changed := s.audio.mic != on
+	s.audio.mic = on
+	s.audio.mu.Unlock()
+	if !changed {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closeInd == nil || s.gone.Load() {
+		return
+	}
+	closeNew, err := showIndicator(s.cid, s.plaque(), a.userClose(s))
+	if err != nil { // REQ-S-08
+		log.Printf("плашка сессии (микрофон): %v — сессия закрыта", err)
+		s.pc.Close()
+		return
+	}
+	s.closeInd, closeNew = closeNew, s.closeInd
+	closeNew()
+	log.Printf("сессия %s: микрофон этого ПК %s", s.cid, map[bool]string{true: "включён", false: "выключен"}[on])
+}
+
+// plaque — пометки плашки этой сессии.
+func (s *session) plaque() (m plaqueMode) {
+	if s.view.Load() {
+		m |= plaqueView
+	}
+	s.audio.mu.Lock()
+	defer s.audio.mu.Unlock()
+	if s.audio.mic {
+		m |= plaqueMic
+	}
+	return m
 }
