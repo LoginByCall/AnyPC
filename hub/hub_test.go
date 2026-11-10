@@ -786,3 +786,40 @@ func TestNotFound48(t *testing.T) {
 		t.Fatalf("not_found сверх %d с /64 пропущен", NotFoundPerMin)
 	}
 }
+
+// TestNoHTMLEscape — N1 (опыт D8): хаб пересылал сообщение через encoding/json с экранированием HTML: «<» → шестибайтовая escape-последовательность
+// (×6). Answer под потолком хаба (32 КБ) приходил хосту больше его буфера чтения (64 КБ) — хост рвал WS.
+// Теперь хост получает то же сообщение целиком, не длиннее принятого плюс from, и остаётся на связи.
+func TestNoHTMLEscape(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	url, host := limHub(t, ctx, &Hub{}) // host.SetReadLimit(64 КБ) — как agent
+	c, cid, code := dialFrom(t, ctx, url, "198.51.100.9")
+	if code != 0 {
+		t.Fatal(code)
+	}
+	sdp := strings.Repeat("<>&", 4<<10) + "  "
+	raw := []byte(`{"v":1,"type":"answer","to":"123456789","data":{"type":"answer","sdp":"` + sdp + `"}}`) // как JSON.stringify
+	if len(raw) > maxSize("answer") {
+		t.Fatalf("сообщение %d Б больше потолка хаба %d", len(raw), maxSize("answer"))
+	}
+	for range 2 { // второе — хост после первого на связи
+		if err := c.Write(ctx, websocket.MessageText, raw); err != nil {
+			t.Fatal(err)
+		}
+		rctx, rc := context.WithTimeout(ctx, 3*time.Second)
+		_, b, err := host.Read(rctx)
+		rc()
+		if err != nil {
+			t.Fatalf("хост: %v (клиент послал %d Б)", err, len(raw))
+		}
+		if len(b) > len(raw)+64 {
+			t.Fatalf("хосту пришло %d Б из %d", len(b), len(raw))
+		}
+		var m Msg
+		var d struct{ SDP string }
+		if json.Unmarshal(b, &m) != nil || json.Unmarshal(m.Data, &d) != nil || m.From != cid || d.SDP != sdp {
+			t.Fatalf("хост получил не то: %.200s", b)
+		}
+	}
+}
