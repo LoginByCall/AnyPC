@@ -190,22 +190,30 @@ var plaques = map[string][6]string{
 }
 
 // asks — окно «Разрешить / Отклонить» (REQ-F-03): заголовок, вопрос, сноска, кнопки (разрешить, отклонить,
-// только просмотр — REQ-F-20), подсказка к системным кнопкам Windows «Да / Нет / Отмена».
-var asks = map[string][7]string{
+// только просмотр — REQ-F-20), подсказка к системным кнопкам Windows «Да / Нет / Отмена», предупреждение о мошенниках.
+// Новые поля — только в конец: winAskHint берёт q[6].
+var asks = map[string][8]string{
 	"en": {"incoming connection", "Allow remote control of this computer?", "No answer within 30 s — rejected.", "Allow", "Deny", "View only",
-		"“Yes” — allow control, “No” — view only, “Cancel” — deny."},
+		"“Yes” — allow control, “No” — view only, “Cancel” — deny.",
+		"Do not allow if a stranger asks you to — a “bank”, “tech support”, “police”."},
 	"ru": {"входящее подключение", "Разрешить удалённое управление этим компьютером?", "Без ответа 30 с — отказ.", "Разрешить", "Отклонить", "Только просмотр",
-		"«Да» — разрешить управление, «Нет» — только просмотр, «Отмена» — отклонить."},
+		"«Да» — разрешить управление, «Нет» — только просмотр, «Отмена» — отклонить.",
+		"Не разрешайте, если просит незнакомый человек — «банк», «техподдержка», «полиция»."},
 	"zh": {"传入连接", "允许远程控制这台电脑吗？", "30 秒内未响应将自动拒绝。", "允许", "拒绝", "仅查看",
-		"“是”——允许控制，“否”——仅查看，“取消”——拒绝。"},
+		"“是”——允许控制，“否”——仅查看，“取消”——拒绝。",
+		"如果是陌生人要求（“银行”“技术支持”“警察”），请不要允许。"},
 	"es": {"conexión entrante", "¿Permitir el control remoto de este equipo?", "Sin respuesta en 30 s — se rechaza.", "Permitir", "Rechazar", "Solo ver",
-		"«Sí»: permitir el control; «No»: solo ver; «Cancelar»: rechazar."},
+		"«Sí»: permitir el control; «No»: solo ver; «Cancelar»: rechazar.",
+		"No lo permita si se lo pide un desconocido: «banco», «soporte técnico», «policía»."},
 	"de": {"eingehende Verbindung", "Fernsteuerung dieses Computers erlauben?", "Ohne Antwort in 30 s — abgelehnt.", "Erlauben", "Ablehnen", "Nur ansehen",
-		"„Ja“ – Steuerung erlauben, „Nein“ – nur ansehen, „Abbrechen“ – ablehnen."},
+		"„Ja“ – Steuerung erlauben, „Nein“ – nur ansehen, „Abbrechen“ – ablehnen.",
+		"Nicht erlauben, wenn ein Fremder darum bittet – „Bank“, „Support“, „Polizei“."},
 	"fr": {"connexion entrante", "Autoriser le contrôle à distance de cet ordinateur ?", "Sans réponse sous 30 s — refusé.", "Autoriser", "Refuser", "Affichage seul",
-		"« Oui » : autoriser le contrôle, « Non » : affichage seul, « Annuler » : refuser."},
+		"« Oui » : autoriser le contrôle, « Non » : affichage seul, « Annuler » : refuser.",
+		"N’autorisez pas si un inconnu vous le demande — « banque », « support technique », « police »."},
 	"it": {"connessione in arrivo", "Consentire il controllo remoto di questo computer?", "Senza risposta entro 30 s — rifiutata.", "Consenti", "Rifiuta", "Solo visualizzazione",
-		"«Sì»: consenti il controllo, «No»: solo visualizzazione, «Annulla»: rifiuta."},
+		"«Sì»: consenti il controllo, «No»: solo visualizzazione, «Annulla»: rifiuta.",
+		"Non consentire se te lo chiede uno sconosciuto: «banca», «assistenza tecnica», «polizia»."},
 }
 
 func winAskHint(lang string) string {
@@ -224,7 +232,7 @@ func askText(lang, cid, peer string) (title, text, yes, no, view string) {
 	if !ok {
 		q = asks["en"]
 	}
-	return "AnyPC — " + q[0], q[1] + "\n\nID: " + cid + "\nIP: " + peer + "\n\n" + q[2], q[3], q[4], q[5]
+	return "AnyPC — " + q[0], q[1] + "\n\n" + q[7] + "\n\nID: " + cid + "\nIP: " + peer + "\n\n" + q[2], q[3], q[4], q[5]
 }
 
 // plaqueBar — однострочная плашка (Windows): подпись и кнопка «Разорвать».

@@ -56,6 +56,7 @@ type Agent struct {
 	Trusted func(pub []byte) bool                               // У3: ключ клиента закреплён (вход с ним был); nil — без доверенных
 	Trust   func(pub []byte)                                    // закрепить ключ клиента после входа по паролю
 	Audio   bool                                                // окно хоста умеет звук (PLAN.md): клиент увидит кнопку микрофона
+	Locked  func() bool                                         // экран заблокирован — захват не запускать (macOS, F7); nil — не проверять
 
 	mu        sync.Mutex
 	ice       []webrtc.ICEServer
@@ -83,6 +84,7 @@ type session struct {
 	gone    atomic.Bool // сессия освобождена (release) — в pend не возвращать
 	ctl     *webrtc.DataChannel
 	peer    string // адрес клиента по выбранной паре ICE — для окна подтверждения
+	ice     iceCap // потолок удалённых ICE-кандидатов (F5, icecap.go)
 
 	mu        sync.Mutex
 	closeInd  func() // закрыть плашку сессии
@@ -97,6 +99,7 @@ type session struct {
 	switched  atomic.Bool           // захват остановлен ради смены монитора/битрейта — перезапуск без паузы
 	rate      rate                  // адаптивный битрейт; max == 0 — выключен
 	bwe       cc.BandwidthEstimator // оценка полосы GCC по TWCC клиента; nil — без неё
+	state     string                // состояние захвата для клиента (F7): "" — ещё не сообщали, "locked", "nocapture", "ok"
 	twcc      atomic.Bool           // от клиента пришёл первый отчёт TWCC (в журнал — один раз)
 }
 
@@ -160,6 +163,7 @@ type ctlMsg struct {
 	C    string    `json:"c,omitempty"`
 	SDP  string    `json:"sdp,omitempty"` // "audio": предложение клиента / ответ окна хоста (PLAN.md, звук)
 	Err  string    `json:"err,omitempty"` // "audio": "closed" — окно хоста не ответило
+	S    string    `json:"s,omitempty"`   // "state": "locked" | "nocapture" | "ok" (F7; старый клиент неизвестный t пропускает)
 }
 
 // Cap — параметры захвата: монитор, потолок битрейта (кбит/с), кадров/с; Video — профиль «видео» (частота кадров
@@ -456,11 +460,18 @@ func (a *Agent) run(ctx context.Context, server string) error {
 			case "answer":
 				var sd webrtc.SessionDescription
 				if json.Unmarshal(m.Data, &sd) == nil {
+					if !s.answerCands(sd.SDP) { // кандидаты в answer — в обход trickle; сверх потолка — отказ
+						log.Printf("клиент %s: в answer кандидатов больше потолка — сессия отклонена", s.cid)
+						a.send(ctx, c, "bye", s.cid, "host")
+						a.release(s)
+						s.pc.Close()
+						continue
+					}
 					err = s.pc.SetRemoteDescription(sd)
 				}
 			case "ice":
 				var ci webrtc.ICECandidateInit
-				if json.Unmarshal(m.Data, &ci) == nil {
+				if json.Unmarshal(m.Data, &ci) == nil && s.ice.admit(s.cid, ci.Candidate, s.authed.Load()) {
 					err = s.pc.AddICECandidate(ci)
 				}
 			case "bye":
@@ -729,6 +740,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 		go s.watchClip(sctx, func(b []byte) { ctl.SendText(string(b)) })
 		go s.watchCursor(sctx, func(b []byte) { ctl.SendText(string(b)) })
 		s.sendMonitors()
+		s.sendState()
 	})
 	recv := new(atomic.Int32) // идущие приёмы файлов этой сессии (не больше maxRecv)
 
@@ -1013,26 +1025,93 @@ func (s *session) watchClip(ctx context.Context, send func([]byte)) {
 	}
 }
 
+// lockPoll — как часто проверять заблокированный экран; noFramePause — пауза перед повтором захвата, не давшего
+// ни кадра (экран блокировки, UAC, отказ портала): без неё ffmpeg перезапускался каждые 300 мс без конца (F7).
+var lockPoll, noFramePause = 2 * time.Second, 2 * time.Second
+
 func (a *Agent) stream(ctx context.Context, s *session, track *webrtc.TrackLocalStaticSample) {
 	for {
-		a.streamOnce(ctx, s, track)
+		if a.Locked != nil && a.Locked() { // macOS: на заблокированном экране ffmpeg кадров не даст — не запускать
+			s.setState("locked")
+			log.Printf("сессия %s: экран заблокирован — жду разблокировки", s.cid)
+			for a.Locked() {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(lockPoll):
+				}
+			}
+			s.refreshMonitors() // при блокировке список мониторов мог быть пуст или другим
+		}
+		got := a.streamOnce(ctx, s, track, func() { s.setState("ok") })
 		if ctx.Err() == nil && s.switched.Swap(false) {
 			continue // смена монитора — сразу
 		}
 		// ffmpeg завершился сам — обычно DXGI_ERROR_ACCESS_LOST (887a0026): UAC, блокировка,
 		// полноэкранное окно, смена режима (ТЗ §9). Перезапуск отдаёт браузеру новый IDR.
+		pause := 300 * time.Millisecond
+		if !got && ctx.Err() == nil {
+			pause = noFramePause
+			if s.setState("nocapture") {
+				log.Printf("сессия %s: захват не дал ни кадра — повтор раз в %v", s.cid, noFramePause)
+			}
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(300 * time.Millisecond):
-			log.Printf("перезапуск захвата")
+		case <-time.After(pause):
+			if got {
+				log.Printf("перезапуск захвата")
+			}
 		}
 	}
 }
 
+// setState — состояние захвата для клиента (F7); true — изменилось. Начальное «ok» не шлётся: клиент его и так предполагает.
+func (s *session) setState(st string) bool {
+	s.mu.Lock()
+	if s.state == st || s.state == "" && st == "ok" {
+		s.mu.Unlock()
+		return false
+	}
+	s.state = st
+	s.mu.Unlock()
+	s.sendState()
+	return true
+}
+
+// sendState — состояние захвата клиенту: только после входа (иначе состояние экрана узнаёт любой, кто знает ID)
+// и при открытом ctl; зовут setState и открытие ctl.
+func (s *session) sendState() {
+	if !s.authed.Load() || s.ctl == nil || s.ctl.ReadyState() != webrtc.DataChannelStateOpen {
+		return
+	}
+	s.mu.Lock()
+	st := s.state
+	s.mu.Unlock()
+	if st == "" {
+		return
+	}
+	b, _ := json.Marshal(ctlMsg{T: "state", S: st})
+	s.ctl.SendText(string(b))
+}
+
+// refreshMonitors — заново снять список мониторов (после разблокировки) и послать клиенту.
+func (s *session) refreshMonitors() {
+	ms := listMonitors()
+	s.mu.Lock()
+	s.mons = ms
+	if s.mon >= len(ms) {
+		s.mon = primaryIndex(ms)
+	}
+	s.mu.Unlock()
+	s.sendMonitors()
+}
+
 // streamVP9 — кадры Y4M из ffmpeg → libvpx в процессе → трек. Битрейт и частота кадров берутся из rate на каждом
 // кадре (прореживание кадров источника), ключевой кадр — по keyReq (PLI): ничего из этого не перезапускает ffmpeg.
-func (a *Agent) streamVP9(ctx context.Context, s *session, out io.Reader, track *webrtc.TrackLocalStaticSample, c Cap) {
+// onFrame зовётся на первом отправленном кадре; true — кадр был.
+func (a *Agent) streamVP9(ctx context.Context, s *session, out io.Reader, track *webrtc.TrackLocalStaticSample, c Cap, onFrame func()) (got bool) {
 	y, err := newY4M(out)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -1090,6 +1169,10 @@ func (a *Agent) streamVP9(ctx context.Context, s *session, out io.Reader, track 
 		if err := track.WriteSample(media.Sample{Data: data, Duration: skipped}); err != nil {
 			return
 		}
+		if !got {
+			got = true
+			onFrame()
+		}
 		skipped = 0
 	}
 }
@@ -1097,7 +1180,8 @@ func (a *Agent) streamVP9(ctx context.Context, s *session, out io.Reader, track 
 // streamOnce: ffmpeg пишет H.264 Annex-B в stdout, NAL-юниты уходят в трек (или Y4M → streamVP9).
 // ponytail: h264reader отдаёт NAL только по старт-коду следующего → +1 кадр задержки (33 мс при 30 к/с);
 // убрать — читать пакеты из контейнера (nut/mkv) или кодировать в процессе.
-func (a *Agent) streamOnce(ctx context.Context, s *session, track *webrtc.TrackLocalStaticSample) {
+// onFrame зовётся на первом отправленном кадре; true — кадр был (F7: захват без единого кадра повторяется с паузой).
+func (a *Agent) streamOnce(ctx context.Context, s *session, track *webrtc.TrackLocalStaticSample, onFrame func()) (got bool) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	s.mu.Lock()
@@ -1132,8 +1216,7 @@ func (a *Agent) streamOnce(ctx context.Context, s *session, track *webrtc.TrackL
 	}
 	defer func() { cancel(); cmd.Wait() }() // сначала убить: при выходе по ошибке записи ffmpeg жив, а пайп никто не читает
 	if s.vp9 {
-		a.streamVP9(ctx, s, out, track, c)
-		return
+		return a.streamVP9(ctx, s, out, track, c, onFrame)
 	}
 	r, err := h264reader.NewReader(out)
 	if err != nil {
@@ -1155,6 +1238,10 @@ func (a *Agent) streamOnce(ctx context.Context, s *session, track *webrtc.TrackL
 		}
 		if err := track.WriteSample(media.Sample{Data: nal.Data, Duration: d}); err != nil {
 			return
+		}
+		if d != 0 && !got {
+			got = true
+			onFrame()
 		}
 	}
 }

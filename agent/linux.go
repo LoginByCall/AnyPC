@@ -217,8 +217,9 @@ func AskAccept(cid, peer string) Answer {
 		return Allow
 	}
 	title, text, yes, no, view := askText(sysLang(), cid, peer)
-	// дополнительная кнопка: zenity печатает её подпись и выходит с кодом 1, как «Отклонить»
-	out, err := exec.Command("zenity", "--question", "--no-wrap", "--title="+title, "--text="+pangoEscape(text),
+	// дополнительная кнопка: zenity печатает её подпись и выходит с кодом 1, как «Отклонить»;
+	// --default-cancel — Enter = «Отклонить»; перенос строк по ширине вместо --no-wrap (длинное предупреждение)
+	out, err := exec.Command("zenity", "--question", "--default-cancel", "--width=460", "--title="+title, "--text="+pangoEscape(text),
 		"--ok-label="+yes, "--cancel-label="+no, "--extra-button="+view, "--timeout="+strconv.Itoa(int(AskTimeout.Seconds()))).Output()
 	switch {
 	case err == nil:
