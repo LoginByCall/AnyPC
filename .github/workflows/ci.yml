@@ -30,7 +30,7 @@ jobs:
         with: { name: bin-linux, path: bin/, retention-days: 7 }
 
   macos:
-    runs-on: macos-14 # Apple Silicon; amd64 собирается кросс-компиляцией и склеивается lipo
+    runs-on: macos-latest # Apple Silicon; amd64 собирается кросс-компиляцией и склеивается lipo
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v5
