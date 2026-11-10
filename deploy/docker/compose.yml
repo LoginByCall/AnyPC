@@ -39,6 +39,8 @@ services:
       - --total-quota=1000
       - --no-tcp-relay
       - --max-bps=1250000
+      - --no-rfc5780
+      - --no-software-attribute
       - --denied-peer-ip=0.0.0.0-0.255.255.255
       - --denied-peer-ip=10.0.0.0-10.255.255.255
       - --denied-peer-ip=100.64.0.0-100.127.255.255
@@ -53,6 +55,10 @@ services:
       - --denied-peer-ip=64:ff9b::-64:ff9b::ffff:ffff
       - --denied-peer-ip=198.18.0.0-198.19.255.255
       - --denied-peer-ip=240.0.0.0-255.255.255.255
+      - --denied-peer-ip=192.0.0.0-192.0.0.255
+      - --denied-peer-ip=192.0.2.0-192.0.2.255
+      - --denied-peer-ip=198.51.100.0-198.51.100.255
+      - --denied-peer-ip=203.0.113.0-203.0.113.255
       - --denied-peer-ip=${PUBLIC_IP:?}
       - --denied-peer-ip=${PUBLIC_IP6:-::1}
 volumes:

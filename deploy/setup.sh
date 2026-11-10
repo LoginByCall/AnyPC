@@ -56,6 +56,8 @@ chmod 600 /etc/anypc/env
 # учётку выдаёт хаб любому клиенту, а relay на свой IP достал бы до соседних служб сервера (почта и т.п.) «изнутри».
 # no-tcp-relay: WebRTC берёт только UDP-аллокации, TCP-relay (RFC 6062) нужен лишь прокси-злоупотреблению;
 # max-bps — байт/с на сеанс (10 Мбит/с при видео до 4 Мбит/с); ::ffff:… — обход запретов IPv4 через IPv4-mapped IPv6.
+# denied-peer-ip — только диапазонами «a-b»: CIDR coturn 4.6.1/4.18 не понимает и молча пропускает строку («Wrong address format»).
+# no-rfc5780 — без ответов с альтернативного адреса/порта (усиление отражения STUN); no-software-attribute — не сообщать версию.
 cat > /etc/turnserver.conf <<EOF
 listening-port=3478
 fingerprint
@@ -72,6 +74,8 @@ user-quota=4
 total-quota=1000
 no-tcp-relay
 max-bps=1250000
+no-rfc5780
+no-software-attribute
 denied-peer-ip=0.0.0.0-0.255.255.255
 denied-peer-ip=10.0.0.0-10.255.255.255
 denied-peer-ip=100.64.0.0-100.127.255.255
@@ -86,6 +90,10 @@ denied-peer-ip=::ffff:0.0.0.0-::ffff:255.255.255.255
 denied-peer-ip=64:ff9b::-64:ff9b::ffff:ffff
 denied-peer-ip=198.18.0.0-198.19.255.255
 denied-peer-ip=240.0.0.0-255.255.255.255
+denied-peer-ip=192.0.0.0-192.0.0.255
+denied-peer-ip=192.0.2.0-192.0.2.255
+denied-peer-ip=198.51.100.0-198.51.100.255
+denied-peer-ip=203.0.113.0-203.0.113.255
 $(for ip in $(hostname -I); do echo "denied-peer-ip=$ip"; done)
 EOF
 chmod 640 /etc/turnserver.conf
@@ -107,6 +115,12 @@ ExecStart=/usr/local/bin/anypc-server -domain $DOMAIN -turn ${TURN:-$DOMAIN} -hu
 DynamicUser=yes
 StateDirectory=anypc
 AmbientCapabilities=CAP_NET_BIND_SERVICE
+# усиление: только порт <1024, без чужих архитектур и сокетов; память — доля ОЗУ (на VPS 1 ГБ поток соединений не уронит систему)
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
+MemoryMax=60%
 Restart=always
 RestartSec=3
 
