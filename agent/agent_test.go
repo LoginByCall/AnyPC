@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -130,6 +131,44 @@ func TestCaptureBlocked(t *testing.T) {
 		}
 	}
 	defer func() { listMonitors, e2eAgent, e2eCtl = monitors, nil, nil }()
+	e2e(t, local(t), "123456789", false, nil, "secret123")
+}
+
+// TestCaptureDenied — регрессия: «Отмена» в окне портала Wayland вызывала окно снова каждые 300 мс (потом 2 с).
+// Теперь отказ человека закрывает сессию: клиент получает state "denied", захват не повторяется.
+func TestCaptureDenied(t *testing.T) {
+	var calls atomic.Int32
+	var ag *Agent
+	e2eAgent = func(a *Agent) {
+		ag = a
+		a.Capture = func(context.Context, Cap) (*exec.Cmd, error) {
+			calls.Add(1)
+			return nil, fmt.Errorf("портал: %w", ErrCaptureDenied)
+		}
+	}
+	e2eNoVideo = true
+	e2eCtl = func(t *testing.T, _ *webrtc.DataChannel, msgs chan ctlMsg) {
+		deadline := time.After(5 * time.Second)
+		for denied := false; !denied; {
+			select {
+			case m := <-msgs:
+				denied = m.T == "state" && m.S == "denied"
+			case <-deadline:
+				t.Fatal("клиент не получил state denied")
+			}
+		}
+		time.Sleep(noFramePause + 500*time.Millisecond) // повтор был бы здесь
+		if n := calls.Load(); n != 1 {
+			t.Errorf("запусков захвата %d, ждали 1 (без повторов после отказа)", n)
+		}
+		ag.mu.Lock()
+		busy := ag.sess != nil
+		ag.mu.Unlock()
+		if busy {
+			t.Error("сессия на хосте не закрыта после отказа")
+		}
+	}
+	defer func() { e2eAgent, e2eCtl, e2eNoVideo = nil, nil, false }()
 	e2e(t, local(t), "123456789", false, nil, "secret123")
 }
 
@@ -339,13 +378,15 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 	if !ok {
 		t.Fatal("верный пароль отвергнут или хост не подтвердил ключ")
 	}
-	select {
-	case mt := <-got:
-		if mt != e2eMime {
-			t.Fatalf("кодек %s", mt)
+	if !e2eNoVideo {
+		select {
+		case mt := <-got:
+			if mt != e2eMime {
+				t.Fatalf("кодек %s", mt)
+			}
+		case <-ctx.Done():
+			t.Fatal("нет видео за 20 с")
 		}
-	case <-ctx.Done():
-		t.Fatal("нет видео за 20 с")
 	}
 	select {
 	case dc := <-dcOpen:
@@ -467,14 +508,15 @@ func TestClipEcho(t *testing.T) {
 
 // Крючки e2e для отдельных тестов (по умолчанию nil).
 var (
-	e2eAgent func(*Agent)
-	e2eMime  = webrtc.MimeTypeH264                                         // кодек видео, который ждёт клиент
-	e2eVP9   bool                                                          // клиент просит VP9 в connect
-	e2eTrack func(*testing.T, *webrtc.PeerConnection, *webrtc.TrackRemote) // после 300 RTP видео у клиента
-	e2eDeny  bool                                                          // ожидать отказ человека на хосте (REQ-F-03)
-	e2eCtl   func(*testing.T, *webrtc.DataChannel, chan ctlMsg)
-	e2eSquat int    // столько клиентов до настоящего шлют connect и молчат (У3, У9)
-	e2eKey   string // seed ключа клиента (base64): заявить в connect и подписать в «b» (У3); "bad" — заявить, подпись испортить
+	e2eAgent   func(*Agent)
+	e2eMime    = webrtc.MimeTypeH264                                         // кодек видео, который ждёт клиент
+	e2eVP9     bool                                                          // клиент просит VP9 в connect
+	e2eTrack   func(*testing.T, *webrtc.PeerConnection, *webrtc.TrackRemote) // после 300 RTP видео у клиента
+	e2eDeny    bool                                                          // ожидать отказ человека на хосте (REQ-F-03)
+	e2eCtl     func(*testing.T, *webrtc.DataChannel, chan ctlMsg)
+	e2eSquat   int    // столько клиентов до настоящего шлют connect и молчат (У3, У9)
+	e2eKey     string // seed ключа клиента (base64): заявить в connect и подписать в «b» (У3); "bad" — заявить, подпись испортить
+	e2eNoVideo bool   // видео не ждать (захват отклонён на хосте) — сразу к e2eCtl
 )
 
 // squat — клиент, который получил offer и не отвечает: раньше одного такого хватало, чтобы хост 20 с был «занят».

@@ -99,6 +99,7 @@ type session struct {
 	switched  atomic.Bool           // захват остановлен ради смены монитора/битрейта — перезапуск без паузы
 	rate      rate                  // адаптивный битрейт; max == 0 — выключен
 	bwe       cc.BandwidthEstimator // оценка полосы GCC по TWCC клиента; nil — без неё
+	denied    atomic.Bool           // захват отклонён человеком у хоста (ErrCaptureDenied) — сессия закрывается
 	state     string                // состояние захвата для клиента (F7): "" — ещё не сообщали, "locked", "nocapture", "ok"
 	twcc      atomic.Bool           // от клиента пришёл первый отчёт TWCC (в журнал — один раз)
 }
@@ -1025,6 +1026,10 @@ func (s *session) watchClip(ctx context.Context, send func([]byte)) {
 	}
 }
 
+// ErrCaptureDenied — человек у хоста отказал в доступе к экрану (Wayland: «Отмена» в окне портала). Повторять бессмысленно:
+// окно всплывало бы снова каждые 2 с — сессия закрывается, клиент видит причину (state "denied").
+var ErrCaptureDenied = errors.New("доступ к экрану отклонён на удалённом ПК")
+
 // lockPoll — как часто проверять заблокированный экран; noFramePause — пауза перед повтором захвата, не давшего
 // ни кадра (экран блокировки, UAC, отказ портала): без неё ffmpeg перезапускался каждые 300 мс без конца (F7).
 var lockPoll, noFramePause = 2 * time.Second, 2 * time.Second
@@ -1044,6 +1049,14 @@ func (a *Agent) stream(ctx context.Context, s *session, track *webrtc.TrackLocal
 			s.refreshMonitors() // при блокировке список мониторов мог быть пуст или другим
 		}
 		got := a.streamOnce(ctx, s, track, func() { s.setState("ok") })
+		if s.denied.Load() {
+			s.setState("denied")
+			log.Printf("сессия %s: доступ к экрану отклонён на хосте — сессия закрыта", s.cid)
+			time.Sleep(200 * time.Millisecond) // state по ctl — раньше, чем bye через хаб
+			a.send(context.Background(), s.conn, "bye", s.cid, "host")
+			s.pc.Close()
+			return
+		}
 		if ctx.Err() == nil && s.switched.Swap(false) {
 			continue // смена монитора — сразу
 		}
@@ -1196,6 +1209,7 @@ func (a *Agent) streamOnce(ctx context.Context, s *session, track *webrtc.TrackL
 		var err error
 		if cmd, err = a.Capture(ctx, c); err != nil {
 			log.Printf("захват: %v", err)
+			s.denied.Store(errors.Is(err, ErrCaptureDenied))
 			return
 		}
 	} else {
