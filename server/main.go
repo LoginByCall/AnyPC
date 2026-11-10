@@ -112,9 +112,12 @@ func main() {
 }
 
 // serve — сервер с таймаутами: без них простаивающие и медленные (slowloris) соединения копятся до OOM на VPS 1 ГБ.
-// WebSocket после Upgrade таймауты http.Server не трогают — его живость проверяет hub.Keepalive.
+// ReadHeaderTimeout и IdleTimeout WebSocket после Upgrade не трогают — его живость проверяет hub.Keepalive.
+// ReadTimeout/WriteTimeout не ставить: дедлайн остаётся на захваченном соединении и рвёт WS через N секунд.
+// MaxHeaderBytes 16 КБ (по умолчанию 1 МБ): наши запросы — сотни байт, а мегабайт заголовков на каждое
+// из тысяч соединений — память VPS.
 func serve(addr string, h http.Handler) *http.Server {
-	return &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}
+	return &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 16 << 10}
 }
 
 // list — "a, b,,c,a" → [a b c]: пустые и повторы отбрасываются (повторный запуск sed по флагам дал дубль, 2026-11-06).
