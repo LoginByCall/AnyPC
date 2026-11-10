@@ -92,9 +92,10 @@ func main() {
 	turn := flag.String("turn", "", "хосты STUN/TURN через запятую")
 	hubs := flag.String("hubs", "", "все хабы сигнализации через запятую (wss://…/ws), для веб-клиента; пусто — только этот")
 	certs := flag.String("certs", "certs", "каталог кэша сертификатов")
+	maxConns := flag.Int("maxconns", hub.MaxConnsDefault, "потолок соединений сигнализации (≈55 КБ на WS по TLS); сверх — 503")
 	flag.Parse()
 
-	h := &hub.Hub{TurnHosts: list(*turn), TurnSecret: os.Getenv("ANYPC_TURN_SECRET"), Keys: filepath.Join(filepath.Dir(*certs), "hosts.json")}
+	h := &hub.Hub{TurnHosts: list(*turn), TurnSecret: os.Getenv("ANYPC_TURN_SECRET"), Keys: filepath.Join(filepath.Dir(*certs), "hosts.json"), MaxConns: *maxConns}
 	mux := newMux(h, list(*siteHost), *dl, h.TurnHosts, list(*hubs))
 	if *domain == "" {
 		log.Println("HTTP", *addr)
