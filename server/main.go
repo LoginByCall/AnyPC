@@ -55,11 +55,30 @@ func newMux(h http.Handler, siteHosts []string, dlDir string, turns, hubs []stri
 			host = hp
 		}
 		if slices.ContainsFunc(siteHosts, func(s string) bool { return strings.EqualFold(host, s) }) {
+			secure(w, r, site.CSP)
 			www.ServeHTTP(w, r)
 			return
 		}
+		// Клиенту — только frame-ancestors: полная политика у него в <meta> (ui/index.html), а две полные
+		// действовали бы обе, и расхождение хешей убило бы страницу; окно программы отдаёт ту же страницу без заголовка.
+		secure(w, r, "frame-ancestors 'none'")
 		app.ServeHTTP(w, r)
 	})
+}
+
+// secure — заголовки безопасности на каждый ответ (обоим mux, включая /ws: в ответе 101 они безвредны).
+// HSTS — только по TLS и без includeSubDomains/preload: с апекса он накрыл бы us.anypc.org:8080 (HTTP),
+// а свой узел за обратным прокси (-addr без TLS) не должен навязывать HSTS домену оператора.
+// max-age=86400 — первая неделя (сутки обратимы); год (31536000) — после недели без жалоб.
+func secure(w http.ResponseWriter, r *http.Request, csp string) {
+	h := w.Header()
+	h.Set("X-Frame-Options", "DENY")
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Referrer-Policy", "no-referrer") // Origin у WebSocket и CORS от этого не обнуляется
+	h.Set("Content-Security-Policy", csp)
+	if r.TLS != nil {
+		h.Set("Strict-Transport-Security", "max-age=86400")
+	}
 }
 
 // version — из git-тега при сборке (build.sh).
