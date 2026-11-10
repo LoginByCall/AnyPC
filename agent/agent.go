@@ -101,6 +101,7 @@ type session struct {
 	bwe       cc.BandwidthEstimator // оценка полосы GCC по TWCC клиента; nil — без неё
 	denied    atomic.Bool           // захват отклонён человеком у хоста (ErrCaptureDenied) — сессия закрывается
 	state     string                // состояние захвата для клиента (F7): "" — ещё не сообщали, "locked", "nocapture", "ok"
+	stateAt   time.Time             // когда state последний раз уходил клиенту (повтор — repeatState)
 	twcc      atomic.Bool           // от клиента пришёл первый отчёт TWCC (в журнал — один раз)
 }
 
@@ -1034,6 +1035,9 @@ var ErrCaptureDenied = errors.New("доступ к экрану отклонён
 // ни кадра (экран блокировки, UAC, отказ портала): без неё ffmpeg перезапускался каждые 300 мс без конца (F7).
 var lockPoll, noFramePause = 2 * time.Second, 2 * time.Second
 
+// stateEvery — не чаще чем раз в столько повторять клиенту текущее состояние, пока оно держится (D3).
+var stateEvery = 2 * time.Second
+
 func (a *Agent) stream(ctx context.Context, s *session, track *webrtc.TrackLocalStaticSample) {
 	for {
 		if a.Locked != nil && a.Locked() { // macOS: на заблокированном экране ffmpeg кадров не даст — не запускать
@@ -1045,8 +1049,11 @@ func (a *Agent) stream(ctx context.Context, s *session, track *webrtc.TrackLocal
 					return
 				case <-time.After(lockPoll):
 				}
+				s.repeatState()
 			}
 			s.refreshMonitors() // при блокировке список мониторов мог быть пуст или другим
+		} else if s.noMonitors() { // D4: сразу после разблокировки дисплеи могли ещё не проснуться — снимать, пока пусто
+			s.refreshMonitors()
 		}
 		got := a.streamOnce(ctx, s, track, func() { s.setState("ok") })
 		if s.denied.Load() {
@@ -1067,6 +1074,8 @@ func (a *Agent) stream(ctx context.Context, s *session, track *webrtc.TrackLocal
 			pause = noFramePause
 			if s.setState("nocapture") {
 				log.Printf("сессия %s: захват не дал ни кадра — повтор раз в %v", s.cid, noFramePause)
+			} else {
+				s.repeatState()
 			}
 		}
 		select {
@@ -1087,10 +1096,24 @@ func (s *session) setState(st string) bool {
 		s.mu.Unlock()
 		return false
 	}
-	s.state = st
+	s.state, s.stateAt = st, time.Now()
 	s.mu.Unlock()
 	s.sendState()
 	return true
+}
+
+// repeatState — повторить клиенту текущее состояние (не чаще stateEvery). Первое могло потеряться: ok входа идёт
+// по каналу auth, state — по ctl, порядок между каналами не гарантирован, а клиент принимает state только после входа.
+func (s *session) repeatState() {
+	s.mu.Lock()
+	due := time.Since(s.stateAt) >= stateEvery
+	if due {
+		s.stateAt = time.Now()
+	}
+	s.mu.Unlock()
+	if due {
+		s.sendState()
+	}
 }
 
 // sendState — состояние захвата клиенту: только после входа (иначе состояние экрана узнаёт любой, кто знает ID)
@@ -1110,15 +1133,26 @@ func (s *session) sendState() {
 }
 
 // refreshMonitors — заново снять список мониторов (после разблокировки) и послать клиенту.
+// Пусто и было пусто (Wayland — всегда) — клиенту не слать.
 func (s *session) refreshMonitors() {
 	ms := listMonitors()
 	s.mu.Lock()
+	same := len(ms) == 0 && len(s.mons) == 0
 	s.mons = ms
 	if s.mon >= len(ms) {
 		s.mon = primaryIndex(ms)
 	}
 	s.mu.Unlock()
-	s.sendMonitors()
+	if !same {
+		s.sendMonitors()
+	}
+}
+
+// noMonitors — список мониторов пуст: координаты мыши не пересчитываются, выбора монитора нет.
+func (s *session) noMonitors() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.mons) == 0
 }
 
 // streamVP9 — кадры Y4M из ffmpeg → libvpx в процессе → трек. Битрейт и частота кадров берутся из rate на каждом

@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="ru">
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-0SU/AvbgEWElJWH1ToAeAxK4KklTkL0lYohVLtrnpr4=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-8TybE4PzEIhh8c6AEq7lZxT/bOzptq8IXTPiXdKOxGk=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AnyPC</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26'><style>.a{stroke:%2317181c}.b{fill:%23d2452d}@media(prefers-color-scheme:dark){.a{stroke:%23eceae4}.b{fill:%23ef6a52}}</style><rect class='a' x='1.5' y='3' width='15' height='11' rx='2' fill='none' stroke-width='2.6'/><rect class='b' x='10' y='12' width='15' height='11' rx='2'/></svg>">
@@ -354,7 +354,7 @@ function end(reason, keep) {
   pc = ws = dc = ctl = null;
   audioStop(); $('mic').classList.add('hidden'); $('mic').disabled = false;
   $('mon').classList.add('hidden'); $('qsel').classList.add('hidden'); $('cur').classList.add('hidden'); v.style.cursor = '';
-  hostState('ok');
+  lastState = 'ok'; hostState('ok');
   setFs(false);
   v.srcObject = null;
   show(false);
@@ -510,7 +510,7 @@ async function onAuth(ch, e, mine) {
       $('trust').classList.remove('hidden');
       return;
     }
-    trustNext = null; expect = ''; authed = true;
+    trustNext = null; expect = ''; authed = true; hostState(lastState);
     document.body.classList.toggle('view', !!m.view); // REQ-F-20: режим сессии решает хост (мог сузить сам)
     if (m.audio) audioOffer(); // хост умеет звук (PLAN.md); старый хост поля не шлёт — кнопки 🎤 нет
     if (was !== fp) await known.set(host, fp);
@@ -589,12 +589,13 @@ function onCtl(e) {
   if (m.t === 'monitors') return showMonitors(m); // хост шлёт список при открытии канала, до входа
   if (m.t === 'cur') return authed && showCursor(m);
   if (m.t === 'audio') return authed && audioReply(m);
-  if (m.t === 'state') return authed && hostState(m.s); // F7: экран хоста заблокирован / захват не даёт кадров
+  if (m.t === 'state') { lastState = m.s; return authed && hostState(m.s); } // F7: экран хоста заблокирован / захват не даёт кадров; до входа — запомнить (D3)
   if (!authed || m.t !== 'clip' || !clipOK(m.text)) return; // Д-2
   lastClip = m.text;
   (APP ? setClip(m.text) : navigator.clipboard?.writeText(m.text))?.catch?.(() => {});
 }
 let hostDenied = false; // хост отказал в захвате (Wayland: «Отмена» в окне портала) — следом придёт bye
+let lastState = 'ok'; // последний state хоста: мог прийти по ctl раньше, чем ok входа по auth (D3)
 function hostState(s) {
   hostDenied = s === 'denied';
   const k = { locked: 'h_locked', nocapture: 'h_nocap', denied: 'h_denied' }[s];

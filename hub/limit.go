@@ -2,9 +2,12 @@ package hub
 
 import (
 	"cmp"
+	"log"
 	"net/http"
 	"net/netip"
 	"time"
+
+	"github.com/coder/websocket"
 )
 
 // Лимиты хаба (F4, числа — fixes-review.md). Через хаб идут только connect/offer/answer/ice/bye/error/hello:
@@ -19,8 +22,10 @@ const (
 	ConnectEvery                    = 3 * time.Second     // …и пополнение; сверх — существующий ответ busy, не пересылать
 	HostMsgBurst, HostMsgRate       = 600, 100            // сообщений хоста; сверх — молча отбросить (+ журнал)
 	HostByteBurst, HostByteRate     = 2 << 20, 256 << 10  // байт хоста; сверх — так же
+	ToHostBurst, ToHostRate         = 256 << 10, 64 << 10 // байт всех клиентов вместе одному хосту (попытка ≈20 КБ); сверх — молча отбросить
 	NotFoundPerConn                 = 5                   // not_found клиенту на соединение; следующий — закрыть
-	NotFoundPerMin                  = 30                  // not_found на IP (/64) в минуту; сверх — закрыть и 429 новым клиентским WS
+	NotFoundPerMin                  = 30                  // not_found на IPv4 и /64 (/48 — ×10) в минуту; сверх — закрыть и 429 новым клиентским WS
+	NewClientBurst, NewClientRate   = 60, 1               // новых клиентских WS с адреса (IPv4, /64; /48 — ×10): всплеск, в секунду; сверх — 429 до Upgrade
 	ConnsPerIP                      = 100                 // соединений с адреса IPv4 или /64 (офис, школа, CGNAT); сверх — 429 до Upgrade
 	ConnsPer48                      = 1000                // соединений с /48 (у владельца /48 — 65 536 разных /64)
 	MaxConnsDefault                 = 5000                // всех соединений (≈55 КБ на WS по TLS → ≈280 МБ); сверх — 503
@@ -126,37 +131,109 @@ func (h *Hub) release(a netip.Addr) {
 }
 
 // notFound считает not_found для адреса a (take) или только проверяет, остался ли запас (для отказа новым WS).
-// Счёт на соединение перечислению ID не мешает (новое WS на каждую пробу) — поэтому ещё и на IP.
+// Счёт на соединение перечислению ID не мешает (новое WS на каждую пробу) — поэтому ещё и на адрес: IPv4, /64 и /48 (D5).
 func (h *Hub) notFound(a netip.Addr, take bool) bool {
+	return h.perAddr(&h.nf, a, NotFoundPerMin, NotFoundPerMin/60.0, take)
+}
+
+// sweep — раз в минуту убрать полные вёдра «на адрес»: память — только под недавних клиентов. Под h.lim.
+func (h *Hub) sweep() {
+	if time.Since(h.sweepAt) < time.Minute {
+		return
+	}
+	for _, m := range []map[string]*bucket{h.nf, h.fresh} {
+		for k, b := range m {
+			if b.fill(); b.tokens >= b.burst {
+				delete(m, k)
+			}
+		}
+	}
+	h.sweepAt = time.Now()
+}
+
+// perAddr снимает маркер со всех вёдер адреса a в *m (все или ничего; take == false — только проверить запас).
+// Ключи — как у соединений (limKeys): IPv4 — адрес, IPv6 — /64 и /48; ведро /48 в ConnsPer48/ConnsPerIP раз шире,
+// иначе у владельца /48 65 536 независимых вёдер /64. Нет записи — ведро полное. Loopback и частные — без лимита.
+func (h *Hub) perAddr(m *map[string]*bucket, a netip.Addr, burst, rate float64, take bool) bool {
 	ks := limKeys(a)
 	if ks == nil {
 		return true
 	}
 	h.lim.Lock()
 	defer h.lim.Unlock()
-	if time.Since(h.nfSweep) > time.Minute { // полные вёдра не нужны: память — только под недавних нарушителей
-		for k, b := range h.nf {
-			if b.fill(); b.tokens >= b.burst {
-				delete(h.nf, k)
+	h.sweep()
+	var bs []*bucket
+	for _, k := range ks {
+		b := (*m)[k.key]
+		if b == nil {
+			if !take {
+				continue
 			}
+			if *m == nil {
+				*m = map[string]*bucket{}
+			}
+			f := float64(k.max) / ConnsPerIP
+			nb := newBucket(burst*f, rate*f)
+			b = &nb
+			(*m)[k.key] = b
 		}
-		h.nfSweep = time.Now()
-	}
-	b, ok := h.nf[ks[0].key]
-	if !ok {
-		if !take {
-			return true
+		if b.fill(); b.tokens < 1 {
+			return false
 		}
-		if h.nf == nil {
-			h.nf = map[string]*bucket{}
-		}
-		nb := newBucket(NotFoundPerMin, NotFoundPerMin/60.0)
-		b = &nb
-		h.nf[ks[0].key] = b
+		bs = append(bs, b)
 	}
 	if take {
-		return b.take(1)
+		for _, b := range bs {
+			b.tokens--
+		}
 	}
-	b.fill()
-	return b.tokens >= 1
+	return true
+}
+
+// newClient — можно ли открыть ещё одно клиентское WS с адреса a (D1). Ведро connect живёт в соединении:
+// без этого WS → 5 connect → закрыть → повторить давало тысячи connect в секунду до хоста с одного IP.
+func (h *Hub) newClient(a netip.Addr) bool {
+	return h.perAddr(&h.fresh, a, NewClientBurst, NewClientRate, true)
+}
+
+// hostIn — ведро байт от всех клиентов к одному хосту (D2): ведро клиента ограничивает одно соединение, а сотни
+// соединений вместе переполняли буфер записи медленного хоста — запись ждала дольше 5 с, и хаб закрывал WS хоста.
+type hostIn struct {
+	c         *websocket.Conn // чья запись: после переподключения хоста старое соединение чужую не снимает
+	b         bucket
+	dropped   int
+	droppedAt time.Time
+}
+
+func (h *Hub) hostOpen(id string, c *websocket.Conn) {
+	h.lim.Lock()
+	defer h.lim.Unlock()
+	if h.in == nil {
+		h.in = map[string]*hostIn{}
+	}
+	h.in[id] = &hostIn{c: c, b: newBucket(ToHostBurst, ToHostRate)}
+}
+
+func (h *Hub) hostClose(id string, c *websocket.Conn) {
+	h.lim.Lock()
+	defer h.lim.Unlock()
+	if in := h.in[id]; in != nil && in.c == c {
+		delete(h.in, id)
+	}
+}
+
+// toHost — можно ли переслать хосту id ещё n байт от клиентов. Нет — сообщение отбрасывается молча: ни клиент
+// (законный в общей очереди), ни хост не закрываются; в журнал — не чаще раза в минуту.
+func (h *Hub) toHost(id string, n int) bool {
+	h.lim.Lock()
+	defer h.lim.Unlock()
+	in := h.in[id]
+	if in == nil || in.b.take(float64(n)) { // нет записи — хост уходит или только что пришёл
+		return true
+	}
+	if in.dropped++; time.Since(in.droppedAt) > time.Minute {
+		log.Printf("hub: клиентов к хосту %s сверх %d КБ/с, отброшено %d", id, ToHostRate>>10, in.dropped)
+		in.dropped, in.droppedAt = 0, time.Now()
+	}
+	return false
 }
