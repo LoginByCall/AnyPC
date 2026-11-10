@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"anypc/site"
 )
 
 func get(t *testing.T, h http.Handler, host, path string) (int, string) {
@@ -58,6 +60,56 @@ func TestRouting(t *testing.T) {
 	}
 	if _, b := get(t, h, "any.example.com", "/ws"); b != "WS" {
 		t.Error("any → /ws")
+	}
+}
+
+// TestHeaders — F2: заголовки безопасности на обоих mux; HSTS только по TLS; полная CSP — только лендингу
+// (у клиента она в <meta>, вторая полная политика с другим хешем убила бы страницу).
+func TestHeaders(t *testing.T) {
+	ws := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "WS") })
+	h := newMux(ws, []string{"www.example.com"}, t.TempDir(), nil, nil)
+	resp := func(host, path string, tls bool) *http.Response {
+		r := httptest.NewRequest("GET", path, nil)
+		if tls {
+			r = httptest.NewRequest("GET", "https://"+host+path, nil)
+		}
+		r.Host = host
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w.Result()
+	}
+	for _, c := range []struct{ host, path, csp string }{
+		{"www.example.com", "/", site.CSP},
+		{"www.example.com", "/privacy.html", site.CSP},
+		{"any.example.com", "/", "frame-ancestors 'none'"},
+		{"any.example.com", "/pake.wasm", "frame-ancestors 'none'"},
+		{"any.example.com", "/ws", "frame-ancestors 'none'"},
+	} {
+		for _, tls := range []bool{false, true} {
+			r := resp(c.host, c.path, tls)
+			if r.StatusCode != 200 {
+				t.Errorf("%s%s: %d", c.host, c.path, r.StatusCode)
+			}
+			for k, v := range map[string]string{"X-Frame-Options": "DENY", "X-Content-Type-Options": "nosniff",
+				"Referrer-Policy": "no-referrer", "Content-Security-Policy": c.csp} {
+				if got := r.Header.Get(k); got != v {
+					t.Errorf("%s%s: %s = %q, ждали %q", c.host, c.path, k, got, v)
+				}
+			}
+			hsts := r.Header.Get("Strict-Transport-Security")
+			if tls && hsts != "max-age=86400" || !tls && hsts != "" {
+				t.Errorf("%s%s tls=%v: HSTS %q", c.host, c.path, tls, hsts)
+			}
+		}
+	}
+	if !strings.Contains(site.CSP, "script-src 'sha256-") {
+		t.Errorf("CSP лендинга без хеша скрипта: %q", site.CSP)
+	}
+	// nosniff: браузер не угадывает тип — wasm и скрипт клиента обязаны прийти со своим Content-Type
+	for path, ct := range map[string]string{"/pake.wasm": "application/wasm", "/wasm_exec.js": "text/javascript; charset=utf-8"} {
+		if got := resp("any.example.com", path, true).Header.Get("Content-Type"); got != ct {
+			t.Errorf("%s: Content-Type %q, ждали %q", path, got, ct)
+		}
 	}
 }
 
