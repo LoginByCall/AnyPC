@@ -254,6 +254,73 @@ func TestBrowserFakeHost(t *testing.T) {
 	}
 }
 
+// cdpState — вход, при котором проверка хоста на клиенте задержана на 1,5 с: state хоста по ctl приходит раньше,
+// чем клиент завершил вход. Печатает, виден ли баннер состояния после входа.
+const cdpState = `
+const [, , port, url] = process.argv;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+(async () => {
+  const tab = await (await fetch('http://127.0.0.1:' + port + '/json/new?' + url, { method: 'PUT' })).json();
+  const ws = new WebSocket(tab.webSocketDebuggerUrl); await new Promise(r => ws.onopen = r);
+  let id = 0; const wait = {};
+  ws.onmessage = e => { const m = JSON.parse(e.data); if (m.id && wait[m.id]) wait[m.id](m); };
+  const ev = x => new Promise(r => { const i = ++id; wait[i] = m => r(m.result?.result?.value); ws.send(JSON.stringify({ id: i, method: 'Runtime.evaluate', params: { expression: x, awaitPromise: true, returnByValue: true } })); });
+  // pake.wasm грузится при подключении и ставит hostVerify сам — обёртка через свойство окна
+  await ev("let hv; Object.defineProperty(window, 'hostVerify', { configurable: true, set: f => hv = f," +
+    " get: () => hv && (async (...a) => (await new Promise(r => setTimeout(r, 1500)), hv(...a))) });" +
+    " window.early = 0; const oc = onCtl; onCtl = e => (early += !authed && JSON.parse(e.data).t === 'state', oc(e)); 1");
+  await ev("document.getElementById('id').value='123456789'; document.getElementById('pw').value='secret123'; document.getElementById('go').click()");
+  let s = '';
+  for (let i = 0; i < 75 && !s.endsWith('|true'); i++) { await sleep(200); s = await ev("document.getElementById('msg').textContent + '|' + !document.getElementById('sess').classList.contains('hidden')"); }
+  await sleep(300);
+  console.log('session=' + s + '|early=' + await ev("early") + '|banner=' + await ev("!document.getElementById('hstate').classList.contains('hidden') && document.getElementById('hstate').textContent"));
+  process.exit(0);
+})();`
+
+// TestBrowserStateBeforeLogin — регрессия D3: state «экран заблокирован» по ctl мог прийти раньше, чем клиент
+// завершил вход (ok — по каналу auth, порядок между каналами не гарантирован), — клиент его отбрасывал, и баннера
+// не было до разблокировки. Теперь клиент запоминает последний state и показывает его после входа.
+// Повтор с хоста здесь выключен (stateEvery), чтобы проверять именно клиента.
+func TestBrowserStateBeforeLogin(t *testing.T) {
+	chrome, err := exec.LookPath("google-chrome")
+	if err != nil {
+		t.Skip("нет google-chrome")
+	}
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("нет node")
+	}
+	if _, err := fs.Stat(ui.FS, "pake.wasm"); err != nil {
+		t.Skip("нет ui/pake.wasm — собрать через build.sh")
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/ws", &hub.Hub{})
+	mux.Handle("/", http.FileServer(http.FS(ui.FS)))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+	stateEvery = time.Hour
+	defer func() { stateEvery = 2 * time.Second }()
+	a := newAgent("ws"+strings.TrimPrefix(srv.URL, "http")+"/ws", "123456789", nil)
+	var once sync.Once
+	var t0 time.Time
+	a.Locked = func() bool { // заблокирован первые 10 с сессии
+		once.Do(func() { t0 = time.Now() })
+		return time.Since(t0) < 10*time.Second
+	}
+	a.Capture = func(ctx context.Context, c Cap) (*exec.Cmd, error) {
+		return exec.CommandContext(ctx, "ffmpeg", FFArgs("test", "libx264", c)...), nil
+	}
+	go a.Run(ctx)
+	out := string(runCDP(t, ctx, chrome, cdpState, srv.URL+"/"))
+	if !strings.Contains(out, "|true|early=1|banner=") {
+		t.Fatal("вход не выполнен или state пришёл не до входа — сценарий не воспроизведён")
+	}
+	if !strings.Contains(out, "|banner=The remote PC's screen is locked") {
+		t.Error("state locked, пришедший до входа, потерян: баннера нет")
+	}
+}
+
 // fakeHost — хост без пароля: регистрируется, на connect шлёт offer, в канале auth сразу «ok» со своей подписью.
 // С guesses — вместо «ok» шлёт «a» на каждую догадку пароля и пишет в guesses, сколько «b» вернул клиент.
 func fakeHost(t *testing.T, ctx context.Context, url, id string, guesses chan<- int) {
