@@ -17,8 +17,10 @@ lipo -create -output AnyPC-macos AnyPC-macos-amd64 AnyPC-macos-arm64
 # одинаково у всех сборок, и macOS не сбрасывает выданные AnyPC разрешения («Запись экрана», «Универсальный доступ») при
 # обновлении; нет связки (CI, чужой Мак) — ad-hoc, как раньше. Пароль связки — в ~/.config/anypc/sign-keychain.pass (не пароль Мака).
 K=$HOME/Library/Keychains/anypc-sign.keychain-db
-if [ -f "$K" ] && security unlock-keychain -p "$(cat "$HOME/.config/anypc/sign-keychain.pass")" "$K"; then
+if [ -f "$K" ]; then # связка есть — только своей подписью: молчаливый откат на ad-hoc сбросил бы разрешения у пользователей
+  security unlock-keychain -p "$(cat "$HOME/.config/anypc/sign-keychain.pass")" "$K" || { echo "связка anypc-sign не открылась" >&2; exit 1; }
   codesign -s "AnyPC Code Signing" --keychain "$K" -i org.anypc.host -f AnyPC-macos
+  security lock-keychain "$K"
 else
   codesign -s - -f AnyPC-macos
 fi
