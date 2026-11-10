@@ -1052,6 +1052,8 @@ func (a *Agent) stream(ctx context.Context, s *session, track *webrtc.TrackLocal
 				s.repeatState()
 			}
 			s.refreshMonitors() // при блокировке список мониторов мог быть пуст или другим
+		} else if s.noMonitors() { // D4: сразу после разблокировки дисплеи могли ещё не проснуться — снимать, пока пусто
+			s.refreshMonitors()
 		}
 		got := a.streamOnce(ctx, s, track, func() { s.setState("ok") })
 		if s.denied.Load() {
@@ -1131,15 +1133,26 @@ func (s *session) sendState() {
 }
 
 // refreshMonitors — заново снять список мониторов (после разблокировки) и послать клиенту.
+// Пусто и было пусто (Wayland — всегда) — клиенту не слать.
 func (s *session) refreshMonitors() {
 	ms := listMonitors()
 	s.mu.Lock()
+	same := len(ms) == 0 && len(s.mons) == 0
 	s.mons = ms
 	if s.mon >= len(ms) {
 		s.mon = primaryIndex(ms)
 	}
 	s.mu.Unlock()
-	s.sendMonitors()
+	if !same {
+		s.sendMonitors()
+	}
+}
+
+// noMonitors — список мониторов пуст: координаты мыши не пересчитываются, выбора монитора нет.
+func (s *session) noMonitors() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.mons) == 0
 }
 
 // streamVP9 — кадры Y4M из ffmpeg → libvpx в процессе → трек. Битрейт и частота кадров берутся из rate на каждом
