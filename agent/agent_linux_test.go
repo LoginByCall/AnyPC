@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -100,4 +101,35 @@ func TestX11(t *testing.T) {
 	}
 	cancel()
 	cmd.Wait()
+}
+
+type stubDesk struct{ live bool }
+
+func (stubDesk) capture(context.Context, Cap, string, *Monitor) (*exec.Cmd, error) { return nil, nil }
+func (stubDesk) input(event, *Monitor) error                                       { return nil }
+func (d stubDesk) alive() bool                                                     { return d.live }
+
+// TestInputNoPortal — N5: ввод на Wayland не открывает сеанс портала (окно согласия), только берёт живой.
+// Раньше sendInput звал getDesktop: клавиша клиента, ждавшая, пока открыто первое окно, после «Отмена»
+// открывала второе. Захват (getDesktop) открывает по-прежнему.
+func TestInputNoPortal(t *testing.T) {
+	oldW, oldOpen, oldDesk := Wayland, openPortal, desk
+	t.Cleanup(func() { Wayland, openPortal, desk = oldW, oldOpen, oldDesk })
+	Wayland = true
+	opened := 0
+	openPortal = func() (desktop, error) { opened++; return nil, errors.New("заглушка портала") }
+	for _, d := range []desktop{nil, stubDesk{false}} { // нет сеанса; сеанс закрыт («Отмена», закрыл человек)
+		desk = d
+		if got, err := inputDesktop(); err == nil || got != nil || opened != 0 {
+			t.Fatalf("ввод при %v: %v, %v, окон портала %d", d, got, err, opened)
+		}
+	}
+	desk = stubDesk{true}
+	if got, err := inputDesktop(); err != nil || got != desk || opened != 0 {
+		t.Fatalf("живой сеанс: %v, %v, окон портала %d", got, err, opened)
+	}
+	desk = nil
+	if getDesktop(); opened != 1 {
+		t.Fatalf("захват открыл окон портала: %d", opened)
+	}
 }
