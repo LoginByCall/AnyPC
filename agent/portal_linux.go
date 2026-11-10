@@ -199,7 +199,7 @@ func (p *portal) capture(ctx context.Context, c Cap, _ string, _ *Monitor) (*exe
 }
 
 // gstTail — кодирование после videorate: H.264 Annex-B или (c.VP9) Y4M для кодера в процессе — как у ffmpeg (FFArgs).
-//: tune=zerolatency режет кадр на слайсы по числу потоков, а длительность сэмпла ставится на слайс —
+// sliced-threads=false: tune=zerolatency режет кадр на слайсы по числу потоков, а длительность сэмпла ставится на слайс —
 // браузер видел каждый слайс отдельным кадром: цела верхняя полоса, ниже вертикальные полосы (Ubuntu, 3440×1440, 2026-11-10).
 // ponytail: нечётные размеры экрана для Y4M не выравниваются (ffmpeg-ветка делает scale) — мониторы чётные.
 func gstTail(c Cap) string {
