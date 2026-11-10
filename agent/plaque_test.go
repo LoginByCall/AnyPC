@@ -28,3 +28,32 @@ func TestPlaqueBar(t *testing.T) {
 		t.Errorf("запасной язык: %q", b)
 	}
 }
+
+// TestAskText — окно «Разрешить» (REQ-F-03): на каждом языке все поля непустые, в тексте есть ID, IP и
+// предупреждение о мошенниках (F3); неизвестный язык — английский.
+func TestAskText(t *testing.T) {
+	for _, lang := range []string{"en", "ru", "zh", "es", "de", "fr", "it"} {
+		if _, ok := asks[lang]; !ok {
+			t.Errorf("нет языка %s", lang)
+		}
+	}
+	for lang, q := range asks {
+		for i, s := range q {
+			if strings.TrimSpace(s) == "" {
+				t.Errorf("%s: пустая строка %d", lang, i)
+			}
+		}
+		_, text, yes, no, view := askText(lang, "c123456789012", "203.0.113.7")
+		for _, want := range []string{"ID: c123456789012", "IP: 203.0.113.7", q[1], q[7]} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s: в тексте нет %q:\n%s", lang, want, text)
+			}
+		}
+		if yes != q[3] || no != q[4] || view != q[5] || winAskHint(lang) != q[6] {
+			t.Errorf("%s: кнопки %q %q %q", lang, yes, no, view)
+		}
+	}
+	if _, text, _, _, _ := askText("xx", "c1", "ip"); !strings.Contains(text, "stranger") {
+		t.Errorf("запасной язык: %q", text)
+	}
+}
