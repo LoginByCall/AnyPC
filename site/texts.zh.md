@@ -27,6 +27,7 @@
 - `w2`: 如果出现“Windows 已保护你的电脑”，请点击“更多信息”→“仍要运行”：本程序尚未进行代码签名。
 - `w3`: 如果 Windows 防火墙询问是否允许网络访问，请选择允许；否则可能无法直连，流量将经由中继服务器。
 - `w4`: 要让其他电脑能连接到本机，请在“本机”部分设置密码。
+- `w5`: 如果 FFmpeg 无法自动下载（窗口显示下载错误），请手动下载压缩包 [ffmpeg-9.0.2-essentials_build.zip](https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip)（约 115 MB），无需解压，放入“下载”文件夹或 AnyPC.exe 所在文件夹。程序会在 30 秒内找到它并校验其校验和。
 - `wchk`: 校验文件（PowerShell）——结果应与上方的校验和一致：
 - `l1`: 安装依赖项——具体取决于您的图形会话：
 - `l2`: 为文件添加执行权限并运行——AnyPC 窗口将在浏览器标签页中打开：

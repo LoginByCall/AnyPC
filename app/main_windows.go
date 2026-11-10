@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -61,6 +62,11 @@ func main() {
 	// FFmpeg — в фоне: окно и сигнализация работают сразу, захват — когда загрузится (повтор раз в 30 с без сети).
 	var ffMu sync.Mutex
 	ff, ffState := "", "0" // путь к ffmpeg.exe; ffState — проценты загрузки, "err" или "" (готов)
+	zipName := path.Base(ffMirrors[0])
+	ffLocal = []string{filepath.Join(os.Getenv("USERPROFILE"), "Downloads", zipName)}
+	if exe, err := os.Executable(); err == nil {
+		ffLocal = append(ffLocal, filepath.Join(filepath.Dir(exe), zipName))
+	}
 	go func() {
 		for {
 			p, err := ensureFFmpeg(dir, func(d, t int64) { ffMu.Lock(); ffState = strconv.Itoa(int(d * 100 / max(t, 1))); ffMu.Unlock() })
