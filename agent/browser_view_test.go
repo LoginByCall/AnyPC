@@ -43,6 +43,9 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await ev("document.getElementById('tipskip').click()"); await sleep(300);
   await ev("document.getElementById('helpbtn').click()"); await sleep(400);
   console.log('help=' + await vis('#help .dlg') + ' sections=' + await ev("document.querySelectorAll('#helpbody h3, #helpbody details, #helpbody section').length"));
+  // Windows: ссылка на сайт из справки — openSite (главная), а не openUpdate (раздел загрузки)
+  await ev("window.openSite = () => (window.opened = 'site'); window.openUpdate = () => (window.opened = 'update'); document.querySelector('#helpbody a').click(); 1");
+  console.log('help_link=' + await ev("window.opened"));
   await shot('03-help-light'); await dark(true); await sleep(300); await shot('04-help-dark'); await dark(false);
   await ev("document.getElementById('helpx').click()");
   await ev("document.getElementById('id').value='123456789'; document.getElementById('pw').value='secret123'; document.getElementById('go').click()");
@@ -113,7 +116,7 @@ func TestBrowserView(t *testing.T) {
 	}
 	go a.Run(ctx)
 	out := string(runCDP(t, ctx, chrome, cdpVisual, srv.URL+"/"))
-	for _, want := range []string{"tour_home=true", "tour_sess=true", "help=true sections=9", "session=true", "ring=true cnt=6", "view_session=true",
+	for _, want := range []string{"tour_home=true", "tour_sess=true", "help=true sections=9", "help_link=site", "session=true", "ring=true cnt=6", "view_session=true",
 		"view_body=true keys_btn=false fsend=false clipbtn=false", "view only", "view.bin | ✗ View only: files are not sent"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("нет %q", want)
