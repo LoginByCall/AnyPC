@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"anypc/agent"
 )
@@ -54,7 +55,9 @@ func deps() []string { return []string{"ffmpeg"} }
 
 // Автозапуск на macOS — LaunchAgent пользователя: старт при входе в графический сеанс (Aqua), перезапуск при падении.
 // Процесс от launchd сам отвечает за свои разрешения TCC: «Запись экрана» и «Универсальный доступ» нужны самому AnyPC,
-// а не Терминалу; файл подписан ad-hoc — после замены (обновления) macOS спросит разрешения заново.
+// а не Терминалу. Выпускной файл подписан своим сертификатом (deploy/mac.sh), требование подписи у сборок одно —
+// после обновления на том же месте разрешения сохраняются; спросит заново, если файл перенесли или он подписан
+// иначе (ad-hoc — сборка без связки подписи).
 const launchLabel = "org.anypc.host"
 
 func launchPath() string {
@@ -81,7 +84,8 @@ func launchPlist(exe string) string {
 `
 }
 
-func launchctl(args ...string) error {
+// launchctl — вызов launchctl; в тестах подменяется.
+var launchctl = func(args ...string) error {
 	out, err := exec.Command("launchctl", args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("launchctl %s: %v %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
@@ -99,9 +103,27 @@ func installService(exe string) error {
 	if err := os.WriteFile(p, []byte(launchPlist(exe)), 0o644); err != nil {
 		return err
 	}
-	launchctl("bootout", guiDomain()+"/"+launchLabel) // прежняя копия (другой путь) — не ошибка, если её нет
-	return launchctl("bootstrap", guiDomain(), p)
+	svc := guiDomain() + "/" + launchLabel
+	launchctl("bootout", svc) // прежняя копия (другой путь) — не ошибка, если её нет
+	// bootout завершает службу асинхронно: bootstrap сразу за ним launchd отвергает «Bootstrap failed: 5:
+	// Input/output error» (N4, повтор --install-service при работающей службе). Ждём, пока print перестанет
+	// её находить (до ~5 с), и на всякий случай повторяем bootstrap.
+	for i := 0; i < 50 && launchctl("print", svc) == nil; i++ {
+		time.Sleep(launchWait)
+	}
+	var err error
+	for i := range 3 {
+		if i > 0 {
+			time.Sleep(10 * launchWait)
+		}
+		if err = launchctl("bootstrap", guiDomain(), p); err == nil {
+			return nil
+		}
+	}
+	return err
 }
+
+var launchWait = 100 * time.Millisecond // шаг ожидания launchd; в тестах меньше
 
 func uninstallService() error {
 	launchctl("bootout", guiDomain()+"/"+launchLabel) // не загружен — не ошибка
@@ -125,4 +147,4 @@ func serviceState() string {
 }
 
 // serviceHint — что сказать после --install-service.
-const serviceHint = "Журнал: ~/Library/Caches/AnyPC/anypc.log. Выдайте «Запись экрана» и «Универсальный доступ» самому AnyPC (не Терминалу) в «Настройки → Конфиденциальность и безопасность»; после обновления файла — заново"
+const serviceHint = "Журнал: ~/Library/Caches/AnyPC/anypc.log. Выдайте «Запись экрана» и «Универсальный доступ» самому AnyPC (не Терминалу) в «Настройки → Конфиденциальность и безопасность»; после обновления выпускной сборки на том же месте разрешения сохраняются, после переноса файла — выдать заново"
