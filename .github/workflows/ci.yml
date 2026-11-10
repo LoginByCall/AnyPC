@@ -1,0 +1,53 @@
+# Проверка каждого push и PR: те же build.sh (Linux + Windows) и deploy/mac.sh (macOS), что и при выпуске.
+# Подписи и выкладки здесь нет: ключ выпуска — только на машине владельца (deploy/publish.sh).
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0 } # git describe → версия
+      - uses: actions/setup-go@v6
+        with: { go-version-file: go.mod }
+      - run: sudo apt-get update && sudo apt-get install -y nasm gcc-mingw-w64-x86-64 ffmpeg xvfb
+      - uses: actions/cache@v4
+        with:
+          path: |
+            third_party/libvpx/linux-amd64
+            third_party/libvpx/windows-amd64
+          key: libvpx-linux-${{ hashFiles('deploy/libvpx.sh') }}
+      - run: '[ -f third_party/libvpx/windows-amd64/lib/libvpx.a ] || deploy/libvpx.sh linux-amd64 windows-amd64'
+      - run: ./build.sh
+      - uses: actions/upload-artifact@v4
+        with: { name: bin-linux, path: bin/, retention-days: 7 }
+
+  macos:
+    runs-on: macos-14 # Apple Silicon; amd64 собирается кросс-компиляцией и склеивается lipo
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v6
+        with: { go-version-file: go.mod }
+      - run: brew install nasm ffmpeg
+      - uses: actions/cache@v4
+        with:
+          path: |
+            third_party/libvpx/darwin-amd64
+            third_party/libvpx/darwin-arm64
+          key: libvpx-macos-${{ hashFiles('deploy/libvpx.sh') }}
+      - run: '[ -f third_party/libvpx/darwin-amd64/lib/libvpx.a ] || deploy/libvpx.sh darwin-amd64 darwin-arm64'
+      - run: | # ui встраивает pake.wasm; в git его нет (на Мак его привозит build.sh)
+          GOOS=js GOARCH=wasm go build -trimpath -buildvcs=false -ldflags='-s -w' -o ui/pake.wasm ./wasm
+          cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" ui/
+      - run: deploy/mac.sh "$(git describe --tags --always --dirty)"
+      - uses: actions/upload-artifact@v4
+        with: { name: AnyPC-macos, path: AnyPC-macos, retention-days: 7 }

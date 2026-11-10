@@ -4,7 +4,7 @@
 # Linux берёт системный. Так AnyPC сам не распространяет GPL-код (ASK #11 → A, 2026-11-07).
 set -eu
 cd "$(dirname "$0")"
-export GOTOOLCHAIN=auto
+export GOTOOLCHAIN=auto GOFLAGS="-trimpath -buildvcs=false" # без путей каталога и меток git: из одного тега — одни и те же байты
 
 # CPace для веб-клиента: тот же Go-код в WebAssembly (встраивается в ui)
 V=$(git describe --tags --always --dirty 2>/dev/null || echo dev) # v0.1.0, v0.1.0-3-gabc123, …-dirty
@@ -34,16 +34,9 @@ else
   GOOS=windows GOARCH=amd64 go build -ldflags="-s -w -H windowsgui -X main.version=$V" -o bin/AnyPC.exe ./app
 fi
 rm -f bin/AnyPC-macos
-if [ "${ANYPC_MAC:-}" ]; then # macOS: ввод через CoreGraphics (cgo) — сборка на самом Маке по ssh (Go в ~/.local/go), Intel + Apple Silicon в одном файле
+if [ "${ANYPC_MAC:-}" ]; then # macOS: сборка на самом Маке по ssh (Go в ~/.local/go) — deploy/mac.sh
   git ls-files -co --exclude-standard | grep -vE '^(bin|\.claude)/' | { cat; printf 'ui/pake.wasm\nui/wasm_exec.js\n'; } | rsync -a --files-from=- ./ "$ANYPC_MAC:anypc-src/"
-  ssh "$ANYPC_MAC" "set -e; cd anypc-src; export PATH=\$HOME/.local/go/bin:/usr/local/bin:/opt/homebrew/bin:\$PATH GOTOOLCHAIN=local CGO_ENABLED=1
-    # сетевые e2e на Маке вернулись 2026-11-10: 4 прогона подряд и 3 полных — зелёные при включённом LuLu
-    # libvpx на Маке: deploy/libvpx.sh darwin-amd64 darwin-arm64 (в anypc-src); в lib/ только libvpx.a — иначе ld возьмёт dylib
-    vpx() { L=\$PWD/third_party/libvpx/darwin-\$1; if [ -f \$L/lib/libvpx.a ]; then export CGO_CFLAGS=-I\$L/include CGO_LDFLAGS=-L\$L/lib; T=-tags=vp9; else unset CGO_CFLAGS CGO_LDFLAGS; T=; fi; }
-    vpx \$(uname -m | sed s/x86_64/amd64/); go vet \$T ./app ./agent; go test -count=1 \$T ./agent ./app
-    for a in amd64 arm64; do vpx \$a; GOARCH=\$a go build \$T -ldflags='-s -w -X main.version=$V' -o AnyPC-macos-\$a ./app; done
-    for a in amd64 arm64; do otool -L AnyPC-macos-\$a | grep -q libvpx && { echo \"AnyPC-macos-\$a: libvpx слинкована динамически\"; exit 1; }; done
-    lipo -create -output AnyPC-macos AnyPC-macos-amd64 AnyPC-macos-arm64; codesign -s - -f AnyPC-macos; lipo -info AnyPC-macos"
+  ssh "$ANYPC_MAC" "anypc-src/deploy/mac.sh $V"
   scp "$ANYPC_MAC:anypc-src/AnyPC-macos" bin/
 fi
 cp deploy/setup.sh bin/install.sh # свой узел одной командой: скачивает anypc-server и сверяет с SHA256SUMS

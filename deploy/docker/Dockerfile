@@ -6,6 +6,7 @@ FROM --platform=$BUILDPLATFORM golang:1.26 AS build
 ARG TARGETARCH
 ARG VERSION=dev
 WORKDIR /src
+ENV GOFLAGS="-trimpath -buildvcs=false"
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
