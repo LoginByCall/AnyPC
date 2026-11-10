@@ -89,7 +89,9 @@ func (p *portal) request(method string, args ...any) (vmap, error) {
 			if s.Path != path || len(s.Body) < 2 {
 				continue
 			}
-			if code, _ := s.Body[0].(uint32); code != 0 {
+			if code, _ := s.Body[0].(uint32); code == 1 { // 1 — человек нажал «Отмена», 2 — прервано иначе
+				return nil, fmt.Errorf("%s: %w", method, ErrCaptureDenied)
+			} else if code != 0 {
 				return nil, fmt.Errorf("%s: отказ или отмена (%d)", method, code)
 			}
 			res, _ := s.Body[1].(map[string]dbus.Variant)
