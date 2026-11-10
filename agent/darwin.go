@@ -56,6 +56,28 @@ static int anyInputOK(int ask) {
 	CFRelease(d);
 	return r;
 }
+// anyFlag — значение-флаг словаря сеанса: 1/0, -1 — нет ключа или не флаг.
+static int anyFlag(CFDictionaryRef d, CFStringRef k) {
+	CFTypeRef v = CFDictionaryGetValue(d, k);
+	if (!v) return -1;
+	if (CFGetTypeID(v) == CFBooleanGetTypeID()) return CFBooleanGetValue((CFBooleanRef)v) ? 1 : 0;
+	if (CFGetTypeID(v) == CFNumberGetTypeID()) {
+		int i = 0;
+		CFNumberGetValue((CFNumberRef)v, kCFNumberIntType, &i);
+		return i != 0;
+	}
+	return -1;
+}
+// anyLocked — экран заблокирован или сеанс не на консоли (быстрое переключение пользователей).
+// Нет словаря (запуск из ssh/службы) — не блокировка: решать нечем, захват пробует сам.
+// Ключ CGSSessionScreenIsLocked недокументирован (стоит, пока заблокировано; после разблокировки исчезает).
+static int anyLocked(void) {
+	CFDictionaryRef d = CGSessionCopyCurrentDictionary();
+	if (!d) return 0;
+	int r = anyFlag(d, CFSTR("CGSSessionScreenIsLocked")) == 1 || anyFlag(d, kCGSessionOnConsoleKey) == 0;
+	CFRelease(d);
+	return r;
+}
 */
 import "C"
 
@@ -75,6 +97,9 @@ import (
 
 // fakeDesktop — только для тестов (agent_darwin_test.go): не двигать мышь и не открывать окна у человека за этим Маком.
 var fakeDesktop bool
+
+// ScreenLocked — Agent.Locked для macOS (F7): экран заблокирован — ffmpeg avfoundation кадров не даст.
+func ScreenLocked() bool { return C.anyLocked() != 0 }
 
 // Permissions — есть ли разрешения «Запись экрана» и «Универсальный доступ»; ask — показать запрос системы.
 func Permissions(ask bool) (screen, input bool) {
@@ -274,12 +299,13 @@ func showIndicator(cid string, mode plaqueMode, onUserClose func()) (func(), err
 }
 
 // AskAccept — окно «Разрешить / Отклонить» (REQ-F-03); без ответа AskTimeout или ошибка → отказ.
+// Кнопка 1 «Отклонить» — и по умолчанию (Enter), и отмена (Esc): случайный Enter не даёт доступ.
 func AskAccept(cid, peer string) Answer {
 	if fakeDesktop {
 		return Allow
 	}
 	title, text, yes, no, view := askText(sysLang(), cid, peer)
-	out, err := osa(`set r to display dialog (item 2 of argv) with title (item 1 of argv) buttons {item 4 of argv, item 6 of argv, item 3 of argv} default button 3 cancel button 1 giving up after ((item 5 of argv) as integer) with icon caution
+	out, err := osa(`set r to display dialog (item 2 of argv) with title (item 1 of argv) buttons {item 4 of argv, item 6 of argv, item 3 of argv} default button 1 cancel button 1 giving up after ((item 5 of argv) as integer) with icon caution
 if gave up of r then return "no"
 if button returned of r is (item 3 of argv) then return "yes"
 if button returned of r is (item 6 of argv) then return "view"
