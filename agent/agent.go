@@ -83,6 +83,7 @@ type session struct {
 	gone    atomic.Bool // сессия освобождена (release) — в pend не возвращать
 	ctl     *webrtc.DataChannel
 	peer    string // адрес клиента по выбранной паре ICE — для окна подтверждения
+	ice     iceCap // потолок удалённых ICE-кандидатов (F5, icecap.go)
 
 	mu        sync.Mutex
 	closeInd  func() // закрыть плашку сессии
@@ -456,11 +457,18 @@ func (a *Agent) run(ctx context.Context, server string) error {
 			case "answer":
 				var sd webrtc.SessionDescription
 				if json.Unmarshal(m.Data, &sd) == nil {
+					if !s.answerCands(sd.SDP) { // кандидаты в answer — в обход trickle; сверх потолка — отказ
+						log.Printf("клиент %s: в answer кандидатов больше потолка — сессия отклонена", s.cid)
+						a.send(ctx, c, "bye", s.cid, "host")
+						a.release(s)
+						s.pc.Close()
+						continue
+					}
 					err = s.pc.SetRemoteDescription(sd)
 				}
 			case "ice":
 				var ci webrtc.ICECandidateInit
-				if json.Unmarshal(m.Data, &ci) == nil {
+				if json.Unmarshal(m.Data, &ci) == nil && s.ice.admit(s.cid, ci.Candidate, s.authed.Load()) {
 					err = s.pc.AddICECandidate(ci)
 				}
 			case "bye":
