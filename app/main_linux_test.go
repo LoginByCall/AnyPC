@@ -134,6 +134,37 @@ func TestCLI(t *testing.T) {
 	if err != nil || !cfg.hasPass() || !bytes.Equal(cfg.Hash, pake.KDF("secret123", cfg.Salt)) {
 		t.Errorf("пароль не записан: %v", err)
 	}
+	cli := func(args ...string) (string, error) {
+		c := exec.Command(bin, args...)
+		c.Env = append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+home+"/.config", "XDG_CACHE_HOME="+home+"/.cache")
+		out, err := c.CombinedOutput()
+		return string(out), err
+	}
+	if out, err := cli("--confirm", "maybe"); err == nil {
+		t.Errorf("--confirm maybe принят: %q", out)
+	}
+	if out, err := cli("--confirm", "off"); err != nil {
+		t.Errorf("--confirm off: %v %q", err, out)
+	}
+	if out, err := cli("--node", "bad node!"); err == nil {
+		t.Errorf("неверный узел принят: %q", out)
+	}
+	if out, err := cli("--node", "-"); err != nil {
+		t.Errorf("--node -: %v %q", err, out)
+	}
+	cfg, _ = loadConfig(filepath.Join(home, ".config", "AnyPC", "config.json"))
+	if cfg.confirm() || cfg.Server != DefaultServer {
+		t.Errorf("настройки после ключей: confirm=%v server=%q", cfg.confirm(), cfg.Server)
+	}
+	if out, _ := cli("--status"); !strings.Contains(out, cfg.ID) || !strings.Contains(out, "Пароль задан: да") || !strings.Contains(out, "«Разрешить»: off") {
+		t.Errorf("--status: %q", out)
+	}
+	if u := serviceUnit("/opt/my apps/AnyPC"); !strings.Contains(u, `ExecStart="/opt/my apps/AnyPC" --no-browser`) || !strings.Contains(u, "WantedBy=graphical-session.target") {
+		t.Errorf("юнит: %q", u)
+	}
+	if u := serviceUnit(`/home/я/Загрузки/50%$x"y`); !strings.Contains(u, `ExecStart="/home/я/Загрузки/50%%$$x\"y" --no-browser`) {
+		t.Errorf("юнит, экранирование: %q", u)
+	}
 	if out := run("--help"); !strings.Contains(out, "-no-browser") || !strings.Contains(out, "-version") || !strings.Contains(out, "v9.9.9") {
 		t.Errorf("--help: %q", out)
 	}

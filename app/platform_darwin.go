@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os"
 	"os/exec"
@@ -30,3 +31,10 @@ func downloads() string {
 var hint = map[string]string{"ffmpeg": "нужен для захвата экрана (brew install ffmpeg)"}
 
 func deps() []string { return []string{"ffmpeg"} }
+
+// ponytail: автозапуск на macOS (LaunchAgent) — когда понадобится; пока — «Объекты входа» в Настройках системы.
+var errNoService = errors.New("на macOS пока нет — добавьте AnyPC в «Объекты входа» (Настройки → Основные)")
+
+func installService(string) error { return errNoService }
+func uninstallService() error     { return errNoService }
+func serviceState() string        { return "— (macOS)" }
