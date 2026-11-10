@@ -124,6 +124,16 @@ func (r *runner) wait() {
 
 // setNode — для окна: проверить узел, сохранить, перерегистрировать хост. Возвращает новый список хабов.
 func setNode(cfg *config, r *runner, node string, public bool) (string, error) {
+	s, err := applyNode(cfg, node, public)
+	if err != nil {
+		return "", err
+	}
+	r.start(s)
+	return s, nil
+}
+
+// applyNode — проверить узел и записать в настройки (без перезапуска сигнализации: это делает setNode или новый запуск).
+func applyNode(cfg *config, node string, public bool) (string, error) {
 	n, err := normNode(node)
 	if err != nil {
 		return "", err
@@ -137,6 +147,5 @@ func setNode(cfg *config, r *runner, node string, public bool) (string, error) {
 	if err := cfg.setServer(s); err != nil {
 		return "", err
 	}
-	r.start(s)
 	return s, nil
 }

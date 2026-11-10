@@ -70,6 +70,13 @@ func main() {
 		fmt.Println(cfg.ID)
 		return
 	}
+	if done, err := runCLI(cfg); done {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if *pwStdin {
 		p, err := readPassword(os.Stdin)
 		if err == nil {
