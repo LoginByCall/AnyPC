@@ -51,7 +51,7 @@ type Hub struct {
 	TurnSecret string        // static-auth-secret coturn; "" — только STUN
 	Keys       string        // файл привязок ID → ключ хоста (JSON); "" — только в памяти
 	Ping       time.Duration // проверка живости соединений; 0 — PingEvery
-	MaxConns   int           // потолок всех соединений; 0 — MaxConnsDefault
+	MaxConns   int           // потолок всех соединений; 0 — MaxConnsDefault; < 0 — ошибка конфигурации (server не стартует)
 
 	mu    sync.Mutex
 	peers map[string]*websocket.Conn
@@ -63,7 +63,9 @@ type Hub struct {
 	conns   map[string]int     // открытых соединений по адресу IPv4 / префиксу IPv6
 	total   int                // всех открытых соединений
 	nf      map[string]*bucket // not_found по адресу
-	nfSweep time.Time
+	fresh   map[string]*bucket // новые клиентские WS по адресу
+	in      map[string]*hostIn // байт от клиентов к хосту по его ID
+	sweepAt time.Time
 }
 
 // NewPerHour — новых ID с одного IP в час. Привязка вечная, файл переписывается целиком:
@@ -280,6 +282,11 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "too many not_found", http.StatusTooManyRequests)
 		return
 	}
+	if id == "" && !h.newClient(addr) {
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "too many new connections", http.StatusTooManyRequests)
+		return
+	}
 	if code := h.acquire(addr); code != 0 {
 		w.Header().Set("Retry-After", "60")
 		http.Error(w, "too many connections", code)
@@ -306,13 +313,17 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer h.del(id, c)
+	isHost := IsHostID(id)
+	if isHost {
+		h.hostOpen(id, c)
+		defer h.hostClose(id, c)
+	}
 	kctx, stop := context.WithCancel(ctx)
 	defer stop()
 	go Keepalive(kctx, c, cmp.Or(h.Ping, PingEvery))
 
 	hello, _ := json.Marshal(map[string]any{"id": id, "ice": h.ICEServers(id)})
 	send(ctx, c, Msg{V: 1, Type: "hello", Data: hello})
-	isHost := IsHostID(id)
 	msgs, size := newBucket(ClientMsgBurst, ClientMsgRate), newBucket(ClientByteBurst, ClientByteRate)
 	connects := newBucket(ConnectBurst, 1/ConnectEvery.Seconds())
 	if isHost {
@@ -369,8 +380,14 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			send(ctx, c, errMsg("not_found"))
 			continue
 		}
+		var fresh []byte
 		if m.Type == "connect" { // пароль TURN живёт TurnTTL, а хост в сети неделями — свежий перед каждой сессией
-			fresh, _ := json.Marshal(map[string]any{"id": m.To, "ice": h.ICEServers(m.To)})
+			fresh, _ = json.Marshal(map[string]any{"id": m.To, "ice": h.ICEServers(m.To)})
+		}
+		if !isHost && !h.toHost(m.To, len(b)+len(fresh)) { // D2: медленный хост не выбивается суммой клиентов
+			continue
+		}
+		if fresh != nil {
 			send(ctx, dst, Msg{V: 1, Type: "hello", Data: fresh})
 		}
 		m.V, m.From = 1, id

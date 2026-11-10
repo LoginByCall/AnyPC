@@ -92,8 +92,11 @@ func main() {
 	turn := flag.String("turn", "", "хосты STUN/TURN через запятую")
 	hubs := flag.String("hubs", "", "все хабы сигнализации через запятую (wss://…/ws), для веб-клиента; пусто — только этот")
 	certs := flag.String("certs", "certs", "каталог кэша сертификатов")
-	maxConns := flag.Int("maxconns", hub.MaxConnsDefault, "потолок соединений сигнализации (≈55 КБ на WS по TLS); сверх — 503")
+	maxConns := flag.Int("maxconns", hub.MaxConnsDefault, "потолок соединений сигнализации (≈55 КБ на WS по TLS); сверх — 503; 0 — по умолчанию, < 0 — ошибка")
 	flag.Parse()
+	if *maxConns < 0 { // иначе хаб отвечал бы 503 на всё: cmp.Or подменяет на MaxConnsDefault только 0
+		log.Fatalf("-maxconns %d: нужен 0 (по умолчанию, %d) или больше", *maxConns, hub.MaxConnsDefault)
+	}
 
 	h := &hub.Hub{TurnHosts: list(*turn), TurnSecret: os.Getenv("ANYPC_TURN_SECRET"), Keys: filepath.Join(filepath.Dir(*certs), "hosts.json"), MaxConns: *maxConns}
 	mux := newMux(h, list(*siteHost), *dl, h.TurnHosts, list(*hubs))

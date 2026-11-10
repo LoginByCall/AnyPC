@@ -195,7 +195,19 @@ func runCDP(t *testing.T, ctx context.Context, chrome, script, url string, flags
 		t.Fatal(err)
 	}
 	defer func() { ch.Process.Kill(); ch.Wait() }()
-	time.Sleep(2 * time.Second)
+	// порт CDP — опросом: фиксированные 2 с под нагрузкой не хватало (node получал ECONNREFUSED, 1 прогон из 4)
+	for end := time.Now().Add(15 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+		r, err := http.Get("http://127.0.0.1:" + port + "/json/version")
+		if err == nil {
+			r.Body.Close()
+			if r.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		if time.Now().After(end) {
+			t.Fatalf("Chrome не открыл порт CDP за 15 с: %v", err)
+		}
+	}
 	js := filepath.Join(t.TempDir(), "cdp.js")
 	os.WriteFile(js, []byte(script), 0o600)
 	out, err := exec.CommandContext(ctx, "node", js, port, url).CombinedOutput()
@@ -251,6 +263,74 @@ func TestBrowserFakeHost(t *testing.T) {
 	}
 	if !strings.Contains(out, "clip=|known=null") {
 		t.Error("поддельный хост передал буфер или его ключ запомнен")
+	}
+}
+
+// cdpState — вход, при котором проверка хоста на клиенте задержана на 1,5 с: state хоста по ctl приходит раньше,
+// чем клиент завершил вход. Печатает, виден ли баннер состояния после входа.
+const cdpState = `
+const [, , port, url] = process.argv;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+(async () => {
+  const tab = await (await fetch('http://127.0.0.1:' + port + '/json/new?' + url, { method: 'PUT' })).json();
+  const ws = new WebSocket(tab.webSocketDebuggerUrl); await new Promise(r => ws.onopen = r);
+  let id = 0; const wait = {};
+  ws.onmessage = e => { const m = JSON.parse(e.data); if (m.id && wait[m.id]) wait[m.id](m); };
+  const ev = x => new Promise(r => { const i = ++id; wait[i] = m => r(m.result?.result?.value); ws.send(JSON.stringify({ id: i, method: 'Runtime.evaluate', params: { expression: x, awaitPromise: true, returnByValue: true } })); });
+  for (let i = 0; i < 75 && await ev("document.readyState === 'complete' && typeof onCtl === 'function'") !== true; i++) await sleep(200);
+  // pake.wasm грузится при подключении и ставит hostVerify сам — обёртка через свойство окна
+  await ev("let hv; Object.defineProperty(window, 'hostVerify', { configurable: true, set: f => hv = f," +
+    " get: () => hv && (async (...a) => (await new Promise(r => setTimeout(r, 1500)), hv(...a))) });" +
+    " window.early = 0; const oc = onCtl; onCtl = e => (early += !authed && JSON.parse(e.data).t === 'state', oc(e)); 1");
+  await ev("document.getElementById('id').value='123456789'; document.getElementById('pw').value='secret123'; document.getElementById('go').click()");
+  let s = '';
+  for (let i = 0; i < 75 && !s.endsWith('|true'); i++) { await sleep(200); s = await ev("document.getElementById('msg').textContent + '|' + !document.getElementById('sess').classList.contains('hidden')"); }
+  await sleep(300);
+  console.log('session=' + s + '|early=' + await ev("early") + '|banner=' + await ev("!document.getElementById('hstate').classList.contains('hidden') && document.getElementById('hstate').textContent"));
+  process.exit(0);
+})();`
+
+// TestBrowserStateBeforeLogin — регрессия D3: state «экран заблокирован» по ctl мог прийти раньше, чем клиент
+// завершил вход (ok — по каналу auth, порядок между каналами не гарантирован), — клиент его отбрасывал, и баннера
+// не было до разблокировки. Теперь клиент запоминает последний state и показывает его после входа.
+// Повтор с хоста здесь выключен (stateEvery), чтобы проверять именно клиента.
+func TestBrowserStateBeforeLogin(t *testing.T) {
+	chrome, err := exec.LookPath("google-chrome")
+	if err != nil {
+		t.Skip("нет google-chrome")
+	}
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("нет node")
+	}
+	if _, err := fs.Stat(ui.FS, "pake.wasm"); err != nil {
+		t.Skip("нет ui/pake.wasm — собрать через build.sh")
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/ws", &hub.Hub{})
+	mux.Handle("/", http.FileServer(http.FS(ui.FS)))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+	stateEvery = time.Hour
+	defer func() { stateEvery = 2 * time.Second }()
+	a := newAgent("ws"+strings.TrimPrefix(srv.URL, "http")+"/ws", "123456789", nil)
+	var once sync.Once
+	var t0 time.Time
+	a.Locked = func() bool { // заблокирован первые 10 с сессии
+		once.Do(func() { t0 = time.Now() })
+		return time.Since(t0) < 10*time.Second
+	}
+	a.Capture = func(ctx context.Context, c Cap) (*exec.Cmd, error) {
+		return exec.CommandContext(ctx, "ffmpeg", FFArgs("test", "libx264", c)...), nil
+	}
+	go a.Run(ctx)
+	out := string(runCDP(t, ctx, chrome, cdpState, srv.URL+"/"))
+	if !strings.Contains(out, "|true|early=1|banner=") {
+		t.Fatal("вход не выполнен или state пришёл не до входа — сценарий не воспроизведён")
+	}
+	if !strings.Contains(out, "|banner=The remote PC's screen is locked") {
+		t.Error("state locked, пришедший до входа, потерян: баннера нет")
 	}
 }
 
