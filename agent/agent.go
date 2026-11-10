@@ -55,6 +55,7 @@ type Agent struct {
 	Confirm func(cid, peer string) Answer                       // REQ-F-03: спросить человека на хосте после верного пароля; nil — не спрашивать (unattended)
 	Trusted func(pub []byte) bool                               // У3: ключ клиента закреплён (вход с ним был); nil — без доверенных
 	Trust   func(pub []byte)                                    // закрепить ключ клиента после входа по паролю
+	Audio   bool                                                // окно хоста умеет звук (PLAN.md): клиент увидит кнопку микрофона
 
 	mu        sync.Mutex
 	ice       []webrtc.ICEServer
@@ -75,6 +76,7 @@ type session struct {
 	keys    held
 	clip    clipSync
 	authed  atomic.Bool // до успешного CPace ни видео, ни ввод, ни буфер обмена, ни файлы не работают
+	audio   audioState
 	view    atomic.Bool // REQ-F-20 «только просмотр»: от клиента — ни ввода, ни буфера, ни файлов; буфер хоста ему не уходит
 	picking atomic.Bool // открыто окно выбора файла
 	asking  atomic.Bool // на хосте открыто окно «Разрешить / Отклонить»
@@ -128,15 +130,16 @@ func (s *session) selectMonitor(i int) bool {
 // authMsg — канал "auth" (REQ-S-02): хост → {"t":"a",salt,msg}; клиент → {"t":"b",msg,conf};
 // хост → {"t":"ok",conf} | {"t":"fail"}. []byte — base64 в JSON.
 type authMsg struct {
-	T    string `json:"t"`
-	Salt []byte `json:"salt,omitempty"`
-	Msg  []byte `json:"msg,omitempty"`
-	Conf []byte `json:"conf,omitempty"`
-	Pub  []byte `json:"pub,omitempty"` // в "ok": ключ хоста и подпись над DTLS-отпечатками (REQ-S-05)
-	Sig  []byte `json:"sig,omitempty"`
-	View bool   `json:"view,omitempty"` // в "ok": сессия «только просмотр» (REQ-F-20)
-	CPub []byte `json:"cpub,omitempty"` // в "b": ключ клиента и его подпись над DTLS-отпечатками (У3)
-	CSig []byte `json:"csig,omitempty"`
+	T     string `json:"t"`
+	Salt  []byte `json:"salt,omitempty"`
+	Msg   []byte `json:"msg,omitempty"`
+	Conf  []byte `json:"conf,omitempty"`
+	Pub   []byte `json:"pub,omitempty"` // в "ok": ключ хоста и подпись над DTLS-отпечатками (REQ-S-05)
+	Sig   []byte `json:"sig,omitempty"`
+	View  bool   `json:"view,omitempty"`  // в "ok": сессия «только просмотр» (REQ-F-20)
+	Audio bool   `json:"audio,omitempty"` // в "ok": хост умеет звук (окно хоста ответит на предложение)
+	CPub  []byte `json:"cpub,omitempty"`  // в "b": ключ клиента и его подпись над DTLS-отпечатками (У3)
+	CSig  []byte `json:"csig,omitempty"`
 }
 
 // ctlMsg — канал "ctl": {"t":"clip","text":"…"} — буфер обмена в обе стороны (REQ-F-11);
@@ -155,6 +158,8 @@ type ctlMsg struct {
 	X    int       `json:"x,omitempty"`
 	Y    int       `json:"y,omitempty"`
 	C    string    `json:"c,omitempty"`
+	SDP  string    `json:"sdp,omitempty"` // "audio": предложение клиента / ответ окна хоста (PLAN.md, звук)
+	Err  string    `json:"err,omitempty"` // "audio": "closed" — окно хоста не ответило
 }
 
 // Cap — параметры захвата: монитор, потолок битрейта (кбит/с), кадров/с; Video — профиль «видео» (частота кадров
@@ -697,6 +702,8 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 			if err := setClip(m.Text); err != nil {
 				log.Printf("буфер обмена: %v", err)
 			}
+		case m.T == "audio" && m.SDP != "" && a.Audio:
+			s.audioOffer(m.SDP)
 		case m.T == "monitor":
 			if s.selectMonitor(m.I) {
 				log.Printf("сессия %s: монитор %d", s.cid, m.I+1)
@@ -907,7 +914,7 @@ func (a *Agent) accept(ctx context.Context, s *session, track *webrtc.TrackLocal
 		a.Trust(pin)
 	}
 	view := s.view.Load()
-	send(authMsg{T: "ok", Conf: conf, Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph), View: view})
+	send(authMsg{T: "ok", Conf: conf, Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph), View: view, Audio: a.Audio})
 	log.Printf("сессия %s: вход выполнен%s", s.cid, map[bool]string{true: " (только просмотр)"}[view])
 	s.sendMonitors()
 	closeInd, err := showIndicator(s.cid, view, a.userClose(s)) // REQ-F-15
