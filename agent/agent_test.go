@@ -134,6 +134,46 @@ func TestCaptureBlocked(t *testing.T) {
 	e2e(t, local(t), "123456789", false, nil, "secret123")
 }
 
+// TestStateRepeat — D3: первый state мог потеряться (пришёл на клиент раньше входа) — пока экран заблокирован,
+// хост повторяет текущее состояние не чаще stateEvery.
+func TestStateRepeat(t *testing.T) {
+	lockPoll, stateEvery = 50*time.Millisecond, 300*time.Millisecond
+	const hold = 1500 * time.Millisecond
+	e2eAgent = func(a *Agent) {
+		var once sync.Once
+		var t0 time.Time
+		a.Locked = func() bool {
+			once.Do(func() { t0 = time.Now() })
+			return time.Since(t0) < hold
+		}
+		a.Capture = func(ctx context.Context, c Cap) (*exec.Cmd, error) {
+			return exec.CommandContext(ctx, "ffmpeg", FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000})...), nil
+		}
+	}
+	e2eCtl = func(t *testing.T, _ *webrtc.DataChannel, msgs chan ctlMsg) {
+		locked := 0
+		for deadline := time.After(5 * time.Second); ; {
+			select {
+			case m := <-msgs:
+				if m.T == "state" && m.S == "locked" {
+					locked++
+				}
+				if m.T != "state" || m.S != "ok" {
+					continue
+				}
+			case <-deadline:
+				t.Fatalf("нет state ok, locked пришёл %d раз", locked)
+			}
+			break
+		}
+		if most := int(hold/stateEvery) + 1; locked < 3 || locked > most {
+			t.Errorf("state locked за %v пришёл %d раз, ждали 3…%d (повтор раз в %v)", hold, locked, most, stateEvery)
+		}
+	}
+	defer func() { lockPoll, stateEvery, e2eAgent, e2eCtl = 2*time.Second, 2*time.Second, nil, nil }()
+	e2e(t, local(t), "123456789", false, nil, "secret123")
+}
+
 // TestCaptureDenied — регрессия: «Отмена» в окне портала Wayland вызывала окно снова каждые 300 мс (потом 2 с).
 // Теперь отказ человека закрывает сессию: клиент получает state "denied", захват не повторяется.
 func TestCaptureDenied(t *testing.T) {
