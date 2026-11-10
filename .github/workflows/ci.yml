@@ -51,3 +51,18 @@ jobs:
       - run: deploy/mac.sh "$(git describe --tags --always --dirty)"
       - uses: actions/upload-artifact@v4
         with: { name: AnyPC-macos, path: AnyPC-macos, retention-days: 7 }
+
+  windows:
+    runs-on: windows-latest # единственное место, где исполняются *_windows_test.go (Загрузки, TaskDialog, плашка)
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with: { go-version-file: go.mod }
+      - run: choco install ffmpeg -y --no-progress
+      - shell: bash # ui встраивает pake.wasm; в git его нет
+        run: |
+          GOOS=js GOARCH=wasm go build -trimpath -buildvcs=false -ldflags='-s -w' -o ui/pake.wasm ./wasm
+          cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" ui/
+      - run: go vet ./app ./agent
+      - run: go test -count=1 ./agent ./app ./pake ./hub
