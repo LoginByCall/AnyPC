@@ -1,0 +1,19 @@
+name: windows
+# Код Windows-хоста (приём файлов, «Загрузки», плашка, окно «Разрешить») исполняют только эти тесты: на машине разработки Linux.
+on:
+  push:
+    branches: [main, ci-windows]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test -count=1 -timeout 15m ./...
