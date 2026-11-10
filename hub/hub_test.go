@@ -8,11 +8,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -630,6 +632,132 @@ func TestNewClientLimit(t *testing.T) {
 			delete(want, from)
 		case <-ctx.Done():
 			t.Fatalf("до хоста не дошли connect от %v", want)
+		}
+	}
+}
+
+// smallBuf — серверный слушатель с маленьким буфером отправки: медленный хост упирается в него за секунды, а не за
+// десятки (на loopback буферы ядра — мегабайты).
+type smallBuf struct{ net.Listener }
+
+func (l smallBuf) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if tc, ok := c.(*net.TCPConn); ok {
+		tc.SetWriteBuffer(32 << 10)
+	}
+	return c, err
+}
+
+// TestSlowHost — D2: медленный хост (250 КБ/с) под потоком answer от многих клиентов. Раньше запись хаба хосту ждала
+// дольше 5 с и хаб закрывал WS хоста (опыт B приёмки: выбит через 17 с при 250 КБ/с). Теперь всё, что клиенты вместе
+// пересылают одному хосту, проходит через ведро ToHostBurst/ToHostRate, лишнее отбрасывается: хост жив и потом
+// получает connect законного клиента. Законный сценарий (несколько попыток подряд: answer 30 КБ + 45 ice) ведро не задевает.
+func TestSlowHost(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+	srv := httptest.NewUnstartedServer(&Hub{})
+	srv.Listener = smallBuf{srv.Listener}
+	srv.Start()
+	t.Cleanup(srv.Close)
+	url := "ws" + strings.TrimPrefix(srv.URL, "http")
+	_, priv, _ := ed25519.GenerateKey(nil)
+	host, m := dialHost(t, ctx, url, "123456789", priv, true)
+	if m.Type != "hello" {
+		t.Fatalf("регистрация: %+v", m)
+	}
+	host.SetReadLimit(64 << 10)
+
+	// законный сценарий: 5 попыток подряд — всё дошло до хоста
+	ice := Msg{Type: "ice", To: "123456789", Data: json.RawMessage(`{"candidate":"candidate:1 1 udp 2122260223 192.0.2.1 50000 typ host generation 0 ufrag abcd network-id 1 network-cost 10"}`)}
+	for i := range 5 {
+		c, cid := dial(t, ctx, url)
+		wsjson.Write(ctx, c, Msg{Type: "connect", To: "123456789"})
+		wsjson.Write(ctx, c, Msg{Type: "answer", To: "123456789", Data: json.RawMessage(`{"sdp":"` + strings.Repeat("a", 30<<10) + `"}`)})
+		for range 45 {
+			wsjson.Write(ctx, c, ice)
+		}
+		wsjson.Write(ctx, c, Msg{Type: "bye", To: "123456789"})
+		n := 0
+		for m := read(t, ctx, host); m.Type != "bye" || m.From != cid; m = read(t, ctx, host) {
+			if m.From == cid {
+				n++
+			}
+		}
+		if n != 1+1+45 { // connect, answer, ice (hello от хаба — без from)
+			t.Fatalf("попытка %d: до хоста дошло %d сообщений из %d", i, n, 47)
+		}
+		c.CloseNow()
+	}
+
+	const rate = 250 << 10
+	dead := make(chan error, 1)
+	legit := make(chan string, 1)
+	var rx atomic.Int64
+	go func() {
+		for {
+			_, b, err := host.Read(ctx)
+			if err != nil {
+				dead <- err
+				return
+			}
+			rx.Add(int64(len(b)))
+			var m Msg
+			if json.Unmarshal(b, &m) == nil && m.Type == "connect" {
+				select {
+				case legit <- m.From:
+				default:
+				}
+			}
+			time.Sleep(time.Duration(float64(len(b)) / rate * float64(time.Second)))
+		}
+	}()
+	pad, _ := json.Marshal(strings.Repeat("x", 31<<10))
+	actx, stop := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	for range 50 { // loopback — вне лимитов на IP: так же выглядят клиенты с многих адресов
+		wg.Go(func() {
+			for actx.Err() == nil {
+				c, _, err := websocket.Dial(actx, url, nil)
+				if err != nil {
+					continue
+				}
+				for range 4 {
+					if wsjson.Write(actx, c, Msg{Type: "answer", To: "123456789", Data: pad}) != nil {
+						break
+					}
+				}
+				wsjson.Write(actx, c, Msg{Type: "bye", To: "123456789"})
+				c.Close(websocket.StatusNormalClosure, "")
+			}
+		})
+	}
+	select {
+	case err := <-dead:
+		t.Fatalf("хост выбит медленным чтением (принял %d КБ): %v", rx.Load()>>10, err)
+	case <-time.After(8 * time.Second):
+	}
+	stop()
+	wg.Wait()
+	// после атаки ведро пустое, а хаб ещё дочитывает хвосты атакующих — законный клиент повторяет попытку
+	// новым WS (как веб-клиент), одна из них должна дойти
+	retry := time.NewTicker(500 * time.Millisecond)
+	defer retry.Stop()
+	ids := map[string]bool{}
+	for {
+		c, cid := dial(t, ctx, url)
+		defer c.CloseNow()
+		ids[cid] = true
+		wsjson.Write(ctx, c, Msg{Type: "connect", To: "123456789"})
+		select {
+		case from := <-legit:
+			if ids[from] {
+				return
+			}
+		case err := <-dead:
+			t.Fatalf("хост выбит после атаки: %v", err)
+		case <-retry.C:
+		case <-ctx.Done():
+			t.Fatal("connect законного клиента не дошёл до хоста")
 		}
 	}
 }
