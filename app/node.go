@@ -149,3 +149,11 @@ func applyNode(cfg *config, node string, public bool) (string, error) {
 	}
 	return s, nil
 }
+
+// audioInfo — предложение звука для окна хоста (PLAN.md): nil — ждать нечего.
+func audioInfo(a *agent.Agent) map[string]any {
+	if cid, sdp := a.AudioPending(); sdp != "" {
+		return map[string]any{"cid": cid, "sdp": sdp, "ice": a.AudioICE()}
+	}
+	return nil
+}

@@ -99,7 +99,7 @@ func main() {
 	defer w.Destroy()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	a := &agent.Agent{
+	a := &agent.Agent{Audio: true,
 		Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, Key: cfg.key(), FPS: 30, Stderr: logf, Trusted: cfg.trusted, Trust: cfg.trust,
 		Bitrate: agent.Kbps(cfg.Bitrate),
 		Confirm: func(cid, peer string) agent.Answer {
@@ -124,7 +124,7 @@ func main() {
 		node, pub := cfg.node()
 		mu.Lock()
 		defer mu.Unlock()
-		return map[string]any{"id": cfg.ID, "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "version": version, "ffmpeg": ffSnap(&ffMu, &ffState), "update": update, "node": node, "nodePub": pub, "server": cfg.Server}
+		return map[string]any{"id": cfg.ID, "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "version": version, "ffmpeg": ffSnap(&ffMu, &ffState), "update": update, "node": node, "nodePub": pub, "server": cfg.Server, "audio": audioInfo(a)}
 	}
 	go watchUpdates(func(v string) { mu.Lock(); update = v; mu.Unlock() }) // окно опрашивает hostInfo
 	a.OnState = func(on bool, s string) {
@@ -135,6 +135,8 @@ func main() {
 		w.Dispatch(func() { w.Eval("window.onHostState && onHostState(" + string(j) + ")") })
 	}
 	w.Bind("hostInfo", info)
+	w.Bind("audioAnswer", a.AudioAnswer)
+	w.Bind("audioMic", a.AudioMic)
 	w.Bind("openUpdate", func() { exec.Command("rundll32", "url.dll,FileProtocolHandler", updateSite).Start() }) // адрес фиксирован: странице не открыть произвольный
 	w.Bind("openSite", func() { exec.Command("rundll32", "url.dll,FileProtocolHandler", siteHome).Start() })
 	w.Bind("setPassword", cfg.setPassword)

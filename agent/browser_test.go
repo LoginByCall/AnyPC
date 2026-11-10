@@ -182,15 +182,15 @@ func TestBrowserClient(t *testing.T) {
 }
 
 // runCDP — headless Chrome + node-скрипт по DevTools Protocol; вывод скрипта.
-func runCDP(t *testing.T, ctx context.Context, chrome, script, url string) []byte {
+func runCDP(t *testing.T, ctx context.Context, chrome, script, url string, flags ...string) []byte {
 	t.Helper()
 	l, _ := net.Listen("tcp", "127.0.0.1:0")
 	port := strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
 	l.Close()
 	prof, _ := os.MkdirTemp("", "anypc-chrome-") // не t.TempDir: дочерние процессы Chrome пишут в профиль и после Kill
 	defer os.RemoveAll(prof)
-	ch := exec.CommandContext(ctx, chrome, "--headless=new", "--disable-gpu", "--lang=en-US",
-		"--remote-debugging-port="+port, "--user-data-dir="+prof, "about:blank")
+	ch := exec.CommandContext(ctx, chrome, append([]string{"--headless=new", "--disable-gpu", "--lang=en-US",
+		"--remote-debugging-port=" + port, "--user-data-dir=" + prof}, append(flags, "about:blank")...)...)
 	if err := ch.Start(); err != nil {
 		t.Fatal(err)
 	}
