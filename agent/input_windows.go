@@ -105,6 +105,17 @@ func hideWindow(c *exec.Cmd) {
 // ponytail: подписи кнопок MessageBox системные (Да/Нет/Отмена), их смысл объяснён строкой в тексте (winAskHint);
 // свои подписи — TaskDialog (нужен манифест comctl32 v6), если строка окажется непонятной.
 func AskAccept(cid, peer string) Answer {
+	title, text, yes, no, view := askText(uiLang(), cid, peer)
+	a, err := askTaskDialog(title, text, yes, no, view, AskTimeout, 0)
+	if err == nil {
+		return a
+	}
+	log.Printf("окно «Разрешить»: %v — запасное окно MessageBox", err)
+	return askMessageBox(cid, peer)
+}
+
+// askMessageBox — запасное окно: Да / Нет / Отмена с поясняющей строкой.
+func askMessageBox(cid, peer string) Answer {
 	p := user32.NewProc("MessageBoxTimeoutW")
 	if p.Find() != nil {
 		log.Printf("нет MessageBoxTimeoutW — подключение %s отклонено", cid)
