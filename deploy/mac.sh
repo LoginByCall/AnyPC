@@ -13,5 +13,14 @@ go test -count=1 $T ./agent ./app # сетевые e2e на Маке верну�
 for a in amd64 arm64; do vpx $a; GOARCH=$a go build $T -ldflags="-s -w -X main.version=$V" -o AnyPC-macos-$a ./app; done
 for a in amd64 arm64; do otool -L AnyPC-macos-$a | grep -q libvpx && { echo "AnyPC-macos-$a: libvpx слинкована динамически"; exit 1; }; done
 lipo -create -output AnyPC-macos AnyPC-macos-amd64 AnyPC-macos-arm64
-codesign -s - -f AnyPC-macos
+# Подпись: свой сертификат «AnyPC Code Signing» (связка anypc-sign, решение владельца 2026-11-11) — требование подписи
+# одинаково у всех сборок, и macOS не сбрасывает выданные AnyPC разрешения («Запись экрана», «Универсальный доступ») при
+# обновлении; нет связки (CI, чужой Мак) — ad-hoc, как раньше. Пароль связки — в ~/.config/anypc/sign-keychain.pass (не пароль Мака).
+K=$HOME/Library/Keychains/anypc-sign.keychain-db
+if [ -f "$K" ] && security unlock-keychain -p "$(cat "$HOME/.config/anypc/sign-keychain.pass")" "$K"; then
+  codesign -s "AnyPC Code Signing" --keychain "$K" -i org.anypc.host -f AnyPC-macos
+else
+  codesign -s - -f AnyPC-macos
+fi
+codesign -dr - AnyPC-macos 2>&1 | grep designated
 lipo -info AnyPC-macos
