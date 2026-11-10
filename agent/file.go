@@ -250,7 +250,7 @@ const maxRecv = 4
 func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32) {
 	r := NewReceiver(a.fileDir())
 	var mu sync.Mutex
-	state := "new" // new → open → finished; в open занято место в active
+	state := "new" // new → wait → open → finished; в open занято место в active
 	end := func() {
 		if state == "open" {
 			active.Add(-1)
@@ -282,22 +282,39 @@ func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32) {
 		json.Unmarshal(m.Data, &fm)
 		switch {
 		case fm.T == "meta" && state == "new":
-			if active.Add(1) > maxRecv {
-				active.Add(-1)
-				fail(fmt.Sprintf("одновременно принимается не больше %d файлов — дождитесь окончания", maxRecv))
-				return
-			}
-			off, err := r.Open(fm.Name, fm.Size, fm.ID)
-			if err != nil {
-				active.Add(-1)
-				fail(err.Error())
-				return
-			}
-			state = "open"
-			if off > 0 {
-				log.Printf("файл %q: докачка с %d байт", r.name, off)
-			}
-			sendJSON(dc, fileMsg{T: "resume", Offset: off})
+			// Лишние файлы ждут очереди, а не получают отказ: клиент шлёт все выбранные сразу (выбрали 10 — 6 отказов).
+			// Ждать здесь нельзя: обработчик зовётся из цикла чтения SCTP — встали бы и идущие передачи.
+			state = "wait"
+			go func() {
+				// ponytail: опрос раз в 200 мс; семафор на сессию — если ожидающих станут сотни
+				for active.Add(1) > maxRecv {
+					active.Add(-1)
+					time.Sleep(200 * time.Millisecond)
+					mu.Lock()
+					waiting := state == "wait"
+					mu.Unlock()
+					if !waiting { // отмена или обрыв, пока ждали
+						return
+					}
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				if state != "wait" {
+					active.Add(-1)
+					return
+				}
+				off, err := r.Open(fm.Name, fm.Size, fm.ID)
+				if err != nil {
+					active.Add(-1)
+					fail(err.Error())
+					return
+				}
+				state = "open"
+				if off > 0 {
+					log.Printf("файл %q: докачка с %d байт", r.name, off)
+				}
+				sendJSON(dc, fileMsg{T: "resume", Offset: off})
+			}()
 		case fm.T == "end" && state == "open":
 			dst, sum, err := r.Finish()
 			if err != nil {

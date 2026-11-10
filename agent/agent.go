@@ -725,13 +725,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 	})
 	recv := new(atomic.Int32) // идущие приёмы файлов этой сессии (не больше maxRecv)
 
-	pc.OnDataChannel(func(dc *webrtc.DataChannel) { // каналы от клиента — только файлы и только после входа
-		if dc.Label() == "file" && s.control() {
-			a.receiveFile(dc, recv)
-			return
-		}
-		dc.OnOpen(func() { dc.Close() })
-	})
+	pc.OnDataChannel(func(dc *webrtc.DataChannel) { a.clientChannel(s, dc, recv) })
 	var started, ended sync.Once
 	// Кандидаты до отправки offer копятся: клиент без offer их выбросит (найдено -race в TestE2E).
 	var (
@@ -943,6 +937,22 @@ const (
 	Allow           // полное управление
 	ViewOnly        // REQ-F-20: только просмотр
 )
+
+// clientChannel — канал, открытый клиентом: только файлы и только после входа. В «только просмотр» — внятный отказ:
+// клиенты ≤ v0.1.15 кнопку файлов не прячут, а молча закрытый канал они показывали как обрыв «отправьте ещё раз».
+func (a *Agent) clientChannel(s *session, dc *webrtc.DataChannel, recv *atomic.Int32) {
+	switch {
+	case dc.Label() == "file" && s.control():
+		a.receiveFile(dc, recv)
+	case dc.Label() == "file" && s.authed.Load():
+		dc.OnOpen(func() {
+			sendJSON(dc, fileMsg{T: "err", Msg: "только просмотр: файлы на этот ПК не принимаются"})
+			dc.Close()
+		})
+	default:
+		dc.OnOpen(func() { dc.Close() })
+	}
+}
 
 // control — от клиента можно принимать ввод, буфер обмена и файлы: вход выполнен и сессия не «только просмотр».
 func (s *session) control() bool { return s.authed.Load() && !s.view.Load() }
