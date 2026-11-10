@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -250,5 +251,297 @@ func TestRemoteIP(t *testing.T) {
 		if got := remoteIP(r); got != c.want {
 			t.Errorf("%s + %q: %s, ждали %s", c.addr, c.xff, got, c.want)
 		}
+	}
+}
+
+// limHub — хаб с хостом 123456789 в сети; from — адрес клиентов через X-Forwarded-For (тест идёт с loopback,
+// а loopback вне лимитов на IP).
+func limHub(t *testing.T, ctx context.Context, h *Hub) (url string, host *websocket.Conn) {
+	t.Helper()
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	url = "ws" + strings.TrimPrefix(srv.URL, "http")
+	_, priv, _ := ed25519.GenerateKey(nil)
+	host, m := dialHost(t, ctx, url, "123456789", priv, true)
+	if m.Type != "hello" {
+		t.Fatalf("регистрация: %+v", m)
+	}
+	host.SetReadLimit(64 << 10) // как у agent
+	return url, host
+}
+
+// dialFrom — клиент «с адреса from»: соединение, его ID; ответ HTTP-кодом — (nil, "", код).
+func dialFrom(t *testing.T, ctx context.Context, url, from string) (*websocket.Conn, string, int) {
+	t.Helper()
+	o := &websocket.DialOptions{HTTPHeader: http.Header{}}
+	if from != "" {
+		o.HTTPHeader.Set("X-Forwarded-For", from)
+	}
+	c, r, err := websocket.Dial(ctx, url, o)
+	if err != nil {
+		if r == nil {
+			t.Fatal(err)
+		}
+		return nil, "", r.StatusCode
+	}
+	m := read(t, ctx, c)
+	if m.Type != "hello" {
+		t.Fatalf("hello: %+v", m)
+	}
+	var d struct{ ID string }
+	json.Unmarshal(m.Data, &d)
+	return c, d.ID, 0
+}
+
+// closed — соединение закрыто хабом с кодом 1008 (сообщения до закрытия пропускаются).
+func closed(t *testing.T, ctx context.Context, c *websocket.Conn) {
+	t.Helper()
+	for {
+		var m Msg
+		err := wsjson.Read(ctx, c, &m)
+		if err == nil {
+			continue
+		}
+		if s := websocket.CloseStatus(err); s != websocket.StatusPolicyViolation {
+			t.Fatalf("ждали закрытия 1008, получили %v (%d)", err, s)
+		}
+		return
+	}
+}
+
+// untilFrom читает хост до сообщения typ от from; возвращает, сколько connect от других пришло по дороге.
+func untilFrom(t *testing.T, ctx context.Context, host *websocket.Conn, typ, from string) (connects int) {
+	t.Helper()
+	for {
+		m := read(t, ctx, host)
+		if m.Type == typ && m.From == from {
+			return connects
+		}
+		if m.Type == "connect" {
+			connects++
+		}
+	}
+}
+
+// TestClientFlood — F4: клиент сверх ведра (сообщения или байты) закрыт 1008, хост остаётся в сети
+// и получает сообщения другого клиента; законная попытка (≈45 ice + answer 6 КБ) лимит не задевает.
+func TestClientFlood(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	url, host := limHub(t, ctx, &Hub{})
+
+	ok, okID := dial(t, ctx, url) // граница: законный всплеск
+	for range 45 {
+		wsjson.Write(ctx, ok, Msg{Type: "ice", To: "123456789", Data: json.RawMessage(`{"candidate":"candidate:1 1 udp 2122260223 192.0.2.1 50000 typ host"}`)})
+	}
+	wsjson.Write(ctx, ok, Msg{Type: "answer", To: "123456789", Data: json.RawMessage(`{"sdp":"` + strings.Repeat("a", 6<<10) + `"}`)})
+	wsjson.Write(ctx, ok, Msg{Type: "bye", To: "123456789"})
+	untilFrom(t, ctx, host, "bye", okID)
+
+	flood, _ := dial(t, ctx, url) // 1000 ice подряд
+	go func() {
+		for range 1000 {
+			if wsjson.Write(ctx, flood, Msg{Type: "ice", To: "123456789", Data: json.RawMessage(`{}`)}) != nil {
+				return
+			}
+		}
+	}()
+	closed(t, ctx, flood)
+
+	big, _ := dial(t, ctx, url) // байты: 5 × 30 КБ > всплеска 128 КБ
+	go func() {
+		for range 5 {
+			wsjson.Write(ctx, big, Msg{Type: "answer", To: "123456789", Data: json.RawMessage(`"` + strings.Repeat("b", 30<<10) + `"`)})
+		}
+	}()
+	closed(t, ctx, big)
+
+	// размер по типу: ice 3 КБ (> 2 КБ) — закрыт; иначе 64 КБ с конвертом from переполняли буфер чтения хоста
+	// и выбивали его из сети одним сообщением
+	for typ, n := range map[string]int{"ice": 3 << 10, "connect": 5 << 10, "bye": 1 << 10, "answer": 60 << 10} {
+		c, _ := dial(t, ctx, url)
+		wsjson.Write(ctx, c, Msg{Type: typ, To: "123456789", Data: json.RawMessage(`"` + strings.Repeat("c", n) + `"`)})
+		closed(t, ctx, c)
+	}
+
+	other, oid := dial(t, ctx, url)
+	wsjson.Write(ctx, other, Msg{Type: "connect", To: "123456789"})
+	untilFrom(t, ctx, host, "connect", oid)
+	wsjson.Write(ctx, ok, Msg{Type: "bye", To: "123456789"}) // законный клиент не задет
+	untilFrom(t, ctx, host, "bye", okID)
+}
+
+// TestConnectSpamKeepsHost — регрессия F4 п. 1: спам connect не пересылается хосту (сверх всплеска — busy от хаба),
+// а поток хоста сверх его ведра отбрасывается молча — хост остаётся в сети.
+func TestConnectSpamKeepsHost(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	url, host := limHub(t, ctx, &Hub{})
+
+	spam, sid := dial(t, ctx, url)
+	for range 20 {
+		wsjson.Write(ctx, spam, Msg{Type: "connect", To: "123456789"})
+	}
+	wsjson.Write(ctx, spam, Msg{Type: "x", To: "123456789"}) // метка конца: forbidden
+	busy := 0
+	for m := read(t, ctx, spam); string(m.Data) != `"forbidden"`; m = read(t, ctx, spam) {
+		if m.Type != "error" || string(m.Data) != `"busy"` {
+			t.Fatalf("спамеру: %+v", m)
+		}
+		busy++
+	}
+	if busy < 20-ConnectBurst-1 || busy > 20-ConnectBurst {
+		t.Fatalf("busy: %d из 20 (всплеск %d)", busy, ConnectBurst)
+	}
+	wsjson.Write(ctx, spam, Msg{Type: "bye", To: "123456789"})
+	if n := untilFrom(t, ctx, host, "bye", sid); n < ConnectBurst || n > ConnectBurst+1 {
+		t.Fatalf("до хоста дошло connect: %d, ждали %d", n, ConnectBurst)
+	}
+
+	// хост шлёт сверх ведра (700 > 600) — не закрыт и дальше принимает и отправляет
+	sink, cid := dial(t, ctx, url)
+	for range 700 {
+		if err := wsjson.Write(ctx, host, Msg{Type: "ice", To: cid, Data: json.RawMessage(`{}`)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := 0
+	wsjson.Write(ctx, host, Msg{Type: "bye", To: cid})
+	time.Sleep(50 * time.Millisecond) // ведро хоста пополняется 100/с: bye мог отброситься — шлём ещё раз
+	wsjson.Write(ctx, host, Msg{Type: "bye", To: cid})
+	for m := read(t, ctx, sink); m.Type != "bye"; m = read(t, ctx, sink) {
+		got++
+	}
+	if got < HostMsgBurst-10 || got >= 700 {
+		t.Fatalf("клиент получил ice: %d (ждали ≈%d, сверх — отброшены)", got, HostMsgBurst)
+	}
+	other, oid := dial(t, ctx, url)
+	wsjson.Write(ctx, other, Msg{Type: "connect", To: "123456789"})
+	untilFrom(t, ctx, host, "connect", oid)
+}
+
+// TestNotFoundLimit — F4: not_found клиенту не больше NotFoundPerConn на соединение и NotFoundPerMin на IP;
+// дальше — закрытие и 429 новым клиентским WS с этого IP; другой IP и хост не задеты.
+func TestNotFoundLimit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	url, host := limHub(t, ctx, &Hub{})
+	probe := func(c *websocket.Conn, n int) {
+		t.Helper()
+		for i := range n {
+			wsjson.Write(ctx, c, Msg{Type: "ice", To: fmt.Sprint(900000000 + i)})
+			if m := read(t, ctx, c); string(m.Data) != `"not_found"` {
+				t.Fatalf("not_found %d: %+v", i, m)
+			}
+		}
+	}
+
+	c, _, _ := dialFrom(t, ctx, url, "") // на соединение — и с loopback
+	probe(c, NotFoundPerConn)
+	wsjson.Write(ctx, c, Msg{Type: "ice", To: "999999999"})
+	closed(t, ctx, c)
+
+	const ip = "203.0.113.7"
+	spare, _, _ := dialFrom(t, ctx, url, ip) // открыто до исчерпания
+	for i := range NotFoundPerMin / NotFoundPerConn {
+		c, _, code := dialFrom(t, ctx, url, ip)
+		if code != 0 {
+			t.Fatalf("соединение %d с %s: %d", i, ip, code)
+		}
+		probe(c, NotFoundPerConn)
+	}
+	wsjson.Write(ctx, spare, Msg{Type: "ice", To: "999999999"}) // 31-й с IP
+	closed(t, ctx, spare)
+	if _, _, code := dialFrom(t, ctx, url, ip); code != http.StatusTooManyRequests {
+		t.Fatalf("новое WS после %d not_found с IP: %d, ждали 429", NotFoundPerMin, code)
+	}
+	if c, _, code := dialFrom(t, ctx, url, "203.0.113.8"); code != 0 {
+		t.Fatalf("другой IP: %d", code)
+	} else {
+		probe(c, 1)
+	}
+	if _, _, code := dialFrom(t, ctx, url, "127.0.0.1"); code != 0 { // loopback вне лимита на IP
+		t.Fatalf("loopback: %d", code)
+	}
+	other, oid, _ := dialFrom(t, ctx, url, "203.0.113.9")
+	wsjson.Write(ctx, other, Msg{Type: "connect", To: "123456789"})
+	untilFrom(t, ctx, host, "connect", oid)
+}
+
+// TestConnLimit — F4: соединений с IPv4 (и /64) не больше ConnsPerIP, с /48 — ConnsPer48, всего — MaxConns;
+// отказ 429/503 до Upgrade; закрытое соединение место освобождает; loopback и частные — вне лимита на IP.
+func TestConnLimit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	h := &Hub{}
+	url, _ := limHub(t, ctx, h)
+	var keep []*websocket.Conn
+	for i := range ConnsPerIP {
+		c, _, code := dialFrom(t, ctx, url, "203.0.113.5")
+		if code != 0 {
+			t.Fatalf("соединение %d: %d", i, code)
+		}
+		keep = append(keep, c)
+	}
+	if _, _, code := dialFrom(t, ctx, url, "203.0.113.5"); code != http.StatusTooManyRequests {
+		t.Fatalf("соединение %d с IP: %d, ждали 429", ConnsPerIP+1, code)
+	}
+	if _, _, code := dialFrom(t, ctx, url, "203.0.113.6"); code != 0 {
+		t.Fatalf("соседний IP: %d", code)
+	}
+	for i := range ConnsPerIP + 1 { // loopback (свой прокси без XFF, тесты) — без лимита на IP
+		c, _, code := dialFrom(t, ctx, url, "")
+		if code != 0 {
+			t.Fatalf("loopback %d: %d", i, code)
+		}
+		defer c.CloseNow()
+	}
+	keep[0].Close(websocket.StatusNormalClosure, "")
+	ok := false
+	for range 50 { // хаб снимает соединение после закрытия асинхронно
+		if c, _, code := dialFrom(t, ctx, url, "203.0.113.5"); code == 0 {
+			ok = true
+			c.CloseNow()
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !ok {
+		t.Fatal("закрытое соединение не освободило место")
+	}
+	for _, c := range keep {
+		c.CloseNow()
+	}
+
+	// IPv6: /64 — как один IPv4, /48 — свой потолок (без 1000 настоящих соединений — счётчики напрямую)
+	for i := range ConnsPer48 {
+		a := netip.MustParseAddr(fmt.Sprintf("2001:db8:1:%x::1", i/ConnsPerIP))
+		if code := h.acquire(a); code != 0 {
+			t.Fatalf("v6 %d (%s): %d", i, a, code)
+		}
+	}
+	if code := h.acquire(netip.MustParseAddr("2001:db8:1:ff::1")); code != http.StatusTooManyRequests {
+		t.Fatalf("/48 сверх %d: %d", ConnsPer48, code)
+	}
+	if code := h.acquire(netip.MustParseAddr("2001:db8:1:0::2")); code != http.StatusTooManyRequests {
+		t.Fatalf("/64 сверх %d: %d", ConnsPerIP, code)
+	}
+	if code := h.acquire(netip.MustParseAddr("2001:db8:2::1")); code != 0 {
+		t.Fatalf("соседний /48: %d", code)
+	}
+	if !exempt(netip.MustParseAddr("10.1.2.3")) || !exempt(netip.MustParseAddr("172.17.0.1")) || exempt(netip.MustParseAddr("100.64.0.1")) {
+		t.Fatal("частные адреса — вне лимита на IP, остальные — в нём")
+	}
+
+	// общий потолок — 503 и для loopback
+	small := &Hub{MaxConns: 2}
+	url, _ = limHub(t, ctx, small) // хост — первое соединение
+	c, _, code := dialFrom(t, ctx, url, "")
+	if code != 0 {
+		t.Fatalf("второе соединение: %d", code)
+	}
+	defer c.CloseNow()
+	if _, _, code := dialFrom(t, ctx, url, ""); code != http.StatusServiceUnavailable {
+		t.Fatalf("сверх MaxConns: %d, ждали 503", code)
 	}
 }
