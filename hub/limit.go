@@ -2,9 +2,12 @@ package hub
 
 import (
 	"cmp"
+	"log"
 	"net/http"
 	"net/netip"
 	"time"
+
+	"github.com/coder/websocket"
 )
 
 // Лимиты хаба (F4, числа — fixes-review.md). Через хаб идут только connect/offer/answer/ice/bye/error/hello:
@@ -19,6 +22,7 @@ const (
 	ConnectEvery                    = 3 * time.Second     // …и пополнение; сверх — существующий ответ busy, не пересылать
 	HostMsgBurst, HostMsgRate       = 600, 100            // сообщений хоста; сверх — молча отбросить (+ журнал)
 	HostByteBurst, HostByteRate     = 2 << 20, 256 << 10  // байт хоста; сверх — так же
+	ToHostBurst, ToHostRate         = 256 << 10, 64 << 10 // байт всех клиентов вместе одному хосту (попытка ≈20 КБ); сверх — молча отбросить
 	NotFoundPerConn                 = 5                   // not_found клиенту на соединение; следующий — закрыть
 	NotFoundPerMin                  = 30                  // not_found на IP (/64) в минуту; сверх — закрыть и 429 новым клиентским WS
 	NewClientBurst, NewClientRate   = 60, 1               // новых клиентских WS с адреса (IPv4, /64; /48 — ×10): всплеск, в секунду; сверх — 429 до Upgrade
@@ -213,4 +217,46 @@ func (h *Hub) perAddr(m *map[string]*bucket, a netip.Addr, burst, rate float64, 
 // без этого WS → 5 connect → закрыть → повторить давало тысячи connect в секунду до хоста с одного IP.
 func (h *Hub) newClient(a netip.Addr) bool {
 	return h.perAddr(&h.fresh, a, NewClientBurst, NewClientRate, true)
+}
+
+// hostIn — ведро байт от всех клиентов к одному хосту (D2): ведро клиента ограничивает одно соединение, а сотни
+// соединений вместе переполняли буфер записи медленного хоста — запись ждала дольше 5 с, и хаб закрывал WS хоста.
+type hostIn struct {
+	c         *websocket.Conn // чья запись: после переподключения хоста старое соединение чужую не снимает
+	b         bucket
+	dropped   int
+	droppedAt time.Time
+}
+
+func (h *Hub) hostOpen(id string, c *websocket.Conn) {
+	h.lim.Lock()
+	defer h.lim.Unlock()
+	if h.in == nil {
+		h.in = map[string]*hostIn{}
+	}
+	h.in[id] = &hostIn{c: c, b: newBucket(ToHostBurst, ToHostRate)}
+}
+
+func (h *Hub) hostClose(id string, c *websocket.Conn) {
+	h.lim.Lock()
+	defer h.lim.Unlock()
+	if in := h.in[id]; in != nil && in.c == c {
+		delete(h.in, id)
+	}
+}
+
+// toHost — можно ли переслать хосту id ещё n байт от клиентов. Нет — сообщение отбрасывается молча: ни клиент
+// (законный в общей очереди), ни хост не закрываются; в журнал — не чаще раза в минуту.
+func (h *Hub) toHost(id string, n int) bool {
+	h.lim.Lock()
+	defer h.lim.Unlock()
+	in := h.in[id]
+	if in == nil || in.b.take(float64(n)) { // нет записи — хост уходит или только что пришёл
+		return true
+	}
+	if in.dropped++; time.Since(in.droppedAt) > time.Minute {
+		log.Printf("hub: клиентов к хосту %s сверх %d КБ/с, отброшено %d", id, ToHostRate>>10, in.dropped)
+		in.dropped, in.droppedAt = 0, time.Now()
+	}
+	return false
 }
