@@ -408,7 +408,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.V, m.From = 1, id
 		out := encode(m) // ведро считает то, что уйдёт хосту, а не то, что пришло (N1)
 		// D2: медленный хост не выбивается суммой клиентов
-		if !isHost && !h.toHost(m.To, len(out)+len(fresh)) {
+		if !isHost && !h.toHost(m.To, addr, len(out)+len(fresh)) {
 			continue
 		}
 		sendRaw(ctx, dst, fresh)
