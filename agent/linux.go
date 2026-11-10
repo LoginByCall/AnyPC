@@ -34,8 +34,9 @@ type desktop interface {
 }
 
 var (
-	deskMu sync.Mutex
-	desk   desktop
+	deskMu     sync.Mutex
+	desk       desktop
+	openPortal = newPortal // в тестах подменяется: не открывать окно портала у того, кто их запускает
 )
 
 // getDesktop создаёт бэкенд лениво: на Wayland это диалог согласия портала, он должен появиться
@@ -52,7 +53,7 @@ func getDesktop() (desktop, error) {
 	}
 	var err error
 	if Wayland {
-		desk, err = newPortal()
+		desk, err = openPortal()
 	} else {
 		desk, err = newX11()
 	}
@@ -98,11 +99,28 @@ func sendInput(e event, m *Monitor) error {
 	if fakeDesktop {
 		return nil
 	}
-	d, err := getDesktop()
+	d, err := inputDesktop()
 	if err != nil {
 		return err
 	}
 	return d.input(e, m)
+}
+
+var errNoPortal = errors.New("нет сеанса портала (его открывает захват экрана)")
+
+// inputDesktop — бэкенд для ввода (N5). На Wayland сеанс портала (окно согласия) открывает только захват: ввод,
+// ждавший deskMu, пока окно было на экране, после «Отмена» иначе открывал второе окно; то же — отпускание
+// зажатых клавиш при закрытии сессии. На X11 бэкенд без окон — создаётся лениво, как раньше.
+func inputDesktop() (desktop, error) {
+	if !Wayland {
+		return getDesktop()
+	}
+	deskMu.Lock()
+	defer deskMu.Unlock()
+	if desk != nil && desk.alive() {
+		return desk, nil
+	}
+	return nil, errNoPortal
 }
 
 // monitors — X11: RandR; Wayland: nil (монитор выбирает человек в диалоге портала).
