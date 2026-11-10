@@ -52,6 +52,7 @@
 - `lim4`: Linux 和 macOS 版本为测试版，测试程度不及 Windows 版本。
 - `bug`: 报告问题
 - `foot`: AnyPC 测试版。Windows 版首次启动时会从 gyan.dev 的构建下载 FFmpeg（GPLv3）。按“原样”提供，不作任何保证。
+- `privacy`: 隐私政策
 - `f5t`: 可使用自己的服务器
 - `f5d`: 一条命令即可在 VPS 上部署自己的节点，并让程序切换到该节点——连接记录只保留在您手中。
 - `f6t`: 多个自有节点

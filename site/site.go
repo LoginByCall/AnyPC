@@ -3,5 +3,5 @@ package site
 
 import "embed"
 
-//go:embed index.html
+//go:embed index.html privacy.html
 var FS embed.FS
