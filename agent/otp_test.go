@@ -193,8 +193,8 @@ func TestHostViewOnly(t *testing.T) {
 }
 
 // TestOTPTrustedLock — У3 с TOTP: хост заблокирован чужим перебором паролей, а владелец с закреплённым ключом,
-// верным паролем и верным кодом входит; неверные коды закреплённого ключа — своя блокировка (и в общий счётчик);
-// на шаге кода блокировка действует: поставленная, пока вводят код, — отказ и верному коду.
+// верным паролем и верным кодом входит; неверные коды от кого угодно — одна лестница (и в общий счётчик): с ключом
+// и без вор получает 5 кодов, не больше; на шаге кода блокировка действует и на верный код.
 func TestOTPTrustedLock(t *testing.T) {
 	k, _ := pake.ClientSignB64(e2eSeed(), "", "", "")
 	pub, _ := base64.StdEncoding.DecodeString(k["pub"])
@@ -237,7 +237,22 @@ func TestOTPTrustedLock(t *testing.T) {
 	e2eOTP = func(int) string { return fresh() }
 	e2e(t, local(t), "123456789", false, ff, "secret123") // своя блокировка ключа — отказ и верному коду
 
+	e2eAgent = func(a *Agent) { trusted(a); a.otpFails = 4 } // 4 неверных кода уже ввели без ключа — ключ получает один
+	e2eOTP = func(int) string { c := []byte(fresh()); c[0] = '0' + (c[0]-'0'+1)%10; return string(c) }
+	asks.Store(0)
+	e2e(t, local(t), "123456789", false, ff, "secret123")
+	ag.mu.Lock()
+	of, ol = ag.otpFails, time.Until(ag.otpLock)
+	ag.mu.Unlock()
+	if asks.Load() != 1 || of != 5 || ol < 50*time.Second {
+		t.Fatalf("одна лестница кодов: запросов %d, неудач %d, блокировка %v", asks.Load(), of, ol)
+	}
+
 	e2eKey = ""
+	e2eAgent = func(a *Agent) { ag = a; a.OTP = o.check; a.otpLock = time.Now().Add(time.Hour) } // лестница кодов — и для чужих
+	e2eOTP = func(int) string { return fresh() }
+	e2e(t, local(t), "123456789", false, ff, "secret123")
+
 	e2eAgent = func(a *Agent) { ag = a; a.OTP = o.check }
 	e2eOTP = func(int) string { // чужой перебор запер хост, пока человек вводит код
 		ag.mu.Lock()
