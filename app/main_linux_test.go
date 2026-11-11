@@ -172,6 +172,12 @@ func TestCLI(t *testing.T) {
 			t.Errorf("--confirm off с кодом: %v %q", err, out.String())
 		}
 	}
+	if out, err := cli("--view-only", "maybe"); err == nil {
+		t.Errorf("--view-only maybe принят: %q", out)
+	}
+	if out, err := cli("--view-only", "on"); err != nil {
+		t.Errorf("--view-only on: %v %q", err, out)
+	}
 	if out, err := cli("--node", "bad node!"); err == nil {
 		t.Errorf("неверный узел принят: %q", out)
 	}
@@ -182,7 +188,7 @@ func TestCLI(t *testing.T) {
 	if cfg.confirm() || cfg.Server != DefaultServer {
 		t.Errorf("настройки после ключей: confirm=%v server=%q", cfg.confirm(), cfg.Server)
 	}
-	if out, _ := cli("--status"); !strings.Contains(out, cfg.ID) || !strings.Contains(out, "Пароль задан: да") || !strings.Contains(out, "«Разрешить»: off") || !strings.Contains(out, "Второй фактор (TOTP): да") {
+	if out, _ := cli("--status"); !strings.Contains(out, cfg.ID) || !strings.Contains(out, "Пароль задан: да") || !strings.Contains(out, "«Разрешить»: off") || !strings.Contains(out, "Второй фактор (TOTP): да") || !strings.Contains(out, "Только показ экрана: on") {
 		t.Errorf("--status: %q", out)
 	}
 	if u := serviceUnit("/opt/my apps/AnyPC"); !strings.Contains(u, `ExecStart="/opt/my apps/AnyPC" --no-browser`) || !strings.Contains(u, "WantedBy=graphical-session.target") {

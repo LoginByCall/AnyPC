@@ -508,6 +508,9 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 	}
 	// bye от клиента → хост освобождается сразу, без 30-секундного тайм-аута ICE
 	time.Sleep(200 * time.Millisecond) // дать дойти нажатию
+	if e2eInput != nil {
+		e2eInput(t, a)
+	}
 	send("bye", "client")
 	for {
 		select {
@@ -608,12 +611,13 @@ var (
 	e2eTrack   func(*testing.T, *webrtc.PeerConnection, *webrtc.TrackRemote) // после 300 RTP видео у клиента
 	e2eDeny    bool                                                          // ожидать отказ человека на хосте (REQ-F-03)
 	e2eCtl     func(*testing.T, *webrtc.DataChannel, chan ctlMsg)
-	e2eSquat   int                // столько клиентов до настоящего шлют connect и молчат (У3, У9)
-	e2eKey     string             // seed ключа клиента (base64): заявить в connect и подписать в «b» (У3); "bad" — заявить, подпись испортить
-	e2eNoVideo bool               // видео не ждать (захват отклонён на хосте) — сразу к e2eCtl
-	e2eOTP     func(n int) string // код TOTP на n-й запрос хоста; "" — не отвечать
-	e2eSeen    func(authMsg)      // каждое сообщение auth от хоста
-	e2eFail    bool               // ожидать отказ во входе (TOTP)
+	e2eSquat   int                      // столько клиентов до настоящего шлют connect и молчат (У3, У9)
+	e2eKey     string                   // seed ключа клиента (base64): заявить в connect и подписать в «b» (У3); "bad" — заявить, подпись испортить
+	e2eNoVideo bool                     // видео не ждать (захват отклонён на хосте) — сразу к e2eCtl
+	e2eOTP     func(n int) string       // код TOTP на n-й запрос хоста; "" — не отвечать
+	e2eSeen    func(authMsg)            // каждое сообщение auth от хоста
+	e2eFail    bool                     // ожидать отказ во входе (TOTP)
+	e2eInput   func(*testing.T, *Agent) // после нажатия ControlLeft клиентом, до bye
 )
 
 // squat — клиент, который получил offer и не отвечает: раньше одного такого хватало, чтобы хост 20 с был «занят».

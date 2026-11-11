@@ -62,6 +62,7 @@ type Agent struct {
 	// верный (постоянное время и защита от повтора — у владельца секрета). Без секрета вход без подтверждения не
 	// работает: спрашивается Confirm («Разрешить»), а без Confirm — отказ. OTP == nil — TOTP нет вовсе (как раньше).
 	Unattended func() bool
+	ViewOnly   func() bool // «Только показ экрана» на хосте: каждая сессия — только просмотр (REQ-F-20); nil — нет
 	OTP        func(code string) (set, ok bool)
 
 	mu        sync.Mutex
@@ -1012,6 +1013,9 @@ var authWait = 20 * time.Second
 
 // accept — вход разрешён: подпись хоста, плашка сессии, видео.
 func (a *Agent) accept(ctx context.Context, s *session, track *webrtc.TrackLocalStaticSample, send func(authMsg), conf []byte, fpc, fph string, pin []byte) {
+	if a.ViewOnly != nil && a.ViewOnly() { // хост сужает права сам — и «Разрешить» в окне даёт только просмотр
+		s.view.Store(true)
+	}
 	s.authed.Store(true)
 	if pin != nil && a.Trust != nil {
 		a.Trust(pin)
