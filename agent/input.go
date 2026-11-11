@@ -248,7 +248,7 @@ func askText(lang, cid, peer string) (title, text, yes, no, view string) {
 	return "AnyPC — " + q[0], q[1] + "\n\n" + q[7] + "\n\nID: " + cid + "\nIP: " + peer + "\n\n" + q[2], q[3], q[4], q[5]
 }
 
-// plaqueBar — однострочная плашка (Windows): подпись и кнопка «Разорвать».
+// plaqueBar — однострочная плашка (Windows, macOS): подпись и кнопка «Разорвать».
 func plaqueBar(lang, cid string, m plaqueMode) (label, btn string) {
 	pl, ok := plaques[lang]
 	if !ok {
