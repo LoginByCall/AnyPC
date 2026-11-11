@@ -2,9 +2,14 @@ package main
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -231,5 +236,55 @@ func TestOTPReplay(t *testing.T) {
 	}
 	if _, ok := c2.otp(setup); ok {
 		t.Fatal("код более раннего шага принят")
+	}
+}
+
+// TestConfigMinimal — регрессия (Н2): в файле нет server/enc/bitrate — после записи они остаются умолчаниями.
+func TestConfigMinimal(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	_, k, _ := ed25519.GenerateKey(nil)
+	b, _ := json.Marshal(map[string]any{"id": "123456789", "key": k, "confirm": true})
+	os.WriteFile(p, b, 0o600)
+	c, err := loadConfig(p)
+	if err != nil || c.setViewOnly(true) != nil {
+		t.Fatal(err)
+	}
+	c2, _ := loadConfig(p)
+	for _, x := range []*config{c, c2} {
+		if x.Server != DefaultServer || x.Enc != "libx264" || x.Bitrate != "4M" {
+			t.Fatalf("умолчания пропали: %q %q %q", x.Server, x.Enc, x.Bitrate)
+		}
+	}
+}
+
+// TestConfigTwoWriters — регрессия (Н3): два процесса (CLI и программа) пишут настройки одновременно — ни ошибок,
+// ни битого файла, ни брошенных временных файлов; правку CLI видит запущенная программа (viewNow).
+func TestConfigTwoWriters(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.json")
+	a, _ := loadConfig(p)
+	b, _ := loadConfig(p)
+	var wg sync.WaitGroup
+	var errs atomic.Int32
+	for _, c := range []*config{a, b} {
+		wg.Go(func() {
+			for i := range 200 {
+				if c.knownSet("123456789", fmt.Sprint(i)) != nil {
+					errs.Add(1)
+				}
+			}
+		})
+	}
+	wg.Wait()
+	if c, err := loadConfig(p); errs.Load() != 0 || err != nil || c.knownGet("123456789") != "199" {
+		t.Fatalf("ошибок записи %d, чтение %v", errs.Load(), err)
+	}
+	if m, _ := filepath.Glob(filepath.Join(dir, "*.tmp")); len(m) != 0 {
+		t.Fatalf("брошены временные файлы: %v", m)
+	}
+	cli, _ := loadConfig(p)
+	cli.setViewOnly(true) // anypc --view-only on
+	if a.viewOnly() || !a.viewNow() || !a.viewOnly() {
+		t.Fatal("запущенная программа не видит --view-only")
 	}
 }

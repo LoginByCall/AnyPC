@@ -59,7 +59,7 @@ var version = "dev"
 var oldServers = []string{"wss://any.turboseller.xyz/ws", "wss://any-hk.turboseller.xyz/ws", "wss://any-hk.turboseller.xyz/ws,wss://any-ru.turboseller.xyz/ws"}
 
 func loadConfig(path string) (*config, error) {
-	c := &config{path: path, settings: settings{Server: DefaultServer, Enc: "libx264", Bitrate: "4M"}}
+	c := &config{path: path, settings: defaults()}
 	b, err := os.ReadFile(path)
 	if err == nil {
 		err = json.Unmarshal(b, c)
@@ -93,22 +93,45 @@ func loadConfig(path string) (*config, error) {
 // reload — под c.mu перед правкой: файл с диска (его мог изменить ключ CLI при запущенной программе), иначе
 // запись целиком откатила бы чужую правку. Файл не читается — остаётся то, что в памяти.
 func (c *config) reload() {
-	var f settings
+	f := defaults() // поля, которых нет в файле, — как при запуске (loadConfig), а не пустые
 	if b, err := os.ReadFile(c.path); err == nil && json.Unmarshal(b, &f) == nil && hub.IsHostID(f.ID) {
 		c.settings = f
 	}
 }
 
+// defaults — настройки до чтения файла.
+func defaults() settings { return settings{Server: DefaultServer, Enc: "libx264", Bitrate: "4M"} }
+
+// save — через временный файл со своим именем (CreateTemp, 0600) и rename: CLI и запущенная программа могут писать
+// одновременно, общий .tmp давал ошибки и битый файл.
 func (c *config) save() error {
 	b, _ := json.MarshalIndent(c, "", "  ")
 	if err := os.MkdirAll(filepath.Dir(c.path), 0o700); err != nil {
 		return err
 	}
-	tmp := c.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	f, err := os.CreateTemp(filepath.Dir(c.path), filepath.Base(c.path)+".*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, c.path)
+	_, err = f.Write(b)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(f.Name(), c.path)
+	}
+	if err != nil {
+		os.Remove(f.Name())
+	}
+	return err
+}
+
+// viewNow — «Только показ экрана» по файлу (его мог включить ключ CLI при запущенной программе).
+func (c *config) viewNow() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reload()
+	return c.View
 }
 
 func (c *config) setPassword(p string) error {
