@@ -201,3 +201,35 @@ func TestConfigExternal(t *testing.T) {
 		t.Fatal("правка CLI откатилась")
 	}
 }
+
+// TestOTPReplay — боевая защита от повтора (config.otp, приёмка Д6): из 50 параллельных входов одним кодом принят
+// один; после перезапуска тот же код и код более раннего шага — отказ.
+func TestOTPReplay(t *testing.T) {
+	c, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
+	sec := totp.NewSecret()
+	setup, _ := totp.Code(sec, time.Now().Add(-30*time.Second))
+	if err := c.otpEnable(sec, setup); err != nil {
+		t.Fatal(err)
+	}
+	code, _ := totp.Code(sec, time.Now())
+	res := make(chan bool, 50)
+	for range 50 {
+		go func() { _, ok := c.otp(code); res <- ok }()
+	}
+	n := 0
+	for range 50 {
+		if <-res {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("один код принят %d раз из 50", n)
+	}
+	c2, _ := loadConfig(c.path)
+	if _, ok := c2.otp(code); ok {
+		t.Fatal("после перезапуска тот же код принят")
+	}
+	if _, ok := c2.otp(setup); ok {
+		t.Fatal("код более раннего шага принят")
+	}
+}
