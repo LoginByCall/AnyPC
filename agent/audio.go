@@ -108,7 +108,7 @@ func (a *Agent) AudioMic(on bool) {
 	if s.closeInd == nil || s.gone.Load() {
 		return
 	}
-	closeNew, err := showIndicator(s.cid, s.plaque(), a.userClose(s))
+	closeNew, err := showIndicator(s.label(), s.plaque(), a.userClose(s))
 	if err != nil { // REQ-S-08
 		log.Printf("плашка сессии (микрофон): %v — сессия закрыта", err)
 		s.pc.Close()

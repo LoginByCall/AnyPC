@@ -135,7 +135,7 @@ func TestCLI(t *testing.T) {
 		t.Errorf("--password-stdin: %v %q", err, out)
 	}
 	cfg, err := loadConfig(filepath.Join(home, ".config", "AnyPC", "config.json"))
-	if err != nil || !cfg.hasPass() || !bytes.Equal(cfg.Hash, pake.KDF("secret123", cfg.Salt)) {
+	if err != nil || !cfg.hasPass() || !bytes.Equal(cfg.Users[0].Hash, pake.KDF("secret123", cfg.Users[0].Salt)) {
 		t.Errorf("пароль не записан: %v", err)
 	}
 	cli := func(args ...string) (string, error) {
@@ -143,6 +143,40 @@ func TestCLI(t *testing.T) {
 		c.Env = append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+home+"/.config", "XDG_CACHE_HOME="+home+"/.cache")
 		out, err := c.CombinedOutput()
 		return string(out), err
+	}
+	{ // учётные записи (REQ-S-20): --user имя --password-stdin [--rights], список в --status, --user-del
+		user := func(in string, args ...string) (string, error) {
+			c := exec.Command(bin, append([]string{"--password-stdin"}, args...)...)
+			c.Env = append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+home+"/.config", "XDG_CACHE_HOME="+home+"/.cache")
+			c.Stdin = strings.NewReader(in)
+			out, err := c.CombinedOutput()
+			return string(out), err
+		}
+		if out, err := user("olga-pass1\n", "--user", "Olga", "--rights", "admin"); err == nil {
+			t.Errorf("--rights admin принят: %q", out)
+		}
+		if out, err := user("olga-pass1\n", "--user", "a\tb"); err == nil {
+			t.Errorf("имя с табуляцией принято: %q", out)
+		}
+		if out, err := user("olga-pass1\n", "--user", "Olga", "--rights", "view"); err != nil || !strings.Contains(out, "olga (view)") {
+			t.Errorf("--user: %v %q", err, out)
+		}
+		c, _ := loadConfig(filepath.Join(home, ".config", "AnyPC", "config.json"))
+		if s, h, v := c.secret("olga"); !v || !bytes.Equal(h, pake.KDF("olga-pass1", s)) || !c.hasPass() {
+			t.Error("запись olga не записана или затёрла пароль по умолчанию")
+		}
+		if out, _ := cli("--status"); !strings.Contains(out, "  olga: view, TOTP: нет") {
+			t.Errorf("--status без записи: %q", out)
+		}
+		if out, err := cli("--user-del", " "); err == nil {
+			t.Errorf("--user-del без имени: %q", out)
+		}
+		if out, err := cli("--user-del", "OLGA"); err != nil {
+			t.Errorf("--user-del: %v %q", err, out)
+		}
+		if out, _ := cli("--status"); !strings.Contains(out, "(кроме по умолчанию): нет") {
+			t.Errorf("--status после удаления: %q", out)
+		}
 	}
 	if out, err := cli("--confirm", "maybe"); err == nil {
 		t.Errorf("--confirm maybe принят: %q", out)

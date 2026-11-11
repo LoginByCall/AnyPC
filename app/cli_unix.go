@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 
+	"anypc/agent"
 	"anypc/totp"
 )
 
@@ -24,6 +25,9 @@ var (
 	cliStatus    = flag.Bool("status", false, "напечатать настройки и состояние автозапуска и выйти")
 	cliInstall   = flag.Bool("install-service", false, "автозапуск при входе в графический сеанс (Linux: systemd --user, macOS: LaunchAgent) и выйти")
 	cliUninstall = flag.Bool("uninstall-service", false, "убрать автозапуск и выйти")
+	cliUser      = flag.String("user", "", "вместе с --password-stdin: учётная запись входа (имя; нет — добавить, есть — сменить пароль и права)")
+	cliRights    = flag.String("rights", "full", "вместе с --user: права записи — full (управление) или view (только просмотр)")
+	cliUserDel   = flag.String("user-del", "", "удалить учётную запись входа (запись по умолчанию не удаляется) и выйти")
 )
 
 // runCLI выполняет ключ настройки; done — ключ был, программа должна выйти.
@@ -59,6 +63,11 @@ func runCLI(cfg *config) (done bool, err error) {
 			return true, fmt.Errorf("--node: %w", err)
 		}
 		fmt.Println("сигнализация:", s, restartHint)
+	case *cliUserDel != "":
+		if err := cfg.delUser(*cliUserDel); err != nil {
+			return true, fmt.Errorf("--user-del: %w", err)
+		}
+		fmt.Println("учётная запись удалена:", agent.UserKey(*cliUserDel))
 	case *cliStatus:
 		node, public := cfg.node()
 		if node == "" {
@@ -66,6 +75,15 @@ func runCLI(cfg *config) (done bool, err error) {
 		}
 		fmt.Printf("AnyPC %s\nID: %s\nКлюч хоста: %s\nПароль задан: %s\nОкно «Разрешить»: %s\nВторой фактор (TOTP): %s\nТолько показ экрана: %s\nУзел: %s (хабы AnyPC запасными: %s)\nАвтозапуск: %s\n",
 			version, cfg.ID, cfg.fingerprint(), yesNo(cfg.hasPass()), onOff(cfg.confirm() || !cfg.otpSet()), yesNo(cfg.otpSet()), onOff(cfg.viewOnly()), node, yesNo(public), serviceState())
+		fmt.Print("Учётные записи (кроме по умолчанию):")
+		us := cfg.users()
+		if len(us) == 0 {
+			fmt.Print(" нет")
+		}
+		fmt.Println()
+		for _, u := range us {
+			fmt.Printf("  %s: %s, TOTP: %s\n", u["name"], map[bool]string{true: "view", false: "full"}[u["view"] == true], yesNo(u["otp"] == true))
+		}
 	case *cliInstall:
 		exe, err := os.Executable()
 		if err != nil {
@@ -98,7 +116,7 @@ func otpSetup(cfg *config, in io.Reader) error {
 	fmt.Printf("Вход без подтверждения — только со вторым фактором (TOTP). Отсканируйте QR приложением-аутентификатором\n"+
 		"(Google Authenticator, Aegis…) или введите ключ вручную.\n\n%s\n%s\nКлюч: %s\n\nКод из приложения (6 цифр): ", q, u, sec)
 	line, _ := bufio.NewReader(in).ReadString('\n')
-	if err := cfg.otpEnable(sec, strings.TrimSpace(line)); err != nil {
+	if err := cfg.otpEnable(sec, strings.TrimSpace(line), ""); err != nil {
 		if errors.Is(err, errBadCode) {
 			return errors.New("код неверный — вход без подтверждения не включён (проверьте время на телефоне и повторите)")
 		}
