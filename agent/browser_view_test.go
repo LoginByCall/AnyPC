@@ -116,7 +116,7 @@ func TestBrowserView(t *testing.T) {
 	}
 	go a.Run(ctx)
 	out := string(runCDP(t, ctx, chrome, cdpVisual, srv.URL+"/"))
-	for _, want := range []string{"tour_home=true", "tour_sess=true", "help=true sections=9", "help_link=site", "session=true", "ring=true cnt=6", "view_session=true",
+	for _, want := range []string{"tour_home=true", "tour_sess=true", "help=true sections=10", "help_link=site", "session=true", "ring=true cnt=6", "view_session=true",
 		"view_body=true keys_btn=false fsend=false clipbtn=false", "view only", "view.bin | ✗ View only: files are not sent"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("нет %q", want)
