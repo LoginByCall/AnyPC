@@ -1,8 +1,10 @@
 package hub
 
 import (
+	"bufio"
 	"cmp"
 	"log"
+	"net"
 	"net/http"
 	"net/netip"
 	"time"
@@ -30,8 +32,45 @@ const (
 	NewClientBurst, NewClientRate = 60, 1 // новых клиентских WS с адреса (IPv4, /64; /48 — ×10): всплеск, в секунду; сверх — 429 до Upgrade
 	ConnsPerIP                    = 100   // соединений с адреса IPv4 или /64 (офис, школа, CGNAT); сверх — 429 до Upgrade
 	ConnsPer48                    = 1000  // соединений с /48 (у владельца /48 — 65 536 разных /64)
-	MaxConnsDefault               = 5000  // всех соединений (≈55 КБ на WS по TLS → ≈280 МБ); сверх — 503
+	MaxConnsDefault               = 5000  // всех соединений, верхняя граница ConnsFor; сверх — 503
+	// ConnMem — бюджет памяти на соединение под атакой (Д1″ приёмки-6): ≈55–67 КБ памяти Go на WS (стеки 3 горутин,
+	// bufio, TLS) плюс буферы ядра (RcvBuf, SndBuf — по 64 КБ) и мусор сборщика. 5000 WS в 574 МиБ (MemoryMax=60 %
+	// VPS 1 ГБ) не помещались: OOM по TLS, на медленном ядре, с простаивающими HTTP. Подобрано по самому тяжёлому
+	// опыту — встречный поток (хосты атакующего шлют 26 КБ/с своим клиентам, те читают 16 КБ/с) на ядре E 4,4 ГГц
+	// по TLS: 2000 соединений — жив 200 с (пик 527 МиБ), 2400 — OOM на 49-й с, 2937 (200 КБ) — на 21-й.
+	ConnMem  = 300 << 10
+	MinConns = 200 // нижняя граница ConnsFor: узел с малой памятью всё же обслуживает сигнализацию
 )
+
+// SndBuf — буфер отправки ядра у захваченного WS (как в hub-queue, Д2 приёмки-4). По умолчанию ядро растит его до
+// мегабайт на сокет, и под встречным потоком (хосты атакующего шлют своим медленным клиентам) буферы отправки — вне
+// предела Go — съедали ≈140 МиБ из 574 (приёмка-6, опыт conncap). 32 КБ (ядро удваивает): сигнализации хватает
+// (≈200 КБ/с при RTT 300 мс); загрузки и страница — не WS, их буфер не трогаем.
+const SndBuf = 32 << 10
+
+// sndWriter ставит SndBuf соединению, которое websocket.Accept получает через Hijack: TCP напрямую или под TLS
+// (NetConn), в том числе обёртка лимита TCP у server — у неё тот же метод SetWriteBuffer.
+type sndWriter struct{ http.ResponseWriter }
+
+func (w sndWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	c, brw, err := http.NewResponseController(w.ResponseWriter).Hijack()
+	if err != nil {
+		return nil, nil, err
+	}
+	raw := c
+	if t, ok := raw.(interface{ NetConn() net.Conn }); ok { // *tls.Conn на боевом сервере
+		raw = t.NetConn()
+	}
+	if t, ok := raw.(interface{ SetWriteBuffer(int) error }); ok {
+		t.SetWriteBuffer(SndBuf)
+	}
+	return c, brw, nil
+}
+
+// ConnsFor — потолок соединений сигнализации для бюджета памяти budget (байт): budget / ConnMem в [MinConns, MaxConnsDefault].
+func ConnsFor(budget int64) int {
+	return int(min(max(budget/ConnMem, MinConns), MaxConnsDefault))
+}
 
 // maxSize — потолок сообщения клиента по типу (законные: ice ≤ 268 Б, answer 5–6 КБ). Сверх — как превышение лимита.
 // Без него сообщение под REQ-S-07 (64 КБ) плюс from от хаба не влезало в буфер чтения хоста (agent: 64 КБ) —
@@ -84,6 +123,25 @@ type limKey struct {
 	key string
 	max int
 }
+
+// AddrKey — ключ лимита «на адрес» для server (TCP, тяжёлые ответы) и множитель его доли: IPv4 и /64 — 1, /48 — 10,
+// как у соединений хаба (limKeys).
+type AddrKey struct {
+	Key string
+	Mul int
+}
+
+// AddrKeys — ключи лимитов «на адрес» для a; loopback и частные — nil (свой узел за прокси видит всех с одного адреса).
+func AddrKeys(a netip.Addr) []AddrKey {
+	var r []AddrKey
+	for _, k := range limKeys(a) {
+		r = append(r, AddrKey{k.key, k.max / ConnsPerIP})
+	}
+	return r
+}
+
+// ClientAddr — адрес клиента запроса, как для лимитов хаба (X-Forwarded-For — только от loopback).
+func ClientAddr(r *http.Request) netip.Addr { return clientAddr(r) }
 
 // limKeys — по каким счётчикам считать соединение с адреса a: IPv4 — адрес, IPv6 — /64 и /48.
 func limKeys(a netip.Addr) []limKey {
