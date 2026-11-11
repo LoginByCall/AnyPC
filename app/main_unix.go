@@ -77,16 +77,29 @@ func main() {
 		}
 		return
 	}
-	if *pwStdin {
+	if *pwStdin { // с --user — пароль и права учётной записи (REQ-S-20), иначе — записи по умолчанию
+		named := false // --user задан (и пустым: пустое имя — отказ, а не пароль по умолчанию)
+		flag.Visit(func(f *flag.Flag) { named = named || f.Name == "user" })
+		if *cliRights != "" && *cliRights != "full" && *cliRights != "view" {
+			fmt.Fprintln(os.Stderr, "--rights: full или view")
+			os.Exit(1)
+		}
 		p, err := readPassword(os.Stdin)
-		if err == nil {
+		if err == nil && named {
+			err = cfg.setUser(*cliUser, p, *cliRights)
+		} else if err == nil {
 			err = cfg.setPassword(p)
 		}
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "пароль:", err)
 			os.Exit(1)
 		}
-		fmt.Println("пароль задан; если AnyPC уже запущен — перезапустите его")
+		if !named {
+			fmt.Println("пароль задан; запущенный AnyPC подхватит его за 2 с")
+			return
+		}
+		_, _, view := cfg.secret(agent.UserKey(*cliUser))
+		fmt.Printf("учётная запись %s (%s) задана; запущенный AnyPC подхватит её за 2 с\n", agent.UserKey(*cliUser), map[bool]string{true: "view", false: "full"}[view])
 		return
 	}
 	if !cfg.confirm() && !cfg.otpSet() { // хост обновлён с выключенным подтверждением: без TOTP — снова окно «Разрешить»
@@ -111,7 +124,7 @@ func main() {
 		node, pub := cfg.node()
 		mu.Lock()
 		defer mu.Unlock()
-		return map[string]any{"id": cfg.id(), "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "otp": cfg.otpSet(), "viewOnly": cfg.viewOnly(), "version": version, "update": update, "node": node, "nodePub": pub, "server": cfg.server(), "audio": audioInfo(a)}
+		return map[string]any{"id": cfg.id(), "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "otp": cfg.otpSet(), "users": cfg.users(), "viewOnly": cfg.viewOnly(), "version": version, "update": update, "node": node, "nodePub": pub, "server": cfg.server(), "audio": audioInfo(a)}
 	}
 	go watchUpdates(func(v string) { mu.Lock(); update = v; mu.Unlock() })
 
@@ -146,9 +159,7 @@ func main() {
 	srv := cfg.Server
 	go func() { // --view-only on при запущенной программе: вошедшая сессия с полным доступом рвётся (REQ-F-25)
 		for range time.Tick(2 * time.Second) {
-			if cfg.viewNow() {
-				a.DisconnectFull()
-			}
+			pollConfig(cfg, a)
 		}
 	}()
 	run.start(srv) // настройки дальше — только под c.mu (опрос выше их перечитывает)
@@ -219,7 +230,7 @@ window.ANYPC = {ws: %s, clipPoll: %t};
   const T = %s;
   const api = (n, ...a) => fetch('/api/' + n, {method: 'POST', headers: {'X-Token': T, 'Content-Type': 'application/json'}, body: JSON.stringify(a)})
     .then(async r => { const j = await r.json(); if (!r.ok) throw j.error; return j.result; });
-  for (const n of ['hostInfo', 'setPassword', 'setConfirm', 'setNode', 'quit', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'hostVerify', 'knownGet', 'knownSet', 'savedGet', 'savedSet', 'otpNew', 'otpEnable', 'setViewOnly', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort', 'audioAnswer', 'audioMic']) window[n] = (...a) => api(n, ...a);
+  for (const n of ['hostInfo', 'setPassword', 'setConfirm', 'setNode', 'quit', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'hostVerify', 'knownGet', 'knownSet', 'savedGet', 'savedSet', 'otpNew', 'otpEnable', 'otpOff', 'userSet', 'userDel', 'setViewOnly', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort', 'audioAnswer', 'audioMic']) window[n] = (...a) => api(n, ...a);
   window.fullscreen = on => on ? document.documentElement.requestFullscreen().then(() => navigator.keyboard?.lock()).catch(() => {})
                                : document.fullscreenElement && document.exitFullscreen();
 })();
@@ -273,7 +284,7 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 		}
 		a.AudioMic(on)
 	case "setPassword":
-		err = cfg.setPassword(str(0))
+		err = dropAfter(a, cfg.setPassword(str(0)))
 	case "setConfirm":
 		var on bool
 		if len(args) > 0 {
@@ -312,9 +323,15 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 		}
 		err = setViewOnly(cfg, a, on)
 	case "otpNew":
-		res, err = cfg.otpNew()
+		res, err = cfg.otpNew(str(0))
 	case "otpEnable":
-		err = cfg.otpEnable(str(0), str(1))
+		err = cfg.otpEnable(str(0), str(1), str(2))
+	case "otpOff":
+		err = cfg.otpOff(str(0))
+	case "userSet":
+		err = dropAfter(a, cfg.setUser(str(0), str(1), str(2))) // сменили пароль или сузили права — её сессия рвётся
+	case "userDel":
+		err = dropAfter(a, cfg.delUser(str(0)))
 	case "pakeRespond":
 		res, err = pake.ClientRespondB64(str(0), str(1), str(2), str(3), str(4), str(5))
 	default:

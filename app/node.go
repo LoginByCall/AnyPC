@@ -93,6 +93,26 @@ func (c *config) setServer(s string) error {
 }
 
 // setViewOnly — галочка «Только показ экрана» из окна: при включении идущая сессия с полным доступом рвётся.
+// dropAfter — правка записей удалась: сессия записи, которую удалили, сменили пароль или сузили права, рвётся.
+func dropAfter(a *agent.Agent, err error) error {
+	if err == nil {
+		dropRevoked(a)
+	}
+	return err
+}
+
+// dropRevoked — agent.DropRevoked; переменная — тесты проверяют, что окно и опрос её зовут.
+var dropRevoked = (*agent.Agent).DropRevoked
+
+// pollConfig — опрос настроек раз в 2 с (Linux/Mac): правку ключом CLI при запущенной программе видно сразу —
+// «Только показ экрана» рвёт сессию с полным доступом (REQ-F-25), --user / --user-del — сессию отозванной записи.
+func pollConfig(cfg *config, a *agent.Agent) {
+	if cfg.viewNow() { // перечитывает файл целиком
+		a.DisconnectFull()
+	}
+	dropRevoked(a)
+}
+
 func setViewOnly(cfg *config, a *agent.Agent, on bool) error {
 	err := cfg.setViewOnly(on)
 	if err == nil && on {

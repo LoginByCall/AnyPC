@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
@@ -34,7 +35,13 @@ var salt = []byte("0123456789abcdef")
 func newAgent(url, id string, ff []string) *Agent {
 	secret := pake.KDF("secret123", salt)
 	_, key, _ := ed25519.GenerateKey(nil)
-	return &Agent{Server: url, ID: id, Secret: func() ([]byte, []byte) { return salt, secret }, Key: key, FF: ff, FPS: 30}
+	secretOf := func(u string) ([]byte, []byte, bool) { // одна запись — по умолчанию
+		if u != "" {
+			return nil, nil, false
+		}
+		return salt, secret, false
+	}
+	return &Agent{Server: url, ID: id, Secret: secretOf, Key: key, FF: ff, FPS: 30}
 }
 
 func local(t *testing.T) string {
@@ -368,6 +375,20 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 				}
 				switch am.T {
 				case "a":
+					if e2eUser != "" && am.User == "" { // как ui/index.html: запись по имени — первое "a" (по умолчанию) не для нас
+						if !am.Users {
+							t.Error("хост не объявил users в первом a")
+						}
+						out, _ := json.Marshal(authMsg{T: "a", User: e2eUser})
+						dc.Send(out)
+						if e2eTwice {
+							dc.Send(out)
+						}
+						return
+					}
+					if am.User != e2eUser {
+						t.Errorf("ответ хоста на имя %q, а не %q", am.User, e2eUser)
+					}
 					b, conf, hc, err := pake.ClientRespond(pass, am.Salt, am.Msg, id,
 						pake.Fingerprint(pc.LocalDescription().SDP), pake.Fingerprint(pc.RemoteDescription().SDP))
 					if err != nil {
@@ -456,7 +477,8 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 	case <-ctx.Done():
 		t.Fatal("вход не завершился за 20 с")
 	}
-	if pass != "secret123" || e2eDeny || e2eKey == "bad" || e2eFail { // ошибочный путь: отказ и никакого видео
+	good := cmp.Or(e2eGood, "secret123")
+	if pass != good || e2eDeny || e2eKey == "bad" || e2eFail { // ошибочный путь: отказ и никакого видео
 		if ok {
 			t.Fatal("неверный пароль принят или отказ на хосте не сработал")
 		}
@@ -528,17 +550,38 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 	}
 }
 
-func TestLockout(t *testing.T) { // REQ-S-04: 5 неудачных входов → новые подключения отклоняются
+// TestLockout — REQ-S-04, S-22: 5 неудач одного имени запирают его, а не другие имена и не хост; массовый перебор
+// имён (hostLockAt по хосту) — новые подключения отклоняются; успех сбрасывает общий и свой счётчик, не чужой.
+func TestLockout(t *testing.T) {
 	ctx := context.Background()
 	c, _, _ := websocket.Dial(ctx, local(t), nil)
 	defer c.CloseNow()
 	a := newAgent("", "", nil)
-	for i := 0; i < 5; i++ {
-		a.authResult("c1", false)
+	for range 5 {
+		a.authResult("c1", "", false)
+	}
+	now := time.Now()
+	if f, l := nlock(a, ""); f != 5 || l < 50*time.Second || !a.pwLocked("", now) || a.pwLocked("ivan", now) || a.pwLocked("nobody", now) {
+		t.Fatalf("имя: неудач %d, блокировка %v; ivan заперт %v", f, l, a.pwLocked("ivan", now))
+	}
+	for i := range hostLockAt - 5 { // по одной неудаче на имя — ни одно не заперто, но хост — да
+		a.authResult("c1", fmt.Sprint("u", i), false)
+	}
+	if f, _ := nlock(a, "u0"); f != 1 || !a.pwLocked("ivan", time.Now()) {
+		t.Fatalf("массовый перебор: u0 %d, ivan не заперт", f)
 	}
 	a.onConnect(ctx, c, hub.Msg{From: "c000000000001"})
 	if a.sess != nil || len(a.pend) > 0 || time.Until(a.lockUntil) < 50*time.Second {
 		t.Fatalf("блокировка не сработала: sess=%v lock=%v", a.sess, a.lockUntil)
+	}
+	a.authResult("c1", "ivan", true) // успех сбрасывает только счёт своего имени (приёмка Д2)
+	if a.fails != hostLockAt || a.names[""] == nil || a.names["u0"] == nil {
+		t.Fatalf("успех ivan сбросил общий (%d) или чужой счётчик", a.fails)
+	}
+	a.lockUntil, a.failAt = time.Now().Add(-2*hostForget), time.Now().Add(-3*hostForget) // час тишины после блокировки
+	a.authResult("c1", "u1", false)
+	if a.fails != 1 {
+		t.Fatalf("общий счётчик не забылся после тишины: %d", a.fails)
 	}
 }
 
@@ -618,6 +661,9 @@ var (
 	e2eOTP     func(n int) string       // код TOTP на n-й запрос хоста; "" — не отвечать
 	e2eSeen    func(authMsg)            // каждое сообщение auth от хоста
 	e2eFail    bool                     // ожидать отказ во входе (TOTP)
+	e2eUser    string                   // имя учётной записи клиента (REQ-S-20); "" — как старый клиент: запись по умолчанию
+	e2eGood    string                   // верный пароль для e2eUser; "" — secret123
+	e2eTwice   bool                     // назвать имя дважды (хост обязан оборвать вход)
 	e2eInput   func(*testing.T, *Agent) // после нажатия ControlLeft клиентом, до bye
 )
 
@@ -652,8 +698,8 @@ func TestTrustedLocked(t *testing.T) {
 	var trusted atomic.Bool
 	e2eAgent = func(a *Agent) {
 		a.fails, a.lockUntil = 9, time.Now().Add(time.Hour)
-		a.Trusted = func(p []byte) bool { return trusted.Load() && bytes.Equal(p, pub) }
-		a.Trust = func(p []byte) { trusted.Store(bytes.Equal(p, pub)) }
+		a.Trusted = func(p []byte, _ string) bool { return trusted.Load() && bytes.Equal(p, pub) }
+		a.Trust = func(p []byte, _ string) { trusted.Store(bytes.Equal(p, pub)) }
 	}
 	defer func() { e2eAgent, e2eKey = nil, "" }()
 	trusted.Store(true)
@@ -666,7 +712,7 @@ func TestTrustedLocked(t *testing.T) {
 // TestTrustEnroll — верный пароль с подписью ключа закрепляет ключ; неверный — нет.
 func TestTrustEnroll(t *testing.T) {
 	var got atomic.Bool
-	e2eAgent = func(a *Agent) { a.Trust = func([]byte) { got.Store(true) } }
+	e2eAgent = func(a *Agent) { a.Trust = func([]byte, string) { got.Store(true) } }
 	defer func() { e2eAgent, e2eKey = nil, "" }()
 	e2eKey = "ok"
 	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000}), "wrong-pass")
@@ -885,7 +931,7 @@ func TestTrustDenied(t *testing.T) {
 	answer := Deny
 	e2eAgent = func(a *Agent) {
 		a.Confirm = func(string, string) Answer { return answer }
-		a.Trust = func([]byte) { pinned.Store(true) }
+		a.Trust = func([]byte, string) { pinned.Store(true) }
 	}
 	defer func() { e2eAgent, e2eDeny, e2eKey = nil, false, "" }()
 	e2eDeny, e2eKey = true, "ok"

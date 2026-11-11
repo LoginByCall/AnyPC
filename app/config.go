@@ -6,21 +6,31 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 
+	"anypc/agent"
 	"anypc/hub"
 	"anypc/pake"
 	"anypc/totp"
 )
 
-// account — учётная запись входа. Пока одна (по умолчанию): второй фактор входа без подтверждения (PLAN.md «TOTP»).
+// account — учётная запись входа (REQ-S-20). Name "" — запись по умолчанию: пароль из окна, ею входит клиент без имени.
 type account struct {
-	TOTP     string `json:"totp,omitempty"`      // секрет TOTP, base32 без '=' (файл настроек — 0600, как хэш пароля)
-	TOTPStep int64  `json:"totp_step,omitempty"` // шаг последнего принятого кода: тот же и более ранний — повтор, отказ
+	Name     string   `json:"name,omitempty"`      // agent.UserKey: строчными, без пробелов по краям
+	Salt     []byte   `json:"salt,omitempty"`      //
+	Hash     []byte   `json:"hash,omitempty"`      // Argon2id (REQ-S-03); сам пароль не хранится
+	View     bool     `json:"view,omitempty"`      // права «просмотр» (REQ-F-20); иначе полный доступ
+	TOTP     string   `json:"totp,omitempty"`      // секрет TOTP, base32 без '=' (файл настроек — 0600, как хэш пароля)
+	TOTPStep int64    `json:"totp_step,omitempty"` // шаг последнего принятого кода: тот же и более ранний — повтор, отказ
+	Trusted  [][]byte `json:"trusted,omitempty"`   // У3: ключи клиентов, входивших этой записью (старые — в начале); сброс при смене пароля
 }
 
 // config — %APPDATA%\AnyPC\config.json. Enc/Bitrate/Server правятся вручную при необходимости.
@@ -34,17 +44,33 @@ type config struct {
 type settings struct {
 	ID      string            `json:"id"`
 	Server  string            `json:"server"`
-	Enc     string            `json:"enc"`     // кодер H.264 в ffmpeg: libx264 | h264_nvenc | h264_qsv | h264_amf | h264_mf (VP9 выбирает клиент — «Турбо»)
-	Bitrate string            `json:"bitrate"` // ffmpeg: 4M, 1500k…
-	Salt    []byte            `json:"salt,omitempty"`
-	Hash    []byte            `json:"hash,omitempty"`      // Argon2id (REQ-S-03); сам пароль не хранится
+	Enc     string            `json:"enc"`                 // кодер H.264 в ffmpeg: libx264 | h264_nvenc | h264_qsv | h264_amf | h264_mf (VP9 выбирает клиент — «Турбо»)
+	Bitrate string            `json:"bitrate"`             // ffmpeg: 4M, 1500k…
+	Users   []account         `json:"users,omitempty"`     // учётные записи (REQ-S-20); [0] — по умолчанию (Name "")
 	Key     []byte            `json:"key"`                 // Ed25519 ключ хоста (REQ-F-01); не покидает ПК
 	Known   map[string]string `json:"known,omitempty"`     // ID удалённого ПК → отпечаток его ключа (TOFU, REQ-S-05)
 	Confirm *bool             `json:"confirm"`             // REQ-F-03: окно «Разрешить / Отклонить» на каждое подключение
-	Trusted [][]byte          `json:"trusted,omitempty"`   // У3: ключи клиентов, входивших по паролю (старые — в начале); сброс при смене пароля
-	Account account           `json:"account,omitzero"`    // учётная запись по умолчанию (PLAN.md: с учётными записями сюда переедут Salt/Hash)
 	Saved   map[string]string `json:"saved,omitempty"`     // ID удалённого ПК → запомненный пароль («Запомнить пароль» на управляющем ПК)
 	View    bool              `json:"view_only,omitempty"` // «Только показ экрана»: каждая входящая сессия — только просмотр (REQ-F-20)
+	// До учётных записей (v0.1.19 и раньше) запись была одна: Salt/Hash, Trusted и account. Читаются и переезжают
+	// в Users[0] (migrate), в файл больше не пишутся.
+	Salt    []byte   `json:"salt,omitempty"`
+	Hash    []byte   `json:"hash,omitempty"`
+	Trusted [][]byte `json:"trusted,omitempty"`
+	Account account  `json:"account,omitzero"`
+}
+
+// migrate — старый файл (одна запись в Salt/Hash, trusted, account) → Users[0] без потери пароля, ключей и TOTP;
+// новый — Users[0] по умолчанию есть всегда. true — настройки изменились.
+func (s *settings) migrate() bool {
+	if len(s.Users) > 0 && s.Users[0].Name == "" && len(s.Hash) == 0 && s.Trusted == nil && s.Account.TOTP == "" {
+		return false
+	}
+	def := account{Salt: s.Salt, Hash: s.Hash, TOTP: s.Account.TOTP, TOTPStep: s.Account.TOTPStep, Trusted: s.Trusted}
+	s.Users = slices.DeleteFunc(s.Users, func(u account) bool { return u.Name == "" }) // правленный руками файл: одна по умолчанию
+	s.Users = append([]account{def}, s.Users...)
+	s.Salt, s.Hash, s.Trusted, s.Account = nil, nil, nil, account{}
+	return true
 }
 
 const (
@@ -81,8 +107,11 @@ func loadConfig(path string) (*config, error) {
 		c.Key, changed = k, true
 	}
 	if c.Confirm == nil { // старые установки с паролем работали без окна — не запереть ПК, у которого никого нет
-		v := len(c.Hash) == 0
+		v := len(c.Hash) == 0 && (len(c.Users) == 0 || len(c.Users[0].Hash) == 0)
 		c.Confirm, changed = &v, true
+	}
+	if c.migrate() {
+		changed = true
 	}
 	if changed {
 		return c, c.save()
@@ -96,6 +125,7 @@ func (c *config) reload() {
 	f := defaults() // поля, которых нет в файле, — как при запуске (loadConfig), а не пустые
 	// файл негодный (правлен руками: нет ID или ключа) — остаются прежние настройки
 	if b, err := os.ReadFile(c.path); err == nil && json.Unmarshal(b, &f) == nil && hub.IsHostID(f.ID) && len(f.Key) == ed25519.PrivateKeySize {
+		f.migrate() // старая версия могла записать файл по-своему (откат и снова обновление)
 		c.settings = f
 	}
 }
@@ -135,18 +165,97 @@ func (c *config) viewNow() bool {
 	return c.View
 }
 
-func (c *config) setPassword(p string) error {
+// setPassword — пароль записи по умолчанию (окно хоста, --password-stdin).
+func (c *config) setPassword(p string) error { return c.setAccount("", p, "full") }
+
+// maxUsers — учётных записей на хосте, кроме записи по умолчанию.
+const maxUsers = 32
+
+// validName — имя записи: 1–32 буквы, цифры, пробел и « . _ - @ » (в плашку, окно «Разрешить» и журнал — как есть).
+func validName(n string) bool {
+	r := []rune(n)
+	return len(r) >= 1 && len(r) <= 32 && !slices.ContainsFunc(r, func(c rune) bool {
+		return !unicode.IsLetter(c) && !unicode.IsDigit(c) && !strings.ContainsRune(" ._-@", c)
+	})
+}
+
+// user — запись по имени (agent.UserKey) под c.mu; nil — нет.
+func (c *config) user(name string) *account {
+	for i := range c.Users {
+		if c.Users[i].Name == name {
+			return &c.Users[i]
+		}
+	}
+	return nil
+}
+
+// setUser — добавить запись по имени или сменить её пароль и права (REQ-S-20); пустое имя — отказ (пароль по
+// умолчанию — setPassword). rights: "full" | "view" | "" — у существующей оставить, новой — «просмотр» (безопаснее).
+func (c *config) setUser(name, p, rights string) error {
+	if agent.UserKey(name) == "" {
+		return errors.New("имя не задано")
+	}
+	return c.setAccount(agent.UserKey(name), p, rights)
+}
+
+// setAccount — пароль и права записи name (UserKey; "" — по умолчанию, права у неё всегда полные). Новый пароль —
+// доверие ключам заново; TOTP записи остаётся.
+func (c *config) setAccount(name, p, rights string) error {
+	if name != "" && !validName(name) {
+		return errors.New("имя: 1–32 буквы, цифры, пробел и . _ - @")
+	}
+	if rights != "" && rights != "full" && rights != "view" {
+		return errors.New("права: full или view")
+	}
 	if len([]rune(p)) < 8 {
 		return errors.New("пароль короче 8 символов")
 	}
 	salt := make([]byte, 16)
 	rand.Read(salt)
+	hash := pake.KDF(p, salt)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
-	c.Salt, c.Hash = salt, pake.KDF(p, salt)
-	c.Trusted = nil // новый пароль — доверие заново
+	u := c.user(name)
+	switch {
+	case u != nil:
+	case len(c.Users[0].Hash) == 0:
+		return errors.New("сначала задайте пароль этого компьютера (запись по умолчанию)")
+	case len(c.Users) > maxUsers:
+		return fmt.Errorf("не больше %d учётных записей", maxUsers)
+	default:
+		c.Users = append(c.Users, account{Name: name, View: true}) // новая без явных прав — «просмотр»
+		u = &c.Users[len(c.Users)-1]
+	}
+	u.Salt, u.Hash, u.Trusted = salt, hash, nil
+	if rights != "" {
+		u.View = rights == "view" && name != ""
+	}
 	return c.save()
+}
+
+// delUser — удалить запись по имени; запись по умолчанию не удаляется.
+func (c *config) delUser(name string) error {
+	name = agent.UserKey(name)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reload()
+	if name == "" || c.user(name) == nil {
+		return errors.New("нет такой учётной записи")
+	}
+	c.Users = slices.DeleteFunc(c.Users, func(u account) bool { return u.Name == name })
+	return c.save()
+}
+
+// users — записи, кроме по умолчанию, для окна хоста и --status: имя, права, TOTP.
+func (c *config) users() []map[string]any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	l := []map[string]any{}
+	for _, u := range c.Users[1:] {
+		l = append(l, map[string]any{"name": u.Name, "view": u.View, "otp": u.TOTP != ""})
+	}
+	return l
 }
 
 func (c *config) confirm() bool {
@@ -160,12 +269,12 @@ func (c *config) setConfirm(on bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
-	if !on && c.Account.TOTP == "" {
+	if !on && c.Users[0].TOTP == "" {
 		return errors.New("вход без подтверждения — только со вторым фактором (TOTP)")
 	}
 	c.Confirm = &on
-	if on {
-		c.Account = account{}
+	if on { // TOTP записи по умолчанию; у остальных записей свой — остаётся (действует, когда подтверждение снова выключат)
+		c.Users[0].TOTP, c.Users[0].TOTPStep = "", 0
 	}
 	return c.save()
 }
@@ -173,9 +282,9 @@ func (c *config) setConfirm(on bool) error {
 // errBadCode — неверный код при настройке TOTP (окно показывает свой текст по этой метке).
 var errBadCode = errors.New("bad_code")
 
-// otpEnable — настройка TOTP: секрет сохраняется только с верным кодом из приложения, и вход без подтверждения
-// включается вместе с ним.
-func (c *config) otpEnable(secret, code string) error {
+// otpEnable — настройка TOTP записи user: секрет сохраняется только с верным кодом из приложения; у записи по
+// умолчанию вместе с ним включается и вход без подтверждения.
+func (c *config) otpEnable(secret, code, user string) error {
 	if !totp.Valid(secret) {
 		return errors.New("неверный секрет TOTP")
 	}
@@ -186,39 +295,65 @@ func (c *config) otpEnable(secret, code string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
-	off := false
-	c.Account, c.Confirm = account{TOTP: secret, TOTPStep: step}, &off // этот код уже не войдёт (повтор)
+	u := c.user(agent.UserKey(user))
+	if u == nil {
+		return errors.New("нет такой учётной записи")
+	}
+	u.TOTP, u.TOTPStep = secret, step // этот код уже не войдёт (повтор)
+	if u.Name == "" {
+		off := false
+		c.Confirm = &off
+	}
 	return c.save()
 }
 
-// otp — второй фактор для agent.Agent.OTP: set — секрет задан; ok — код верный и новее последнего принятого.
-func (c *config) otp(code string) (set, ok bool) {
+// otpOff — отключить TOTP записи (не по умолчанию: та отключается вместе с подтверждением, setConfirm(true)).
+func (c *config) otpOff(user string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
-	if c.Account.TOTP == "" {
+	u := c.user(agent.UserKey(user))
+	if u == nil || u.Name == "" {
+		return errors.New("нет такой учётной записи")
+	}
+	u.TOTP, u.TOTPStep = "", 0
+	return c.save()
+}
+
+// otp — второй фактор для agent.Agent.OTP: set — у записи задан секрет; ok — код верный и новее последнего принятого.
+func (c *config) otp(user, code string) (set, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reload()
+	u := c.user(user)
+	if u == nil || u.TOTP == "" {
 		return false, false
 	}
-	step, ok := totp.Check(c.Account.TOTP, code, time.Now(), c.Account.TOTPStep)
+	step, ok := totp.Check(u.TOTP, code, time.Now(), u.TOTPStep)
 	if ok {
-		c.Account.TOTPStep = step
+		u.TOTPStep = step
 		c.save()
 	}
 	return true, ok
 }
 
-// otpNew — новый секрет для окна настройки TOTP: ключ, otpauth-URI и QR (SVG). Сохраняется только otpEnable.
-func (c *config) otpNew() (map[string]string, error) {
-	sec := totp.NewSecret()
-	u := totp.URI(c.id(), sec)
+// otpNew — новый секрет для окна настройки TOTP записи user: ключ, otpauth-URI и QR (SVG). Сохраняется только
+// otpEnable. В приложении запись подписана ID и именем — у каждой записи своя.
+func (c *config) otpNew(user string) (map[string]string, error) {
+	sec, label := totp.NewSecret(), c.id()
+	if n := agent.UserKey(user); n != "" {
+		label += " " + n
+	}
+	u := totp.URI(url.PathEscape(label), sec)
 	svg, err := totp.SVG(u)
 	return map[string]string{"secret": sec, "uri": u, "svg": svg}, err
 }
 
+// otpSet — TOTP записи по умолчанию (вход без подтверждения).
 func (c *config) otpSet() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.Account.TOTP != ""
+	return c.Users[0].TOTP != ""
 }
 
 func (c *config) viewOnly() bool {
@@ -238,7 +373,7 @@ func (c *config) setViewOnly(on bool) error {
 func (c *config) hasPass() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return len(c.Hash) > 0
+	return len(c.Users[0].Hash) > 0
 }
 
 // key, id, server — под c.mu: reload (опрос раз в 2 с) меняет настройки на ходу.
@@ -313,27 +448,37 @@ func (c *config) savedSet(id, pw string) error {
 // maxTrusted — доверенных ключей клиентов; лишние — самые давние.
 const maxTrusted = 20
 
-func (c *config) trusted(pub []byte) bool {
+// trusted — ключ клиента закреплён за записью user (agent.AnyUser — за любой).
+func (c *config) trusted(pub []byte, user string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return slices.ContainsFunc(c.Trusted, func(k []byte) bool { return bytes.Equal(k, pub) })
+	return slices.ContainsFunc(c.Users, func(u account) bool {
+		return (user == agent.AnyUser || u.Name == user) && slices.ContainsFunc(u.Trusted, func(k []byte) bool { return bytes.Equal(k, pub) })
+	})
 }
 
-func (c *config) trust(pub []byte) {
+func (c *config) trust(pub []byte, user string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
-	c.Trusted = slices.DeleteFunc(c.Trusted, func(k []byte) bool { return bytes.Equal(k, pub) })
-	c.Trusted = append(c.Trusted, bytes.Clone(pub))
-	if n := len(c.Trusted) - maxTrusted; n > 0 {
-		c.Trusted = c.Trusted[n:]
+	u := c.user(user)
+	if u == nil { // запись удалили, пока шёл вход
+		return
+	}
+	u.Trusted = slices.DeleteFunc(u.Trusted, func(k []byte) bool { return bytes.Equal(k, pub) })
+	u.Trusted = append(u.Trusted, bytes.Clone(pub))
+	if n := len(u.Trusted) - maxTrusted; n > 0 {
+		u.Trusted = u.Trusted[n:]
 	}
 	c.save()
 }
 
-// secret — соль и KDF(пароль, соль) для CPace (agent.Agent.Secret).
-func (c *config) secret() (salt, hash []byte) {
+// secret — запись user для CPace (agent.Agent.Secret): соль, KDF(пароль, соль), права «просмотр»; нет — пустой hash.
+func (c *config) secret(user string) (salt, hash []byte, view bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.Salt, c.Hash
+	if u := c.user(user); u != nil {
+		return u.Salt, u.Hash, u.View
+	}
+	return nil, nil, false
 }
