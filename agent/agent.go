@@ -291,13 +291,14 @@ func (a *Agent) Disconnect() {
 	s.pc.Close()
 }
 
-// DisconnectFull — хост включил «Только показ экрана»: идущую сессию с полным доступом разорвать (новая войдёт
-// только просмотром); сессию «только просмотр» не трогать.
+// DisconnectFull — хост включил «Только показ экрана»: вошедшую сессию с полным доступом разорвать (новая войдёт
+// только просмотром); сессию «только просмотр» и ещё не вошедшую (шаг кода, окно «Разрешить») не трогать — accept
+// сам выставит ей просмотр.
 func (a *Agent) DisconnectFull() {
 	a.mu.Lock()
 	s := a.sess
 	a.mu.Unlock()
-	if s != nil && !s.view.Load() {
+	if s != nil && s.authed.Load() && !s.view.Load() {
 		log.Printf("сессия %s: включён «Только показ экрана» — разорвана", s.cid)
 		a.Disconnect()
 	}
@@ -1061,6 +1062,10 @@ func (a *Agent) accept(ctx context.Context, s *session, track *webrtc.TrackLocal
 		s.view.Store(true)
 	}
 	s.authed.Store(true)
+	// ещё раз после authed: галочку могли включить между проверкой выше и authed, а DisconnectFull не вошедшую не рвёт
+	if a.ViewOnly != nil && a.ViewOnly() {
+		s.view.Store(true)
+	}
 	if pin != nil && a.Trust != nil {
 		a.Trust(pin)
 	}

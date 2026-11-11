@@ -111,16 +111,9 @@ func main() {
 		node, pub := cfg.node()
 		mu.Lock()
 		defer mu.Unlock()
-		return map[string]any{"id": cfg.ID, "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "otp": cfg.otpSet(), "viewOnly": cfg.viewOnly(), "version": version, "update": update, "node": node, "nodePub": pub, "server": cfg.Server, "audio": audioInfo(a)}
+		return map[string]any{"id": cfg.id(), "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "otp": cfg.otpSet(), "viewOnly": cfg.viewOnly(), "version": version, "update": update, "node": node, "nodePub": pub, "server": cfg.server(), "audio": audioInfo(a)}
 	}
 	go watchUpdates(func(v string) { mu.Lock(); update = v; mu.Unlock() })
-	go func() { // --view-only on при запущенной программе: идущая сессия с полным доступом рвётся (REQ-F-25)
-		for range time.Tick(2 * time.Second) {
-			if cfg.viewNow() {
-				a.DisconnectFull()
-			}
-		}
-	}()
 
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -150,7 +143,15 @@ func main() {
 	if !*noBrowser { // аргументы браузера видны всем пользователям ПК (/proc/*/cmdline) — в них одноразовый код, не токен
 		openWindow("http://" + addr + "/?n=" + once.code)
 	}
-	run.start(cfg.Server)
+	srv := cfg.Server
+	go func() { // --view-only on при запущенной программе: вошедшая сессия с полным доступом рвётся (REQ-F-25)
+		for range time.Tick(2 * time.Second) {
+			if cfg.viewNow() {
+				a.DisconnectFull()
+			}
+		}
+	}()
+	run.start(srv) // настройки дальше — только под c.mu (опрос выше их перечитывает)
 	run.wait()
 }
 

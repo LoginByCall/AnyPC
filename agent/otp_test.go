@@ -321,3 +321,48 @@ func TestOTPLateCode(t *testing.T) {
 		t.Fatal("нет отказа по сроку")
 	}
 }
+
+// TestViewOnlyPending — регрессия (приёмка Б1): опрос «Только показ экрана» (DisconnectFull раз в 2 с) не рвёт
+// сессию, ещё не вошедшую — на шаге кода и при открытом окне «Разрешить»; после кода и «Разрешить» она входит
+// просмотром. Галочка, включённая между проверкой в accept и authed, тоже даёт просмотр.
+func TestViewOnlyPending(t *testing.T) {
+	o := &otpHost{secret: totp.NewSecret()}
+	var gotView atomic.Bool
+	var ag *Agent
+	e2eSeen = func(m authMsg) {
+		if m.T == "ok" {
+			gotView.Store(m.View)
+		}
+	}
+	defer func() { e2eAgent, e2eSeen, e2eOTP = nil, nil, nil }()
+	ff := FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000})
+	yes := func() bool { return true }
+
+	e2eAgent = func(a *Agent) { ag = a; a.OTP = o.check; a.ViewOnly = yes }
+	e2eOTP = func(int) string { ag.DisconnectFull(); time.Sleep(300 * time.Millisecond); return o.code() } // опрос на шаге кода
+	e2e(t, local(t), "123456789", false, ff, "secret123")
+	if !gotView.Load() {
+		t.Fatal("шаг кода: сессия вошла не просмотром")
+	}
+
+	e2eOTP = nil
+	e2eAgent = func(a *Agent) {
+		ag = a
+		a.ViewOnly = yes
+		a.Unattended = func() bool { return false }
+		a.Confirm = func(string, string) Answer { ag.DisconnectFull(); time.Sleep(300 * time.Millisecond); return Allow } // опрос при открытом окне
+	}
+	gotView.Store(false)
+	e2e(t, local(t), "123456789", false, ff, "secret123")
+	if !gotView.Load() {
+		t.Fatal("окно «Разрешить»: сессия вошла не просмотром")
+	}
+
+	var calls atomic.Int32 // галочку включили сразу после первой проверки в accept
+	e2eAgent = func(a *Agent) { a.ViewOnly = func() bool { return calls.Add(1) > 1 } }
+	gotView.Store(false)
+	e2e(t, local(t), "123456789", false, ff, "secret123")
+	if !gotView.Load() {
+		t.Fatal("галочка между проверкой и входом: полный доступ")
+	}
+}
