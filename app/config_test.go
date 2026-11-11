@@ -98,6 +98,7 @@ func TestTrusted(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := func(i int) []byte { return bytes.Repeat([]byte{byte(i)}, 32) }
+	passwordMode(t, c) // в режиме кода закреплений нет (TestCodeTrust)
 	for i := range maxTrusted + 2 {
 		c.trust(key(i), "")
 	}
@@ -464,5 +465,56 @@ func TestCodeConfig(t *testing.T) {
 	c.setConfirm(true)
 	if c.code() == "" || c.code() == stored || c.code() == before {
 		t.Fatalf("«Спрашивать» включили — код %q", c.code())
+	}
+}
+
+// passwordMode — режим без вопросов: TOTP записи по умолчанию (вход паролем, записи, закреплённые ключи).
+func passwordMode(t *testing.T, c *config) {
+	sec := totp.NewSecret()
+	code, _ := totp.Code(sec, time.Now())
+	if err := c.otpEnable(sec, code, ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestCodeTrust — приёмка otc Д1: в режиме кода ключи не закрепляются и закреплённые не действуют (иначе впущенный
+// однажды клиент перебирал бы следующие коды мимо блокировки); в режиме пароля — хранятся и действуют снова.
+func TestCodeTrust(t *testing.T) {
+	c, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
+	k, k2 := bytes.Repeat([]byte{7}, 32), bytes.Repeat([]byte{8}, 32)
+	c.trust(k, "") // вход кодом + «Разрешить»
+	if c.trusted(k, "") || c.trusted(k, agent.AnyUser) || len(c.Users[0].Trusted) != 0 {
+		t.Fatal("в режиме кода ключ закреплён")
+	}
+	passwordMode(t, c)
+	c.trust(k2, "")
+	if !c.trusted(k2, "") {
+		t.Fatal("в режиме пароля ключ не закреплён")
+	}
+	c.setConfirm(true)
+	if c.trusted(k2, "") || c.trusted(k2, agent.AnyUser) {
+		t.Fatal("в режиме кода действует ключ из режима пароля")
+	}
+}
+
+// TestCodeMode — выжившие мутации приёмки otc: хост после обновления с выключенным подтверждением без TOTP — режим
+// кода (он и так спрашивает «Разрешить»); код — 6 цифр из 10^6 (2000 кодов: почти все разные, все первые цифры).
+func TestCodeMode(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	os.WriteFile(p, []byte(`{"id":"123456789","salt":"AAAA","hash":"AAAA","confirm":false}`), 0o600)
+	c, _ := loadConfig(p)
+	if c.confirm() || !c.codeMode() || len(c.code()) != 6 {
+		t.Fatalf("без TOTP с выключенным подтверждением: режим кода %v, код %q", c.codeMode(), c.code())
+	}
+	seen, first := map[string]bool{}, map[byte]bool{}
+	for range 2000 {
+		s := randCode()
+		if len(s) != 6 || strings.Trim(s, "0123456789") != "" {
+			t.Fatalf("код %q", s)
+		}
+		seen[s], first[s[0]] = true, true
+	}
+	if len(seen) < 1980 || len(first) != 10 { // из 10^6 ожидаемо ≈2 совпадения; из 10^3 — сотни
+		t.Fatalf("разных кодов %d из 2000, первых цифр %d", len(seen), len(first))
 	}
 }

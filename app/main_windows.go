@@ -59,6 +59,7 @@ func main() {
 	if err != nil {
 		fatal("Настройки: " + err.Error())
 	}
+	cfg.codeUsed() // режим «Спрашивать»: новый код при запуске — программа могла кончиться посреди сессии (REQ-S-23)
 	// FFmpeg — в фоне: окно и сигнализация работают сразу, захват — когда загрузится (повтор раз в 30 с без сети).
 	var ffMu sync.Mutex
 	ff, ffState := "", "0" // путь к ffmpeg.exe; ffState — проценты загрузки, "err" или "" (готов)
@@ -136,12 +137,12 @@ func main() {
 	w.Bind("openUpdate", func() { exec.Command("rundll32", "url.dll,FileProtocolHandler", updateSite).Start() }) // адрес фиксирован: странице не открыть произвольный
 	w.Bind("openSite", func() { exec.Command("rundll32", "url.dll,FileProtocolHandler", siteHome).Start() })
 	w.Bind("setPassword", func(p string) error { return dropAfter(a, cfg.setPassword(p)) })
-	w.Bind("setConfirm", cfg.setConfirm)
+	w.Bind("setConfirm", func(on bool) error { return dropAfter(a, cfg.setConfirm(on)) }) // смена режима рвёт сессию по паролю/записи
 	w.Bind("otpNew", cfg.otpNew)
 	w.Bind("setViewOnly", func(on bool) error { return setViewOnly(cfg, a, on) })
-	w.Bind("otpEnable", cfg.otpEnable)
+	w.Bind("otpEnable", func(s, code, user string) error { return dropAfter(a, cfg.otpEnable(s, code, user)) })
 	w.Bind("otpOff", cfg.otpOff)
-	w.Bind("newCode", cfg.newCode)
+	w.Bind("newCode", func() (string, error) { return newCode(cfg, a) })
 	w.Bind("userSet", func(name, pw, rights string) error { return dropAfter(a, cfg.setUser(name, pw, rights)) })
 	w.Bind("userDel", func(name string) error { return dropAfter(a, cfg.delUser(name)) })
 	run := &runner{a: a, ctx: ctx}

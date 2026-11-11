@@ -85,9 +85,24 @@ func TestLocalAPI(t *testing.T) {
 			t.Errorf("%s %s: %d, разрывов %d (ждали %d, %d)", c.name, c.args, code, drops, c.code, c.drops)
 		}
 	}
-	pollConfig(cfg, &agent.Agent{}) // опрос настроек раз в 2 с — тоже (CLI при запущенной программе)
-	if drops != 4 {
-		t.Errorf("опрос настроек не зовёт DropRevoked: %d", drops)
+	var pend int
+	dropPending = func(*agent.Agent) { pend++ }
+	defer func() { dropPending = (*agent.Agent).DropPending }()
+	last := cfg.code()
+	pollConfig(cfg, &agent.Agent{}, &last) // опрос настроек раз в 2 с — тоже (CLI при запущенной программе)
+	if drops != 4 || pend != 0 {
+		t.Errorf("опрос настроек: DropRevoked %d, DropPending %d", drops, pend)
+	}
+	// новый код (↻ или --confirm on в другом процессе) — незавершённые входы со старым закрыть (приёмка otc Д3)
+	if code := call("newCode", `[]`); code != 200 || pend != 1 {
+		t.Errorf("↻: %d, DropPending %d", code, pend)
+	}
+	pollConfig(cfg, &agent.Agent{}, &last)
+	if pend != 2 || last != cfg.code() {
+		t.Errorf("опрос после смены кода: DropPending %d", pend)
+	}
+	if code := call("setConfirm", `[true]`); code != 200 || drops != 6 { // смена режима рвёт сессию по паролю (Д4)
+		t.Errorf("setConfirm: %d, DropRevoked %d", code, drops)
 	}
 }
 

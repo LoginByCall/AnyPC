@@ -538,9 +538,14 @@ func (c *config) savedSet(id, pw string) error {
 const maxTrusted = 20
 
 // trusted — ключ клиента закреплён за записью user (agent.AnyUser — за любой).
+// В режиме кода (REQ-S-23) закреплённых нет: код — для любого клиента одинаковая преграда, и ключ, однажды
+// впущенный «Разрешить», не перебирает следующие коды мимо блокировки (закрепления хранятся для режима пароля).
 func (c *config) trusted(pub []byte, user string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.codeModeLocked() {
+		return false
+	}
 	return slices.ContainsFunc(c.Users, func(u account) bool {
 		return (user == agent.AnyUser || u.Name == user) && slices.ContainsFunc(u.Trusted, func(k []byte) bool { return bytes.Equal(k, pub) })
 	})
@@ -550,6 +555,9 @@ func (c *config) trust(pub []byte, user string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
+	if c.codeModeLocked() { // вход кодом ключ не закрепляет
+		return
+	}
 	u := c.user(user)
 	if u == nil { // запись удалили, пока шёл вход
 		return

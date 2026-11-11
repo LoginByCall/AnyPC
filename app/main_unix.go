@@ -103,6 +103,7 @@ func main() {
 		fmt.Printf("учётная запись %s (%s) задана; запущенный AnyPC подхватит её за 2 с\n", agent.UserKey(*cliUser), map[bool]string{true: "view", false: "full"}[view])
 		return
 	}
+	cfg.codeUsed()                       // режим «Спрашивать»: новый код при запуске — программа могла кончиться посреди сессии (REQ-S-23)
 	if !cfg.confirm() && !cfg.otpSet() { // хост обновлён с выключенным подтверждением: без TOTP — снова окно «Разрешить»
 		log.Printf("ВНИМАНИЕ: вход без подтверждения выключен, пока не настроен второй фактор (TOTP): каждый вход спросит «Разрешить». Настройте: %s --confirm off", filepath.Base(os.Args[0]))
 	}
@@ -159,9 +160,10 @@ func main() {
 		openWindow("http://" + addr + "/?n=" + once.code)
 	}
 	srv := cfg.Server
+	code := cfg.code()
 	go func() { // --view-only on при запущенной программе: вошедшая сессия с полным доступом рвётся (REQ-F-25)
 		for range time.Tick(2 * time.Second) {
-			pollConfig(cfg, a)
+			pollConfig(cfg, a, &code)
 		}
 	}()
 	run.start(srv) // настройки дальше — только под c.mu (опрос выше их перечитывает)
@@ -292,7 +294,7 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 		if len(args) > 0 {
 			json.Unmarshal(args[0], &on)
 		}
-		err = cfg.setConfirm(on)
+		err = dropAfter(a, cfg.setConfirm(on)) // смена режима: сессия по паролю или записи (другая соль) рвётся
 	case "setNode":
 		var pub bool
 		if len(args) > 1 {
@@ -327,9 +329,9 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 	case "otpNew":
 		res, err = cfg.otpNew(str(0))
 	case "otpEnable":
-		err = cfg.otpEnable(str(0), str(1), str(2))
+		err = dropAfter(a, cfg.otpEnable(str(0), str(1), str(2)))
 	case "newCode":
-		res, err = cfg.newCode()
+		res, err = newCode(cfg, a)
 	case "otpOff":
 		err = cfg.otpOff(str(0))
 	case "userSet":
