@@ -137,7 +137,8 @@ func TestCaptureBlocked(t *testing.T) {
 // TestStateRepeat — D3: первый state мог потеряться (пришёл на клиент раньше входа) — пока экран заблокирован,
 // хост повторяет текущее состояние не чаще stateEvery.
 func TestStateRepeat(t *testing.T) {
-	lockPoll, stateEvery = 50*time.Millisecond, 300*time.Millisecond
+	lockPoll = 50 * time.Millisecond
+	stateEvery.Store(int64(300 * time.Millisecond))
 	const hold = 1500 * time.Millisecond
 	e2eAgent = func(a *Agent) {
 		var once sync.Once
@@ -166,11 +167,11 @@ func TestStateRepeat(t *testing.T) {
 			}
 			break
 		}
-		if most := int(hold/stateEvery) + 1; locked < 3 || locked > most {
-			t.Errorf("state locked за %v пришёл %d раз, ждали 3…%d (повтор раз в %v)", hold, locked, most, stateEvery)
+		if every := time.Duration(stateEvery.Load()); locked < 3 || locked > int(hold/every)+1 {
+			t.Errorf("state locked за %v пришёл %d раз, ждали 3…%d (повтор раз в %v)", hold, locked, int(hold/every)+1, every)
 		}
 	}
-	defer func() { lockPoll, stateEvery, e2eAgent, e2eCtl = 2*time.Second, 2*time.Second, nil, nil }()
+	defer func() { lockPoll, e2eAgent, e2eCtl = 2*time.Second, nil, nil; stateEvery.Store(int64(2 * time.Second)) }()
 	e2e(t, local(t), "123456789", false, nil, "secret123")
 }
 
@@ -968,8 +969,9 @@ func TestHubSpoof(t *testing.T) {
 // TestClipBeforeAuth — Д-5: буфер хоста уходил в канал ctl до ввода пароля (20 с ожидания входа).
 func TestClipBeforeAuth(t *testing.T) {
 	var seq atomic.Uint32
-	defer func(a func() uint32, b func() (string, error), c bool) { clipSeq, clipText, clipOnCopy = a, b, c }(clipSeq, clipText, clipOnCopy)
-	clipSeq, clipText, clipOnCopy = func() uint32 { return seq.Load() }, func() (string, error) { return "пароль от банка", nil }, false
+	defer func(a func() uint32, b func() (string, error), c bool) { clipSeq, clipText = a, b; clipOnCopy.Store(c) }(clipSeq, clipText, clipOnCopy.Load())
+	clipSeq, clipText = func() uint32 { return seq.Load() }, func() (string, error) { return "пароль от банка", nil }
+	clipOnCopy.Store(false)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sent := make(chan string, 4)
@@ -1000,9 +1002,10 @@ func TestClipBeforeAuth(t *testing.T) {
 // читается только после Ctrl+C/X клиента — не больше трёх раз.
 func TestClipOnCopy(t *testing.T) {
 	var seq, calls atomic.Uint32
-	defer func(a func() uint32, b func() (string, error), c bool) { clipSeq, clipText, clipOnCopy = a, b, c }(clipSeq, clipText, clipOnCopy)
+	defer func(a func() uint32, b func() (string, error), c bool) { clipSeq, clipText = a, b; clipOnCopy.Store(c) }(clipSeq, clipText, clipOnCopy.Load())
 	clipSeq = func() uint32 { calls.Add(1); return seq.Load() }
-	clipText, clipOnCopy = func() (string, error) { return "скопировано", nil }, true
+	clipText = func() (string, error) { return "скопировано", nil }
+	clipOnCopy.Store(true)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sent := make(chan string, 4)
@@ -1011,7 +1014,7 @@ func TestClipOnCopy(t *testing.T) {
 	done := make(chan struct{})
 	go func() { s.watchClip(ctx, func(b []byte) { sent <- string(b) }); close(done) }()
 	defer func() { cancel(); <-done }() // глобалы восстанавливаются только после выхода watchClip (гонка под -race)
-	time.Sleep(100 * time.Millisecond) // начальное значение прочитано
+	time.Sleep(100 * time.Millisecond)  // начальное значение прочитано
 	seq.Add(1)
 	select {
 	case m := <-sent:
