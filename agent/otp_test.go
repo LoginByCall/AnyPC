@@ -1,11 +1,14 @@
 package agent
 
 import (
+	"bytes"
+	"encoding/base64"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"anypc/pake"
 	"anypc/totp"
 )
 
@@ -185,4 +188,60 @@ func TestHostViewOnly(t *testing.T) {
 	if gotView.Load() || held.Load() != 1 {
 		t.Fatalf("без галочки: view=%v, зажато клавиш %d", gotView.Load(), held.Load())
 	}
+}
+
+// TestOTPTrustedLock — У3 с TOTP: хост заблокирован чужим перебором паролей, а владелец с закреплённым ключом,
+// верным паролем и верным кодом входит; неверные коды закреплённого ключа — своя блокировка (и в общий счётчик);
+// на шаге кода блокировка действует: поставленная, пока вводят код, — отказ и верному коду.
+func TestOTPTrustedLock(t *testing.T) {
+	k, _ := pake.ClientSignB64(e2eSeed(), "", "", "")
+	pub, _ := base64.StdEncoding.DecodeString(k["pub"])
+	o := &otpHost{secret: totp.NewSecret()}
+	var ag *Agent
+	var asks atomic.Int32
+	trusted := func(a *Agent) {
+		ag = a
+		a.OTP = o.check
+		a.fails, a.lockUntil = 9, time.Now().Add(time.Hour)
+		a.Trusted = func(p []byte) bool { return bytes.Equal(p, pub) }
+	}
+	e2eSeen = func(m authMsg) {
+		if m.T == "otp" {
+			asks.Add(1)
+		}
+	}
+	defer func() { e2eAgent, e2eSeen, e2eOTP, e2eFail, e2eKey = nil, nil, nil, false, "" }()
+	ff := FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000})
+	e2eAgent, e2eKey = trusted, "ok"
+	e2eOTP = func(int) string { return o.code() }
+	e2e(t, local(t), "123456789", false, ff, "secret123")
+	if f, _ := lock(ag); f != 9 {
+		t.Fatalf("вход владельца сбросил общий счётчик: %d", f)
+	}
+
+	e2eFail = true
+	e2eOTP = func(int) string { c := []byte(o.code()); c[0] = '0' + (c[0]-'0'+1)%10; return string(c) }
+	asks.Store(0)
+	e2e(t, local(t), "123456789", false, ff, "secret123")
+	ag.mu.Lock()
+	of, ol, f := ag.otpFails, time.Until(ag.otpLock), ag.fails
+	ag.mu.Unlock()
+	if asks.Load() != 5 || of != 5 || ol < 50*time.Second || f != 14 {
+		t.Fatalf("неверные коды ключа: запросов %d, своих неудач %d (блокировка %v), общих %d", asks.Load(), of, ol, f)
+	}
+
+	fresh := func() string { o.mu.Lock(); o.last = 0; o.mu.Unlock(); return o.code() } // код не повтор: отказ — только от блокировки
+	e2eAgent = func(a *Agent) { trusted(a); a.otpLock = time.Now().Add(time.Hour) }
+	e2eOTP = func(int) string { return fresh() }
+	e2e(t, local(t), "123456789", false, ff, "secret123") // своя блокировка ключа — отказ и верному коду
+
+	e2eKey = ""
+	e2eAgent = func(a *Agent) { ag = a; a.OTP = o.check }
+	e2eOTP = func(int) string { // чужой перебор запер хост, пока человек вводит код
+		ag.mu.Lock()
+		ag.lockUntil = time.Now().Add(time.Hour)
+		ag.mu.Unlock()
+		return fresh()
+	}
+	e2e(t, local(t), "123456789", false, ff, "secret123")
 }
