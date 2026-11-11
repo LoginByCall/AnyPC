@@ -193,7 +193,7 @@ func TestCLI(t *testing.T) {
 			t.Errorf("--user: %v %q", err, out)
 		}
 		c, _ := loadConfig(filepath.Join(home, ".config", "AnyPC", "config.json"))
-		if s, h, v := c.secret("olga"); !v || !bytes.Equal(h, pake.KDF("olga-pass1", s)) || !c.hasPass() {
+		if u := c.user("olga"); u == nil || !u.View || !bytes.Equal(u.Hash, pake.KDF("olga-pass1", u.Salt)) || !c.hasPass() {
 			t.Error("запись olga не записана или затёрла пароль по умолчанию")
 		}
 		if out, err := user("olga-pass2\n", "--user", "olga"); err != nil || !strings.Contains(out, "olga (view)") { // приёмка Д3
@@ -263,8 +263,17 @@ func TestCLI(t *testing.T) {
 	if cfg.confirm() || cfg.Server != DefaultServer {
 		t.Errorf("настройки после ключей: confirm=%v server=%q", cfg.confirm(), cfg.Server)
 	}
-	if out, _ := cli("--status"); !strings.Contains(out, cfg.ID) || !strings.Contains(out, "Пароль задан: да") || !strings.Contains(out, "«Разрешить»: off") || !strings.Contains(out, "Второй фактор (TOTP): да") || !strings.Contains(out, "Только показ экрана: on") {
+	if out, _ := cli("--status"); !strings.Contains(out, cfg.ID) || !strings.Contains(out, "Пароль задан: да") || !strings.Contains(out, "«Разрешить»: off") || !strings.Contains(out, "Второй фактор (TOTP): да") || !strings.Contains(out, "Только показ экрана: on") || strings.Contains(out, "Одноразовый код") {
 		t.Errorf("--status: %q", out)
+	}
+	// режим «Спрашивать» (REQ-S-23): --confirm on печатает новый одноразовый код, --status показывает тот же
+	out, err := cli("--confirm", "on")
+	cfg, _ = loadConfig(filepath.Join(home, ".config", "AnyPC", "config.json"))
+	if code := cfg.code(); err != nil || len(code) != 6 || !strings.Contains(out, "одноразовый код: "+spaced(code)) {
+		t.Errorf("--confirm on: %v %q (код %q)", err, out, code)
+	}
+	if out, _ := cli("--status"); !strings.Contains(out, "Одноразовый код: "+spaced(cfg.code())) {
+		t.Errorf("--status без кода: %q", out)
 	}
 	if u := serviceUnit("/opt/my apps/AnyPC"); !strings.Contains(u, `ExecStart="/opt/my apps/AnyPC" --no-browser`) || !strings.Contains(u, "WantedBy=graphical-session.target") {
 		t.Errorf("юнит: %q", u)

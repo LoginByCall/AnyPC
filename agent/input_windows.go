@@ -106,7 +106,7 @@ func hideWindow(c *exec.Cmd) {
 // свои подписи — TaskDialog (нужен манифест comctl32 v6), если строка окажется непонятной.
 func AskAccept(cid, peer string) Answer {
 	title, text, yes, no, view := askText(uiLang(), cid, peer)
-	a, err := askTaskDialog(title, text, yes, no, view, AskTimeout, 0)
+	a, err := askTaskDialog(title, text, yes, no, view, AskTimeout, AskDelay, 0) // кнопки согласия выключены первые AskDelay
 	if err == nil {
 		return a
 	}
@@ -126,12 +126,14 @@ func askMessageBox(cid, peer string) Answer {
 	t, _ := syscall.UTF16PtrFromString(title)
 	m, _ := syscall.UTF16PtrFromString(text + "\n\n" + winAskHint(lang))
 	const flags = 0x3 | 0x20 | 0x200 | 0x1000 | 0x10000 | 0x40000 // YESNOCANCEL | ICONQUESTION | DEFBUTTON3 (Enter = «Отмена» = отказ) | SYSTEMMODAL | SETFOREGROUND | TOPMOST
-	r, _, _ := p.Call(0, uintptr(unsafe.Pointer(m)), uintptr(unsafe.Pointer(t)), flags, 0, uintptr(AskTimeout/time.Millisecond))
-	switch r {
-	case 6: // IDYES
-		return Allow
-	case 7: // IDNO
-		return ViewOnly
-	}
-	return Deny // IDCANCEL, крестик; 32000 — истекло время
+	return askLoop(func(left time.Duration) Answer {              // у MessageBox кнопку не выключить: согласие раньше AskDelay — окно снова
+		r, _, _ := p.Call(0, uintptr(unsafe.Pointer(m)), uintptr(unsafe.Pointer(t)), flags, 0, uintptr(left/time.Millisecond))
+		switch r {
+		case 6: // IDYES
+			return Allow
+		case 7: // IDNO
+			return ViewOnly
+		}
+		return Deny // IDCANCEL, крестик; 32000 — истекло время
+	})
 }

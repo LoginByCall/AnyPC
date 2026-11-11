@@ -71,6 +71,10 @@ type Agent struct {
 	Unattended func() bool
 	ViewOnly   func() bool                            // «Только показ экрана» на хосте: каждая сессия — только просмотр (REQ-F-20); nil — нет
 	OTP        func(user, code string) (set, ok bool) // у каждой записи свой секрет TOTP
+	// CodeUsed — одноразовый код израсходован (PLAN.md «одноразовый код»): кончилась сессия, прошедшая пароль
+	// (вошедшая или отклонённая на хосте), или вход записью по умолчанию заперт перебором. Зовётся без a.mu, в своей
+	// горутине; nil — кода нет.
+	CodeUsed func()
 
 	mu        sync.Mutex
 	ice       []webrtc.ICEServer
@@ -429,11 +433,15 @@ const maxPending = 3
 func (a *Agent) release(s *session) {
 	s.gone.Store(true)
 	a.mu.Lock()
-	if a.sess == s {
+	used := a.sess == s // прошла пароль (код): им уже вошли или его знает отклонённый — сменить
+	if used {
 		a.sess = nil
 	}
 	delete(a.pend, s)
 	a.mu.Unlock()
+	if used && a.CodeUsed != nil {
+		go a.CodeUsed()
+	}
 }
 
 // promote — пароль верный: s становится сессией хоста, если её не опередила другая.
@@ -717,6 +725,9 @@ func (a *Agent) countAuth(cid, user string, ok bool) {
 	n.at = time.Now()
 	hostStep(&a.fails, &a.lockUntil, &a.failAt)
 	log.Printf("неверный пароль или код от %s (запись %q: %d, всего %d)", cid, user, n.fails, a.fails)
+	if now := time.Now(); a.CodeUsed != nil && (user == "" && now.Before(n.until) || now.Before(a.lockUntil)) {
+		go a.CodeUsed() // перебор дошёл до блокировки: новый код, подобранное к старому не пригодится
+	}
 }
 
 // hostStep — неудача в общий счётчик хоста; счёт забывается, если неудач не было hostForget после конца блокировки.
