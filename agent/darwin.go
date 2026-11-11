@@ -361,11 +361,12 @@ return "no"`, title, text, yes, no, strconv.Itoa(int(left.Seconds()))).Output()
 	}) == Allow
 }
 
-func pickFile() (string, bool) {
+// pickFile — окно выбора файла на хосте; ctx кончился — окно закрывается.
+func pickFile(ctx context.Context) (string, bool) {
 	if fakeDesktop {
 		return "", false
 	}
-	out, err := osa(`POSIX path of (choose file with prompt (item 1 of argv))`, "AnyPC").Output()
+	out, err := exec.CommandContext(ctx, "osascript", osa(`POSIX path of (choose file with prompt (item 1 of argv))`, "AnyPC").Args[1:]...).Output()
 	p := strings.TrimRight(string(out), "\n")
 	return p, err == nil && p != ""
 }

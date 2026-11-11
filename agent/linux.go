@@ -176,11 +176,12 @@ func showIndicator(cid string, mode plaqueMode, onUserClose func()) (func(), err
 }
 
 // pickFile — окно выбора файла на хосте (zenity работает и в X11, и в Wayland).
-func pickFile() (string, bool) {
+// ctx кончился — окно закрывается.
+func pickFile(ctx context.Context) (string, bool) {
 	if fakeDesktop {
 		return "", false
 	}
-	out, err := exec.Command("zenity", "--file-selection", "--title=AnyPC").Output()
+	out, err := exec.CommandContext(ctx, "zenity", "--file-selection", "--title=AnyPC").Output()
 	p := strings.TrimRight(string(out), "\n")
 	return p, err == nil && p != ""
 }
