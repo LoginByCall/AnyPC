@@ -291,6 +291,18 @@ func (a *Agent) Disconnect() {
 	s.pc.Close()
 }
 
+// DisconnectFull — хост включил «Только показ экрана»: идущую сессию с полным доступом разорвать (новая войдёт
+// только просмотром); сессию «только просмотр» не трогать.
+func (a *Agent) DisconnectFull() {
+	a.mu.Lock()
+	s := a.sess
+	a.mu.Unlock()
+	if s != nil && !s.view.Load() {
+		log.Printf("сессия %s: включён «Только показ экрана» — разорвана", s.cid)
+		a.Disconnect()
+	}
+}
+
 func (a *Agent) setOnline(hub string, on bool) {
 	a.mu.Lock()
 	if a.online == nil {

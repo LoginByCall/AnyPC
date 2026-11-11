@@ -247,3 +247,36 @@ func TestOTPTrustedLock(t *testing.T) {
 	}
 	e2e(t, local(t), "123456789", false, ff, "secret123")
 }
+
+// TestViewOnlyDrop — регрессия (приёмка Д4): «Только показ экрана» включили во время сессии с полным доступом —
+// она разорвана; сессию «только просмотр» включение не рвёт.
+func TestViewOnlyDrop(t *testing.T) {
+	var on atomic.Bool
+	var gone atomic.Bool
+	e2eAgent = func(a *Agent) { a.ViewOnly = on.Load }
+	e2eInput = func(t *testing.T, a *Agent) {
+		on.Store(true) // хозяин поставил галочку
+		a.DisconnectFull()
+		for range 30 {
+			a.mu.Lock()
+			s := a.sess
+			a.mu.Unlock()
+			if s == nil {
+				gone.Store(true)
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		gone.Store(false)
+	}
+	defer func() { e2eAgent, e2eInput = nil, nil }()
+	ff := FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000})
+	e2e(t, local(t), "123456789", false, ff, "secret123")
+	if !gone.Load() {
+		t.Fatal("сессия с полным доступом не разорвана")
+	}
+	e2e(t, local(t), "123456789", false, ff, "secret123") // галочка уже стоит: сессия — просмотр, её не рвать
+	if gone.Load() {
+		t.Fatal("сессия «только просмотр» разорвана")
+	}
+}
