@@ -53,7 +53,10 @@ func TestOTP(t *testing.T) {
 			asks.Add(1)
 		}
 	}
-	defer func() { e2eAgent, e2eSeen, e2eOTP, e2eFail, otpWait90 = nil, nil, nil, false, 90*time.Second }()
+	defer func() {
+		e2eAgent, e2eSeen, e2eOTP, e2eFail = nil, nil, nil, false
+		otpWait90.Store(int64(90 * time.Second))
+	}()
 	ff := FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000})
 
 	var used string
@@ -82,7 +85,7 @@ func TestOTP(t *testing.T) {
 	}
 
 	e2eAgent = func(a *Agent) { ag = a; a.OTP = o.check }
-	otpWait90 = time.Second
+	otpWait90.Store(int64(time.Second))
 	var denied atomic.Bool
 	e2eSeen = func(m authMsg) { denied.Store(denied.Load() || m.T == "denied") }
 	e2eOTP = func(int) string { return "" } // клиент молчит — хост отказывает сам
@@ -303,8 +306,12 @@ func TestOTPLateCode(t *testing.T) {
 	e2eAgent = func(a *Agent) { a.OTP = o.check }
 	e2eSeen = func(m authMsg) { seen.Store(m.T, true) }
 	e2eOTP = func(int) string { time.Sleep(1200 * time.Millisecond); return o.code() } // срок — 1 с
-	otpWait90, e2eFail = time.Second, true
-	defer func() { e2eAgent, e2eSeen, e2eOTP, e2eFail, otpWait90 = nil, nil, nil, false, 90*time.Second }()
+	otpWait90.Store(int64(time.Second))
+	e2eFail = true
+	defer func() {
+		e2eAgent, e2eSeen, e2eOTP, e2eFail = nil, nil, nil, false
+		otpWait90.Store(int64(90 * time.Second))
+	}()
 	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000}), "secret123")
 	time.Sleep(300 * time.Millisecond)
 	if _, ok := seen.Load("ok"); ok {

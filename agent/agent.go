@@ -1000,7 +1000,8 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 				s.mu.Unlock()
 				// conf и подпись — как в "ok": клиент отдаёт код только хосту, доказавшему пароль и ключ (не хабу-самозванцу)
 				send(authMsg{T: "otp", Conf: conf, Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph)})
-				time.AfterFunc(otpWait90, func() {
+				wait := time.Duration(otpWait90.Load())
+				time.AfterFunc(wait, func() {
 					s.mu.Lock()
 					waiting := otpN == n && otpWait != nil
 					if waiting {
@@ -1008,7 +1009,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 					}
 					s.mu.Unlock()
 					if waiting && !s.authed.Load() { // внятный отказ (и старому клиенту), а не обрыв связи
-						log.Printf("сессия %s: код TOTP не введён за %v", s.cid, otpWait90)
+						log.Printf("сессия %s: код TOTP не введён за %v", s.cid, wait)
 						reject("denied")
 					}
 				})
@@ -1048,7 +1049,11 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 
 // authWait — сколько ждать входа после открытия канала auth; otpWait90 — кода TOTP на каждый запрос (разблокировать
 // телефон, открыть приложение, найти запись, набрать 6 цифр).
-var authWait, otpWait90 = 20 * time.Second, 90 * time.Second
+// otpWait90 — атомарно (нс): тесты меняют его при живых сессиях.
+var authWait = 20 * time.Second
+var otpWait90 atomic.Int64
+
+func init() { otpWait90.Store(int64(90 * time.Second)) }
 
 // accept — вход разрешён: подпись хоста, плашка сессии, видео.
 func (a *Agent) accept(ctx context.Context, s *session, track *webrtc.TrackLocalStaticSample, send func(authMsg), conf []byte, fpc, fph string, pin []byte) {

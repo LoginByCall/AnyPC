@@ -114,8 +114,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // TestBrowserOTPLate — хост не дождался кода: клиент пишет причину (не «связь потеряна»), поле не остаётся мёртвым.
 func TestBrowserOTPLate(t *testing.T) {
-	otpWait90 = 2 * time.Second
-	defer func() { otpWait90 = 90 * time.Second }()
+	otpWait90.Store(int64(2 * time.Second))
+	defer otpWait90.Store(int64(90 * time.Second))
 	out := otpBrowser(t, cdpOTPLate)
 	late := "Error: the time to enter the code is over — connect again|false|false"
 	if !strings.Contains(out, "late="+late) || !strings.Contains(out, "after="+late) {
