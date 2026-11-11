@@ -34,3 +34,13 @@ func TestTaskDialogDelay(t *testing.T) {
 		t.Errorf("нажатие выключенной «Разрешить»: %v %v", got, err)
 	}
 }
+
+// TestTaskDialogTwo — окно «Разрешить управление?» (REQ-F-26): без кнопки «Только просмотр», две кнопки — свои ответы.
+func TestTaskDialogTwo(t *testing.T) {
+	for click, want := range map[int]Answer{tdAllow: Allow, tdDeny: Deny} {
+		got, err := askTaskDialog("AnyPC — test", "two", "Allow", "Deny", "", AskTimeout, 0, click)
+		if err != nil || got != want {
+			t.Errorf("кнопка %d: %v %v, ждали %v", click, got, err, want)
+		}
+	}
+}

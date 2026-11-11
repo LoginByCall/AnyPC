@@ -163,7 +163,7 @@ func tdCallbackFn(hwnd uintptr, msg uint32, wparam, lparam, ref uintptr) uintptr
 }
 
 // askTaskDialog — окно с кнопками yes / view / no; Esc, крестик и истёкшее время → Deny. Кнопка по умолчанию — «Отклонить».
-// delay > 0 — yes и view выключены первые delay (TDM_ENABLE_BUTTON по таймеру окна).
+// delay > 0 — yes и view выключены первые delay (TDM_ENABLE_BUTTON по таймеру окна). view == "" — без этой кнопки.
 func askTaskDialog(title, text, yes, no, view string, timeout, delay time.Duration, click int) (Answer, error) {
 	tdOnce.Do(tdInit)
 	if tdInitErr != nil {
@@ -171,9 +171,12 @@ func askTaskDialog(title, text, yes, no, view string, timeout, delay time.Durati
 	}
 	u := func(s string) *uint16 { p, _ := syscall.UTF16PtrFromString(s); return p }
 	t, c := u(title), u(text)
-	labels := []*uint16{u(yes), u(view), u(no)}
+	labels, ids := []*uint16{u(yes), u(view), u(no)}, []int32{tdAllow, tdView, tdDeny}
+	if view == "" {
+		labels, ids = []*uint16{labels[0], labels[2]}, []int32{tdAllow, tdDeny}
+	}
 	r := &tdRun{timeout: timeout, delay: delay, click: click}
-	for i, id := range []int32{tdAllow, tdView, tdDeny} {
+	for i, id := range ids {
 		binary.LittleEndian.PutUint32(r.btns[i*12:], uint32(id))
 		binary.LittleEndian.PutUint64(r.btns[i*12+4:], uint64(uintptr(unsafe.Pointer(labels[i]))))
 	}
@@ -191,7 +194,7 @@ func askTaskDialog(title, text, yes, no, view string, timeout, delay time.Durati
 	p64(28, uintptr(unsafe.Pointer(t))) // pszWindowTitle
 	p64(36, 0xFFFF)                     // TD_WARNING_ICON
 	p64(52, uintptr(unsafe.Pointer(c))) // pszContent
-	p32(60, 3)                          // cButtons
+	p32(60, uint32(len(ids)))           // cButtons
 	p64(64, uintptr(unsafe.Pointer(&r.btns[0])))
 	p32(72, tdDeny)      // nDefaultButton: Enter — отказ
 	p64(140, tdCallback) // pfCallback

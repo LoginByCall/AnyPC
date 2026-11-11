@@ -29,8 +29,8 @@ func TestPlaqueBar(t *testing.T) {
 	}
 }
 
-// TestAskText — окно «Разрешить» (REQ-F-03): на каждом языке все поля непустые, в тексте есть ID, IP и
-// предупреждение о мошенниках (F3); неизвестный язык — английский.
+// TestAskText — окно «Разрешить» (REQ-F-03) и «Разрешить управление?» (REQ-F-26): на каждом языке все поля непустые,
+// в тексте есть ID, IP и предупреждение о мошенниках (F3); неизвестный язык — английский.
 func TestAskText(t *testing.T) {
 	for _, lang := range []string{"en", "ru", "zh", "es", "de", "fr", "it"} {
 		if _, ok := asks[lang]; !ok {
@@ -54,6 +54,17 @@ func TestAskText(t *testing.T) {
 		}
 		if _, loop, _, _, _ := askText(lang, "c1", "ip", true); !strings.Contains(text, q[8]) || !strings.Contains(loop, q[9]) || strings.Contains(loop, q[8]) {
 			t.Errorf("%s: задержка — TaskDialog 3 с, окна askLoop 5 с", lang)
+		}
+		// окно «Разрешить управление?» (REQ-F-26): свой вопрос, то же предупреждение, ID и задержка только про «Разрешить»
+		title, ctext, cyes, cno := askControlText(lang, "c1", "ip", false)
+		_, cloop, _, _ := askControlText(lang, "c1", "ip", true)
+		if title != "AnyPC — "+q[10] || cyes != q[3] || cno != q[4] || !strings.Contains(cloop, q[13]) || strings.Contains(ctext, q[5]) {
+			t.Errorf("%s: окно управления %q %q %q", lang, title, cyes, cno)
+		}
+		for _, want := range []string{q[11], q[7], "ID: c1", q[12]} {
+			if !strings.Contains(ctext, want) {
+				t.Errorf("%s: в окне управления нет %q", lang, want)
+			}
 		}
 	}
 	if _, text, _, _, _ := askText("xx", "c1", "ip", true); !strings.Contains(text, "stranger") {

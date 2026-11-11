@@ -246,8 +246,9 @@ func fileID(path string, st os.FileInfo) string {
 // maxRecv — сколько файлов сессия принимает одновременно: каждый держит открытый файл и место на диске.
 const maxRecv = 4
 
-// receiveFile принимает файл от клиента в папку загрузок хоста; active — идущие приёмы этой сессии.
-func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32) {
+// receiveFile принимает файл от клиента в папку загрузок хоста; active — идущие приёмы этой сессии; allow — сессия
+// всё ещё с управлением (клиент перешёл в просмотр — идущий приём обрывается, REQ-F-26).
+func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32, allow func() bool) {
 	r := NewReceiver(a.fileDir())
 	var mu sync.Mutex
 	state := "new" // new → wait → open → finished; в open занято место в active
@@ -268,6 +269,10 @@ func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32) {
 		mu.Lock()
 		defer mu.Unlock()
 		if state == "finished" {
+			return
+		}
+		if !allow() {
+			fail("только просмотр: файлы на этот ПК не принимаются")
 			return
 		}
 		if !m.IsString {

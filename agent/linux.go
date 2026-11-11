@@ -251,3 +251,16 @@ func AskAccept(cid, peer string) Answer {
 		return Deny
 	})
 }
+
+// AskControl — окно «Разрешить управление?» (смена режима сессии «Спрашивать»): как AskAccept, без «Только просмотр».
+func AskControl(cid, peer string) bool {
+	if fakeDesktop {
+		return true
+	}
+	title, text, yes, no := askControlText(sysLang(), cid, peer, true)
+	return askLoop(func(left time.Duration) Answer {
+		err := exec.Command("zenity", "--question", "--default-cancel", "--width=460", "--title="+title, "--text="+pangoEscape(text),
+			"--ok-label="+yes, "--cancel-label="+no, "--timeout="+strconv.Itoa(int(left.Seconds()))).Run()
+		return map[bool]Answer{true: Allow}[err == nil]
+	}) == Allow
+}

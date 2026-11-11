@@ -103,19 +103,7 @@ func (a *Agent) AudioMic(on bool) {
 	if !changed {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closeInd == nil || s.gone.Load() {
-		return
-	}
-	closeNew, err := showIndicator(s.label(), s.plaque(), a.userClose(s))
-	if err != nil { // REQ-S-08
-		log.Printf("плашка сессии (микрофон): %v — сессия закрыта", err)
-		s.pc.Close()
-		return
-	}
-	s.closeInd, closeNew = closeNew, s.closeInd
-	closeNew()
+	a.replaque(s)
 	log.Printf("сессия %s: микрофон этого ПК %s", s.cid, map[bool]string{true: "включён", false: "выключен"}[on])
 }
 

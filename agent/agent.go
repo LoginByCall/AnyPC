@@ -75,6 +75,9 @@ type Agent struct {
 	// (вошедшая или отклонённая на хосте), или вход записью по умолчанию заперт перебором. Зовётся без a.mu, в своей
 	// горутине; nil — кода нет.
 	CodeUsed func()
+	// ConfirmControl — окно «Разрешить управление?» (REQ-F-26): сессия, вошедшая через «Разрешить», просит из просмотра
+	// управление; nil — смены режима нет (клиент кнопки не покажет).
+	ConfirmControl func(cid, peer string) bool
 
 	mu        sync.Mutex
 	ice       []webrtc.ICEServer
@@ -107,13 +110,16 @@ type session struct {
 	view    atomic.Bool // REQ-F-20 «только просмотр»: от клиента — ни ввода, ни буфера, ни файлов; буфер хоста ему не уходит
 	picking atomic.Bool // открыто окно выбора файла
 	asking  atomic.Bool // на хосте открыто окно «Разрешить / Отклонить» или ждём код TOTP
+	byAsk   atomic.Bool // вход разрешил человек у хоста («Разрешить»): режим можно менять (REQ-F-26); паролем, записью, TOTP — нет
+	modeAsk atomic.Bool // открыто окно «Разрешить управление?» этой сессии
 	gone    atomic.Bool // сессия освобождена (release) — в pend не возвращать
 	ctl     *webrtc.DataChannel
 	peer    string // адрес клиента по выбранной паре ICE — для окна подтверждения
 	ice     iceCap // потолок удалённых ICE-кандидатов (F5, icecap.go)
 
 	mu        sync.Mutex
-	closeInd  func() // закрыть плашку сессии
+	closeInd  func()    // закрыть плашку сессии
+	modeNo    time.Time // последний отказ в окне «Разрешить управление?» (повтор — не раньше modeWait)
 	mons      []Monitor
 	mon       int                   // выбранный монитор (индекс в mons)
 	capCancel context.CancelFunc    // остановить текущий процесс захвата
@@ -179,6 +185,7 @@ type authMsg struct {
 	Sig   []byte `json:"sig,omitempty"`
 	View  bool   `json:"view,omitempty"`  // в "ok": сессия «только просмотр» (REQ-F-20)
 	Audio bool   `json:"audio,omitempty"` // в "ok": хост умеет звук (окно хоста ответит на предложение)
+	Mode  bool   `json:"mode,omitempty"`  // в "ok": сессию можно переключать просмотр ↔ управление (REQ-F-26, modeMsg)
 	CPub  []byte `json:"cpub,omitempty"`  // в "b": ключ клиента и его подпись над DTLS-отпечатками (У3)
 	CSig  []byte `json:"csig,omitempty"`
 	Code  string `json:"code,omitempty"`  // в "otp" от клиента: код TOTP
@@ -205,6 +212,21 @@ type ctlMsg struct {
 	Err  string    `json:"err,omitempty"` // "audio": "closed" — окно хоста не ответило
 	S    string    `json:"s,omitempty"`   // "state": "locked" | "nocapture" | "ok" (F7; старый клиент неизвестный t пропускает)
 }
+
+// modeMsg — канал "ctl", смена режима сессии без разрыва (REQ-F-26; только у сессии с mode в "ok"):
+// клиент → {"t":"mode","view":bool} — просьба; хост → {"t":"mode","view":bool,"ok":bool,"why":"…"} — view — режим
+// сессии после ответа, ok — просьба выполнена, why при отказе: "rights" (вход не через «Разрешить» или права записи
+// «просмотр»), "viewonly" («Только показ экрана»), "busy" (окно уже открыто), "wait" (после отказа не прошло modeWait),
+// "denied" («Отклонить» или нет ответа AskTimeout).
+type modeMsg struct {
+	T    string `json:"t"`
+	View bool   `json:"view"`
+	OK   bool   `json:"ok"`
+	Why  string `json:"why,omitempty"`
+}
+
+// modeWait — повторная просьба управления не раньше, чем через столько после отказа: не спамить окнами.
+var modeWait = 10 * time.Second
 
 // Cap — параметры захвата: монитор, потолок битрейта (кбит/с), кадров/с; Video — профиль «видео» (частота кадров
 // важнее чёткости: к/с не снижается, на канале < 2 Мбит/с картинка ужимается до 720p); Cursor — рисовать курсор
@@ -932,6 +954,10 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 			if err := setClip(m.Text); err != nil {
 				log.Printf("буфер обмена: %v", err)
 			}
+		case m.T == "mode":
+			var mm modeMsg
+			json.Unmarshal(msg.Data, &mm)
+			a.setMode(sctx, s, mm.View, func(r modeMsg) { b, _ := json.Marshal(r); ctl.SendText(string(b)) })
 		case m.T == "audio" && m.SDP != "" && a.Audio:
 			s.audioOffer(m.SDP)
 		case m.T == "monitor":
@@ -1245,6 +1271,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 				if ans == ViewOnly { // человек на хосте может только сузить права, не расширить
 					s.view.Store(true)
 				}
+				s.byAsk.Store(true)
 				a.accept(ctx, s, track, send, conf, fpc, fph, pin)
 			default:
 				log.Printf("сессия %s: отклонена на хосте", s.cid)
@@ -1291,7 +1318,7 @@ func (a *Agent) accept(ctx context.Context, s *session, track *webrtc.TrackLocal
 		a.Trust(pin, s.user)
 	}
 	view := s.view.Load()
-	send(authMsg{T: "ok", Conf: conf, Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph), View: view, Audio: a.Audio})
+	send(authMsg{T: "ok", Conf: conf, Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph), View: view, Audio: a.Audio, Mode: s.byAsk.Load() && a.ConfirmControl != nil})
 	log.Printf("сессия %s: вход выполнен%s", s.label(), map[bool]string{true: " (только просмотр)"}[view]) // REQ-F-16, F-24
 	s.sendMonitors()
 	closeInd, err := showIndicator(s.label(), s.plaque(), a.userClose(s)) // REQ-F-15, F-24
@@ -1336,7 +1363,7 @@ const (
 func (a *Agent) clientChannel(s *session, dc *webrtc.DataChannel, recv *atomic.Int32) {
 	switch {
 	case dc.Label() == "file" && s.control():
-		a.receiveFile(dc, recv)
+		a.receiveFile(dc, recv, s.control)
 	case dc.Label() == "file" && s.authed.Load():
 		dc.OnOpen(func() {
 			sendJSON(dc, fileMsg{T: "err", Msg: "только просмотр: файлы на этот ПК не принимаются"})
@@ -1345,6 +1372,101 @@ func (a *Agent) clientChannel(s *session, dc *webrtc.DataChannel, recv *atomic.I
 	default:
 		dc.OnOpen(func() { dc.Close() })
 	}
+}
+
+// setMode — клиент просит сменить режим сессии (REQ-F-26): только сессия, вошедшая через «Разрешить». В просмотр — сразу;
+// в управление — если хост не навязывает просмотр («Только показ экрана», права записи) и человек у хоста ответил
+// «Разрешить» в окне ConfirmControl (одно окно на сессию; после отказа — не раньше modeWait).
+func (a *Agent) setMode(ctx context.Context, s *session, view bool, reply func(modeMsg)) {
+	no := func(why string) { reply(modeMsg{T: "mode", View: s.view.Load(), Why: why}) }
+	forced := func() string { // просмотр навязан хостом
+		if a.ViewOnly != nil && a.ViewOnly() {
+			return "viewonly"
+		}
+		if gone, v := a.revoked(s); gone || v {
+			return "rights"
+		}
+		return ""
+	}
+	switch {
+	case !s.byAsk.Load() || a.ConfirmControl == nil:
+		no("rights")
+		return
+	case view:
+		if !s.view.Swap(true) {
+			for _, e := range s.keys.release() { // не оставить зажатый Ctrl/кнопку на хосте
+				sendInput(e, nil)
+			}
+			log.Printf("сессия %s: клиент перешёл в «только просмотр»", s.label())
+			a.replaque(s)
+		}
+		reply(modeMsg{T: "mode", View: true, OK: true})
+		return
+	case !s.view.Load():
+		reply(modeMsg{T: "mode", OK: true})
+		return
+	}
+	if why := forced(); why != "" {
+		no(why)
+		return
+	}
+	if !s.modeAsk.CompareAndSwap(false, true) {
+		no("busy")
+		return
+	}
+	s.mu.Lock()
+	wait, peer := time.Since(s.modeNo) < modeWait, s.peer
+	s.mu.Unlock()
+	if wait {
+		s.modeAsk.Store(false)
+		no("wait")
+		return
+	}
+	go func() {
+		defer s.modeAsk.Store(false)
+		why := "denied"
+		if a.ConfirmControl(s.label(), peer) {
+			why = forced() // за время окна могли включить «Только показ экрана» или сузить права
+		}
+		if ctx.Err() != nil { // сессия кончилась, пока ждали ответа
+			return
+		}
+		if why == "" {
+			s.view.Store(false)
+			if why = forced(); why != "" { // ещё раз после: DisconnectFull и DropRevoked сессию «просмотр» не рвут
+				s.view.Store(true)
+			}
+		}
+		if why != "" {
+			s.mu.Lock()
+			s.modeNo = time.Now()
+			s.mu.Unlock()
+			log.Printf("сессия %s: управление не разрешено (%s)", s.label(), why)
+			no(why)
+			return
+		}
+		log.Printf("сессия %s: управление разрешено на хосте", s.label())
+		a.replaque(s)
+		reply(modeMsg{T: "mode", OK: true})
+	}()
+}
+
+// replaque — пересоздать плашку с новыми пометками режима (REQ-F-15): новая появляется раньше, чем закрывается старая.
+// Не вышло показать — сессия закрыта (REQ-S-08).
+func (a *Agent) replaque(s *session) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closeInd == nil || s.gone.Load() {
+		return
+	}
+	closeNew, err := showIndicator(s.label(), s.plaque(), a.userClose(s))
+	if err != nil {
+		log.Printf("плашка сессии: %v — сессия закрыта", err)
+		s.pc.Close()
+		return
+	}
+	s.closeInd, closeNew = closeNew, s.closeInd
+	closeNew()
 }
 
 // control — от клиента можно принимать ввод, буфер обмена и файлы: вход выполнен и сессия не «только просмотр».
