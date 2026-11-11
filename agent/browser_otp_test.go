@@ -191,6 +191,9 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await ev("localStorage.setItem('st', JSON.stringify({ id: '123456789', confirm: false, otp: false })); 1");
   await call('Page.reload', {}); await sleep(1500);
   console.log('legacy=' + await show());
+  // ID копируется без пробелов; предупреждение о не латинской раскладке и Caps Lock у поля пароля
+  console.log('copyid=' + await ev("(() => { const d = new DataTransfer(); document.getElementById('myid').dispatchEvent(new ClipboardEvent('copy', { clipboardData: d, bubbles: true, cancelable: true })); return document.getElementById('myid').textContent + '>' + d.getData('text/plain'); })()"));
+  console.log('kb=' + await ev("(() => { const i = document.getElementById('newpw'), w = i.closest('.row').nextElementSibling; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'ф', code: 'KeyA' })); const a = w.textContent; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', code: 'KeyA' })); return a + '|' + w.classList.contains('hidden'); })()"));
   process.exit(0);
 })();`
 
@@ -214,6 +217,8 @@ func TestBrowserHostOTP(t *testing.T) {
 		"on=false|false|true|false|||enable:000000,enable:123456\n",
 		"off=true|false|false|false|||enable:000000,enable:123456,confirm:true\n",
 		"legacy=true|false|false|true|||\n",
+		"copyid=123 456 789>123456789\n",
+		"kb=The keyboard layout is not Latin — check the password|true\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("нет %q", want)
