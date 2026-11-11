@@ -1,12 +1,15 @@
 package hub
 
 import (
+	"context"
 	"crypto/tls"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // TestSndBuf — SndBuf ставится захваченному соединению (WS) и без TLS, и по TLS (боевой server — ServeTLS: Hijack
@@ -41,5 +44,38 @@ func TestSndBuf(t *testing.T) {
 			t.Errorf("TLS=%v: SO_SNDBUF %d, ждали %d", useTLS, n, 2*SndBuf)
 		}
 		srv.Close()
+	}
+}
+
+// capL запоминает принятые соединения.
+type capL struct {
+	net.Listener
+	conns chan *net.TCPConn
+}
+
+func (l capL) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if tc, ok := c.(*net.TCPConn); ok {
+		l.conns <- tc
+	}
+	return c, err
+}
+
+// TestSndBufWS — проводка: ServeHTTP хаба принимает WS через sndWriter (буфер отправки — SndBuf).
+func TestSndBufWS(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	srv := httptest.NewUnstartedServer(&Hub{})
+	l := capL{srv.Listener, make(chan *net.TCPConn, 4)}
+	srv.Listener = l
+	srv.Start()
+	defer srv.Close()
+	c, _ := dial(t, ctx, "ws"+strings.TrimPrefix(srv.URL, "http"))
+	defer c.CloseNow()
+	n := -1
+	rc, _ := (<-l.conns).SyscallConn()
+	rc.Control(func(fd uintptr) { n, _ = syscall.GetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_SNDBUF) })
+	if n != 2*SndBuf {
+		t.Fatalf("SO_SNDBUF принятого WS %d, ждали %d", n, 2*SndBuf)
 	}
 }

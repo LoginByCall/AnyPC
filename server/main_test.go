@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -213,16 +212,82 @@ func TestMemBudget(t *testing.T) {
 		{"без предела cgroup — 60 % ОЗУ", map[string]string{"/proc/self/cgroup": "0::/user.slice\n", "/sys/fs/cgroup/user.slice/memory.max": "max",
 			"/proc/meminfo": meminfo}, 1000000 << 10 * 6 / 10, 2000},
 		{"большой узел", map[string]string{"/proc/meminfo": "MemTotal: 16000000 kB\n"}, 16000000 << 10 * 6 / 10, hub.MaxConnsDefault},
-		{"ничего не прочитать", map[string]string{}, 0, hub.MinConns},
+		{"ничего не прочитать (не Linux)", map[string]string{}, 0, hub.MinConns},
+		{"cgroup v1", map[string]string{"/proc/self/cgroup": "5:cpu,cpuacct:/x\n4:memory:/system.slice/anypc.service\n",
+			"/sys/fs/cgroup/memory/system.slice/anypc.service/memory.limit_in_bytes": "601636864\n",
+			"/sys/fs/cgroup/memory/system.slice/memory.limit_in_bytes":               "9223372036854771712\n",
+			"/proc/meminfo": meminfo}, 601636864, 1958},
+		{"предел cgroup больше ОЗУ — 60 % ОЗУ", map[string]string{"/proc/self/cgroup": "0::/a\n", "/sys/fs/cgroup/a/memory.max": "4294967296",
+			"/proc/meminfo": meminfo}, 1000000 << 10 * 6 / 10, 2000},
 	} {
 		got, from := memBudget(fs(c.files))
 		if got != c.want || hub.ConnsFor(got) != c.conns {
 			t.Errorf("%s: бюджет %d (%s), соединений %d; ждали %d и %d", c.name, got, from, hub.ConnsFor(got), c.want, c.conns)
 		}
 	}
-	if line := memLine(601636864, "x/memory.max", 1<<63-1, 1958); !strings.Contains(line, "бюджет 573 МиБ (x/memory.max)") ||
+	if line := memLine(601636864, "x/memory.max", 1<<63-1, 1958, 2214); !strings.Contains(line, "бюджет 573 МиБ (x/memory.max)") ||
 		!strings.Contains(line, "предел Go нет") || !strings.Contains(line, "сигнализации 1958, TCP 2214") {
 		t.Errorf("журнал: %s", line)
+	}
+	if line := memLine(0, "не определена", 1<<63-1, hub.MinConns, 456); !strings.Contains(line, "бюджет неизвестен") {
+		t.Errorf("журнал вне Linux: %s", line)
+	}
+	// plan: явный -maxconns важнее; предел Go — GoLimitPct бюджета, GOMEMLIMIT важнее
+	if p := plan(0, 601636864, ""); p.conns != 1958 || p.tcp != 2214 || p.goLimit != 601636864*GoLimitPct/100 {
+		t.Errorf("plan из памяти: %+v", p)
+	}
+	if p := plan(100, 601636864, "300MiB"); p.conns != 100 || p.tcp != 100+HTTPConns || p.goLimit != 0 {
+		t.Errorf("plan с -maxconns и GOMEMLIMIT: %+v", p)
+	}
+}
+
+// TestMainHelper — не тест: процесс-помощник TestMainWiring запускает в нём настоящий main.
+func TestMainHelper(t *testing.T) {
+	if os.Getenv("ANYPC_MAIN_HELPER") == "" {
+		t.Skip("помощник TestMainWiring")
+	}
+	os.Args = append([]string{"anypc-server"}, strings.Fields(os.Getenv("ANYPC_MAIN_HELPER"))...)
+	main()
+}
+
+// TestMainWiring — проводка main (мутации приёмки-7 З5): журнал при старте пишет, что действует на деле —
+// предел Go из рантайма, потолок из хаба, лимит TCP из слушателя; без -maxconns — из памяти узла, с ним — он.
+func TestMainWiring(t *testing.T) {
+	budget, from := memBudget(os.ReadFile)
+	for _, c := range []struct {
+		args string
+		want limits
+	}{
+		{"", plan(0, budget, "")},
+		{"-maxconns 300", plan(300, budget, "")},
+	} {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestMainHelper$")
+		cmd.Env = append(os.Environ(), "ANYPC_MAIN_HELPER=-addr 127.0.0.1:0 -certs "+t.TempDir()+"/c "+c.args, "GOMEMLIMIT=")
+		out, _ := cmd.StderrPipe()
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		buf := make([]byte, 4096)
+		n, _ := io.ReadAtLeast(out, buf, 1)
+		time.Sleep(200 * time.Millisecond)
+		cmd.Process.Kill()
+		rest, _ := io.ReadAll(out)
+		cmd.Wait()
+		m := copy(buf[n:], rest)
+		goLimit := c.want.goLimit
+		if goLimit == 0 {
+			goLimit = 1<<63 - 1
+		}
+		if want := memLine(budget, from, goLimit, c.want.conns, c.want.tcp); !strings.Contains(string(buf[:n+m]), want) {
+			t.Errorf("%q: журнал\n%s\nждали\n%s", c.args, buf[:n+m], want)
+		}
+	}
+}
+
+// TestServeTimeouts — сроки сервера: IdleTimeout 10 с (простаивающее keep-alive держит место под лимитом TCP).
+func TestServeTimeouts(t *testing.T) {
+	if s := serve("", nil); s.IdleTimeout != 10*time.Second || s.ReadHeaderTimeout != 10*time.Second {
+		t.Fatalf("IdleTimeout %v, ReadHeaderTimeout %v", s.IdleTimeout, s.ReadHeaderTimeout)
 	}
 }
 
@@ -279,32 +344,3 @@ func TestIdleTimeoutKeepsWS(t *testing.T) {
 		t.Fatalf("WS после IdleTimeout: %v %+v", err, m)
 	}
 }
-
-// TestRcvBuf — приёмный буфер ядра у принятых соединений (Д1″ (в) приёмки-6); Linux удваивает заданное.
-func TestRcvBuf(t *testing.T) {
-	raw, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer raw.Close()
-	go func() {
-		if c, err := net.Dial("tcp", raw.Addr().String()); err == nil {
-			defer c.Close()
-			time.Sleep(time.Second)
-		}
-	}()
-	c, err := limitListener{raw.(*net.TCPListener), make(chan struct{}, 1)}.Accept()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close()
-	rc, _ := c.(*limConn).SyscallConn()
-	n := 0
-	rc.Control(func(fd uintptr) { n, _ = syscall.GetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF) })
-	if n != 2*RcvBuf {
-		t.Fatalf("SO_RCVBUF %d, ждали %d", n, 2*RcvBuf)
-	}
-}
-
-// hub ставит SndBuf захваченному WS через SetWriteBuffer: обёртка лимита TCP должна его отдавать.
-var _ interface{ SetWriteBuffer(int) error } = (*limConn)(nil)
