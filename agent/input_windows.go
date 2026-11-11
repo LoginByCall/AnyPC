@@ -137,3 +137,31 @@ func askMessageBox(cid, peer string) Answer {
 		return Deny // IDCANCEL, крестик; 32000 — истекло время
 	})
 }
+
+// AskControl — окно «Разрешить управление?» (смена режима сессии «Спрашивать»): как AskAccept, без «Только просмотр»;
+// запасное — MessageBox «Да / Нет» (Enter — «Нет»).
+func AskControl(cid, peer string) bool {
+	lang := uiLang()
+	title, text, yes, no := askControlText(lang, cid, peer, false)
+	a, err := askTaskDialog(title, text, yes, no, "", AskTimeout, AskDelay, 0)
+	if err == nil {
+		return a == Allow
+	}
+	log.Printf("окно «Разрешить управление»: %v — запасное окно MessageBox", err)
+	p := user32.NewProc("MessageBoxTimeoutW")
+	if p.Find() != nil {
+		return false
+	}
+	title, text, _, _ = askControlText(lang, cid, peer, true)
+	q, ok := asks[lang]
+	if !ok {
+		q = asks["en"]
+	}
+	t, _ := syscall.UTF16PtrFromString(title)
+	m, _ := syscall.UTF16PtrFromString(text + "\n\n" + q[14])     // кнопки системные: «Да» = «Разрешить»
+	const flags = 0x4 | 0x20 | 0x100 | 0x1000 | 0x10000 | 0x40000 // YESNO | ICONQUESTION | DEFBUTTON2 (Enter = «Нет») | SYSTEMMODAL | SETFOREGROUND | TOPMOST
+	return askLoop(func(left time.Duration) Answer {
+		r, _, _ := p.Call(0, uintptr(unsafe.Pointer(m)), uintptr(unsafe.Pointer(t)), flags, 0, uintptr(left/time.Millisecond))
+		return map[bool]Answer{true: Allow}[r == 6] // IDYES; IDNO, крестик, 32000 — истекло время
+	}) == Allow
+}
