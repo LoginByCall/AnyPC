@@ -97,7 +97,7 @@ func TestBrowserUsers(t *testing.T) {
 	out := string(runCDP(t, ctx, chrome, cdpUsers, srv.URL+"/"))
 	for _, want := range []string{
 		"nopw=Enter the password|false",
-		"wrong=Error: wrong name or password|false",
+		"wrong=Error: wrong name or password. Names do not work if the remote PC has “Ask before each connection” on or no TOTP for its own password — then leave “Name” empty and enter the one-time code|false",
 		"ok=|true",
 		`saved={"123456789":"Ivan"}`,
 		"refill=Ivan|true",
