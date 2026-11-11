@@ -266,7 +266,7 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		t.Skip("нет ffmpeg")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), e2eWait)
 	defer cancel()
 	sessions := make(chan string, 10)
 	var asked, denied, gotOK, gotMons atomic.Bool
@@ -667,6 +667,7 @@ var (
 	e2eTwice   bool                     // назвать имя дважды (хост обязан оборвать вход)
 	e2eInput   func(*testing.T, *Agent) // после нажатия ControlLeft клиентом, до bye
 	e2eIn      *webrtc.DataChannel      // канал input клиента (для e2eCtl): ставит e2e
+	e2eWait    = 20 * time.Second       // весь e2e: вход, видео, e2eCtl
 )
 
 // squat — клиент, который получил offer и не отвечает: раньше одного такого хватало, чтобы хост 20 с был «занят».

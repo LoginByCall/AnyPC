@@ -33,7 +33,7 @@ func modeHost(byAsk bool) (*Agent, *session, chan bool, *atomic.Int32) {
 
 func modeCall(ctx context.Context, a *Agent, s *session, view bool) chan modeMsg {
 	ch := make(chan modeMsg, 1)
-	a.setMode(ctx, s, view, func(m modeMsg) { ch <- m })
+	a.setMode(ctx, s, &view, func(m modeMsg) { ch <- m })
 	return ch
 }
 
@@ -49,6 +49,16 @@ func modeGot(t *testing.T, ch chan modeMsg, want modeMsg) {
 	}
 }
 
+// answer — человек у хоста ответил в окне; окна нет (его не открыли) — внятная ошибка, а не зависание.
+func answer(t *testing.T, ans chan bool, v bool) {
+	t.Helper()
+	select {
+	case ans <- v:
+	case <-time.After(5 * time.Second):
+		t.Fatal("окно «Разрешить управление?» не открыто")
+	}
+}
+
 // TestMode — REQ-F-26: сессия «Спрашивать» уходит в просмотр сразу и без окна; управление — после «Разрешить».
 func TestMode(t *testing.T) {
 	ctx := context.Background()
@@ -58,7 +68,7 @@ func TestMode(t *testing.T) {
 		t.Fatalf("в просмотр: управление %v, окон %d", s.control(), shown.Load())
 	}
 	ch := modeCall(ctx, a, s, false)
-	ans <- true
+	answer(t, ans, true)
 	modeGot(t, ch, modeMsg{T: "mode", OK: true})
 	if !s.control() || shown.Load() != 1 {
 		t.Fatalf("«Разрешить»: управление %v, окон %d", s.control(), shown.Load())
@@ -79,7 +89,7 @@ func TestModeDeny(t *testing.T) {
 	s.view.Store(true)
 	ch := modeCall(ctx, a, s, false)
 	modeGot(t, modeCall(ctx, a, s, false), modeMsg{T: "mode", View: true, Why: "busy"})
-	ans <- false
+	answer(t, ans, false)
 	modeGot(t, ch, modeMsg{T: "mode", View: true, Why: "denied"})
 	modeGot(t, modeCall(ctx, a, s, false), modeMsg{T: "mode", View: true, Why: "wait"})
 	if s.control() || shown.Load() != 1 {
@@ -87,7 +97,7 @@ func TestModeDeny(t *testing.T) {
 	}
 	time.Sleep(modeWait)
 	ch = modeCall(ctx, a, s, false)
-	ans <- true
+	answer(t, ans, true)
 	modeGot(t, ch, modeMsg{T: "mode", OK: true})
 	if !s.control() || shown.Load() != 2 {
 		t.Fatalf("после modeWait: управление %v, окон %d", s.control(), shown.Load())
@@ -126,13 +136,13 @@ func TestModeRefuse(t *testing.T) {
 
 	ch := modeCall(ctx, a, s, false)
 	on.Store(true)
-	ans <- true
+	answer(t, ans, true)
 	modeGot(t, ch, modeMsg{T: "mode", View: true, Why: "viewonly"})
 	on.Store(false)
 	cctx, cancel := context.WithCancel(ctx)
 	ch = modeCall(cctx, a, s, false)
 	cancel()
-	ans <- true
+	answer(t, ans, true)
 	select {
 	case m := <-ch:
 		t.Errorf("ответ кончившейся сессии: %+v", m)
@@ -341,5 +351,95 @@ func TestBrowserMode(t *testing.T) {
 	}
 	if asked.Load() != 2 {
 		t.Errorf("окон «Разрешить управление?» %d, ждали 2", asked.Load())
+	}
+}
+
+// TestModeRecheck — «Только показ экрана» включили во время окна (до проверки после «Разрешить») и между двумя
+// проверками после него: управления нет; view не снимается до первой проверки (ввод в этот миг не проходит).
+func TestModeRecheck(t *testing.T) {
+	for _, on := range []int32{2, 3} { // номер вызова ViewOnly, с которого включено: 1 — до окна
+		a, s, ans, _ := modeHost(true)
+		s.view.Store(true)
+		var calls atomic.Int32
+		var leaked atomic.Bool
+		a.ViewOnly = func() bool {
+			if s.control() {
+				leaked.Store(true)
+			}
+			return calls.Add(1) >= on
+		}
+		ch := modeCall(context.Background(), a, s, false)
+		answer(t, ans, true)
+		modeGot(t, ch, modeMsg{T: "mode", View: true, Why: "viewonly"})
+		if s.control() || on == 2 && leaked.Load() {
+			t.Errorf("включено с вызова %d: управление %v, view снят до проверки %v", on, s.control(), leaked.Load())
+		}
+	}
+}
+
+// TestModeLimit — после modeMax «Отклонить» за сессию окно больше не открывается ("limit"); отказы без окна и
+// «Только показ экрана» после «Разрешить» в счёт не идут.
+func TestModeLimit(t *testing.T) {
+	defer func(w time.Duration) { modeWait = w }(modeWait)
+	modeWait = 0
+	ctx := context.Background()
+	a, s, ans, shown := modeHost(true)
+	s.view.Store(true)
+	var on atomic.Bool
+	a.ViewOnly = on.Load
+	on.Store(true)
+	modeGot(t, modeCall(ctx, a, s, false), modeMsg{T: "mode", View: true, Why: "viewonly"})
+	on.Store(false)
+	for range modeMax {
+		ch := modeCall(ctx, a, s, false)
+		answer(t, ans, false)
+		modeGot(t, ch, modeMsg{T: "mode", View: true, Why: "denied"})
+	}
+	modeGot(t, modeCall(ctx, a, s, false), modeMsg{T: "mode", View: true, Why: "limit"})
+	if shown.Load() != int32(modeMax) {
+		t.Errorf("окон %d, ждали %d", shown.Load(), modeMax)
+	}
+	modeGot(t, modeCall(ctx, a, s, true), modeMsg{T: "mode", View: true, OK: true}) // просмотр — по-прежнему сразу
+}
+
+// TestModeCancel — клиент попросил просмотр, пока окно открыто: «Разрешить» после этого управления не даёт ("cancel");
+// view не bool или нет поля — отказ "bad" без окна.
+func TestModeCancel(t *testing.T) {
+	ctx := context.Background()
+	a, s, ans, shown := modeHost(true)
+	s.view.Store(true)
+	ch := modeCall(ctx, a, s, false)
+	modeGot(t, modeCall(ctx, a, s, true), modeMsg{T: "mode", View: true, OK: true})
+	answer(t, ans, true)
+	modeGot(t, ch, modeMsg{T: "mode", View: true, Why: "cancel"})
+	if s.control() {
+		t.Fatal("управление после отменённой просьбы")
+	}
+	r := make(chan modeMsg, 1)
+	a.setMode(ctx, s, nil, func(m modeMsg) { r <- m })
+	modeGot(t, r, modeMsg{T: "mode", View: true, Why: "bad"})
+	if shown.Load() != 1 {
+		t.Errorf("окон %d", shown.Load())
+	}
+}
+
+// TestModePlaque — плашка пересоздаётся с пометкой режима: новая до закрытия старой (REQ-F-15).
+func TestModePlaque(t *testing.T) {
+	defer func(f func(string, plaqueMode, func()) (func(), error)) { indicator = f }(indicator)
+	var modes []plaqueMode
+	var closed atomic.Int32
+	indicator = func(_ string, m plaqueMode, _ func()) (func(), error) {
+		modes = append(modes, m)
+		return func() { closed.Add(1) }, nil
+	}
+	ctx := context.Background()
+	a, s, ans, _ := modeHost(true)
+	s.closeInd = func() { closed.Add(1) }
+	modeGot(t, modeCall(ctx, a, s, true), modeMsg{T: "mode", View: true, OK: true})
+	ch := modeCall(ctx, a, s, false)
+	answer(t, ans, true)
+	modeGot(t, ch, modeMsg{T: "mode", OK: true})
+	if len(modes) != 2 || modes[0]&plaqueView == 0 || modes[1]&plaqueView != 0 || closed.Load() != 2 {
+		t.Errorf("плашки %v, закрыто %d", modes, closed.Load())
 	}
 }
