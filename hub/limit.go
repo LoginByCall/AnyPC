@@ -124,6 +124,25 @@ type limKey struct {
 	max int
 }
 
+// AddrKey — ключ лимита «на адрес» для server (TCP, тяжёлые ответы) и множитель его доли: IPv4 и /64 — 1, /48 — 10,
+// как у соединений хаба (limKeys).
+type AddrKey struct {
+	Key string
+	Mul int
+}
+
+// AddrKeys — ключи лимитов «на адрес» для a; loopback и частные — nil (свой узел за прокси видит всех с одного адреса).
+func AddrKeys(a netip.Addr) []AddrKey {
+	var r []AddrKey
+	for _, k := range limKeys(a) {
+		r = append(r, AddrKey{k.key, k.max / ConnsPerIP})
+	}
+	return r
+}
+
+// ClientAddr — адрес клиента запроса, как для лимитов хаба (X-Forwarded-For — только от loopback).
+func ClientAddr(r *http.Request) netip.Addr { return clientAddr(r) }
+
 // limKeys — по каким счётчикам считать соединение с адреса a: IPv4 — адрес, IPv6 — /64 и /48.
 func limKeys(a netip.Addr) []limKey {
 	if exempt(a) {
