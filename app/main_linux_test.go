@@ -58,6 +58,37 @@ func TestLocalAPI(t *testing.T) {
 	if code, body := do("GET", "127.0.0.1:5000", "/?t=tok123", ""); code != 200 || !strings.Contains(body, "pakeRespond") {
 		t.Errorf("страница: %d", code)
 	}
+	// правка записей из окна рвёт сессию отозванной записи (Д4): зовётся DropRevoked — и только при успехе
+	var drops int
+	dropRevoked = func(*agent.Agent) { drops++ }
+	defer func() { dropRevoked = (*agent.Agent).DropRevoked }()
+	call := func(name, args string) int {
+		r := httptest.NewRequest("POST", "/api/"+name, strings.NewReader(args))
+		r.Host = "127.0.0.1:5000"
+		r.Header.Set("X-Token", "tok123")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w.Code
+	}
+	for _, c := range []struct {
+		name, args  string
+		code, drops int
+	}{
+		{"setPassword", `["short"]`, 400, 0},
+		{"setPassword", `["пароль-123"]`, 200, 1},
+		{"userSet", `["ivan","пароль-ивана","full"]`, 200, 2},
+		{"userSet", `["ivan","пароль-ивана","admin"]`, 400, 2},
+		{"userDel", `["nobody"]`, 400, 2},
+		{"userDel", `["ivan"]`, 200, 3},
+	} {
+		if code := call(c.name, c.args); code != c.code || drops != c.drops {
+			t.Errorf("%s %s: %d, разрывов %d (ждали %d, %d)", c.name, c.args, code, drops, c.code, c.drops)
+		}
+	}
+	pollConfig(cfg, &agent.Agent{}) // опрос настроек раз в 2 с — тоже (CLI при запущенной программе)
+	if drops != 4 {
+		t.Errorf("опрос настроек не зовёт DropRevoked: %d", drops)
+	}
 }
 
 // TestOnceCode: браузер открывается одноразовым кодом (токена нет в аргументах, /proc/*/cmdline): первый заход —

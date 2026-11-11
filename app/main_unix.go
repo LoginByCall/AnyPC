@@ -159,10 +159,7 @@ func main() {
 	srv := cfg.Server
 	go func() { // --view-only on при запущенной программе: вошедшая сессия с полным доступом рвётся (REQ-F-25)
 		for range time.Tick(2 * time.Second) {
-			if cfg.viewNow() {
-				a.DisconnectFull()
-			}
-			a.DropRevoked() // --user / --user-del при запущенной программе (настройки перечитал viewNow)
+			pollConfig(cfg, a)
 		}
 	}()
 	run.start(srv) // настройки дальше — только под c.mu (опрос выше их перечитывает)

@@ -83,7 +83,7 @@ type Agent struct {
 	lockUntil time.Time
 	failAt    time.Time            // последняя неудача по хосту (hostStep)
 	names     map[string]*nameLock // неудачи по имени записи (REQ-S-22): и для несуществующих имён — иначе блокировка выдала бы, есть ли имя
-	otpFails  int                  // неверные коды TOTP по хосту (все записи): с hostLockAt шаг кода заперт всем, и закреплённым ключам;
+	otpFails  int                  // неверные коды TOTP по хосту (все записи): с hostLockAt шаг кода заперт всем, кроме закреплённых ключей;
 	otpLock   time.Time            // у каждой записи ещё своя лестница кодов (nameLock.otpFails, как одна лестница v0.1.19)
 	otpAt     time.Time            // последний неверный код по хосту (hostStep)
 	online    map[string]bool      // хабы, на которых хост зарегистрирован
@@ -332,15 +332,24 @@ func (a *Agent) DropRevoked() {
 	if s == nil || !s.authed.Load() {
 		return
 	}
+	if gone, view := a.revoked(s); !gone && (!view || s.view.Load()) {
+		return
+	}
+	if a.byCID(s.cid) != s { // проверенная сессия уже кончилась — другую, успевшую войти, не трогать
+		return
+	}
+	log.Printf("сессия %s: учётную запись удалили, сменили ей пароль или права — разорвана", s.label())
+	a.send(context.Background(), s.conn, "bye", s.cid, "host")
+	s.pc.Close()
+}
+
+// revoked — запись сессии s удалили или сменили ей пароль (соль не та, что при входе); view — права записи сейчас «просмотр».
+func (a *Agent) revoked(s *session) (gone, view bool) {
 	s.mu.Lock()
 	user, was := s.user, s.salt
 	s.mu.Unlock()
 	salt, secret, view := a.Secret(user)
-	if len(secret) > 0 && bytes.Equal(salt, was) && (!view || s.view.Load()) {
-		return
-	}
-	log.Printf("сессия %s: учётную запись удалили, сменили ей пароль или права — разорвана", s.label())
-	a.Disconnect()
+	return len(secret) == 0 || !bytes.Equal(salt, was), view
 }
 
 func (a *Agent) setOnline(hub string, on bool) {
@@ -651,7 +660,17 @@ type nameLock struct {
 	until    time.Time
 	otpFails int // неверные коды этой записи: сбрасывает только верный код этой же записи
 	otpUntil time.Time
+	at       time.Time // последняя неудача (пароль или код)
 }
+
+// stale — строка имени затихла: nameForget после последней неудачи и после конца обеих блокировок — забыть. 5 попыток
+// в сутки меньше, чем даёт установившаяся лестница (24 в сутки), — перебор не ослаблен.
+func (n *nameLock) stale(now time.Time) bool {
+	return now.After(n.at.Add(nameForget)) && now.After(n.until.Add(nameForget)) && now.After(n.otpUntil.Add(nameForget))
+}
+
+// nameForget — сутки тишины, после которых строка имени (и общая othersKey) забывается.
+const nameForget = 24 * time.Hour
 
 // hostLockAt — неудач по хосту (все имена) до общей блокировки: массовый перебор имён; одно имя запирается раньше —
 // с 5-й (REQ-S-04), и перебор одного имени другие не запирает. maxNames — сколько имён помнить; имена с неудачами не
@@ -665,8 +684,13 @@ const othersKey = "\x01"
 
 // nameOf — счётчики имени (под a.mu); create — завести, если нет. Сверх maxNames — общий othersKey.
 func (a *Agent) nameOf(user string, create bool) *nameLock {
-	if n := a.names[user]; n != nil {
+	now := time.Now()
+	if n := a.names[user]; n != nil && !n.stale(now) {
 		return n
+	}
+	delete(a.names, user)
+	if len(a.names) >= maxNames { // таблица полна: сначала забыть затихшие (иначе одна атака навсегда сводит всех в othersKey)
+		maps.DeleteFunc(a.names, func(_ string, l *nameLock) bool { return l.stale(now) })
 	}
 	if len(a.names) >= maxNames {
 		user = othersKey
@@ -690,6 +714,7 @@ func (a *Agent) countAuth(cid, user string, ok bool) {
 	}
 	n := a.nameOf(user, true)
 	lockStep(&n.fails, &n.until, 5)
+	n.at = time.Now()
 	hostStep(&a.fails, &a.lockUntil, &a.failAt)
 	log.Printf("неверный пароль или код от %s (запись %q: %d, всего %d)", cid, user, n.fails, a.fails)
 }
@@ -1106,12 +1131,13 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 			check := func(code string) {
 				// Блокировка (REQ-S-04, S-22): у записи своя лестница кодов (5 → 1 мин … 1 ч), её сбрасывает только верный
 				// код этой же записи (вор с паролем и ключом записи получает 5 кодов, как в v0.1.19, и свой вход другой
-				// записью их не обнуляет); плюс общая по хосту. Их смотрят все; чужой — ещё и блокировки паролей, закреплённый
-				// ключ — нет (У3: знающий только ID перебором паролей владельца не запирает).
+				// записью их не обнуляет) — её смотрят все. Чужой смотрит ещё общую лестницу кодов по хосту и блокировки
+				// паролей; закреплённый ключ — нет (У3: ни перебор паролей, ни неверные коды записи «просмотр» со своим TOTP
+				// владельца с ключом не запирают).
 				lock := func() bool {
 					now := time.Now()
 					n := a.nameOf(user, false)
-					return now.Before(a.otpLock) || n != nil && now.Before(n.otpUntil) || !trusted && a.pwLocked(user, now)
+					return !trusted && now.Before(a.otpLock) || n != nil && now.Before(n.otpUntil) || !trusted && a.pwLocked(user, now)
 				}
 				a.mu.Lock()
 				if lock() {
@@ -1125,6 +1151,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 				} else if !ok {
 					n := a.nameOf(user, true)
 					lockStep(&n.otpFails, &n.otpUntil, 5)
+					n.at = time.Now()
 					hostStep(&a.otpFails, &a.otpLock, &a.otpAt)
 				}
 				if !trusted || !ok { // неверные коды — и в общий счётчик (REQ-S-04); успех ключа общий не сбрасывает
@@ -1215,6 +1242,15 @@ func (a *Agent) accept(ctx context.Context, s *session, track *webrtc.TrackLocal
 	s.authed.Store(true)
 	// ещё раз после authed: галочку могли включить между проверкой выше и authed, а DisconnectFull не вошедшую не рвёт
 	if a.ViewOnly != nil && a.ViewOnly() {
+		s.view.Store(true)
+	}
+	// и запись: её могли удалить или сменить ей пароль, пока ждали «Разрешить» или код, — DropRevoked не вошедшую не рвёт,
+	// а на Windows опроса настроек нет; права сузили — только просмотр
+	if gone, v := a.revoked(s); gone {
+		log.Printf("сессия %s: учётную запись удалили или сменили ей пароль во время входа — отказ", s.label())
+		s.pc.Close()
+		return
+	} else if v {
 		s.view.Store(true)
 	}
 	if pin != nil && a.Trust != nil {

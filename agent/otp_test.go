@@ -86,7 +86,11 @@ func TestOTP(t *testing.T) {
 		t.Fatalf("повтор кода: запросов %d, неудач %d, блокировка %v", asks.Load(), f, l)
 	}
 
-	e2eAgent = func(a *Agent) { ag = a; a.OTP = o.check; a.names = map[string]*nameLock{"": {fails: 4}} }
+	e2eAgent = func(a *Agent) {
+		ag = a
+		a.OTP = o.check
+		a.names = map[string]*nameLock{"": {fails: 4, at: time.Now()}}
+	}
 	e2eOTP = func(int) string { c := []byte(o.code()); c[0] = '0' + (c[0]-'0'+1)%10; return string(c) }
 	asks.Store(0)
 	e2e(t, local(t), "123456789", false, ff, "secret123") // верный пароль не сбросил 4 неудачи: первый неверный код — блокировка
@@ -246,11 +250,11 @@ func TestOTPTrustedLock(t *testing.T) {
 	}
 
 	fresh := func() string { o.mu.Lock(); o.last = 0; o.mu.Unlock(); return o.code() } // код не повтор: отказ — только от блокировки
-	e2eAgent = func(a *Agent) { trusted(a); a.otpLock = time.Now().Add(time.Hour) }
+	e2eAgent = func(a *Agent) { trusted(a); a.names = map[string]*nameLock{"": {otpUntil: time.Now().Add(time.Hour)}} }
 	e2eOTP = func(int) string { return fresh() }
 	e2e(t, local(t), "123456789", false, ff, "secret123") // своя блокировка ключа — отказ и верному коду
 
-	e2eAgent = func(a *Agent) { trusted(a); a.names = map[string]*nameLock{"": {otpFails: 4}} } // 4 неверных кода уже ввели без ключа — ключ получает один
+	e2eAgent = func(a *Agent) { trusted(a); a.names = map[string]*nameLock{"": {otpFails: 4, at: time.Now()}} } // 4 неверных кода уже ввели без ключа — ключ получает один
 	e2eOTP = func(int) string { c := []byte(fresh()); c[0] = '0' + (c[0]-'0'+1)%10; return string(c) }
 	asks.Store(0)
 	e2e(t, local(t), "123456789", false, ff, "secret123")
