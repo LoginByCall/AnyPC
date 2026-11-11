@@ -25,6 +25,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -98,10 +99,11 @@ func main() {
 			fmt.Println("пароль задан; запущенный AnyPC подхватит его за 2 с")
 			return
 		}
-		_, _, view := cfg.secret(agent.UserKey(*cliUser))
+		view := cfg.users()[slices.IndexFunc(cfg.users(), func(u map[string]any) bool { return u["name"] == agent.UserKey(*cliUser) })]["view"] == true
 		fmt.Printf("учётная запись %s (%s) задана; запущенный AnyPC подхватит её за 2 с\n", agent.UserKey(*cliUser), map[bool]string{true: "view", false: "full"}[view])
 		return
 	}
+	cfg.codeUsed()                       // режим «Спрашивать»: новый код при запуске — программа могла кончиться посреди сессии (REQ-S-23)
 	if !cfg.confirm() && !cfg.otpSet() { // хост обновлён с выключенным подтверждением: без TOTP — снова окно «Разрешить»
 		log.Printf("ВНИМАНИЕ: вход без подтверждения выключен, пока не настроен второй фактор (TOTP): каждый вход спросит «Разрешить». Настройте: %s --confirm off", filepath.Base(os.Args[0]))
 	}
@@ -116,7 +118,8 @@ func main() {
 	a := &agent.Agent{Audio: true, Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, Key: cfg.key(), FPS: 30, Trusted: cfg.trusted, Trust: cfg.trust,
 		Bitrate: agent.Kbps(cfg.Bitrate),
 		Confirm: agent.AskAccept, Unattended: func() bool { return !cfg.confirm() }, OTP: cfg.otp, ViewOnly: cfg.viewOnly, // без подтверждения — с TOTP (PLAN.md)
-		Capture: hostCapture(cfg.Enc), Locked: hostLocked, FileDir: downloads(), Stderr: logw}
+		CodeUsed: cfg.codeUsed, // «Спрашивать»: код сменить после сессии и блокировки (REQ-S-23)
+		Capture:  hostCapture(cfg.Enc), Locked: hostLocked, FileDir: downloads(), Stderr: logw}
 	var mu sync.Mutex
 	online, session, update := false, "", ""
 	a.OnState = func(on bool, s string) { mu.Lock(); online, session = on, s; mu.Unlock() }
@@ -124,7 +127,7 @@ func main() {
 		node, pub := cfg.node()
 		mu.Lock()
 		defer mu.Unlock()
-		return map[string]any{"id": cfg.id(), "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "otp": cfg.otpSet(), "users": cfg.users(), "viewOnly": cfg.viewOnly(), "version": version, "update": update, "node": node, "nodePub": pub, "server": cfg.server(), "audio": audioInfo(a)}
+		return map[string]any{"id": cfg.id(), "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "otp": cfg.otpSet(), "users": cfg.users(), "code": cfg.code(), "viewOnly": cfg.viewOnly(), "version": version, "update": update, "node": node, "nodePub": pub, "server": cfg.server(), "audio": audioInfo(a)}
 	}
 	go watchUpdates(func(v string) { mu.Lock(); update = v; mu.Unlock() })
 
@@ -157,9 +160,10 @@ func main() {
 		openWindow("http://" + addr + "/?n=" + once.code)
 	}
 	srv := cfg.Server
+	code := cfg.code()
 	go func() { // --view-only on при запущенной программе: вошедшая сессия с полным доступом рвётся (REQ-F-25)
 		for range time.Tick(2 * time.Second) {
-			pollConfig(cfg, a)
+			pollConfig(cfg, a, &code)
 		}
 	}()
 	run.start(srv) // настройки дальше — только под c.mu (опрос выше их перечитывает)
@@ -230,7 +234,7 @@ window.ANYPC = {ws: %s, clipPoll: %t};
   const T = %s;
   const api = (n, ...a) => fetch('/api/' + n, {method: 'POST', headers: {'X-Token': T, 'Content-Type': 'application/json'}, body: JSON.stringify(a)})
     .then(async r => { const j = await r.json(); if (!r.ok) throw j.error; return j.result; });
-  for (const n of ['hostInfo', 'setPassword', 'setConfirm', 'setNode', 'quit', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'hostVerify', 'knownGet', 'knownSet', 'savedGet', 'savedSet', 'otpNew', 'otpEnable', 'otpOff', 'userSet', 'userDel', 'setViewOnly', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort', 'audioAnswer', 'audioMic']) window[n] = (...a) => api(n, ...a);
+  for (const n of ['hostInfo', 'setPassword', 'setConfirm', 'setNode', 'quit', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'hostVerify', 'knownGet', 'knownSet', 'savedGet', 'savedSet', 'otpNew', 'otpEnable', 'otpOff', 'newCode', 'userSet', 'userDel', 'setViewOnly', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort', 'audioAnswer', 'audioMic']) window[n] = (...a) => api(n, ...a);
   window.fullscreen = on => on ? document.documentElement.requestFullscreen().then(() => navigator.keyboard?.lock()).catch(() => {})
                                : document.fullscreenElement && document.exitFullscreen();
 })();
@@ -290,7 +294,7 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 		if len(args) > 0 {
 			json.Unmarshal(args[0], &on)
 		}
-		err = cfg.setConfirm(on)
+		err = dropAfter(a, cfg.setConfirm(on)) // смена режима: сессия по паролю или записи (другая соль) рвётся
 	case "setNode":
 		var pub bool
 		if len(args) > 1 {
@@ -325,7 +329,9 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 	case "otpNew":
 		res, err = cfg.otpNew(str(0))
 	case "otpEnable":
-		err = cfg.otpEnable(str(0), str(1), str(2))
+		err = dropAfter(a, cfg.otpEnable(str(0), str(1), str(2)))
+	case "newCode":
+		res, err = newCode(cfg, a)
 	case "otpOff":
 		err = cfg.otpOff(str(0))
 	case "userSet":

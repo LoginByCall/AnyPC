@@ -59,6 +59,7 @@ func main() {
 	if err != nil {
 		fatal("Настройки: " + err.Error())
 	}
+	cfg.codeUsed() // режим «Спрашивать»: новый код при запуске — программа могла кончиться посреди сессии (REQ-S-23)
 	// FFmpeg — в фоне: окно и сигнализация работают сразу, захват — когда загрузится (повтор раз в 30 с без сети).
 	var ffMu sync.Mutex
 	ff, ffState := "", "0" // путь к ffmpeg.exe; ffState — проценты загрузки, "err" или "" (готов)
@@ -103,6 +104,7 @@ func main() {
 		Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, Key: cfg.key(), FPS: 30, Stderr: logf, Trusted: cfg.trusted, Trust: cfg.trust,
 		Bitrate: agent.Kbps(cfg.Bitrate),
 		Confirm: agent.AskAccept, Unattended: func() bool { return !cfg.confirm() }, OTP: cfg.otp, ViewOnly: cfg.viewOnly, // без подтверждения — с TOTP (PLAN.md)
+		CodeUsed: cfg.codeUsed, // «Спрашивать»: код сменить после сессии и блокировки (REQ-S-23)
 		Capture: func(ctx context.Context, c agent.Cap) (*exec.Cmd, error) { // выход DXGI c.Mon
 			ffMu.Lock()
 			ff := ff
@@ -119,7 +121,7 @@ func main() {
 		node, pub := cfg.node()
 		mu.Lock()
 		defer mu.Unlock()
-		return map[string]any{"id": cfg.id(), "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "otp": cfg.otpSet(), "users": cfg.users(), "viewOnly": cfg.viewOnly(), "version": version, "ffmpeg": ffSnap(&ffMu, &ffState), "update": update, "node": node, "nodePub": pub, "server": cfg.server(), "audio": audioInfo(a)}
+		return map[string]any{"id": cfg.id(), "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "otp": cfg.otpSet(), "users": cfg.users(), "code": cfg.code(), "viewOnly": cfg.viewOnly(), "version": version, "ffmpeg": ffSnap(&ffMu, &ffState), "update": update, "node": node, "nodePub": pub, "server": cfg.server(), "audio": audioInfo(a)}
 	}
 	go watchUpdates(func(v string) { mu.Lock(); update = v; mu.Unlock() }) // окно опрашивает hostInfo
 	a.OnState = func(on bool, s string) {
@@ -135,11 +137,12 @@ func main() {
 	w.Bind("openUpdate", func() { exec.Command("rundll32", "url.dll,FileProtocolHandler", updateSite).Start() }) // адрес фиксирован: странице не открыть произвольный
 	w.Bind("openSite", func() { exec.Command("rundll32", "url.dll,FileProtocolHandler", siteHome).Start() })
 	w.Bind("setPassword", func(p string) error { return dropAfter(a, cfg.setPassword(p)) })
-	w.Bind("setConfirm", cfg.setConfirm)
+	w.Bind("setConfirm", func(on bool) error { return dropAfter(a, cfg.setConfirm(on)) }) // смена режима рвёт сессию по паролю/записи
 	w.Bind("otpNew", cfg.otpNew)
 	w.Bind("setViewOnly", func(on bool) error { return setViewOnly(cfg, a, on) })
-	w.Bind("otpEnable", cfg.otpEnable)
+	w.Bind("otpEnable", func(s, code, user string) error { return dropAfter(a, cfg.otpEnable(s, code, user)) })
 	w.Bind("otpOff", cfg.otpOff)
+	w.Bind("newCode", func() (string, error) { return newCode(cfg, a) })
 	w.Bind("userSet", func(name, pw, rights string) error { return dropAfter(a, cfg.setUser(name, pw, rights)) })
 	w.Bind("userDel", func(name string) error { return dropAfter(a, cfg.delUser(name)) })
 	run := &runner{a: a, ctx: ctx}

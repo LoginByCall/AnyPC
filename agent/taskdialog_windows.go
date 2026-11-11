@@ -20,7 +20,9 @@ import (
 const (
 	tdAllow, tdView, tdDeny = 100, 101, 102
 	tdmClickButton          = 0x0400 + 102 // TDM_CLICK_BUTTON
+	tdmEnableButton         = 0x0400 + 111 // TDM_ENABLE_BUTTON: wParam — ID кнопки, lParam — 0 выключить / 1 включить
 	tdnCreated, tdnTimer    = 0, 4
+	tdnButtonClicked        = 2 // вернуть S_FALSE (1) — окно не закрывать
 	idCancel                = 2 // IDCANCEL: Esc и крестик
 )
 
@@ -46,9 +48,11 @@ type actCtx struct {
 // и адреса pButtons/pnButton со стека стали бы чужими (ответ «Разрешить» потерялся бы или испортил память).
 type tdRun struct {
 	timeout time.Duration
-	click   int       // тест: нажать эту кнопку сразу после появления окна
-	cfg     [160]byte // TASKDIALOGCONFIG (pshpack1), x64
-	btns    [36]byte  // 3 × TASKDIALOG_BUTTON (pshpack1): int + PCWSTR = 12 байт
+	delay   time.Duration // кнопки согласия выключены столько после появления окна
+	enabled bool          // уже включены (только из tdCallbackFn — поток окна)
+	click   int           // тест: нажать эту кнопку сразу после появления окна
+	cfg     [160]byte     // TASKDIALOGCONFIG (pshpack1), x64
+	btns    [36]byte      // 3 × TASKDIALOG_BUTTON (pshpack1): int + PCWSTR = 12 байт
 	pressed int32
 }
 
@@ -134,10 +138,23 @@ func tdCallbackFn(hwnd uintptr, msg uint32, wparam, lparam, ref uintptr) uintptr
 	case tdnCreated: // поверх всех окон и на передний план, как MB_TOPMOST|MB_SETFOREGROUND
 		procSetWindowPos.Call(hwnd, ^uintptr(0), 0, 0, 0, 0, 0x3) // HWND_TOPMOST, SWP_NOSIZE|SWP_NOMOVE
 		procSetForeground.Call(hwnd)
+		if r.delay > 0 { // «Разрешить» и «Только просмотр» — не раньше delay (включит tdnTimer)
+			procPostMessage.Call(hwnd, tdmEnableButton, tdAllow, 0)
+			procPostMessage.Call(hwnd, tdmEnableButton, tdView, 0)
+		}
 		if r.click != 0 {
 			procPostMessage.Call(hwnd, tdmClickButton, uintptr(r.click), 0)
 		}
-	case tdnTimer: // wparam — мс с появления окна
+	case tdnButtonClicked: // и если кнопка всё же нажата раньше delay (включилась раньше, клавиатура) — не засчитать
+		if r.delay > 0 && !r.enabled && (wparam == tdAllow || wparam == tdView) {
+			return 1
+		}
+	case tdnTimer: // wparam — мс с появления окна (таймер — раз в ~200 мс)
+		if el := time.Duration(wparam) * time.Millisecond; r.delay > 0 && !r.enabled && el >= r.delay {
+			r.enabled = true
+			procPostMessage.Call(hwnd, tdmEnableButton, tdAllow, 1)
+			procPostMessage.Call(hwnd, tdmEnableButton, tdView, 1)
+		}
 		if time.Duration(wparam)*time.Millisecond >= r.timeout {
 			procPostMessage.Call(hwnd, tdmClickButton, tdDeny, 0) // своя кнопка точно есть; IDCANCEL без кнопки «Отмена» не гарантирован
 		}
@@ -146,7 +163,8 @@ func tdCallbackFn(hwnd uintptr, msg uint32, wparam, lparam, ref uintptr) uintptr
 }
 
 // askTaskDialog — окно с кнопками yes / view / no; Esc, крестик и истёкшее время → Deny. Кнопка по умолчанию — «Отклонить».
-func askTaskDialog(title, text, yes, no, view string, timeout time.Duration, click int) (Answer, error) {
+// delay > 0 — yes и view выключены первые delay (TDM_ENABLE_BUTTON по таймеру окна).
+func askTaskDialog(title, text, yes, no, view string, timeout, delay time.Duration, click int) (Answer, error) {
 	tdOnce.Do(tdInit)
 	if tdInitErr != nil {
 		return Deny, tdInitErr
@@ -154,7 +172,7 @@ func askTaskDialog(title, text, yes, no, view string, timeout time.Duration, cli
 	u := func(s string) *uint16 { p, _ := syscall.UTF16PtrFromString(s); return p }
 	t, c := u(title), u(text)
 	labels := []*uint16{u(yes), u(view), u(no)}
-	r := &tdRun{timeout: timeout, click: click}
+	r := &tdRun{timeout: timeout, delay: delay, click: click}
 	for i, id := range []int32{tdAllow, tdView, tdDeny} {
 		binary.LittleEndian.PutUint32(r.btns[i*12:], uint32(id))
 		binary.LittleEndian.PutUint64(r.btns[i*12+4:], uint64(uintptr(unsafe.Pointer(labels[i]))))

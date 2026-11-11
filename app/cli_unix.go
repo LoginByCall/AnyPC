@@ -44,7 +44,11 @@ func runCLI(cfg *config) (done bool, err error) {
 		} else if err := cfg.setConfirm(true); err != nil {
 			return true, err
 		}
-		fmt.Println("окно «Разрешить»:", *cliConfirm, map[bool]string{true: "(второй фактор TOTP отключён)", false: "(второй фактор TOTP включён)"}[*cliConfirm == "on"], restartHint)
+		msg := "окно «Разрешить»: " + *cliConfirm + map[bool]string{true: " (второй фактор TOTP отключён)", false: " (второй фактор TOTP включён)"}[*cliConfirm == "on"]
+		if c := cfg.code(); c != "" { // режим «Спрашивать»: вход — по одноразовому коду (REQ-S-23)
+			msg += "; одноразовый код: " + spaced(c) + " (меняется после каждой сессии)"
+		}
+		fmt.Println(msg + "; запущенный AnyPC подхватит настройку за 2 с") // опрос настроек (pollConfig)
 	case *cliView != "":
 		if *cliView != "on" && *cliView != "off" {
 			return true, errors.New("--view-only: on или off")
@@ -75,6 +79,9 @@ func runCLI(cfg *config) (done bool, err error) {
 		}
 		fmt.Printf("AnyPC %s\nID: %s\nКлюч хоста: %s\nПароль задан: %s\nОкно «Разрешить»: %s\nВторой фактор (TOTP): %s\nТолько показ экрана: %s\nУзел: %s (хабы AnyPC запасными: %s)\nАвтозапуск: %s\n",
 			version, cfg.ID, cfg.fingerprint(), yesNo(cfg.hasPass()), onOff(cfg.confirm() || !cfg.otpSet()), yesNo(cfg.otpSet()), onOff(cfg.viewOnly()), node, yesNo(public), serviceState())
+		if c := cfg.code(); c != "" {
+			fmt.Println("Одноразовый код:", spaced(c), "(пароль в режиме «Спрашивать»; постоянный пароль и учётные записи не действуют)")
+		}
 		fmt.Print("Учётные записи (кроме по умолчанию):")
 		us := cfg.users()
 		if len(us) == 0 {
@@ -126,6 +133,14 @@ func otpSetup(cfg *config, in io.Reader) error {
 }
 
 const restartHint = "(если AnyPC запущен — перезапустите его)"
+
+// spaced — код по три цифры, как в окне: 482 913.
+func spaced(c string) string {
+	if len(c) != 6 {
+		return c
+	}
+	return c[:3] + " " + c[3:]
+}
 
 func yesNo(b bool) string { return map[bool]string{true: "да", false: "нет"}[b] }
 func onOff(b bool) string { return map[bool]string{true: "on", false: "off"}[b] }

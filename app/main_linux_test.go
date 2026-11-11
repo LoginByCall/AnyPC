@@ -85,9 +85,35 @@ func TestLocalAPI(t *testing.T) {
 			t.Errorf("%s %s: %d, разрывов %d (ждали %d, %d)", c.name, c.args, code, drops, c.code, c.drops)
 		}
 	}
-	pollConfig(cfg, &agent.Agent{}) // опрос настроек раз в 2 с — тоже (CLI при запущенной программе)
-	if drops != 4 {
-		t.Errorf("опрос настроек не зовёт DropRevoked: %d", drops)
+	var pend int
+	dropPending = func(*agent.Agent) { pend++ }
+	defer func() { dropPending = (*agent.Agent).DropPending }()
+	last := cfg.code()
+	pollConfig(cfg, &agent.Agent{}, &last) // опрос настроек раз в 2 с — тоже (CLI при запущенной программе)
+	if drops != 4 || pend != 0 {
+		t.Errorf("опрос настроек: DropRevoked %d, DropPending %d", drops, pend)
+	}
+	// новый код (↻ или --confirm on в другом процессе) — незавершённые входы со старым закрыть (приёмка otc Д3)
+	if code := call("newCode", `[]`); code != 200 || pend != 1 {
+		t.Errorf("↻: %d, DropPending %d", code, pend)
+	}
+	pollConfig(cfg, &agent.Agent{}, &last) // свой ↻: входы уже закрыты, начатые новым кодом опрос не трогает
+	if pend != 1 || last != cfg.code() {
+		t.Errorf("опрос после своего ↻: DropPending %d", pend)
+	}
+	other, _ := loadConfig(cfg.path) // --confirm on в другом процессе: новый код в файле
+	other.newCode()
+	pollConfig(cfg, &agent.Agent{}, &last)
+	if pend != 2 || last != other.code() {
+		t.Errorf("опрос после чужой смены кода: DropPending %d", pend)
+	}
+	sec := totp.NewSecret() // включение TOTP из окна (режим пароля) — тоже через dropAfter (Д4)
+	otp, _ := totp.Code(sec, time.Now())
+	if code := call("otpEnable", `["`+sec+`","`+otp+`",""]`); code != 200 || drops != 7 {
+		t.Errorf("otpEnable: %d, DropRevoked %d", code, drops)
+	}
+	if code := call("setConfirm", `[true]`); code != 200 || drops != 8 { // смена режима рвёт сессию по паролю (Д4)
+		t.Errorf("setConfirm: %d, DropRevoked %d", code, drops)
 	}
 }
 
@@ -193,7 +219,7 @@ func TestCLI(t *testing.T) {
 			t.Errorf("--user: %v %q", err, out)
 		}
 		c, _ := loadConfig(filepath.Join(home, ".config", "AnyPC", "config.json"))
-		if s, h, v := c.secret("olga"); !v || !bytes.Equal(h, pake.KDF("olga-pass1", s)) || !c.hasPass() {
+		if u := c.user("olga"); u == nil || !u.View || !bytes.Equal(u.Hash, pake.KDF("olga-pass1", u.Salt)) || !c.hasPass() {
 			t.Error("запись olga не записана или затёрла пароль по умолчанию")
 		}
 		if out, err := user("olga-pass2\n", "--user", "olga"); err != nil || !strings.Contains(out, "olga (view)") { // приёмка Д3
@@ -263,8 +289,17 @@ func TestCLI(t *testing.T) {
 	if cfg.confirm() || cfg.Server != DefaultServer {
 		t.Errorf("настройки после ключей: confirm=%v server=%q", cfg.confirm(), cfg.Server)
 	}
-	if out, _ := cli("--status"); !strings.Contains(out, cfg.ID) || !strings.Contains(out, "Пароль задан: да") || !strings.Contains(out, "«Разрешить»: off") || !strings.Contains(out, "Второй фактор (TOTP): да") || !strings.Contains(out, "Только показ экрана: on") {
+	if out, _ := cli("--status"); !strings.Contains(out, cfg.ID) || !strings.Contains(out, "Пароль задан: да") || !strings.Contains(out, "«Разрешить»: off") || !strings.Contains(out, "Второй фактор (TOTP): да") || !strings.Contains(out, "Только показ экрана: on") || strings.Contains(out, "Одноразовый код") {
 		t.Errorf("--status: %q", out)
+	}
+	// режим «Спрашивать» (REQ-S-23): --confirm on печатает новый одноразовый код, --status показывает тот же
+	out, err := cli("--confirm", "on")
+	cfg, _ = loadConfig(filepath.Join(home, ".config", "AnyPC", "config.json"))
+	if code := cfg.code(); err != nil || len(code) != 6 || !strings.Contains(out, "одноразовый код: "+spaced(code)) {
+		t.Errorf("--confirm on: %v %q (код %q)", err, out, code)
+	}
+	if out, _ := cli("--status"); !strings.Contains(out, "Одноразовый код: "+spaced(cfg.code())) {
+		t.Errorf("--status без кода: %q", out)
 	}
 	if u := serviceUnit("/opt/my apps/AnyPC"); !strings.Contains(u, `ExecStart="/opt/my apps/AnyPC" --no-browser`) || !strings.Contains(u, "WantedBy=graphical-session.target") {
 		t.Errorf("юнит: %q", u)

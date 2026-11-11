@@ -25,8 +25,9 @@ func TestConfig(t *testing.T) {
 	if err != nil || !hub.IsHostID(c.ID) {
 		t.Fatalf("первый запуск: %v %+v", err, c)
 	}
-	if _, h, _ := c.secret(""); len(h) != 0 || c.hasPass() {
-		t.Fatal("без пароля вход должен быть запрещён")
+	// новая установка — режим «Спрашивать» (REQ-S-23): вход — только одноразовым кодом, постоянного пароля нет
+	if s, h, _ := c.secret(""); len(c.code()) != 6 || !bytes.Equal(h, pake.KDF(c.code(), s)) || c.hasPass() {
+		t.Fatalf("первый запуск: код %q", c.code())
 	}
 	if c.setPassword("short") == nil {
 		t.Fatal("короткий пароль принят")
@@ -45,9 +46,12 @@ func TestConfig(t *testing.T) {
 	if c2.knownSet("123456789", "abcd") != nil || c2.knownGet("123456789") != "abcd" || c2.knownSet("../x", "a") == nil {
 		t.Fatal("известные хосты")
 	}
-	salt, h, _ := c2.secret("")
+	salt, h := c2.Users[0].Salt, c2.Users[0].Hash
 	if err != nil || c2.ID != c.ID || !bytes.Equal(h, pake.KDF("пароль-123", salt)) || bytes.Equal(h, pake.KDF("пароль-124", salt)) {
 		t.Fatalf("перезагрузка: %v %+v", err, c2)
+	}
+	if s, h, _ := c2.secret(""); bytes.Equal(h, pake.KDF("пароль-123", s)) || c2.code() != c.code() { // пароль хранится, но не действует
+		t.Fatal("в режиме «Спрашивать» действует постоянный пароль или код не пережил перезапуск")
 	}
 }
 
@@ -94,6 +98,7 @@ func TestTrusted(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := func(i int) []byte { return bytes.Repeat([]byte{byte(i)}, 32) }
+	passwordMode(t, c) // в режиме кода закреплений нет (TestCodeTrust)
 	for i := range maxTrusted + 2 {
 		c.trust(key(i), "")
 	}
@@ -411,5 +416,105 @@ func TestUsersConfig(t *testing.T) {
 	fresh, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
 	if fresh.setUser("ivan", "пароль-ивана", "full") == nil {
 		t.Fatal("запись по имени без пароля по умолчанию")
+	}
+}
+
+// TestCodeConfig — REQ-S-23: в режиме «Спрашивать» запись по умолчанию входит одноразовым кодом (6 цифр), постоянный
+// пароль и записи по имени не действуют; код меняется по ↻ и после сессии/блокировки (codeUsed), старый не годится,
+// соль та же; включение «Спрашивать» — новый код; без вопросов (TOTP) — пароль и записи, как раньше, код не меняется.
+func TestCodeConfig(t *testing.T) {
+	c, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
+	c.setPassword("пароль-123")
+	c.setUser("ivan", "пароль-ивана", "full")
+	code := c.code()
+	s0, h0, _ := c.secret("")
+	if len(code) != 6 || strings.Trim(code, "0123456789") != "" || !bytes.Equal(h0, pake.KDF(code, s0)) {
+		t.Fatalf("код %q", code)
+	}
+	if _, h, _ := c.secret("ivan"); h != nil {
+		t.Fatal("запись по имени действует в режиме «Спрашивать»")
+	}
+	// ↻ и codeUsed (конец сессии, блокировка): новый код, старый не годится, соль та же (совпадение — 1e-6)
+	for _, rotate := range []func(){func() { c.newCode() }, c.codeUsed} {
+		old, _, oldH := code, s0, h0
+		rotate()
+		code = c.code()
+		s, h, _ := c.secret("")
+		if c2, _ := loadConfig(c.path); code == old || c2.code() != code || !bytes.Equal(s, s0) || !bytes.Equal(h, pake.KDF(code, s)) || bytes.Equal(h, oldH) {
+			t.Fatalf("смена кода: %q → %q", old, code)
+		}
+		h0 = h
+	}
+	before := code
+	sec := totp.NewSecret()
+	now, _ := totp.Code(sec, time.Now())
+	if err := c.otpEnable(sec, now, ""); err != nil { // без вопросов: пароль + TOTP
+		t.Fatal(err)
+	}
+	if s, h, _ := c.secret(""); c.code() != "" || !bytes.Equal(h, pake.KDF("пароль-123", s)) {
+		t.Fatal("без вопросов: не постоянный пароль")
+	}
+	if _, h, _ := c.secret("ivan"); h == nil {
+		t.Fatal("без вопросов записи по имени не действуют")
+	}
+	stored := c.Code
+	c.codeUsed()
+	if c.Code != stored {
+		t.Fatal("без вопросов код меняется")
+	}
+	c.setConfirm(true)
+	if c.code() == "" || c.code() == stored || c.code() == before {
+		t.Fatalf("«Спрашивать» включили — код %q", c.code())
+	}
+}
+
+// passwordMode — режим без вопросов: TOTP записи по умолчанию (вход паролем, записи, закреплённые ключи).
+func passwordMode(t *testing.T, c *config) {
+	sec := totp.NewSecret()
+	code, _ := totp.Code(sec, time.Now())
+	if err := c.otpEnable(sec, code, ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestCodeTrust — приёмка otc Д1: в режиме кода ключи не закрепляются и закреплённые не действуют (иначе впущенный
+// однажды клиент перебирал бы следующие коды мимо блокировки); в режиме пароля — хранятся и действуют снова.
+func TestCodeTrust(t *testing.T) {
+	c, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
+	k, k2 := bytes.Repeat([]byte{7}, 32), bytes.Repeat([]byte{8}, 32)
+	c.trust(k, "") // вход кодом + «Разрешить»
+	if c.trusted(k, "") || c.trusted(k, agent.AnyUser) || len(c.Users[0].Trusted) != 0 {
+		t.Fatal("в режиме кода ключ закреплён")
+	}
+	passwordMode(t, c)
+	c.trust(k2, "")
+	if !c.trusted(k2, "") {
+		t.Fatal("в режиме пароля ключ не закреплён")
+	}
+	c.setConfirm(true)
+	if c.trusted(k2, "") || c.trusted(k2, agent.AnyUser) {
+		t.Fatal("в режиме кода действует ключ из режима пароля")
+	}
+}
+
+// TestCodeMode — выжившие мутации приёмки otc: хост после обновления с выключенным подтверждением без TOTP — режим
+// кода (он и так спрашивает «Разрешить»); код — 6 цифр из 10^6 (2000 кодов: почти все разные, все первые цифры).
+func TestCodeMode(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	os.WriteFile(p, []byte(`{"id":"123456789","salt":"AAAA","hash":"AAAA","confirm":false}`), 0o600)
+	c, _ := loadConfig(p)
+	if c.confirm() || !c.codeMode() || len(c.code()) != 6 {
+		t.Fatalf("без TOTP с выключенным подтверждением: режим кода %v, код %q", c.codeMode(), c.code())
+	}
+	seen, first := map[string]bool{}, map[byte]bool{}
+	for range 2000 {
+		s := randCode()
+		if len(s) != 6 || strings.Trim(s, "0123456789") != "" {
+			t.Fatalf("код %q", s)
+		}
+		seen[s], first[s[0]] = true, true
+	}
+	if len(seen) < 1980 || len(first) != 10 { // из 10^6 ожидаемо ≈2 совпадения; из 10^3 — сотни
+		t.Fatalf("разных кодов %d из 2000, первых цифр %d", len(seen), len(first))
 	}
 }
