@@ -148,3 +148,41 @@ func TestOTPUpgrade(t *testing.T) {
 	e2eFail = true
 	e2e(t, local(t), "123456789", false, ff, "secret123")
 }
+
+// TestHostViewOnly — «Только показ экрана» на хосте: клиент просит полный доступ, а сессия — только просмотр
+// (view в "ok", ввод не доходит), и «Разрешить» в окне тоже даёт только просмотр; без галочки — как раньше.
+func TestHostViewOnly(t *testing.T) {
+	var on atomic.Bool
+	var gotView atomic.Bool
+	var held atomic.Int32
+	e2eAgent = func(a *Agent) {
+		a.ViewOnly = on.Load
+		a.Unattended = func() bool { return false }
+		a.Confirm = func(string, string) Answer { return Allow }
+	}
+	e2eSeen = func(m authMsg) {
+		if m.T == "ok" {
+			gotView.Store(m.View)
+		}
+	}
+	e2eInput = func(t *testing.T, a *Agent) { // клиент нажал ControlLeft: дошло — клавиша числится зажатой
+		a.mu.Lock()
+		s := a.sess
+		a.mu.Unlock()
+		s.keys.mu.Lock()
+		held.Store(int32(len(s.keys.keys)))
+		s.keys.mu.Unlock()
+	}
+	defer func() { e2eAgent, e2eSeen, e2eInput = nil, nil, nil }()
+	ff := FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000})
+	on.Store(true)
+	e2e(t, local(t), "123456789", false, ff, "secret123")
+	if !gotView.Load() || held.Load() != 0 {
+		t.Fatalf("только показ: view=%v, зажато клавиш %d", gotView.Load(), held.Load())
+	}
+	on.Store(false)
+	e2e(t, local(t), "123456789", false, ff, "secret123")
+	if gotView.Load() || held.Load() != 1 {
+		t.Fatalf("без галочки: view=%v, зажато клавиш %d", gotView.Load(), held.Load())
+	}
+}

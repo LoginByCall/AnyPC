@@ -30,13 +30,14 @@ type config struct {
 	Enc     string            `json:"enc"`     // кодер H.264 в ffmpeg: libx264 | h264_nvenc | h264_qsv | h264_amf | h264_mf (VP9 выбирает клиент — «Турбо»)
 	Bitrate string            `json:"bitrate"` // ffmpeg: 4M, 1500k…
 	Salt    []byte            `json:"salt,omitempty"`
-	Hash    []byte            `json:"hash,omitempty"`    // Argon2id (REQ-S-03); сам пароль не хранится
-	Key     []byte            `json:"key"`               // Ed25519 ключ хоста (REQ-F-01); не покидает ПК
-	Known   map[string]string `json:"known,omitempty"`   // ID удалённого ПК → отпечаток его ключа (TOFU, REQ-S-05)
-	Confirm *bool             `json:"confirm"`           // REQ-F-03: окно «Разрешить / Отклонить» на каждое подключение
-	Trusted [][]byte          `json:"trusted,omitempty"` // У3: ключи клиентов, входивших по паролю (старые — в начале); сброс при смене пароля
-	Account account           `json:"account,omitzero"`  // учётная запись по умолчанию (PLAN.md: с учётными записями сюда переедут Salt/Hash)
-	Saved   map[string]string `json:"saved,omitempty"`   // ID удалённого ПК → запомненный пароль («Запомнить пароль» на управляющем ПК)
+	Hash    []byte            `json:"hash,omitempty"`      // Argon2id (REQ-S-03); сам пароль не хранится
+	Key     []byte            `json:"key"`                 // Ed25519 ключ хоста (REQ-F-01); не покидает ПК
+	Known   map[string]string `json:"known,omitempty"`     // ID удалённого ПК → отпечаток его ключа (TOFU, REQ-S-05)
+	Confirm *bool             `json:"confirm"`             // REQ-F-03: окно «Разрешить / Отклонить» на каждое подключение
+	Trusted [][]byte          `json:"trusted,omitempty"`   // У3: ключи клиентов, входивших по паролю (старые — в начале); сброс при смене пароля
+	Account account           `json:"account,omitzero"`    // учётная запись по умолчанию (PLAN.md: с учётными записями сюда переедут Salt/Hash)
+	Saved   map[string]string `json:"saved,omitempty"`     // ID удалённого ПК → запомненный пароль («Запомнить пароль» на управляющем ПК)
+	View    bool              `json:"view_only,omitempty"` // «Только показ экрана»: каждая входящая сессия — только просмотр (REQ-F-20)
 
 	mu   sync.Mutex
 	path string
@@ -177,6 +178,19 @@ func (c *config) otpSet() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.Account.TOTP != ""
+}
+
+func (c *config) viewOnly() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.View
+}
+
+func (c *config) setViewOnly(on bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.View = on
+	return c.save()
 }
 
 func (c *config) hasPass() bool {

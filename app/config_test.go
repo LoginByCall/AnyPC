@@ -159,3 +159,14 @@ func TestSaved(t *testing.T) {
 		t.Fatal("не забылся")
 	}
 }
+
+// TestViewOnlySetting — «Только показ экрана» сохраняется.
+func TestViewOnlySetting(t *testing.T) {
+	c, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
+	if c.viewOnly() || c.setViewOnly(true) != nil {
+		t.Fatal("по умолчанию включено или не сохранилось")
+	}
+	if c2, _ := loadConfig(c.path); !c2.viewOnly() {
+		t.Fatal("не пережило перезапуск")
+	}
+}

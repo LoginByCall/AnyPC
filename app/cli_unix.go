@@ -18,6 +18,7 @@ import (
 // Каждый меняет настройки и выходит; уже запущенный AnyPC подхватит их после перезапуска.
 var (
 	cliConfirm   = flag.String("confirm", "", "окно «Разрешить» перед каждым входом по паролю: on или off; и выйти.\noff — только со вторым фактором: QR и ключ TOTP в терминале, код из приложения — со stdin; on — TOTP отключается")
+	cliView      = flag.String("view-only", "", "«Только показ экрана»: каждая входящая сессия — только просмотр: on или off; и выйти")
 	cliNode      = flag.String("node", "", "свой узел-хаб (например node.example.com), «-» — вернуть хабы AnyPC; и выйти")
 	cliPublic    = flag.Bool("node-public", false, "вместе с --node: хабы AnyPC остаются запасными")
 	cliStatus    = flag.Bool("status", false, "напечатать настройки и состояние автозапуска и выйти")
@@ -40,6 +41,14 @@ func runCLI(cfg *config) (done bool, err error) {
 			return true, err
 		}
 		fmt.Println("окно «Разрешить»:", *cliConfirm, map[bool]string{true: "(второй фактор TOTP отключён)", false: "(второй фактор TOTP включён)"}[*cliConfirm == "on"], restartHint)
+	case *cliView != "":
+		if *cliView != "on" && *cliView != "off" {
+			return true, errors.New("--view-only: on или off")
+		}
+		if err := cfg.setViewOnly(*cliView == "on"); err != nil {
+			return true, err
+		}
+		fmt.Println("только показ экрана:", *cliView, restartHint)
 	case *cliNode != "":
 		n := *cliNode
 		if n == "-" {
@@ -55,8 +64,8 @@ func runCLI(cfg *config) (done bool, err error) {
 		if node == "" {
 			node = "— (хабы AnyPC)"
 		}
-		fmt.Printf("AnyPC %s\nID: %s\nКлюч хоста: %s\nПароль задан: %s\nОкно «Разрешить»: %s\nВторой фактор (TOTP): %s\nУзел: %s (хабы AnyPC запасными: %s)\nАвтозапуск: %s\n",
-			version, cfg.ID, cfg.fingerprint(), yesNo(cfg.hasPass()), onOff(cfg.confirm() || !cfg.otpSet()), yesNo(cfg.otpSet()), node, yesNo(public), serviceState())
+		fmt.Printf("AnyPC %s\nID: %s\nКлюч хоста: %s\nПароль задан: %s\nОкно «Разрешить»: %s\nВторой фактор (TOTP): %s\nТолько показ экрана: %s\nУзел: %s (хабы AnyPC запасными: %s)\nАвтозапуск: %s\n",
+			version, cfg.ID, cfg.fingerprint(), yesNo(cfg.hasPass()), onOff(cfg.confirm() || !cfg.otpSet()), yesNo(cfg.otpSet()), onOff(cfg.viewOnly()), node, yesNo(public), serviceState())
 	case *cliInstall:
 		exe, err := os.Executable()
 		if err != nil {
