@@ -205,13 +205,13 @@ func TestMemBudget(t *testing.T) {
 			"/proc/self/cgroup": "0::/system.slice/anypc.service\n",
 			"/sys/fs/cgroup/system.slice/anypc.service/memory.max": "601636864\n",
 			"/sys/fs/cgroup/system.slice/memory.max":               "max\n",
-			"/proc/meminfo":                                        meminfo}, 601636864, 2937},
+			"/proc/meminfo":                                        meminfo}, 601636864, 1958},
 		{"предел у предка меньше своего", map[string]string{
 			"/proc/self/cgroup": "0::/a/b\n", "/sys/fs/cgroup/a/b/memory.max": "209715200", "/sys/fs/cgroup/a/memory.max": "104857600",
-			"/proc/meminfo": meminfo}, 100 << 20, 512},
+			"/proc/meminfo": meminfo}, 100 << 20, 341},
 		{"контейнер с cgroupns", map[string]string{"/proc/self/cgroup": "0::/\n", "/sys/fs/cgroup/memory.max": "31457280"}, 30 << 20, hub.MinConns},
 		{"без предела cgroup — 60 % ОЗУ", map[string]string{"/proc/self/cgroup": "0::/user.slice\n", "/sys/fs/cgroup/user.slice/memory.max": "max",
-			"/proc/meminfo": meminfo}, 1000000 << 10 * 6 / 10, 3000},
+			"/proc/meminfo": meminfo}, 1000000 << 10 * 6 / 10, 2000},
 		{"большой узел", map[string]string{"/proc/meminfo": "MemTotal: 16000000 kB\n"}, 16000000 << 10 * 6 / 10, hub.MaxConnsDefault},
 		{"ничего не прочитать", map[string]string{}, 0, hub.MinConns},
 	} {
@@ -220,8 +220,8 @@ func TestMemBudget(t *testing.T) {
 			t.Errorf("%s: бюджет %d (%s), соединений %d; ждали %d и %d", c.name, got, from, hub.ConnsFor(got), c.want, c.conns)
 		}
 	}
-	if line := memLine(601636864, "x/memory.max", 1<<63-1, 2937); !strings.Contains(line, "бюджет 573 МиБ (x/memory.max)") ||
-		!strings.Contains(line, "предел Go нет") || !strings.Contains(line, "сигнализации 2937, TCP 3230") {
+	if line := memLine(601636864, "x/memory.max", 1<<63-1, 1958); !strings.Contains(line, "бюджет 573 МиБ (x/memory.max)") ||
+		!strings.Contains(line, "предел Go нет") || !strings.Contains(line, "сигнализации 1958, TCP 2214") {
 		t.Errorf("журнал: %s", line)
 	}
 }
@@ -254,7 +254,7 @@ func TestListenLimit(t *testing.T) {
 	}
 }
 
-// TestIdleTimeoutKeepsWS — IdleTimeout сервера (30 с) не рвёт захваченный WS: срок ожидания keep-alive заменяется
+// TestIdleTimeoutKeepsWS — IdleTimeout сервера (10 с) не рвёт захваченный WS: срок ожидания keep-alive заменяется
 // при начале запроса и снимается после заголовков.
 func TestIdleTimeoutKeepsWS(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -293,15 +293,18 @@ func TestRcvBuf(t *testing.T) {
 			time.Sleep(time.Second)
 		}
 	}()
-	c, err := rcvListener{raw}.Accept()
+	c, err := limitListener{raw.(*net.TCPListener), make(chan struct{}, 1)}.Accept()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	rc, _ := c.(*net.TCPConn).SyscallConn()
+	rc, _ := c.(*limConn).SyscallConn()
 	n := 0
 	rc.Control(func(fd uintptr) { n, _ = syscall.GetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF) })
 	if n != 2*RcvBuf {
 		t.Fatalf("SO_RCVBUF %d, ждали %d", n, 2*RcvBuf)
 	}
 }
+
+// hub ставит SndBuf захваченному WS через SetWriteBuffer: обёртка лимита TCP должна его отдавать.
+var _ interface{ SetWriteBuffer(int) error } = (*limConn)(nil)

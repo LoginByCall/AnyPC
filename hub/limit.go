@@ -1,8 +1,10 @@
 package hub
 
 import (
+	"bufio"
 	"cmp"
 	"log"
+	"net"
 	"net/http"
 	"net/netip"
 	"time"
@@ -32,11 +34,38 @@ const (
 	ConnsPer48                    = 1000  // соединений с /48 (у владельца /48 — 65 536 разных /64)
 	MaxConnsDefault               = 5000  // всех соединений, верхняя граница ConnsFor; сверх — 503
 	// ConnMem — бюджет памяти на соединение под атакой (Д1″ приёмки-6): ≈55–67 КБ памяти Go на WS (стеки 3 горутин,
-	// bufio, TLS) плюс приёмные буферы ядра, которые растут, когда хаб не успевает читать (до ≈190 КБ на сокет).
-	// 5000 WS в 574 МиБ (MemoryMax=60 % VPS 1 ГБ) не помещались: OOM по TLS, на медленном ядре, с простаивающими HTTP.
-	ConnMem  = 200 << 10
+	// bufio, TLS) плюс буферы ядра (RcvBuf, SndBuf — по 64 КБ) и мусор сборщика. 5000 WS в 574 МиБ (MemoryMax=60 %
+	// VPS 1 ГБ) не помещались: OOM по TLS, на медленном ядре, с простаивающими HTTP. Подобрано по самому тяжёлому
+	// опыту — встречный поток (хосты атакующего шлют 26 КБ/с своим клиентам, те читают 16 КБ/с) на ядре E 4,4 ГГц
+	// по TLS: 2000 соединений — жив 200 с (пик 527 МиБ), 2400 — OOM на 49-й с, 2937 (200 КБ) — на 21-й.
+	ConnMem  = 300 << 10
 	MinConns = 200 // нижняя граница ConnsFor: узел с малой памятью всё же обслуживает сигнализацию
 )
+
+// SndBuf — буфер отправки ядра у захваченного WS (как в hub-queue, Д2 приёмки-4). По умолчанию ядро растит его до
+// мегабайт на сокет, и под встречным потоком (хосты атакующего шлют своим медленным клиентам) буферы отправки — вне
+// предела Go — съедали ≈140 МиБ из 574 (приёмка-6, опыт conncap). 32 КБ (ядро удваивает): сигнализации хватает
+// (≈200 КБ/с при RTT 300 мс); загрузки и страница — не WS, их буфер не трогаем.
+const SndBuf = 32 << 10
+
+// sndWriter ставит SndBuf соединению, которое websocket.Accept получает через Hijack: TCP напрямую или под TLS
+// (NetConn), в том числе обёртка лимита TCP у server — у неё тот же метод SetWriteBuffer.
+type sndWriter struct{ http.ResponseWriter }
+
+func (w sndWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	c, brw, err := http.NewResponseController(w.ResponseWriter).Hijack()
+	if err != nil {
+		return nil, nil, err
+	}
+	raw := c
+	if t, ok := raw.(interface{ NetConn() net.Conn }); ok { // *tls.Conn на боевом сервере
+		raw = t.NetConn()
+	}
+	if t, ok := raw.(interface{ SetWriteBuffer(int) error }); ok {
+		t.SetWriteBuffer(SndBuf)
+	}
+	return c, brw, nil
+}
 
 // ConnsFor — потолок соединений сигнализации для бюджета памяти budget (байт): budget / ConnMem в [MinConns, MaxConnsDefault].
 func ConnsFor(budget int64) int {

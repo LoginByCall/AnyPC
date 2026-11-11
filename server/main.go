@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"anypc/hub"
@@ -23,7 +24,6 @@ import (
 	"anypc/ui"
 
 	"golang.org/x/crypto/acme/autocert"
-	"golang.org/x/net/netutil"
 )
 
 // newMux: хосты siteHosts → лендинг и /download/ (каталог dlDir); любой другой → веб-клиент и /ws.
@@ -98,7 +98,7 @@ func main() {
 	turn := flag.String("turn", "", "хосты STUN/TURN через запятую")
 	hubs := flag.String("hubs", "", "все хабы сигнализации через запятую (wss://…/ws), для веб-клиента; пусто — только этот")
 	certs := flag.String("certs", "certs", "каталог кэша сертификатов")
-	maxConns := flag.Int("maxconns", 0, "потолок соединений сигнализации; сверх — 503; 0 — из памяти узла (memory.max cgroup или 60 % ОЗУ, по 200 КБ на соединение, не больше 5000), < 0 — ошибка")
+	maxConns := flag.Int("maxconns", 0, "потолок соединений сигнализации; сверх — 503; 0 — из памяти узла (memory.max cgroup или 60 % ОЗУ, по 300 КБ на соединение, не больше 5000), < 0 — ошибка")
 	flag.Parse()
 	if *maxConns < 0 { // иначе хаб отвечал бы 503 на всё
 		log.Fatalf("-maxconns %d: нужен 0 (из памяти узла) или больше", *maxConns)
@@ -141,23 +141,44 @@ func tcpLimit(conns int) int { return conns + max(conns/10, HTTPConns) }
 // хватает (входящий поток — только сообщения ≤ 64 КБ и запросы), отправитель просто ждёт окна.
 const RcvBuf = 32 << 10
 
-type rcvListener struct{ net.Listener }
-
-func (l rcvListener) Accept() (net.Conn, error) {
-	c, err := l.Listener.Accept()
-	if tc, ok := c.(*net.TCPConn); ok {
-		tc.SetReadBuffer(RcvBuf)
-	}
-	return c, err
+// limitListener — не больше cap(sem) соединений одновременно: n+1-е ждёт в Accept (в очереди ядра), как
+// netutil.LimitListener. Свой, а не netutil: его обёртка соединения прячет *net.TCPConn, а hub ставит SndBuf
+// захваченному WS через SetWriteBuffer — здесь он виден (limConn встраивает *net.TCPConn).
+type limitListener struct {
+	*net.TCPListener
+	sem chan struct{}
 }
 
-// listen — TCP на addr не больше n соединений одновременно (netutil.LimitListener: n+1-е ждёт в Accept), RcvBuf у каждого.
+func (l limitListener) Accept() (net.Conn, error) {
+	l.sem <- struct{}{}
+	c, err := l.AcceptTCP()
+	if err != nil {
+		<-l.sem
+		return nil, err
+	}
+	c.SetReadBuffer(RcvBuf)
+	return &limConn{TCPConn: c, release: func() { <-l.sem }}, nil
+}
+
+type limConn struct {
+	*net.TCPConn
+	once    sync.Once
+	release func()
+}
+
+func (c *limConn) Close() error {
+	err := c.TCPConn.Close()
+	c.once.Do(c.release)
+	return err
+}
+
+// listen — TCP на addr не больше n соединений одновременно, RcvBuf у каждого.
 func listen(addr string, n int) net.Listener {
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.Fatal(err)
 	}
-	return netutil.LimitListener(rcvListener{l}, n)
+	return limitListener{l.(*net.TCPListener), make(chan struct{}, n)}
 }
 
 // memBudget — память узла для хаба: memory.max своей cgroup и её предков (наименьший; MemoryMax unit-файла —
@@ -217,12 +238,13 @@ func mib(n int64) string {
 // ReadHeaderTimeout и IdleTimeout WebSocket после Upgrade не трогают — его живость проверяет hub.Keepalive.
 // ReadTimeout/WriteTimeout не ставить: дедлайн остаётся на захваченном соединении и рвёт WS через N секунд.
 // IdleTimeout (ожидание следующего запроса keep-alive) захваченный WS не трогает: Hijack снимает сроки соединения
-// (net/http, hijackLocked; TestIdleTimeoutKeepsWS). 30 с вместо 2 мин: простаивающее соединение занимает место
-// под общим лимитом TCP (listen), а браузеру хватает и этого.
+// (net/http, hijackLocked; TestIdleTimeoutKeepsWS). 10 с вместо 2 мин: простаивающее keep-alive занимает место
+// под общим лимитом TCP (listen); когда запас выбран, новое соединение ждёт в очереди ядра не дольше ≈10 с
+// (ReadHeaderTimeout — столько же для молчащих), а браузер просто откроет новое.
 // MaxHeaderBytes 16 КБ (по умолчанию 1 МБ): наши запросы — сотни байт, а мегабайт заголовков на каждое
 // из тысяч соединений — память VPS.
 func serve(addr string, h http.Handler) *http.Server {
-	return &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
+	return &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 10 * time.Second, MaxHeaderBytes: 16 << 10}
 }
 
 // list — "a, b,,c,a" → [a b c]: пустые и повторы отбрасываются (повторный запуск sed по флагам дал дубль, 2026-11-06).
