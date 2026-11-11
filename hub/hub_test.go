@@ -377,7 +377,7 @@ func TestClientFlood(t *testing.T) {
 // TestConnectSpamKeepsHost — регрессия F4 п. 1: спам connect не пересылается хосту (сверх всплеска — busy от хаба),
 // а поток хоста сверх его ведра отбрасывается молча — хост остаётся в сети.
 func TestConnectSpamKeepsHost(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	url, host := limHub(t, ctx, &Hub{})
 
@@ -408,12 +408,30 @@ func TestConnectSpamKeepsHost(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got := 0
-	wsjson.Write(ctx, host, Msg{Type: "bye", To: cid})
-	time.Sleep(50 * time.Millisecond) // ведро хоста пополняется 100/с: bye мог отброситься — шлём ещё раз
-	wsjson.Write(ctx, host, Msg{Type: "bye", To: cid})
-	for m := read(t, ctx, sink); m.Type != "bye"; m = read(t, ctx, sink) {
-		got++
+	ices := make(chan int, 1)
+	go func() {
+		n := 0
+		for {
+			var m Msg
+			if wsjson.Read(ctx, sink, &m) != nil || m.Type == "bye" {
+				ices <- n
+				return
+			}
+			n++
+		}
+	}()
+	// ведро хоста пополняется 100/с, а разбор всплеска под race дольше 50 мс: bye мог отброситься вместе с хвостом
+	// ice — повторять, пока не дошёл (Д3′ приёмки-5)
+	got := -1
+	for got < 0 {
+		wsjson.Write(ctx, host, Msg{Type: "bye", To: cid})
+		select {
+		case got = <-ices:
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	if ctx.Err() != nil {
+		t.Fatal("bye не дошёл клиенту")
 	}
 	if got < HostMsgBurst-10 || got >= 700 {
 		t.Fatalf("клиент получил ice: %d (ждали ≈%d, сверх — отброшены)", got, HostMsgBurst)

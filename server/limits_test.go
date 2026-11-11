@@ -2,11 +2,20 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
+	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -38,7 +47,7 @@ func within(t *testing.T, d time.Duration, what string, f func()) {
 // не держит; закрытое своё — освобождает место адреса.
 func TestTCPPerAddr(t *testing.T) {
 	fromAll(t)
-	l := listen("127.0.0.1:0", TCPPerAddr+10)
+	l := listen("127.0.0.1:0", TCPPerAddr+10, TCPPerAddr)
 	defer l.Close()
 	var mu sync.Mutex
 	var acc []net.Conn
@@ -100,7 +109,7 @@ func TestTCPPerAddr(t *testing.T) {
 
 // TestLimitListenerAccept — ошибка Accept (слушатель закрыт) возвращает место; сверх общего лимита Accept ждёт.
 func TestLimitListenerAccept(t *testing.T) {
-	l := listen("127.0.0.1:0", 1)
+	l := listen("127.0.0.1:0", 1, TCPPerAddr)
 	go net.Dial("tcp", l.Addr().String())
 	c, err := l.Accept()
 	if err != nil {
@@ -125,12 +134,13 @@ func TestLimitListenerAccept(t *testing.T) {
 	}
 }
 
-// TestHeavy — Д1 приёмки-7: тяжёлых ответов с адреса не больше HeavyPerAddr, лишний ждёт места.
+// TestHeavy — Д1 приёмки-7: тяжёлых ответов с адреса не больше доли пула, лишний ждёт места.
 func TestHeavy(t *testing.T) {
 	fromAll(t)
+	pool := &heavyLim{max: 10, perAddr: 2, per: map[string]int{}}
 	release := make(chan struct{})
 	var started sync.WaitGroup
-	h := heavy(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := heavy(pool, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/block" {
 			started.Done()
 			<-release
@@ -139,8 +149,8 @@ func TestHeavy(t *testing.T) {
 	}))
 	srv := httptest.NewServer(h)
 	defer srv.Close()
-	started.Add(HeavyPerAddr)
-	for range HeavyPerAddr {
+	started.Add(pool.perAddr)
+	for range pool.perAddr {
 		go http.Get(srv.URL + "/block")
 	}
 	started.Wait()
@@ -148,19 +158,63 @@ func TestHeavy(t *testing.T) {
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "GET", srv.URL+"/x", nil)
 	if _, err := http.DefaultClient.Do(req); err == nil {
-		t.Fatalf("тяжёлый ответ сверх %d с адреса не ждёт", HeavyPerAddr)
+		t.Fatalf("тяжёлый ответ сверх %d с адреса не ждёт", pool.perAddr)
 	}
 	close(release)
 	r, err := http.Get(srv.URL + "/x")
 	if err != nil || r.StatusCode != 200 {
 		t.Fatalf("после освобождения: %v %v", err, r)
 	}
-	l := &heavyLim{per: map[string]int{}}
-	for range HeavyTotal {
+}
+
+// TestHeavyLim — пул: всего max, с адреса perAddr, /48 — ×10, все ключи адреса или ни одного; отмена запроса
+// в ожидании места — сразу отказ.
+func TestHeavyLim(t *testing.T) {
+	l := &heavyLim{max: 100, perAddr: 2, per: map[string]int{}}
+	p48 := []hub.AddrKey{{Key: "a/64", Mul: 1}, {Key: "a/48", Mul: 10}}
+	for i := range 10 { // десять /64 одного /48 — по 2 с каждого
+		ks := []hub.AddrKey{{Key: fmt.Sprint("b", i), Mul: 1}, {Key: "b/48", Mul: 10}}
+		for range 2 {
+			if !l.try(ks) {
+				t.Fatalf("/64 №%d: отказ в пределах доли /48 ×10", i)
+			}
+		}
+	}
+	if l.try([]hub.AddrKey{{Key: "b10", Mul: 1}, {Key: "b/48", Mul: 10}}) {
+		t.Fatal("/48 сверх perAddr × 10 принят")
+	}
+	if !l.try(p48) || !l.try(p48) || l.try(p48) {
+		t.Fatal("доля /64 не 2")
+	}
+	if l.per["b10"] != 0 {
+		t.Fatalf("отказ занял ключ /64: %d (ждали «все или ничего»)", l.per["b10"])
+	}
+	for range 100 - 22 {
 		l.try(nil)
 	}
 	if l.try(nil) {
-		t.Fatalf("сверх HeavyTotal %d принято", HeavyTotal)
+		t.Fatalf("сверх max %d принято", l.max)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	t0 := time.Now()
+	if l.acquire(ctx, nil) || time.Since(t0) > time.Second {
+		t.Fatalf("отмена запроса в ожидании: место или ждал %v", time.Since(t0))
+	}
+}
+
+// TestTCPPerAddrKeys — лимит TCP с адреса: /48 — ×10, все ключи или ни одного.
+func TestTCPPerAddrKeys(t *testing.T) {
+	l := &limitListener{perAddr: 3, per: map[string]int{}}
+	for i := range 10 {
+		for range 3 {
+			if !l.take([]hub.AddrKey{{Key: fmt.Sprint("p", i), Mul: 1}, {Key: "p/48", Mul: 10}}) {
+				t.Fatalf("/64 №%d: отказ в пределах /48 ×10", i)
+			}
+		}
+	}
+	if l.take([]hub.AddrKey{{Key: "p10", Mul: 1}, {Key: "p/48", Mul: 10}}) || l.per["p10"] != 0 {
+		t.Fatalf("сверх /48 ×10: принят или занял ключ /64 (%d)", l.per["p10"])
 	}
 }
 
@@ -176,11 +230,11 @@ func (w *dlWriter) SetWriteDeadline(t time.Time) error { w.dl = append(w.dl, t);
 func TestStallWrite(t *testing.T) {
 	fromAll(t)
 	w := &dlWriter{ResponseRecorder: *httptest.NewRecorder()}
-	heavy(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	heavy(pagePool, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Write(make([]byte, 2*stallChunk+1))
 	})).ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
-	if len(w.dl) != 4 || w.dl[0].IsZero() || time.Until(w.dl[2]) < StallWrite-time.Second || !w.dl[3].IsZero() {
-		t.Fatalf("сроки записи: %v (ждали три по StallWrite и сброс)", w.dl)
+	if len(w.dl) != 4 || w.dl[0].IsZero() || time.Until(w.dl[2]) < StallWrite-time.Second || time.Until(w.dl[3]) < StallWrite-time.Second {
+		t.Fatalf("сроки записи: %v (ждали три по StallWrite и срок на хвост)", w.dl)
 	}
 	if w.Body.Len() != 2*stallChunk+1 {
 		t.Fatalf("записано %d", w.Body.Len())
@@ -189,19 +243,45 @@ func TestStallWrite(t *testing.T) {
 
 var _ interface{ SetWriteBuffer(int) error } = (*limConn)(nil) // hub ставит SndBuf захваченному WS через него
 
+// TestPagePoolFree — Н3: занятые загрузками места не отнимают у страницы (свой пул).
+func TestPagePoolFree(t *testing.T) {
+	fromAll(t)
+	ks := addrKeys(netip.Addr{})
+	for range dlPool.perAddr {
+		dlPool.try(ks)
+	}
+	defer func() {
+		for range dlPool.perAddr {
+			dlPool.done(ks)
+		}
+	}()
+	h := newMux(http.NotFoundHandler(), nil, t.TempDir(), nil, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	r := httptest.NewRequest("GET", "/", nil).WithContext(ctx)
+	r.Host = "app.example.com"
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("страница при занятых загрузках: %d", w.Code)
+	}
+}
+
 // TestHeavyRoutes — проводка: страница, сайт и загрузки идут через heavy (при занятых местах адреса — 503 по сроку
 // запроса), а /turns и /hubs — нет.
 func TestHeavyRoutes(t *testing.T) {
 	fromAll(t)
 	ks := addrKeys(netip.Addr{})
-	for range HeavyPerAddr {
-		heavyNow.try(ks)
-	}
-	defer func() {
-		for range HeavyPerAddr {
-			heavyNow.done(ks)
+	for _, p := range []*heavyLim{pagePool, dlPool} {
+		for range p.perAddr {
+			p.try(ks)
 		}
-	}()
+		defer func() {
+			for range p.perAddr {
+				p.done(ks)
+			}
+		}()
+	}
 	dl := t.TempDir()
 	h := newMux(http.NotFoundHandler(), []string{"www.example.com"}, dl, nil, nil)
 	for _, c := range []struct {
@@ -220,5 +300,44 @@ func TestHeavyRoutes(t *testing.T) {
 		if w.Code != c.code {
 			t.Errorf("%s%s: %d, ждали %d", c.host, c.path, w.Code, c.code)
 		}
+	}
+}
+
+// TestNoHTTP2 — Н1, Н2 повторной приёмки-7: serve не согласует h2 по ALPN (клиент предлагает h2 первым — получает
+// http/1.1), а noH2 убирает h2 из ALPN autocert, оставляя acme-tls/1.
+func TestNoHTTP2(t *testing.T) {
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		IPAddresses: []net.IP{net.IPv4(127, 0, 0, 1)}}
+	der, _ := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	kb, _ := x509.MarshalECPrivateKey(key)
+	dir := t.TempDir()
+	os.WriteFile(dir+"/c.pem", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600)
+	os.WriteFile(dir+"/k.pem", pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kb}), 0o600)
+	l := listen("127.0.0.1:0", 10, TCPPerAddr)
+	srv := serve("", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok") }))
+	go srv.ServeTLS(l, dir+"/c.pem", dir+"/k.pem")
+	defer srv.Close()
+	c, err := tls.Dial("tcp", l.Addr().String(), &tls.Config{InsecureSkipVerify: true, NextProtos: []string{"h2", "http/1.1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if p := c.ConnectionState().NegotiatedProtocol; p == "h2" {
+		t.Fatalf("ALPN согласовал %q", p)
+	}
+	if got := noH2(&tls.Config{NextProtos: []string{"h2", "http/1.1", "acme-tls/1"}}).NextProtos; strings.Join(got, ",") != "http/1.1,acme-tls/1" {
+		t.Fatalf("noH2: %v", got)
+	}
+}
+
+// TestMuxResetsDeadline — каждый запрос снимает срок записи, оставленный прошлым тяжёлым ответом на этом keep-alive.
+func TestMuxResetsDeadline(t *testing.T) {
+	w := &dlWriter{ResponseRecorder: *httptest.NewRecorder()}
+	r := httptest.NewRequest("GET", "/turns", nil)
+	r.Host = "app.example.com"
+	newMux(http.NotFoundHandler(), nil, "", nil, nil).ServeHTTP(w, r)
+	if len(w.dl) == 0 || !w.dl[0].IsZero() {
+		t.Fatalf("сроки записи: %v (ждали сброс первым)", w.dl)
 	}
 }
