@@ -302,7 +302,7 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 		if len(args) > 0 {
 			json.Unmarshal(args[0], &on)
 		}
-		err = cfg.setViewOnly(on)
+		err = setViewOnly(cfg, a, on)
 	case "otpNew":
 		res, err = cfg.otpNew()
 	case "otpEnable":

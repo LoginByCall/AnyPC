@@ -137,7 +137,7 @@ func main() {
 	w.Bind("setPassword", cfg.setPassword)
 	w.Bind("setConfirm", cfg.setConfirm)
 	w.Bind("otpNew", cfg.otpNew)
-	w.Bind("setViewOnly", cfg.setViewOnly)
+	w.Bind("setViewOnly", func(on bool) error { return setViewOnly(cfg, a, on) })
 	w.Bind("otpEnable", cfg.otpEnable)
 	run := &runner{a: a, ctx: ctx}
 	w.Bind("setNode", func(node string, public bool) (string, error) { return setNode(cfg, run, node, public) })
