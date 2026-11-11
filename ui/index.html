@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="ru">
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-4bH7ZFDPmRFYeQr1JM9ZmzhPZhS/8azhrk/jehzbm2o=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-6TpByiDP4dOeCOeTEIgZ3KOXk6UUBpT1J/t+iWZLPrc=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AnyPC</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26'><style>.a{stroke:%2317181c}.b{fill:%23d2452d}@media(prefers-color-scheme:dark){.a{stroke:%23eceae4}.b{fill:%23ef6a52}}</style><rect class='a' x='1.5' y='3' width='15' height='11' rx='2' fill='none' stroke-width='2.6'/><rect class='b' x='10' y='12' width='15' height='11' rx='2'/></svg>">
@@ -358,7 +358,9 @@ async function fillSaved() {
   else if (autoPw) { $('pw').value = ''; $('remember').checked = false; pwAuto(false); }
 }
 $('id').oninput = fillSaved;
-$('pw').onbeforeinput = () => { if (autoPw) { $('pw').value = ''; pwAuto(false); } };
+$('pw').onbeforeinput = e => { // правка символами (не Enter: он входит с подставленным паролем)
+  if (autoPw && /^(insert|delete)/.test(e.inputType) && e.inputType !== 'insertLineBreak') { $('pw').value = ''; pwAuto(false); }
+};
 $('remember').onchange = () => { if (!$('remember').checked && idOnly().length === 9) saved.set(idOnly(), '').catch(() => {}); }; // снять — забыть
 
 // ---------- Сессия ----------
@@ -560,7 +562,7 @@ let again = null;
 function redial() {
   const p = again;
   end('', true);
-  $('id').value = p.host; $('pw').value = p.pw;
+  $('id').value = p.host; $('pw').value = p.pw; pwAuto(true); // пароль сессии глазиком не показать
   setTimeout(async () => { await $('go').onclick(); if ($('msg').textContent === t('connecting')) $('msg').textContent = t('redial'); }, 1500);
 }
 // hostProof — хост доказал CPace (conf) и ключ (подпись над DTLS-отпечатками, REQ-S-05); ключ сменился — предупредить.
