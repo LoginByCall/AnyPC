@@ -247,6 +247,7 @@ func TestMainHelper(t *testing.T) {
 		t.Skip("помощник TestMainWiring")
 	}
 	os.Args = append([]string{"anypc-server"}, strings.Fields(os.Getenv("ANYPC_MAIN_HELPER"))...)
+	go func() { io.Copy(io.Discard, os.Stdin); os.Exit(0) }() // родитель умер (таймаут go test, Ctrl+C) — stdin закрыт, выйти: иначе сервер жил часами
 	main()
 }
 
@@ -261,18 +262,21 @@ func TestMainWiring(t *testing.T) {
 		{"", plan(0, budget, "")},
 		{"-maxconns 300", plan(300, budget, "")},
 	} {
-		cmd := exec.Command(os.Args[0], "-test.run=^TestMainHelper$")
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestMainHelper$")
 		cmd.Env = append(os.Environ(), "ANYPC_MAIN_HELPER=-addr 127.0.0.1:0 -certs "+t.TempDir()+"/c "+c.args, "GOMEMLIMIT=")
 		out, _ := cmd.StderrPipe()
+		stdin, _ := cmd.StdinPipe() // держим открытым: закрытие — сигнал помощнику выйти
 		if err := cmd.Start(); err != nil {
+			cancel()
 			t.Fatal(err)
 		}
+		t.Cleanup(func() { stdin.Close(); cancel(); cmd.Wait() }) // и при t.Fatal/панике помощник не остаётся
 		buf := make([]byte, 4096)
 		n, _ := io.ReadAtLeast(out, buf, 1)
 		time.Sleep(200 * time.Millisecond)
 		cmd.Process.Kill()
 		rest, _ := io.ReadAll(out)
-		cmd.Wait()
 		m := copy(buf[n:], rest)
 		goLimit := c.want.goLimit
 		if goLimit == 0 {
@@ -342,5 +346,26 @@ func TestIdleTimeoutKeepsWS(t *testing.T) {
 	wsjson.Write(ctx, c, hub.Msg{Type: "ice", To: "123456789"})
 	if err := wsjson.Read(ctx, c, &m); err != nil || string(m.Data) != `"not_found"` {
 		t.Fatalf("WS после IdleTimeout: %v %+v", err, m)
+	}
+}
+
+// TestMainHelperExits — помощник выходит сам, когда закрыт stdin (умер родитель): раньше прерванный прогон оставлял
+// настоящий сервер на 127.0.0.1 работать часами.
+func TestMainHelperExits(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=^TestMainHelper$")
+	cmd.Env = append(os.Environ(), "ANYPC_MAIN_HELPER=-addr 127.0.0.1:0 -certs "+t.TempDir()+"/c", "GOMEMLIMIT=")
+	stdin, _ := cmd.StdinPipe()
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	stdin.Close()
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		cmd.Process.Kill()
+		t.Fatal("помощник не вышел после закрытия stdin")
 	}
 }
