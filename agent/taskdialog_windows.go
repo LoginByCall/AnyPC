@@ -22,6 +22,7 @@ const (
 	tdmClickButton          = 0x0400 + 102 // TDM_CLICK_BUTTON
 	tdmEnableButton         = 0x0400 + 111 // TDM_ENABLE_BUTTON: wParam — ID кнопки, lParam — 0 выключить / 1 включить
 	tdnCreated, tdnTimer    = 0, 4
+	tdnButtonClicked        = 2 // вернуть S_FALSE (1) — окно не закрывать
 	idCancel                = 2 // IDCANCEL: Esc и крестик
 )
 
@@ -143,6 +144,10 @@ func tdCallbackFn(hwnd uintptr, msg uint32, wparam, lparam, ref uintptr) uintptr
 		}
 		if r.click != 0 {
 			procPostMessage.Call(hwnd, tdmClickButton, uintptr(r.click), 0)
+		}
+	case tdnButtonClicked: // и если кнопка всё же нажата раньше delay (включилась раньше, клавиатура) — не засчитать
+		if r.delay > 0 && !r.enabled && (wparam == tdAllow || wparam == tdView) {
+			return 1
 		}
 	case tdnTimer: // wparam — мс с появления окна (таймер — раз в ~200 мс)
 		if el := time.Duration(wparam) * time.Millisecond; r.delay > 0 && !r.enabled && el >= r.delay {

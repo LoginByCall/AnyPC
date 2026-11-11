@@ -76,9 +76,9 @@ func TestCodeRotate(t *testing.T) {
 // TestAskLoop — «Разрешить» не раньше AskDelay: согласие раньше — окно снова, позже — засчитано; отказ — сразу;
 // всего не дольше AskTimeout.
 func TestAskLoop(t *testing.T) {
-	d, to := AskDelay, AskTimeout
-	defer func() { AskDelay = d }()
-	AskDelay = 200 * time.Millisecond
+	d, sp, to := AskDelay, askSpawn, AskTimeout
+	defer func() { AskDelay, askSpawn = d, sp }()
+	AskDelay, askSpawn = 150*time.Millisecond, 50*time.Millisecond
 	shows := 0
 	early := func(wait time.Duration, a Answer) func(time.Duration) Answer {
 		return func(left time.Duration) Answer {
@@ -109,4 +109,18 @@ func TestAskLoop(t *testing.T) {
 	if a := askLoop(func(left time.Duration) Answer { time.Sleep(min(left, 5*time.Second)); return Allow }); a != Deny || time.Since(t0) > to+time.Second {
 		t.Fatalf("без засчитанного согласия: %v за %v", a, time.Since(t0))
 	}
+}
+
+// TestDropPending — приёмка otc Д3: код сменили, пока вход ждал «Разрешить», — вход закрыт (его CPace построен на
+// старом коде), «Разрешить» после этого не впускает.
+func TestDropPending(t *testing.T) {
+	var ag *Agent
+	e2eAgent = func(a *Agent) {
+		ag = a
+		a.Unattended = func() bool { return false }
+		a.Confirm = func(string, string) Answer { ag.DropPending(); time.Sleep(200 * time.Millisecond); return Allow }
+	}
+	defer e2eReset()
+	e2eGood = "-" // ждём отказ
+	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000}), "secret123")
 }

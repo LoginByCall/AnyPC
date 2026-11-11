@@ -105,12 +105,29 @@ func dropAfter(a *agent.Agent, err error) error {
 var dropRevoked = (*agent.Agent).DropRevoked
 
 // pollConfig — опрос настроек раз в 2 с (Linux/Mac): правку ключом CLI при запущенной программе видно сразу —
-// «Только показ экрана» рвёт сессию с полным доступом (REQ-F-25), --user / --user-del — сессию отозванной записи.
-func pollConfig(cfg *config, a *agent.Agent) {
+// «Только показ экрана» рвёт сессию с полным доступом (REQ-F-25), --user / --user-del и смена режима — сессию
+// отозванной записи, новый одноразовый код (--confirm on) — незавершённые входы со старым. last — код прошлого опроса.
+func pollConfig(cfg *config, a *agent.Agent, last *string) {
 	if cfg.viewNow() { // перечитывает файл целиком
 		a.DisconnectFull()
 	}
 	dropRevoked(a)
+	if c := cfg.code(); c != *last {
+		*last = c
+		dropPending(a)
+	}
+}
+
+// dropPending — agent.DropPending (переменная — для тестов): код сменили ↻ или ключом CLI.
+var dropPending = (*agent.Agent).DropPending
+
+// newCode — ↻ в окне: новый код, незавершённые входы со старым закрыть.
+func newCode(cfg *config, a *agent.Agent) (string, error) {
+	c, err := cfg.newCode()
+	if err == nil {
+		dropPending(a)
+	}
+	return c, err
 }
 
 func setViewOnly(cfg *config, a *agent.Agent, on bool) error {

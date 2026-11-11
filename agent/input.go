@@ -249,11 +249,13 @@ func askText(lang, cid, peer string) (title, text, yes, no, view string) {
 }
 
 // AskDelay — «Разрешить» и «Только просмотр» засчитываются не раньше чем через столько после показа окна (PLAN.md
-// «одноразовый код»: против мошенника, торопящего по телефону, и случайного Enter/щелчка). Переменная — для тестов.
-var AskDelay = 3 * time.Second
+// «одноразовый код»: против мошенника, торопящего по телефону, и случайного Enter/щелчка). askSpawn — запас askLoop:
+// момент появления окна zenity/osascript не узнать, считаем от запуска и добавляем время на появление (медленная
+// машина — 1–2 с). Переменные — для тестов.
+var AskDelay, askSpawn = 3 * time.Second, 2 * time.Second
 
 // askLoop — окно «Разрешить» там, где кнопку нельзя выключить на время (zenity, osascript, MessageBox): show
-// показывает окно не дольше left; согласие раньше AskDelay не засчитывается — окно показывается снова (в тексте
+// показывает окно не дольше left; согласие раньше AskDelay+askSpawn от запуска не засчитывается — окно показывается снова (в тексте
 // сказано про 3 с), отказ — сразу. Всего — не дольше AskTimeout.
 func askLoop(show func(left time.Duration) Answer) Answer {
 	end := time.Now().Add(AskTimeout)
@@ -263,7 +265,7 @@ func askLoop(show func(left time.Duration) Answer) Answer {
 			return Deny
 		}
 		t0 := time.Now()
-		if a := show(left); a == Deny || time.Since(t0) >= AskDelay {
+		if a := show(left); a == Deny || time.Since(t0) >= AskDelay+askSpawn {
 			return a
 		}
 	}

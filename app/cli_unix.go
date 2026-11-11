@@ -44,10 +44,11 @@ func runCLI(cfg *config) (done bool, err error) {
 		} else if err := cfg.setConfirm(true); err != nil {
 			return true, err
 		}
-		fmt.Println("окно «Разрешить»:", *cliConfirm, map[bool]string{true: "(второй фактор TOTP отключён)", false: "(второй фактор TOTP включён)"}[*cliConfirm == "on"], restartHint)
+		msg := "окно «Разрешить»: " + *cliConfirm + map[bool]string{true: " (второй фактор TOTP отключён)", false: " (второй фактор TOTP включён)"}[*cliConfirm == "on"]
 		if c := cfg.code(); c != "" { // режим «Спрашивать»: вход — по одноразовому коду (REQ-S-23)
-			fmt.Println("одноразовый код:", spaced(c), "(сменится после сессии; запущенный AnyPC подхватит его за 2 с)")
+			msg += "; одноразовый код: " + spaced(c) + " (меняется после каждой сессии)"
 		}
+		fmt.Println(msg + "; запущенный AnyPC подхватит настройку за 2 с") // опрос настроек (pollConfig)
 	case *cliView != "":
 		if *cliView != "on" && *cliView != "off" {
 			return true, errors.New("--view-only: on или off")
