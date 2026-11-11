@@ -1,5 +1,5 @@
 #!/bin/sh
-# AnyPC-macos (Intel + Apple Silicon в одном файле, ad-hoc подпись) — на самом Маке: build.sh по ssh или CI.
+# AnyPC-macos (Intel + Apple Silicon в одном файле; подпись — свой сертификат или ad-hoc, см. ниже) — на самом Маке: build.sh по ssh или CI.
 # Ввод через CoreGraphics — cgo, кросс-сборки с Linux нет. Аргумент — версия. ui/pake.wasm должен уже лежать в ui/.
 # libvpx: deploy/libvpx.sh darwin-amd64 darwin-arm64; в lib/ только libvpx.a — иначе ld возьмёт dylib.
 set -eu
@@ -18,9 +18,9 @@ lipo -create -output AnyPC-macos AnyPC-macos-amd64 AnyPC-macos-arm64
 # обновлении; нет связки (CI, чужой Мак) — ad-hoc, как раньше. Пароль связки — в ~/.config/anypc/sign-keychain.pass (не пароль Мака).
 K=$HOME/Library/Keychains/anypc-sign.keychain-db
 if [ -f "$K" ]; then # связка есть — только своей подписью: молчаливый откат на ad-hoc сбросил бы разрешения у пользователей
+  trap 'security lock-keychain "$K" 2>/dev/null' EXIT # и при ошибке codesign связка не остаётся открытой
   security unlock-keychain -p "$(cat "$HOME/.config/anypc/sign-keychain.pass")" "$K" || { echo "связка anypc-sign не открылась" >&2; exit 1; }
   codesign -s "AnyPC Code Signing" --keychain "$K" -i org.anypc.host -f AnyPC-macos
-  security lock-keychain "$K"
 else
   codesign -s - -f AnyPC-macos
 fi

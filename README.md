@@ -37,7 +37,7 @@ curl -fsSLO https://raw.githubusercontent.com/LoginByCall/AnyPC/main/deploy/dock
 printf 'DOMAIN=my.example.com\nPUBLIC_IP=203.0.113.10\nTURN_SECRET=%s\n' "$(openssl rand -base64 32)" > .env
 docker compose up -d
 ```
-**Behind your own reverse proxy** (ports 80/443 already taken): run `anypc-server -addr 127.0.0.1:8080` without `-domain` (in compose: replace `"-domain", "${DOMAIN}"` with `"-addr", "127.0.0.1:8080"`) and proxy `my.example.com` to `http://127.0.0.1:8080` with WebSocket — Caddy: `my.example.com { reverse_proxy 127.0.0.1:8080 }`; nginx: `proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection upgrade;`. TURN (3478, 49152–65535/udp) stays on the host as is.
+**Behind your own reverse proxy** (ports 80/443 already taken): run `anypc-server -addr 127.0.0.1:8080` without `-domain` (in compose: replace `"-domain", "${DOMAIN}"` with `"-addr", "127.0.0.1:8080"`) and proxy `my.example.com` to `http://127.0.0.1:8080` with WebSocket — Caddy: `my.example.com { reverse_proxy 127.0.0.1:8080 }`; nginx: `proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection upgrade; proxy_set_header X-Forwarded-For $remote_addr;`. TURN (3478, 49152–65535/udp) stays on the host as is.
 
 **Ansible:** the same script on every host of a group:
 ```yaml
