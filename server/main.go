@@ -2,6 +2,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"log"
@@ -37,7 +38,7 @@ func newMux(h http.Handler, siteHosts []string, dlDir string, turns, hubs []stri
 		m.HandleFunc("GET /turns", jsonList(turns))
 		m.HandleFunc("GET /hubs", jsonList(hubs))
 		if dlDir != "" { // загрузки на каждом узле: лендинг качает с ответившего первым
-			fs := heavy(http.StripPrefix("/download/", http.FileServer(http.Dir(dlDir))))
+			fs := heavy(dlPool, http.StripPrefix("/download/", http.FileServer(http.Dir(dlDir))))
 			m.Handle("/download/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Access-Control-Allow-Origin", "*")
 				if !strings.HasSuffix(r.URL.Path, "SHA256SUMS") {
@@ -48,9 +49,11 @@ func newMux(h http.Handler, siteHosts []string, dlDir string, turns, hubs []stri
 		}
 	}
 	app.Handle("/ws", h)
-	app.Handle("/", heavy(http.FileServer(http.FS(ui.FS)))) // pake.wasm — 4 МБ, страница — 165 КБ
-	www.Handle("/", heavy(http.FileServer(http.FS(site.FS))))
+	app.Handle("/", heavy(pagePool, http.FileServer(http.FS(ui.FS)))) // pake.wasm — 4 МБ, страница — 165 КБ
+	www.Handle("/", heavy(pagePool, http.FileServer(http.FS(site.FS))))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// срок записи прошлого тяжёлого ответа на этом keep-alive (heavy оставляет его на хвост) — снять
+		http.NewResponseController(w).SetWriteDeadline(time.Time{})
 		host := r.Host
 		if hp, _, err := net.SplitHostPort(host); err == nil {
 			host = hp
@@ -110,7 +113,7 @@ func main() {
 	if *domain != "" {
 		port = ":443"
 	}
-	l := listen(port, lim.tcp)
+	l := listen(port, lim.tcp, TCPPerAddr)
 	log.Print(memLine(budget, from, debug.SetMemoryLimit(-1), h.MaxConns, cap(l.sem))) // что действует на деле (TestMainWiring)
 	if *domain == "" {
 		log.Println("HTTP", *addr)
@@ -119,9 +122,9 @@ func main() {
 	hosts := list(*domain)
 	hosts = append(hosts, list(*siteHost)...)
 	m := &autocert.Manager{Prompt: autocert.AcceptTOS, HostPolicy: autocert.HostWhitelist(hosts...), Cache: autocert.DirCache(*certs)}
-	go func() { log.Fatal(serve(":80", m.HTTPHandler(nil)).Serve(listen(":80", HTTPConns))) }()
+	go func() { log.Fatal(serve(":80", m.HTTPHandler(nil)).Serve(listen(":80", HTTPConns, HTTPPerAddr))) }()
 	srv := serve(":443", mux)
-	srv.TLSConfig = m.TLSConfig()
+	srv.TLSConfig = noH2(m.TLSConfig())
 	log.Println("AnyPC server", version, "HTTPS", hosts)
 	log.Fatal(srv.ServeTLS(l, "", ""))
 }
@@ -136,7 +139,17 @@ func main() {
 // MaxHeaderBytes 16 КБ (по умолчанию 1 МБ): наши запросы — сотни байт, а мегабайт заголовков на каждое
 // из тысяч соединений — память VPS.
 func serve(addr string, h http.Handler) *http.Server {
-	return &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 10 * time.Second, MaxHeaderBytes: 16 << 10}
+	return &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 10 * time.Second, MaxHeaderBytes: 16 << 10,
+		TLSNextProto: map[string]func(*http.Server, *tls.Conn, http.Handler){}} // без HTTP/2 (noH2)
+}
+
+// noH2 — без HTTP/2 (Н1, Н2 повторной приёмки-7): потоки HTTP/2 не связаны с числом соединений (128 соединений ×
+// 250 потоков GET /pake.wasm с адреса — OOM за 12–47 с), а срок записи потока не освобождает место, когда клиент
+// не читает сокет. Веб-клиенту, загрузкам и WS он не нужен. ALPN autocert предлагает h2 — убрать (acme-tls/1 остаётся);
+// TLSNextProto в serve пустой — сервер h2 не включает и сам.
+func noH2(c *tls.Config) *tls.Config {
+	c.NextProtos = slices.DeleteFunc(slices.Clone(c.NextProtos), func(p string) bool { return p == "h2" })
+	return c
 }
 
 // list — "a, b,,c,a" → [a b c]: пустые и повторы отбрасываются (повторный запуск sed по флагам дал дубль, 2026-11-06).

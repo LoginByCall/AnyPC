@@ -50,9 +50,10 @@ var addrKeys = hub.AddrKeys
 // а hub ставит SndBuf захваченному WS через SetWriteBuffer — здесь он виден (limConn встраивает *net.TCPConn).
 type limitListener struct {
 	*net.TCPListener
-	sem chan struct{}
-	mu  sync.Mutex
-	per map[string]int
+	sem     chan struct{}
+	perAddr int // с одного адреса (/48 — ×10)
+	mu      sync.Mutex
+	per     map[string]int
 }
 
 func (l *limitListener) Accept() (net.Conn, error) {
@@ -80,7 +81,7 @@ func (l *limitListener) take(ks []hub.AddrKey) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for _, k := range ks {
-		if l.per[k.Key] >= TCPPerAddr*k.Mul {
+		if l.per[k.Key] >= l.perAddr*k.Mul {
 			return false
 		}
 	}
@@ -112,43 +113,51 @@ func (c *limConn) Close() error {
 	return err
 }
 
-// listen — TCP на addr под limitListener на n соединений.
-func listen(addr string, n int) *limitListener {
+// HTTPPerAddr — TCP с адреса на :80 (редирект и ACME HTTP-01): два адреса не должны занять все HTTPConns мест.
+const HTTPPerAddr = 16
+
+// listen — TCP на addr под limitListener: n соединений, perAddr с адреса.
+func listen(addr string, n, perAddr int) *limitListener {
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.Fatal(err)
 	}
-	return &limitListener{TCPListener: l.(*net.TCPListener), sem: make(chan struct{}, n), per: map[string]int{}}
+	return &limitListener{TCPListener: l.(*net.TCPListener), sem: make(chan struct{}, n), perAddr: perAddr, per: map[string]int{}}
 }
 
 // Тяжёлые ответы — статика и загрузки (страница 165 КБ, pake.wasm 4 МБ, AnyPC.exe): у каждого буфер ядра до 2 × SndBuf,
-// и остановленный ответ держит его, пока не истечёт StallWrite. Одновременно — не больше HeavyTotal, с адреса —
-// HeavyPerAddr (/48 — ×10); сверх — ждут до HeavyWait, затем 503. Браузеру хватает: остальное он ставит в очередь сам.
+// и остановленный ответ держит его, пока не истечёт StallWrite. Два пула (Н3 повторной приёмки-7): ресурсы страницы
+// (вход в веб-клиент) и загрузки установщиков — медленные загрузки не должны отнимать у страницы места. Сверх пула
+// или доли адреса (/48 — ×10) — ждут до HeavyWait, затем 503. Браузеру хватает: остальное он ставит в очередь сам.
+var (
+	pagePool = &heavyLim{max: 64, perAddr: 8, per: map[string]int{}}
+	dlPool   = &heavyLim{max: 16, perAddr: 2, per: map[string]int{}}
+)
+
 const (
-	HeavyTotal, HeavyPerAddr = 32, 4
-	HeavyWait                = 10 * time.Second
-	// StallWrite — тяжёлый ответ без продвижения (кусок stallChunk не ушёл в буфер ядра) столько — соединение рвётся:
-	// медленный честный клиент докачивает (от ≈0,5 КБ/с), остановленный освобождает место за ≈30 с.
-	StallWrite = 30 * time.Second
+	HeavyWait = 10 * time.Second
+	// StallWrite — тяжёлый ответ без продвижения столько — соединение рвётся. Продвижение видно кусками stallChunk,
+	// а ядро будит писателя, когда в буфере отправки (2 × SndBuf = 512 КиБ) свободна треть — ≈170 КБ: честный медленный
+	// клиент докачивает от ≈170 КБ / 90 с ≈ 2 КБ/с; остановленный освобождает место за ≈90 с (повторная приёмка-7, З8).
+	StallWrite = 90 * time.Second
 	stallChunk = 16 << 10
 )
 
 type heavyLim struct {
-	mu    sync.Mutex
-	total int
-	per   map[string]int
+	max, perAddr int // всего и с адреса (/48 — ×10)
+	mu           sync.Mutex
+	total        int
+	per          map[string]int
 }
-
-var heavyNow = &heavyLim{per: map[string]int{}}
 
 func (l *heavyLim) try(ks []hub.AddrKey) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.total >= HeavyTotal {
+	if l.total >= l.max {
 		return false
 	}
 	for _, k := range ks {
-		if l.per[k.Key] >= HeavyPerAddr*k.Mul {
+		if l.per[k.Key] >= l.perAddr*k.Mul {
 			return false
 		}
 	}
@@ -182,18 +191,20 @@ func (l *heavyLim) acquire(ctx context.Context, ks []hub.AddrKey) bool {
 	return true
 }
 
-// heavy — обёртка тяжёлого ответа: лимит одновременных (heavyNow) и срок записи по продвижению (StallWrite).
-func heavy(h http.Handler) http.Handler {
+// heavy — обёртка тяжёлого ответа: место в пуле pool и срок записи по продвижению (StallWrite). Срок после ответа
+// не снимается — net/http дописывает хвост (bufio) уже после обработчика; следующий запрос на этом соединении
+// снимает его сам (newMux), Hijack — тоже.
+func heavy(pool *heavyLim, h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ks := addrKeys(hub.ClientAddr(r))
-		if !heavyNow.acquire(r.Context(), ks) {
+		if !pool.acquire(r.Context(), ks) {
 			w.Header().Set("Retry-After", "5")
 			http.Error(w, "busy", http.StatusServiceUnavailable)
 			return
 		}
-		defer heavyNow.done(ks)
+		defer pool.done(ks)
 		rc := http.NewResponseController(w)
-		defer rc.SetWriteDeadline(time.Time{}) // keep-alive: следующий ответ на этом соединении — без старого срока
+		defer rc.SetWriteDeadline(time.Now().Add(StallWrite)) // хвост ответа — под сроком
 		h.ServeHTTP(stallWriter{w, rc}, r)
 	})
 }

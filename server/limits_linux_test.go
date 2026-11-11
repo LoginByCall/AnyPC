@@ -9,7 +9,7 @@ import (
 
 // TestBufs — буферы ядра у принятых соединений (Д1″ (в) приёмки-6, Д1 приёмки-7); Linux удваивает заданное.
 func TestBufs(t *testing.T) {
-	l := listen("127.0.0.1:0", 2)
+	l := listen("127.0.0.1:0", 2, TCPPerAddr)
 	defer l.Close()
 	go func() {
 		if c, err := net.Dial("tcp", l.Addr().String()); err == nil {

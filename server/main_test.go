@@ -294,7 +294,7 @@ func TestServeTimeouts(t *testing.T) {
 // TestListenLimit — общий лимит TCP (Д1″ приёмки-6): простаивающее keep-alive занимает место, следующее соединение
 // ждёт, пока оно не освободится.
 func TestListenLimit(t *testing.T) {
-	l := listen("127.0.0.1:0", 1)
+	l := listen("127.0.0.1:0", 1, TCPPerAddr)
 	srv := serve("", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok") }))
 	go srv.Serve(l)
 	defer srv.Close()
@@ -324,7 +324,7 @@ func TestListenLimit(t *testing.T) {
 func TestIdleTimeoutKeepsWS(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	l := listen("127.0.0.1:0", 10)
+	l := listen("127.0.0.1:0", 10, TCPPerAddr)
 	srv := serve("", &hub.Hub{})
 	srv.IdleTimeout = 200 * time.Millisecond
 	go srv.Serve(l)
