@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"math/big"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -36,8 +38,11 @@ type account struct {
 // config — %APPDATA%\AnyPC\config.json. Enc/Bitrate/Server правятся вручную при необходимости.
 type config struct {
 	settings
-	mu   sync.Mutex
-	path string
+	mu    sync.Mutex
+	path  string
+	kmu   sync.Mutex // кэш KDF одноразового кода: Argon2 — раз на код, не на каждый вход
+	kkey  string
+	khash []byte
 }
 
 // settings — то, что лежит в файле.
@@ -52,6 +57,10 @@ type settings struct {
 	Confirm *bool             `json:"confirm"`             // REQ-F-03: окно «Разрешить / Отклонить» на каждое подключение
 	Saved   map[string]string `json:"saved,omitempty"`     // ID удалённого ПК → запомненный пароль («Запомнить пароль» на управляющем ПК)
 	View    bool              `json:"view_only,omitempty"` // «Только показ экрана»: каждая входящая сессия — только просмотр (REQ-F-20)
+	// Одноразовый код (REQ-S-23): в режиме «Спрашивать» — пароль записи по умолчанию; меняется после каждой сессии,
+	// блокировки и по ↻. В файле (0600, как запомненные пароли): окно, ключи CLI и запущенная программа видят один код.
+	Code     string `json:"code,omitempty"`
+	CodeSalt []byte `json:"code_salt,omitempty"`
 	// До учётных записей (v0.1.19 и раньше) запись была одна: Salt/Hash, Trusted и account. Читаются и переезжают
 	// в Users[0] (migrate), в файл больше не пишутся.
 	Salt    []byte   `json:"salt,omitempty"`
@@ -111,6 +120,10 @@ func loadConfig(path string) (*config, error) {
 		c.Confirm, changed = &v, true
 	}
 	if c.migrate() {
+		changed = true
+	}
+	if c.codeModeLocked() && c.Code == "" { // режим «Спрашивать» без кода (новая установка, обновление) — завести
+		c.setCode(randCode())
 		changed = true
 	}
 	if changed {
@@ -275,8 +288,84 @@ func (c *config) setConfirm(on bool) error {
 	c.Confirm = &on
 	if on { // TOTP записи по умолчанию; у остальных записей свой — остаётся (действует, когда подтверждение снова выключат)
 		c.Users[0].TOTP, c.Users[0].TOTPStep = "", 0
+		c.setCode(randCode()) // режим «Спрашивать» — новый одноразовый код
 	}
 	return c.save()
+}
+
+// codeModeLocked — режим «Спрашивать перед каждым подключением» (REQ-S-23, под c.mu): вход записи по умолчанию —
+// одноразовым кодом и «Разрешить», постоянный пароль и записи по имени не действуют (хранятся). Это и галочка, и
+// хост после обновления с выключенным подтверждением без TOTP (он и так спрашивает «Разрешить»).
+func (c *config) codeModeLocked() bool {
+	return c.Confirm == nil || *c.Confirm || len(c.Users) == 0 || c.Users[0].TOTP == ""
+}
+
+func (c *config) codeMode() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.codeModeLocked()
+}
+
+// randCode — одноразовый код: 6 цифр crypto/rand (равномерно).
+func randCode() string {
+	n, err := rand.Int(rand.Reader, big.NewInt(1e6))
+	if err != nil {
+		panic(err) // crypto/rand не отказывает
+	}
+	return fmt.Sprintf("%06d", n)
+}
+
+// setCode — новый код под c.mu. Соль KDF кода — одна на хост: смена кода не меняет соль, и DropRevoked не рвёт идущую
+// сессию по ↻ (сессию кончает «Разорвать»); смена режима (пароль ↔ код) — меняет.
+func (c *config) setCode(code string) {
+	if len(c.CodeSalt) == 0 {
+		c.CodeSalt = make([]byte, 16)
+		rand.Read(c.CodeSalt)
+	}
+	c.Code = code
+}
+
+// code — одноразовый код для окна и --status; "" — не режим «Спрашивать».
+func (c *config) code() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.codeModeLocked() {
+		return ""
+	}
+	return c.Code
+}
+
+// newCode — сменить одноразовый код (↻, конец сессии, блокировка перебора); KDF — сразу, первый вход не ждёт Argon2.
+func (c *config) newCode() (string, error) {
+	code := randCode()
+	c.mu.Lock()
+	c.reload()
+	c.setCode(code)
+	salt := c.CodeSalt
+	err := c.save()
+	c.mu.Unlock()
+	go c.codeKDF(code, salt)
+	return code, err
+}
+
+// codeUsed — agent.Agent.CodeUsed: код израсходован — в режиме «Спрашивать» новый.
+func (c *config) codeUsed() {
+	if c.codeMode() {
+		if _, err := c.newCode(); err != nil {
+			log.Printf("одноразовый код: %v", err)
+		}
+	}
+}
+
+// codeKDF — KDF(код, соль), с кэшем на последний код (без c.mu: Argon2 64 МБ не держит настройки).
+func (c *config) codeKDF(code string, salt []byte) []byte {
+	k := code + "\x00" + string(salt)
+	c.kmu.Lock()
+	defer c.kmu.Unlock()
+	if c.kkey != k {
+		c.kkey, c.khash = k, pake.KDF(code, salt)
+	}
+	return c.khash
 }
 
 // errBadCode — неверный код при настройке TOTP (окно показывает свой текст по этой метке).
@@ -474,8 +563,17 @@ func (c *config) trust(pub []byte, user string) {
 }
 
 // secret — запись user для CPace (agent.Agent.Secret): соль, KDF(пароль, соль), права «просмотр»; нет — пустой hash.
+// В режиме «Спрашивать» (REQ-S-23) запись по умолчанию — одноразовый код, записи по имени не действуют.
 func (c *config) secret(user string) (salt, hash []byte, view bool) {
 	c.mu.Lock()
+	if c.codeModeLocked() {
+		code, salt := c.Code, c.CodeSalt
+		c.mu.Unlock()
+		if user != "" || code == "" {
+			return nil, nil, false
+		}
+		return salt, c.codeKDF(code, salt), false
+	}
 	defer c.mu.Unlock()
 	if u := c.user(user); u != nil {
 		return u.Salt, u.Hash, u.View
