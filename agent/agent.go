@@ -74,6 +74,8 @@ type Agent struct {
 	starting  int                  // занятые места pend, пока newSession шлёт offer (без a.mu)
 	fails     int
 	lockUntil time.Time
+	otpFails  int             // неверные коды TOTP от закреплённых ключей (У3): своя блокировка — чужой перебор паролей
+	otpLock   time.Time       // владельца с ключом не запирает, а украденный ключ код не переберёт
 	online    map[string]bool // хабы, на которых хост зарегистрирован
 }
 
@@ -596,11 +598,16 @@ func (a *Agent) countAuth(cid string, ok bool) {
 		a.fails = 0
 		return
 	}
-	a.fails++
-	if a.fails >= 5 {
-		a.lockUntil = time.Now().Add(min(time.Minute<<min(a.fails-5, 6), time.Hour))
-	}
+	lockStep(&a.fails, &a.lockUntil)
 	log.Printf("неверный пароль или код от %s (%d)", cid, a.fails)
+}
+
+// lockStep — ещё одна неудача: с 5-й блокировка на 1 мин, дальше удвоение до 1 ч (REQ-S-04).
+func lockStep(fails *int, until *time.Time) {
+	*fails++
+	if *fails >= 5 {
+		*until = time.Now().Add(min(time.Minute<<min(*fails-5, 6), time.Hour))
+	}
 }
 
 // newAPI — WebRTC со стандартными интерсепторами (NACK, RTCP-отчёты, TWCC-ответы); при kbps > 0 ещё и
@@ -936,15 +943,28 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 			s.asking.Store(true) // общий таймер входа не закрывает — у каждого запроса кода свой
 			var ask func()
 			check := func(code string) {
+				// Блокировка (REQ-S-04): чужим — общая с паролем; закреплённому ключу — своя по его неверным кодам (У3:
+				// знающий только ID перебором паролей владельца не запирает), и его неверные коды идут ещё и в общий счётчик.
+				lock := func() bool {
+					return time.Now().Before(map[bool]time.Time{false: a.lockUntil, true: a.otpLock}[trusted])
+				}
 				a.mu.Lock()
-				if time.Now().Before(a.lockUntil) { // и для доверенного ключа: украденный ключ не даёт перебор кода
+				if lock() {
 					a.mu.Unlock()
 					reject("locked")
 					return
 				}
 				_, ok := a.OTP(code)
-				a.countAuth(s.cid, ok) // общий счётчик перебора с паролем (REQ-S-04)
-				locked := time.Now().Before(a.lockUntil)
+				switch {
+				case !trusted:
+					a.countAuth(s.cid, ok)
+				case ok:
+					a.otpFails = 0 // общий счётчик успех владельца не сбрасывает
+				default:
+					lockStep(&a.otpFails, &a.otpLock)
+					a.countAuth(s.cid, false)
+				}
+				locked := lock()
 				a.mu.Unlock()
 				switch {
 				case ctx.Err() != nil: // клиент ушёл
