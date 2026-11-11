@@ -165,6 +165,16 @@ func TestCLI(t *testing.T) {
 		if s, h, v := c.secret("olga"); !v || !bytes.Equal(h, pake.KDF("olga-pass1", s)) || !c.hasPass() {
 			t.Error("запись olga не записана или затёрла пароль по умолчанию")
 		}
+		if out, err := user("olga-pass2\n", "--user", "olga"); err != nil || !strings.Contains(out, "olga (view)") { // приёмка Д3
+			t.Errorf("смена пароля без --rights: %v %q", err, out)
+		}
+		_, def, _ := c.secret("")
+		if out, err := user("other-pass1\n", "--user", "  "); err == nil { // приёмка Д5
+			t.Errorf("пустое имя принято: %q", out)
+		}
+		if c, _ := loadConfig(filepath.Join(home, ".config", "AnyPC", "config.json")); !bytes.Equal(func() []byte { _, h, _ := c.secret(""); return h }(), def) {
+			t.Error("пустое --user сменило пароль по умолчанию")
+		}
 		if out, _ := cli("--status"); !strings.Contains(out, "  olga: view, TOTP: нет") {
 			t.Errorf("--status без записи: %q", out)
 		}

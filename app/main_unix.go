@@ -78,19 +78,28 @@ func main() {
 		return
 	}
 	if *pwStdin { // с --user — пароль и права учётной записи (REQ-S-20), иначе — записи по умолчанию
-		if *cliRights != "full" && *cliRights != "view" {
+		named := false // --user задан (и пустым: пустое имя — отказ, а не пароль по умолчанию)
+		flag.Visit(func(f *flag.Flag) { named = named || f.Name == "user" })
+		if *cliRights != "" && *cliRights != "full" && *cliRights != "view" {
 			fmt.Fprintln(os.Stderr, "--rights: full или view")
 			os.Exit(1)
 		}
 		p, err := readPassword(os.Stdin)
-		if err == nil {
-			err = cfg.setUser(*cliUser, p, *cliRights == "view")
+		if err == nil && named {
+			err = cfg.setUser(*cliUser, p, *cliRights)
+		} else if err == nil {
+			err = cfg.setPassword(p)
 		}
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "пароль:", err)
 			os.Exit(1)
 		}
-		fmt.Println(map[bool]string{true: "пароль задан", false: "учётная запись " + agent.UserKey(*cliUser) + " (" + *cliRights + ") задана"}[*cliUser == ""] + "; запущенный AnyPC подхватит её за 2 с")
+		if !named {
+			fmt.Println("пароль задан; запущенный AnyPC подхватит его за 2 с")
+			return
+		}
+		_, _, view := cfg.secret(agent.UserKey(*cliUser))
+		fmt.Printf("учётная запись %s (%s) задана; запущенный AnyPC подхватит её за 2 с\n", agent.UserKey(*cliUser), map[bool]string{true: "view", false: "full"}[view])
 		return
 	}
 	if !cfg.confirm() && !cfg.otpSet() { // хост обновлён с выключенным подтверждением: без TOTP — снова окно «Разрешить»
@@ -153,6 +162,7 @@ func main() {
 			if cfg.viewNow() {
 				a.DisconnectFull()
 			}
+			a.DropRevoked() // --user / --user-del при запущенной программе (настройки перечитал viewNow)
 		}
 	}()
 	run.start(srv) // настройки дальше — только под c.mu (опрос выше их перечитывает)
@@ -277,7 +287,7 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 		}
 		a.AudioMic(on)
 	case "setPassword":
-		err = cfg.setPassword(str(0))
+		err = dropAfter(a, cfg.setPassword(str(0)))
 	case "setConfirm":
 		var on bool
 		if len(args) > 0 {
@@ -322,13 +332,9 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 	case "otpOff":
 		err = cfg.otpOff(str(0))
 	case "userSet":
-		var view bool
-		if len(args) > 2 {
-			json.Unmarshal(args[2], &view)
-		}
-		err = cfg.setUser(str(0), str(1), view)
+		err = dropAfter(a, cfg.setUser(str(0), str(1), str(2))) // сменили пароль или сузили права — её сессия рвётся
 	case "userDel":
-		err = cfg.delUser(str(0))
+		err = dropAfter(a, cfg.delUser(str(0)))
 	case "pakeRespond":
 		res, err = pake.ClientRespondB64(str(0), str(1), str(2), str(3), str(4), str(5))
 	default:

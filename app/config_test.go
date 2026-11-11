@@ -351,14 +351,19 @@ func TestUsersConfig(t *testing.T) {
 	}
 
 	for _, n := range []string{"a\nb", "имя\u202e", strings.Repeat("x", 33), "a*", "<b>"} {
-		if c.setUser(n, "пароль-ивана", false) == nil {
+		if c.setUser(n, "пароль-ивана", "full") == nil {
 			t.Errorf("имя %q принято", n)
 		}
 	}
-	if c.setUser("Ivan", "short", false) == nil {
-		t.Fatal("короткий пароль принят")
+	if c.setUser("Ivan", "short", "full") == nil || c.setUser("Ivan", "пароль-ивана", "admin") == nil {
+		t.Fatal("короткий пароль или неверные права приняты")
 	}
-	if err := c.setUser(" Ivan ", "пароль-ивана", true); err != nil {
+	for _, n := range []string{"", "  "} { // приёмка Д5: пустое имя — отказ, а не смена пароля по умолчанию
+		if c.setUser(n, "пароль-ивана", "full") == nil {
+			t.Fatalf("пустое имя %q принято", n)
+		}
+	}
+	if err := c.setUser(" Ivan ", "пароль-ивана", ""); err != nil { // новая без явных прав — «просмотр»
 		t.Fatal(err)
 	}
 	if s, h, v := c.secret("ivan"); !v || !bytes.Equal(h, pake.KDF("пароль-ивана", s)) {
@@ -386,9 +391,12 @@ func TestUsersConfig(t *testing.T) {
 	if u := c.users(); len(u) != 1 || u[0]["name"] != "ivan" || u[0]["view"] != true || u[0]["otp"] != true {
 		t.Fatalf("список: %v", u)
 	}
-	c.setUser("ivan", "новый-пароль", false) // смена пароля: доверие заново, TOTP и место в списке остаются
-	if c.trusted(k, "ivan") || c.users()[0]["otp"] != true || c.users()[0]["view"] != false {
+	c.setUser("ivan", "новый-пароль", "") // смена пароля без прав (приёмка Д3): права, TOTP и место остаются, доверие — заново
+	if c.trusted(k, "ivan") || c.users()[0]["otp"] != true || c.users()[0]["view"] != true {
 		t.Fatal("смена пароля ivan")
+	}
+	if c.setUser("ivan", "новый-пароль", "full"); c.users()[0]["view"] != false {
+		t.Fatal("права full не записаны")
 	}
 	if c.otpOff("") == nil || c.otpOff("ivan") != nil || c.users()[0]["otp"] != false {
 		t.Fatal("отключение TOTP")
@@ -401,7 +409,7 @@ func TestUsersConfig(t *testing.T) {
 		t.Fatal("удаление")
 	}
 	fresh, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
-	if fresh.setUser("ivan", "пароль-ивана", false) == nil {
+	if fresh.setUser("ivan", "пароль-ивана", "full") == nil {
 		t.Fatal("запись по имени без пароля по умолчанию")
 	}
 }

@@ -166,7 +166,7 @@ func (c *config) viewNow() bool {
 }
 
 // setPassword — пароль записи по умолчанию (окно хоста, --password-stdin).
-func (c *config) setPassword(p string) error { return c.setUser("", p, false) }
+func (c *config) setPassword(p string) error { return c.setAccount("", p, "full") }
 
 // maxUsers — учётных записей на хосте, кроме записи по умолчанию.
 const maxUsers = 32
@@ -189,12 +189,23 @@ func (c *config) user(name string) *account {
 	return nil
 }
 
-// setUser — добавить запись или сменить её пароль и права (REQ-S-20); "" — запись по умолчанию (права — всегда полные).
-// Новый пароль — доверие ключам заново; TOTP записи остаётся.
-func (c *config) setUser(name, p string, view bool) error {
-	name = agent.UserKey(name)
+// setUser — добавить запись по имени или сменить её пароль и права (REQ-S-20); пустое имя — отказ (пароль по
+// умолчанию — setPassword). rights: "full" | "view" | "" — у существующей оставить, новой — «просмотр» (безопаснее).
+func (c *config) setUser(name, p, rights string) error {
+	if agent.UserKey(name) == "" {
+		return errors.New("имя не задано")
+	}
+	return c.setAccount(agent.UserKey(name), p, rights)
+}
+
+// setAccount — пароль и права записи name (UserKey; "" — по умолчанию, права у неё всегда полные). Новый пароль —
+// доверие ключам заново; TOTP записи остаётся.
+func (c *config) setAccount(name, p, rights string) error {
 	if name != "" && !validName(name) {
 		return errors.New("имя: 1–32 буквы, цифры, пробел и . _ - @")
+	}
+	if rights != "" && rights != "full" && rights != "view" {
+		return errors.New("права: full или view")
 	}
 	if len([]rune(p)) < 8 {
 		return errors.New("пароль короче 8 символов")
@@ -213,10 +224,13 @@ func (c *config) setUser(name, p string, view bool) error {
 	case len(c.Users) > maxUsers:
 		return fmt.Errorf("не больше %d учётных записей", maxUsers)
 	default:
-		c.Users = append(c.Users, account{Name: name})
+		c.Users = append(c.Users, account{Name: name, View: true}) // новая без явных прав — «просмотр»
 		u = &c.Users[len(c.Users)-1]
 	}
-	u.Salt, u.Hash, u.Trusted, u.View = salt, hash, nil, view && name != ""
+	u.Salt, u.Hash, u.Trusted = salt, hash, nil
+	if rights != "" {
+		u.View = rights == "view" && name != ""
+	}
 	return c.save()
 }
 
