@@ -51,6 +51,56 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // TestBrowserOTP — веб-клиент и второй фактор: поле кода, неверный код, вход; «Запомнить пароль».
 func TestBrowserOTP(t *testing.T) {
+	out := otpBrowser(t, cdpOTP)
+	for _, want := range []string{
+		"ask=Enter the 6-digit code from the authenticator app for this PC|true|false",
+		"bad=Wrong code. Check that the time on the phone is correct and try again|true|false",
+		"ok=|false|true",
+		`saved={"123456789":"secret123"}`,
+		"fill=secret123|true",
+		"forgot={}",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("нет %q", want)
+		}
+	}
+}
+
+// cdpOTPLate: код не ввели вовремя — понятная причина, поле кода убрано; кнопка «Войти» ничего не ломает.
+const cdpOTPLate = `
+const [, , port, url] = process.argv;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+(async () => {
+  const tab = await (await fetch('http://127.0.0.1:' + port + '/json/new?' + url, { method: 'PUT' })).json();
+  const ws = new WebSocket(tab.webSocketDebuggerUrl); await new Promise(r => ws.onopen = r);
+  let id = 0; const wait = {};
+  ws.onmessage = e => { const m = JSON.parse(e.data); if (m.id && wait[m.id]) wait[m.id](m); };
+  const ev = x => new Promise(r => { const i = ++id; wait[i] = m => r(m.result?.result?.value); ws.send(JSON.stringify({ id: i, method: 'Runtime.evaluate', params: { expression: x, awaitPromise: true, returnByValue: true } })); });
+  const state = () => ev("document.getElementById('msg').textContent + '|' + !document.getElementById('otpbox').classList.contains('hidden') + '|' + !document.getElementById('sess').classList.contains('hidden')");
+  const until = async f => { for (let i = 0; i < 75; i++) { const s = await state(); if (f(s)) return s; await sleep(200); } return await state(); };
+  await sleep(1000);
+  await ev("document.getElementById('id').value='123456789'; document.getElementById('pw').value='secret123'; document.getElementById('go').click()");
+  console.log('ask=' + await until(s => s.includes('|true|')));
+  console.log('late=' + await until(s => s.includes('|false|')));
+  await ev("document.getElementById('otp').value='123456'; document.getElementById('otpgo').click()");
+  await sleep(300);
+  console.log('after=' + await state());
+  process.exit(0);
+})();`
+
+// TestBrowserOTPLate — хост не дождался кода: клиент пишет причину (не «связь потеряна»), поле не остаётся мёртвым.
+func TestBrowserOTPLate(t *testing.T) {
+	otpWait90 = 2 * time.Second
+	defer func() { otpWait90 = 90 * time.Second }()
+	out := otpBrowser(t, cdpOTPLate)
+	late := "Error: the time to enter the code is over — connect again|false|false"
+	if !strings.Contains(out, "late="+late) || !strings.Contains(out, "after="+late) {
+		t.Error("опоздавший код: нет понятной причины или поле кода осталось")
+	}
+}
+
+// otpBrowser — хост с TOTP (код — /code на том же сервере) и веб-клиент в Chrome по скрипту; вывод скрипта.
+func otpBrowser(t *testing.T, script string) string {
 	chrome, err := exec.LookPath("google-chrome")
 	if err != nil {
 		t.Skip("нет google-chrome")
@@ -79,19 +129,7 @@ func TestBrowserOTP(t *testing.T) {
 		return exec.CommandContext(ctx, "ffmpeg", FFArgs("test", "libx264", c)...), nil
 	}
 	go a.Run(ctx)
-	out := string(runCDP(t, ctx, chrome, cdpOTP, srv.URL+"/"))
-	for _, want := range []string{
-		"ask=Enter the 6-digit code from the authenticator app for this PC|true|false",
-		"bad=Wrong code. Check that the time on the phone is correct and try again|true|false",
-		"ok=|false|true",
-		`saved={"123456789":"secret123"}`,
-		"fill=secret123|true",
-		"forgot={}",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("нет %q", want)
-		}
-	}
+	return string(runCDP(t, ctx, chrome, script, srv.URL+"/"))
 }
 
 // cdpHostOTP — окно хоста с подменёнными привязками программы: снять «Подтверждать вход» = настройка TOTP
