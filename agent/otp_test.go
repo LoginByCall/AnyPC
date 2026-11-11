@@ -295,3 +295,22 @@ func TestViewOnlyDrop(t *testing.T) {
 		t.Fatal("сессия «только просмотр» разорвана")
 	}
 }
+
+// TestOTPLateCode — код пришёл сразу после срока: хост его уже не проверяет — "denied" без «ok» следом.
+func TestOTPLateCode(t *testing.T) {
+	o := &otpHost{secret: totp.NewSecret()}
+	var seen sync.Map
+	e2eAgent = func(a *Agent) { a.OTP = o.check }
+	e2eSeen = func(m authMsg) { seen.Store(m.T, true) }
+	e2eOTP = func(int) string { time.Sleep(1200 * time.Millisecond); return o.code() } // срок — 1 с
+	otpWait90, e2eFail = time.Second, true
+	defer func() { e2eAgent, e2eSeen, e2eOTP, e2eFail, otpWait90 = nil, nil, nil, false, 90*time.Second }()
+	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000}), "secret123")
+	time.Sleep(300 * time.Millisecond)
+	if _, ok := seen.Load("ok"); ok {
+		t.Fatal("код после срока принят: «ok» после «denied»")
+	}
+	if _, ok := seen.Load("denied"); !ok {
+		t.Fatal("нет отказа по сроку")
+	}
+}
