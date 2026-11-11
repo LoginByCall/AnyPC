@@ -10,10 +10,18 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"time"
 
 	"anypc/hub"
 	"anypc/pake"
+	"anypc/totp"
 )
+
+// account — учётная запись входа. Пока одна (по умолчанию): второй фактор входа без подтверждения (PLAN.md «TOTP»).
+type account struct {
+	TOTP     string `json:"totp,omitempty"`      // секрет TOTP, base32 без '=' (файл настроек — 0600, как хэш пароля)
+	TOTPStep int64  `json:"totp_step,omitempty"` // шаг последнего принятого кода: тот же и более ранний — повтор, отказ
+}
 
 // config — %APPDATA%\AnyPC\config.json. Enc/Bitrate/Server правятся вручную при необходимости.
 type config struct {
@@ -27,6 +35,8 @@ type config struct {
 	Known   map[string]string `json:"known,omitempty"`   // ID удалённого ПК → отпечаток его ключа (TOFU, REQ-S-05)
 	Confirm *bool             `json:"confirm"`           // REQ-F-03: окно «Разрешить / Отклонить» на каждое подключение
 	Trusted [][]byte          `json:"trusted,omitempty"` // У3: ключи клиентов, входивших по паролю (старые — в начале); сброс при смене пароля
+	Account account           `json:"account,omitzero"`  // учётная запись по умолчанию (PLAN.md: с учётными записями сюда переедут Salt/Hash)
+	Saved   map[string]string `json:"saved,omitempty"`   // ID удалённого ПК → запомненный пароль («Запомнить пароль» на управляющем ПК)
 
 	mu   sync.Mutex
 	path string
@@ -106,11 +116,67 @@ func (c *config) confirm() bool {
 	return c.Confirm == nil || *c.Confirm
 }
 
+// setConfirm: включить окно «Разрешить» — это и отключить TOTP; выключить — только с настроенным TOTP (otpEnable).
 func (c *config) setConfirm(on bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if !on && c.Account.TOTP == "" {
+		return errors.New("вход без подтверждения — только со вторым фактором (TOTP)")
+	}
 	c.Confirm = &on
+	if on {
+		c.Account = account{}
+	}
 	return c.save()
+}
+
+// errBadCode — неверный код при настройке TOTP (окно показывает свой текст по этой метке).
+var errBadCode = errors.New("bad_code")
+
+// otpEnable — настройка TOTP: секрет сохраняется только с верным кодом из приложения, и вход без подтверждения
+// включается вместе с ним.
+func (c *config) otpEnable(secret, code string) error {
+	if !totp.Valid(secret) {
+		return errors.New("неверный секрет TOTP")
+	}
+	step, ok := totp.Check(secret, code, time.Now(), 0)
+	if !ok {
+		return errBadCode
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	off := false
+	c.Account, c.Confirm = account{TOTP: secret, TOTPStep: step}, &off // этот код уже не войдёт (повтор)
+	return c.save()
+}
+
+// otp — второй фактор для agent.Agent.OTP: set — секрет задан; ok — код верный и новее последнего принятого.
+func (c *config) otp(code string) (set, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.Account.TOTP == "" {
+		return false, false
+	}
+	step, ok := totp.Check(c.Account.TOTP, code, time.Now(), c.Account.TOTPStep)
+	if ok {
+		c.Account.TOTPStep = step
+		c.save()
+	}
+	return true, ok
+}
+
+// otpNew — новый секрет для окна настройки TOTP: ключ, otpauth-URI и QR (SVG). Сохраняется только otpEnable.
+func (c *config) otpNew() (map[string]string, error) {
+	sec := totp.NewSecret()
+	u := totp.URI(c.ID, sec)
+	svg, err := totp.SVG(u)
+	return map[string]string{"secret": sec, "uri": u, "svg": svg}, err
+}
+
+func (c *config) otpSet() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Account.TOTP != ""
 }
 
 func (c *config) hasPass() bool {
@@ -141,6 +207,31 @@ func (c *config) knownSet(id, fp string) error {
 		c.Known = map[string]string{}
 	}
 	c.Known[id] = fp
+	return c.save()
+}
+
+// savedGet — запомненный пароль удалённого ПК ("" — нет).
+func (c *config) savedGet(id string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Saved[id]
+}
+
+// savedSet — запомнить пароль удалённого ПК; "" — забыть.
+func (c *config) savedSet(id, pw string) error {
+	if !hub.IsHostID(id) || len(pw) > 1024 {
+		return errors.New("неверный ID или пароль")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if pw == "" {
+		delete(c.Saved, id)
+	} else {
+		if c.Saved == nil {
+			c.Saved = map[string]string{}
+		}
+		c.Saved[id] = pw
+	}
 	return c.save()
 }
 

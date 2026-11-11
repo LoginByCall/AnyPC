@@ -6,9 +6,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"anypc/hub"
 	"anypc/pake"
+	"anypc/totp"
 )
 
 func TestConfig(t *testing.T) {
@@ -100,5 +102,60 @@ func TestTrusted(t *testing.T) {
 	c.setPassword("новый-пароль")
 	if c.trusted(key(5)) {
 		t.Fatal("смена пароля не сбросила доверие")
+	}
+}
+
+// TestOTPConfig — TOTP (PLAN.md): секрет сохраняется только с верным кодом и переживает перезапуск; выключить
+// подтверждение без TOTP нельзя; включить подтверждение — отключить TOTP; повтор принятого кода — отказ.
+func TestOTPConfig(t *testing.T) {
+	c, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
+	if c.setConfirm(false) == nil || !c.confirm() {
+		t.Fatal("подтверждение выключено без TOTP")
+	}
+	r, err := c.otpNew()
+	if err != nil || !strings.HasPrefix(r["svg"], "<svg") || r["uri"] != totp.URI(c.ID, r["secret"]) {
+		t.Fatalf("otpNew: %v %v", err, r["uri"])
+	}
+	sec := r["secret"]
+	if c.otpEnable(sec, "000000") == nil && c.otpEnable(sec, "111111") == nil {
+		t.Fatal("неверный код принят")
+	}
+	if c.otpSet() || !c.confirm() {
+		t.Fatal("TOTP сохранён без верного кода")
+	}
+	code, _ := totp.Code(sec, time.Now())
+	if err := c.otpEnable(sec, code); err != nil || c.confirm() || !c.otpSet() {
+		t.Fatalf("верный код: %v", err)
+	}
+	b, _ := os.ReadFile(c.path)
+	if !strings.Contains(string(b), sec) {
+		t.Fatal("секрет не в настройках")
+	}
+	c2, _ := loadConfig(c.path)
+	if set, ok := c2.otp(code); !set || ok { // код настройки уже принят — повтор
+		t.Fatalf("после перезапуска: задан %v, повтор принят %v", set, ok)
+	}
+	if set, ok := c2.otp(""); !set || ok {
+		t.Fatal("пустой код")
+	}
+	if err := c2.setConfirm(true); err != nil || c2.otpSet() {
+		t.Fatal("включение подтверждения не отключило TOTP")
+	}
+	if set, _ := c2.otp(code); set {
+		t.Fatal("TOTP остался")
+	}
+}
+
+// TestSaved — запомненные пароли: сохраняются, "" — забыть, чужой ID — отказ.
+func TestSaved(t *testing.T) {
+	c, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
+	if c.savedSet("123456789", "пароль-1") != nil || c.savedSet("../x", "a") == nil {
+		t.Fatal("savedSet")
+	}
+	if c2, _ := loadConfig(c.path); c2.savedGet("123456789") != "пароль-1" {
+		t.Fatal("не сохранился")
+	}
+	if c.savedSet("123456789", "") != nil || c.savedGet("123456789") != "" {
+		t.Fatal("не забылся")
 	}
 }
