@@ -192,7 +192,7 @@ func TestUserLocks(t *testing.T) {
 	e2eAgent = func(a *Agent) {
 		hosts(a)
 		until := time.Now().Add(time.Hour)
-		a.names = map[string]*nameLock{"ivan": {5, until}, "nobody": {5, until}}
+		a.names = map[string]*nameLock{"ivan": {fails: 5, until: until}, "nobody": {fails: 5, until: until}}
 		a.Trusted = func(_ []byte, u string) bool { w, _ := trustedFor.Load().(string); return u == w || u == AnyUser }
 	}
 	e2eSeen = func(m authMsg) {
@@ -267,5 +267,61 @@ func TestUserOTP(t *testing.T) {
 	e2e(t, local(t), "123456789", false, ff, "olga-pass1")
 	if !asked.Load() || !nootp.Load() {
 		t.Fatalf("olga без TOTP: окно %v, nootp %v", asked.Load(), nootp.Load())
+	}
+}
+
+// TestDropRevoked — приёмка Д4: запись вошедшей сессии удалили, сменили ей пароль или сузили права до «просмотр» —
+// сессия рвётся; без перемен и у записи «просмотр», оставшейся «просмотр», — нет.
+func TestDropRevoked(t *testing.T) {
+	var mode, change atomic.Int32 // change: 0 как есть, 1 новая соль, 2 права «просмотр», 3 запись удалена
+	var gone atomic.Bool
+	hosts := usersHost(accounts)
+	e2eAgent = func(a *Agent) {
+		hosts(a)
+		sec := a.Secret
+		a.Secret = func(n string) ([]byte, []byte, bool) {
+			s, k, v := sec(n)
+			if n == "ivan" {
+				switch mode.Load() {
+				case 1:
+					s = []byte("another-salt-123")
+				case 2:
+					v = true
+				case 3:
+					return nil, nil, false
+				}
+			}
+			return s, k, v
+		}
+	}
+	e2eInput = func(t *testing.T, a *Agent) {
+		mode.Store(change.Load())
+		defer mode.Store(0)
+		a.DropRevoked()
+		for range 20 {
+			a.mu.Lock()
+			s := a.sess
+			a.mu.Unlock()
+			if s == nil {
+				gone.Store(true)
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		gone.Store(false)
+	}
+	defer e2eReset()
+	ff := FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000})
+	for _, c := range []struct {
+		user, pass string
+		change     int32
+		gone       bool
+	}{{"ivan", "ivan-pass1", 0, false}, {"ivan", "ivan-pass1", 1, true}, {"ivan", "ivan-pass1", 2, true}, {"ivan", "ivan-pass1", 3, true}, {"olga", "olga-pass1", 0, false}} {
+		change.Store(c.change)
+		e2eUser, e2eGood = c.user, c.pass
+		e2e(t, local(t), "123456789", false, ff, c.pass)
+		if gone.Load() != c.gone {
+			t.Fatalf("%s, правка %d: разорвана %v", c.user, c.change, gone.Load())
+		}
 	}
 }

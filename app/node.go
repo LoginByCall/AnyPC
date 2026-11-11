@@ -93,6 +93,14 @@ func (c *config) setServer(s string) error {
 }
 
 // setViewOnly — галочка «Только показ экрана» из окна: при включении идущая сессия с полным доступом рвётся.
+// dropAfter — правка записей удалась: сессия записи, которую удалили, сменили пароль или сузили права, рвётся.
+func dropAfter(a *agent.Agent, err error) error {
+	if err == nil {
+		a.DropRevoked()
+	}
+	return err
+}
+
 func setViewOnly(cfg *config, a *agent.Agent, on bool) error {
 	err := cfg.setViewOnly(on)
 	if err == nil && on {

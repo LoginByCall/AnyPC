@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/hmac"
@@ -26,6 +27,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"anypc/hub"
 	"anypc/pake"
@@ -77,17 +79,20 @@ type Agent struct {
 	sess      *session             // сессия с верным паролем (одна); до него — в pend
 	pend      map[*session]bool    // незавершённые входы: не больше maxPending, «занят» — только при sess
 	starting  int                  // занятые места pend, пока newSession шлёт offer (без a.mu)
-	fails     int                  // неудачи по хосту (все имена, REQ-S-22): с hostLockAt — блокировка входа всем, кроме закреплённых ключей
+	fails     int                  // неудачи паролей и кодов по хосту (все имена, REQ-S-22): с hostLockAt — блокировка входа всем, кроме закреплённых ключей
 	lockUntil time.Time
+	failAt    time.Time            // последняя неудача по хосту (hostStep)
 	names     map[string]*nameLock // неудачи по имени записи (REQ-S-22): и для несуществующих имён — иначе блокировка выдала бы, есть ли имя
-	otpFails  int                  // неверные коды TOTP от кого угодно — одна лестница на шаге кода; её смотрят все, а общую
-	otpLock   time.Time            // (пароли) — только чужие: перебор паролей не запирает владельца с закреплённым ключом (У3)
+	otpFails  int                  // неверные коды TOTP по хосту (все записи): с hostLockAt шаг кода заперт всем, и закреплённым ключам;
+	otpLock   time.Time            // у каждой записи ещё своя лестница кодов (nameLock.otpFails, как одна лестница v0.1.19)
+	otpAt     time.Time            // последний неверный код по хосту (hostStep)
 	online    map[string]bool      // хабы, на которых хост зарегистрирован
 }
 
 type session struct {
 	cid     string
 	user    string          // учётная запись входа (UserKey; "" — по умолчанию), REQ-F-24
+	salt    []byte          // соль записи при входе (под mu): сменилась — пароль сменили или запись удалили (DropRevoked)
 	conn    *websocket.Conn // хаб, через который пришёл клиент
 	pc      *webrtc.PeerConnection
 	keys    held
@@ -315,6 +320,27 @@ func (a *Agent) DisconnectFull() {
 		log.Printf("сессия %s: включён «Только показ экрана» — разорвана", s.cid)
 		a.Disconnect()
 	}
+}
+
+// DropRevoked — запись вошедшей сессии удалили, сменили ей пароль (новая соль) или сузили права до «просмотр»:
+// сессия рвётся (REQ-S-20). Зовут после правки записей и из опроса настроек; ещё не вошедшую не трогать — она
+// войдёт по тем данным, что были, и следующий вызов её разорвёт.
+func (a *Agent) DropRevoked() {
+	a.mu.Lock()
+	s := a.sess
+	a.mu.Unlock()
+	if s == nil || !s.authed.Load() {
+		return
+	}
+	s.mu.Lock()
+	user, was := s.user, s.salt
+	s.mu.Unlock()
+	salt, secret, view := a.Secret(user)
+	if len(secret) > 0 && bytes.Equal(salt, was) && (!view || s.view.Load()) {
+		return
+	}
+	log.Printf("сессия %s: учётную запись удалили, сменили ей пароль или права — разорвана", s.label())
+	a.Disconnect()
 }
 
 func (a *Agent) setOnline(hub string, on bool) {
@@ -619,44 +645,69 @@ func (a *Agent) authResult(cid, user string, ok bool) {
 	a.countAuth(cid, user, ok)
 }
 
-// nameLock — счётчик неудач одного имени записи (REQ-S-22).
+// nameLock — счётчики неудач одного имени записи (REQ-S-22): пароли и коды TOTP этой записи.
 type nameLock struct {
-	fails int
-	until time.Time
+	fails    int
+	until    time.Time
+	otpFails int // неверные коды этой записи: сбрасывает только верный код этой же записи
+	otpUntil time.Time
 }
 
 // hostLockAt — неудач по хосту (все имена) до общей блокировки: массовый перебор имён; одно имя запирается раньше —
-// с 5-й (REQ-S-04), и перебор одного имени другие не запирает. maxNames — сколько имён помнить: сверх — забыть
-// незапертые (их перебор всё равно упрётся в общий счётчик).
-const hostLockAt, maxNames = 20, 256
+// с 5-й (REQ-S-04), и перебор одного имени другие не запирает. maxNames — сколько имён помнить; имена с неудачами не
+// вытесняются (иначе мусорные имена стирали бы счёт настоящего), новые сверх — в один общий счётчик othersKey.
+// hostForget — общий счётчик забывается после стольких часов тишины после блокировки: успех записи его не
+// сбрасывает (иначе свой вход раз в 19 неудач обнулял бы чужой перебор).
+const hostLockAt, maxNames, hostForget = 20, 256, time.Hour
 
-// countAuth — то же под уже взятым a.mu: счётчик имени и общий по хосту; успех сбрасывает оба.
-func (a *Agent) countAuth(cid, user string, ok bool) {
-	if ok {
-		a.fails = 0
-		delete(a.names, user)
-		return
+// othersKey — общий счётчик имён сверх maxNames (не совпадает ни с одним именем: UserKey и проверка в канале auth).
+const othersKey = "\x01"
+
+// nameOf — счётчики имени (под a.mu); create — завести, если нет. Сверх maxNames — общий othersKey.
+func (a *Agent) nameOf(user string, create bool) *nameLock {
+	if n := a.names[user]; n != nil {
+		return n
+	}
+	if len(a.names) >= maxNames {
+		user = othersKey
 	}
 	n := a.names[user]
-	if n == nil {
-		if len(a.names) >= maxNames {
-			now := time.Now()
-			maps.DeleteFunc(a.names, func(_ string, l *nameLock) bool { return !now.Before(l.until) })
-		}
+	if n == nil && create {
 		if a.names == nil {
 			a.names = map[string]*nameLock{}
 		}
 		n = &nameLock{}
 		a.names[user] = n
 	}
+	return n
+}
+
+// countAuth — то же под уже взятым a.mu: счётчик имени и общий по хосту. Успех сбрасывает только счёт своего имени.
+func (a *Agent) countAuth(cid, user string, ok bool) {
+	if ok {
+		delete(a.names, user)
+		return
+	}
+	n := a.nameOf(user, true)
 	lockStep(&n.fails, &n.until, 5)
-	lockStep(&a.fails, &a.lockUntil, hostLockAt)
+	hostStep(&a.fails, &a.lockUntil, &a.failAt)
 	log.Printf("неверный пароль или код от %s (запись %q: %d, всего %d)", cid, user, n.fails, a.fails)
+}
+
+// hostStep — неудача в общий счётчик хоста; счёт забывается, если неудач не было hostForget после конца блокировки.
+func hostStep(fails *int, until, at *time.Time) {
+	now := time.Now()
+	if now.After(at.Add(hostForget)) && now.After(until.Add(hostForget)) {
+		*fails = 0
+	}
+	*at = now
+	lockStep(fails, until, hostLockAt)
 }
 
 // pwLocked — вход паролем заперт: по хосту или по этому имени (под a.mu).
 func (a *Agent) pwLocked(user string, now time.Time) bool {
-	return now.Before(a.lockUntil) || a.names[user] != nil && now.Before(a.names[user].until)
+	n := a.nameOf(user, false)
+	return now.Before(a.lockUntil) || n != nil && now.Before(n.until)
 }
 
 // lockStep — ещё одна неудача: с at-й блокировка на 1 мин, дальше удвоение до 1 ч (REQ-S-04).
@@ -667,8 +718,9 @@ func lockStep(fails *int, until *time.Time, at int) {
 	}
 }
 
-// AnyUser — Trusted: ключ закреплён за любой записью (onConnect: имя придёт позже, в канале auth).
-const AnyUser = "*"
+// AnyUser — Trusted: ключ закреплён за любой записью (onConnect: имя придёт позже, в канале auth). Непечатаемое:
+// имя от клиента с управляющими символами хост не принимает, и с AnyUser оно не совпадёт.
+const AnyUser = "\x00"
 
 // UserKey — имя записи для сравнения: без пробелов по краям и без регистра (настройки хранят его так же).
 // Поддельная соль считается от него же: иначе «Ivan» и «ivan» у несуществующего имени дали бы разные соли, а у
@@ -949,7 +1001,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 			return
 		}
 		s.mu.Lock()
-		st, view = state, v
+		st, view, s.salt = state, v, salt
 		s.mu.Unlock()
 		send(authMsg{T: "a", Salt: salt, Msg: msgA, Users: true})
 	})
@@ -958,11 +1010,12 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		bad := json.Unmarshal(msg.Data, &m) != nil
 		if !bad && m.T == "a" { // REQ-S-20: клиент назвал запись — CPace заново с её солью (до "b", один раз)
 			s.mu.Lock()
-			ok := st != nil && !named && len(m.User) <= maxUserLen
+			ok := st != nil && !named && len(m.User) <= maxUserLen && !strings.ContainsFunc(m.User, unicode.IsControl)
 			named, st = true, nil
 			fpc, fph := fpClient, fpHost
 			s.mu.Unlock()
-			if !ok {
+			if !ok { // второе имя, имя после "b" или негодное — нарушение протокола: вход на этом соединении кончен
+				s.pc.Close()
 				return
 			}
 			user := UserKey(m.User)
@@ -973,7 +1026,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 				return
 			}
 			s.mu.Lock()
-			st, view, s.user = state, v, user
+			st, view, s.user, s.salt = state, v, user, salt
 			s.mu.Unlock()
 			send(authMsg{T: "a", Salt: salt, Msg: msgA, User: m.User})
 			return
@@ -1051,12 +1104,14 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 			s.asking.Store(true) // общий таймер входа не закрывает — у каждого запроса кода свой
 			var ask func()
 			check := func(code string) {
-				// Блокировка (REQ-S-04): неверные коды от кого угодно — одна лестница otpFails/otpLock, её смотрят все (вор с
-				// паролем и ключом получает те же 5 кодов, не больше); чужой смотрит ещё и общую с паролями, закреплённый
+				// Блокировка (REQ-S-04, S-22): у записи своя лестница кодов (5 → 1 мин … 1 ч), её сбрасывает только верный
+				// код этой же записи (вор с паролем и ключом записи получает 5 кодов, как в v0.1.19, и свой вход другой
+				// записью их не обнуляет); плюс общая по хосту. Их смотрят все; чужой — ещё и блокировки паролей, закреплённый
 				// ключ — нет (У3: знающий только ID перебором паролей владельца не запирает).
 				lock := func() bool {
 					now := time.Now()
-					return now.Before(a.otpLock) || !trusted && a.pwLocked(user, now)
+					n := a.nameOf(user, false)
+					return now.Before(a.otpLock) || n != nil && now.Before(n.otpUntil) || !trusted && a.pwLocked(user, now)
 				}
 				a.mu.Lock()
 				if lock() {
@@ -1065,10 +1120,12 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 					return
 				}
 				_, ok := a.OTP(user, code)
-				if ok {
-					a.otpFails = 0
-				} else {
-					lockStep(&a.otpFails, &a.otpLock, 5)
+				if n := a.names[user]; ok && n != nil { // своя запись, не общий othersKey
+					n.otpFails = 0
+				} else if !ok {
+					n := a.nameOf(user, true)
+					lockStep(&n.otpFails, &n.otpUntil, 5)
+					hostStep(&a.otpFails, &a.otpLock, &a.otpAt)
 				}
 				if !trusted || !ok { // неверные коды — и в общий счётчик (REQ-S-04); успех ключа общий не сбрасывает
 					a.countAuth(s.cid, user, ok)

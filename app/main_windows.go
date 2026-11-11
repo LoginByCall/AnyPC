@@ -134,14 +134,14 @@ func main() {
 	w.Bind("audioMic", a.AudioMic)
 	w.Bind("openUpdate", func() { exec.Command("rundll32", "url.dll,FileProtocolHandler", updateSite).Start() }) // адрес фиксирован: странице не открыть произвольный
 	w.Bind("openSite", func() { exec.Command("rundll32", "url.dll,FileProtocolHandler", siteHome).Start() })
-	w.Bind("setPassword", cfg.setPassword)
+	w.Bind("setPassword", func(p string) error { return dropAfter(a, cfg.setPassword(p)) })
 	w.Bind("setConfirm", cfg.setConfirm)
 	w.Bind("otpNew", cfg.otpNew)
 	w.Bind("setViewOnly", func(on bool) error { return setViewOnly(cfg, a, on) })
 	w.Bind("otpEnable", cfg.otpEnable)
 	w.Bind("otpOff", cfg.otpOff)
-	w.Bind("userSet", cfg.setUser)
-	w.Bind("userDel", cfg.delUser)
+	w.Bind("userSet", func(name, pw, rights string) error { return dropAfter(a, cfg.setUser(name, pw, rights)) })
+	w.Bind("userDel", func(name string) error { return dropAfter(a, cfg.delUser(name)) })
 	run := &runner{a: a, ctx: ctx}
 	w.Bind("setNode", func(node string, public bool) (string, error) { return setNode(cfg, run, node, public) })
 	w.Bind("hostDisconnect", a.Disconnect)

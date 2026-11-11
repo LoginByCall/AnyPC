@@ -42,6 +42,9 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await ev("const r = document.getElementById('remember'); r.checked = false; r.dispatchEvent(new Event('change'))");
   await sleep(300);
   console.log('forgot=' + await ev("localStorage.getItem('users')"));
+  // хост ответил «a» с чужим именем — подмена: клиент рвёт вход и CPace не начинает (выжившая мутация приёмки)
+  await ev("window.op = JSON.parse; JSON.parse = s => { const m = op(s); if (m && m.t === 'a' && m.user) m.user = 'mallory'; return m; }; document.getElementById('id').value='123456789'; document.getElementById('user').value='ivan'; document.getElementById('pw').value='ivan-pass1'; document.getElementById('go').click()");
+  console.log('echo=' + await until(s => s.includes('verified')));
   process.exit(0);
 })();`
 
@@ -87,6 +90,7 @@ func TestBrowserUsers(t *testing.T) {
 		`saved={"123456789":"Ivan"}`,
 		"fill=Ivan|true",
 		"forgot={}",
+		"echo=Error: the remote PC could not be verified — connection may be intercepted|false",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("нет %q", want)
@@ -114,7 +118,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     const st = { id: '123456789', confirm: false, otp: true, hasPass: true, users: [{ name: '<b>x</b>', view: false, otp: false }, { name: 'olga', view: true, otp: true }] };
     window.calls = []; window.confirm = () => true;
     window.hostInfo = async () => JSON.parse(JSON.stringify(st));
-    window.userSet = async (n, p, v) => { calls.push('set:' + n + ':' + p + ':' + v); st.users.push({ name: n, view: v, otp: false }); };
+    window.userSet = async (n, p, r) => { calls.push('set:' + n + ':' + p + ':' + r); st.users.push({ name: n, view: r === 'view', otp: false }); };
     window.userDel = async n => { calls.push('del:' + n); st.users = st.users.filter(u => u.name !== n); };
     window.otpOff = async n => { calls.push('off:' + n); st.users.find(u => u.name === n).otp = false; };
     window.otpNew = async u => { calls.push('new:' + u); return { secret: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567', uri: 'otpauth://x', svg: '<svg xmlns="http://www.w3.org/2000/svg"/>' }; };
@@ -158,11 +162,11 @@ func TestBrowserHostUsers(t *testing.T) {
 	for _, want := range []string{
 		"list=<b>x</b>Full controlPasswordSet up TOTPDelete;olgaView only · TOTPPasswordTurn off TOTPDelete|0|||true\n",
 		"short=<b>x</b>Full controlPasswordSet up TOTPDelete;olgaView only · TOTPPasswordTurn off TOTPDelete|0|Password must be at least 8 characters.|\n",
-		"|set:petr:petr-pass1:true|\n",
+		"|set:petr:petr-pass1:view|\n",
 		"pw=olga|view\n",
 		"totp=Second factor (TOTP) — petr|true\n",
 		"confirm=false\n", // «Спрашивать перед каждым подключением» — блок скрыт
-		"done=<b>x</b>Full controlPasswordSet up TOTPDelete;petrView only · TOTPPasswordTurn off TOTPDelete|0||set:petr:petr-pass1:true,new:petr,enable:123456:petr,off:olga,del:olga\n",
+		"done=<b>x</b>Full controlPasswordSet up TOTPDelete;petrView only · TOTPPasswordTurn off TOTPDelete|0||set:petr:petr-pass1:view,new:petr,enable:123456:petr,off:olga,del:olga\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("нет %q", want)

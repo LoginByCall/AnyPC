@@ -239,7 +239,7 @@ func TestOTPTrustedLock(t *testing.T) {
 	asks.Store(0)
 	e2e(t, local(t), "123456789", false, ff, "secret123")
 	ag.mu.Lock()
-	of, ol, f := ag.otpFails, time.Until(ag.otpLock), ag.fails
+	of, ol, f := ag.names[""].otpFails, time.Until(ag.names[""].otpUntil), ag.fails
 	ag.mu.Unlock()
 	if asks.Load() != 5 || of != 5 || ol < 50*time.Second || f != 14 {
 		t.Fatalf("неверные коды ключа: запросов %d, своих неудач %d (блокировка %v), общих %d", asks.Load(), of, ol, f)
@@ -250,12 +250,12 @@ func TestOTPTrustedLock(t *testing.T) {
 	e2eOTP = func(int) string { return fresh() }
 	e2e(t, local(t), "123456789", false, ff, "secret123") // своя блокировка ключа — отказ и верному коду
 
-	e2eAgent = func(a *Agent) { trusted(a); a.otpFails = 4 } // 4 неверных кода уже ввели без ключа — ключ получает один
+	e2eAgent = func(a *Agent) { trusted(a); a.names = map[string]*nameLock{"": {otpFails: 4}} } // 4 неверных кода уже ввели без ключа — ключ получает один
 	e2eOTP = func(int) string { c := []byte(fresh()); c[0] = '0' + (c[0]-'0'+1)%10; return string(c) }
 	asks.Store(0)
 	e2e(t, local(t), "123456789", false, ff, "secret123")
 	ag.mu.Lock()
-	of, ol = ag.otpFails, time.Until(ag.otpLock)
+	of, ol = ag.names[""].otpFails, time.Until(ag.names[""].otpUntil)
 	ag.mu.Unlock()
 	if asks.Load() != 1 || of != 5 || ol < 50*time.Second {
 		t.Fatalf("одна лестница кодов: запросов %d, неудач %d, блокировка %v", asks.Load(), of, ol)

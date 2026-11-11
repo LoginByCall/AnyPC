@@ -26,7 +26,7 @@ var (
 	cliInstall   = flag.Bool("install-service", false, "автозапуск при входе в графический сеанс (Linux: systemd --user, macOS: LaunchAgent) и выйти")
 	cliUninstall = flag.Bool("uninstall-service", false, "убрать автозапуск и выйти")
 	cliUser      = flag.String("user", "", "вместе с --password-stdin: учётная запись входа (имя; нет — добавить, есть — сменить пароль и права)")
-	cliRights    = flag.String("rights", "full", "вместе с --user: права записи — full (управление) или view (только просмотр)")
+	cliRights    = flag.String("rights", "", "вместе с --user: права записи — full (управление) или view (только просмотр);\nбез ключа — у существующей записи права не меняются, новая — view")
 	cliUserDel   = flag.String("user-del", "", "удалить учётную запись входа (запись по умолчанию не удаляется) и выйти")
 )
 

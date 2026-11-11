@@ -381,6 +381,9 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 						}
 						out, _ := json.Marshal(authMsg{T: "a", User: e2eUser})
 						dc.Send(out)
+						if e2eTwice {
+							dc.Send(out)
+						}
 						return
 					}
 					if am.User != e2eUser {
@@ -571,17 +574,15 @@ func TestLockout(t *testing.T) {
 	if a.sess != nil || len(a.pend) > 0 || time.Until(a.lockUntil) < 50*time.Second {
 		t.Fatalf("блокировка не сработала: sess=%v lock=%v", a.sess, a.lockUntil)
 	}
-	a.authResult("c1", "ivan", true)
-	if a.fails != 0 || a.names[""] == nil || a.names["u0"] == nil {
-		t.Fatal("успех ivan: общий счётчик не сброшен или сброшен чужой")
+	a.authResult("c1", "ivan", true) // успех сбрасывает только счёт своего имени (приёмка Д2)
+	if a.fails != hostLockAt || a.names[""] == nil || a.names["u0"] == nil {
+		t.Fatalf("успех ivan сбросил общий (%d) или чужой счётчик", a.fails)
 	}
-	for i := range maxNames + 10 { // имена не копятся без предела: незапертые забываются
-		a.authResult("c1", fmt.Sprint("x", i), false)
+	a.lockUntil, a.failAt = time.Now().Add(-2*hostForget), time.Now().Add(-3*hostForget) // час тишины после блокировки
+	a.authResult("c1", "u1", false)
+	if a.fails != 1 {
+		t.Fatalf("общий счётчик не забылся после тишины: %d", a.fails)
 	}
-	if a.mu.Lock(); len(a.names) > maxNames+1 {
-		t.Fatalf("имён в памяти %d", len(a.names))
-	}
-	a.mu.Unlock()
 }
 
 func TestDecode(t *testing.T) {
@@ -662,6 +663,7 @@ var (
 	e2eFail    bool                     // ожидать отказ во входе (TOTP)
 	e2eUser    string                   // имя учётной записи клиента (REQ-S-20); "" — как старый клиент: запись по умолчанию
 	e2eGood    string                   // верный пароль для e2eUser; "" — secret123
+	e2eTwice   bool                     // назвать имя дважды (хост обязан оборвать вход)
 	e2eInput   func(*testing.T, *Agent) // после нажатия ControlLeft клиентом, до bye
 )
 
