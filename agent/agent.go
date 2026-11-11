@@ -146,7 +146,8 @@ func (s *session) selectMonitor(i int) bool {
 // хост → {"t":"ok",conf} | {"t":"fail"}. []byte — base64 в JSON.
 // Вход без подтверждения с TOTP: после верного пароля хост → {"t":"otp",conf,pub,sig} (доказательства — как в "ok"),
 // клиент → {"t":"otp","code":"123456"};
-// верный код → "ok", неверный → снова {"t":"otp"} или "locked" (счётчик перебора — общий с паролем).
+// верный код → "ok", неверный → снова {"t":"otp"} или "locked" (счётчик перебора — общий с паролем), не ввели за
+// otpWait90 → "denied".
 type authMsg struct {
 	T     string `json:"t"`
 	Salt  []byte `json:"salt,omitempty"`
@@ -843,7 +844,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 }
 
 // authChannel: CPace по каналу "auth" после установления DTLS; при успехе — плашка, видео.
-// Без входа за authWait сессия закрывается; код TOTP ждём столько же на каждый запрос.
+// Без входа за authWait сессия закрывается; код TOTP ждём otpWait90 на каждый запрос, по сроку — "denied".
 func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.TrackLocalStaticSample) error {
 	ch, err := s.pc.CreateDataChannel("auth", nil)
 	if err != nil {
@@ -986,12 +987,13 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 				s.mu.Unlock()
 				// conf и подпись — как в "ok": клиент отдаёт код только хосту, доказавшему пароль и ключ (не хабу-самозванцу)
 				send(authMsg{T: "otp", Conf: conf, Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph)})
-				time.AfterFunc(authWait, func() {
+				time.AfterFunc(otpWait90, func() {
 					s.mu.Lock()
 					waiting := otpN == n && otpWait != nil
 					s.mu.Unlock()
-					if waiting && !s.authed.Load() {
-						s.pc.Close()
+					if waiting && !s.authed.Load() { // внятный отказ (и старому клиенту), а не обрыв связи
+						log.Printf("сессия %s: код TOTP не введён за %v", s.cid, otpWait90)
+						reject("denied")
 					}
 				})
 			}
@@ -1028,8 +1030,9 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 	return nil
 }
 
-// authWait — сколько ждать входа после открытия канала auth и каждого кода TOTP.
-var authWait = 20 * time.Second
+// authWait — сколько ждать входа после открытия канала auth; otpWait90 — кода TOTP на каждый запрос (разблокировать
+// телефон, открыть приложение, найти запись, набрать 6 цифр).
+var authWait, otpWait90 = 20 * time.Second, 90 * time.Second
 
 // accept — вход разрешён: подпись хоста, плашка сессии, видео.
 func (a *Agent) accept(ctx context.Context, s *session, track *webrtc.TrackLocalStaticSample, send func(authMsg), conf []byte, fpc, fph string, pin []byte) {
