@@ -29,6 +29,9 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const state = () => ev("document.getElementById('msg').textContent + '|' + !document.getElementById('sess').classList.contains('hidden')");
   const until = async f => { for (let i = 0; i < 75; i++) { const s = await state(); if (f(s)) return s; await sleep(200); } return await state(); };
   await sleep(1000);
+  // учётная запись — под ссылкой (поле не принимают за подпись); запомненная — поле открыто
+  const vis = "document.getElementById('user').classList.contains('hidden') + '|' + document.getElementById('userlink').classList.contains('hidden')";
+  console.log('link=' + await ev(vis));
   // без пароля не подключаться: пустой пароль — гарантированный «fail» и лишняя неудача в счётчике перебора
   await ev("document.getElementById('id').value='123456789'; document.getElementById('user').value='ivan'; document.getElementById('go').click()");
   await sleep(300);
@@ -43,6 +46,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   // после «Разорвать» ID в поле остался: запомненный пароль подставлен снова, повторный вход проходит (доска владельца:
   // «не запоминает пароль», «с именем не подключается» — пароль был пуст)
   console.log('refill=' + await ev("document.getElementById('user').value + '|' + (document.getElementById('pw').value === 'ivan-pass1')"));
+  console.log('shown=' + await ev(vis));
   await ev("document.getElementById('go').click()");
   console.log('again=' + await until(s => s.endsWith('|true')));
   await ev("document.getElementById('bye').click()");
@@ -97,7 +101,9 @@ func TestBrowserUsers(t *testing.T) {
 	out := string(runCDP(t, ctx, chrome, cdpUsers, srv.URL+"/"))
 	for _, want := range []string{
 		"nopw=Enter the password|false",
-		"wrong=Error: wrong name or password. Names do not work if the remote PC has “Ask before each connection” on or no TOTP for its own password — then leave “Name” empty and enter the one-time code|false",
+		"wrong=Error: wrong account or password. Accounts do not work if the remote PC has “Ask before each connection” on or no TOTP for its own password — then clear the account field and enter the one-time code|false",
+		"link=true|false",
+		"shown=false|true",
 		"ok=|true",
 		`saved={"123456789":"Ivan"}`,
 		"refill=Ivan|true",
@@ -217,7 +223,7 @@ func TestBrowserOldHost(t *testing.T) {
 		"document.getElementById('pw').value='secret123'; document.getElementById('go').click()\");\n  console.log('old=", 1)
 	script = script[:strings.Index(script, "  await ev(\"document.getElementById('user').value=' Ivan'")] + "  process.exit(0);\n})();"
 	out := string(runCDP(t, ctx, chrome, script, srv.URL+"/"))
-	if !strings.Contains(out, "old=Error: the remote PC does not know user names — update AnyPC there or leave “Name” empty|false") {
+	if !strings.Contains(out, "old=Error: the remote PC does not know user accounts — update AnyPC there or clear the account field|false") {
 		t.Errorf("старый хост: %q", out)
 	}
 	select {
