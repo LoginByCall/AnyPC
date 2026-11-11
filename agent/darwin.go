@@ -331,16 +331,19 @@ func AskAccept(cid, peer string) Answer {
 	if fakeDesktop {
 		return Allow
 	}
-	title, text, yes, no, view := askText(sysLang(), cid, peer)
-	out, err := osa(`set r to display dialog (item 2 of argv) with title (item 1 of argv) buttons {item 4 of argv, item 6 of argv, item 3 of argv} default button 1 cancel button 1 giving up after ((item 5 of argv) as integer) with icon caution
+	title, text, yes, no, view := askText(sysLang(), cid, peer, true)
+	// display dialog кнопку на время не выключает: согласие раньше AskDelay — окно снова (askLoop)
+	return askLoop(func(left time.Duration) Answer {
+		out, err := osa(`set r to display dialog (item 2 of argv) with title (item 1 of argv) buttons {item 4 of argv, item 6 of argv, item 3 of argv} default button 1 cancel button 1 giving up after ((item 5 of argv) as integer) with icon caution
 if gave up of r then return "no"
 if button returned of r is (item 3 of argv) then return "yes"
 if button returned of r is (item 6 of argv) then return "view"
-return "no"`, title, text, yes, no, strconv.Itoa(int(AskTimeout.Seconds())), view).Output()
-	if err != nil {
-		return Deny
-	}
-	return map[string]Answer{"yes": Allow, "view": ViewOnly}[strings.TrimSpace(string(out))]
+return "no"`, title, text, yes, no, strconv.Itoa(int(left.Seconds())), view).Output()
+		if err != nil {
+			return Deny
+		}
+		return map[string]Answer{"yes": Allow, "view": ViewOnly}[strings.TrimSpace(string(out))]
+	})
 }
 
 func pickFile() (string, bool) {
