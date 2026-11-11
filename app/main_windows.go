@@ -102,12 +102,7 @@ func main() {
 	a := &agent.Agent{Audio: true,
 		Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, Key: cfg.key(), FPS: 30, Stderr: logf, Trusted: cfg.trusted, Trust: cfg.trust,
 		Bitrate: agent.Kbps(cfg.Bitrate),
-		Confirm: func(cid, peer string) agent.Answer {
-			if !cfg.confirm() {
-				return agent.Allow
-			}
-			return agent.AskAccept(cid, peer)
-		},
+		Confirm: agent.AskAccept, Unattended: func() bool { return !cfg.confirm() }, OTP: cfg.otp, ViewOnly: cfg.viewOnly, // без подтверждения — с TOTP (PLAN.md)
 		Capture: func(ctx context.Context, c agent.Cap) (*exec.Cmd, error) { // выход DXGI c.Mon
 			ffMu.Lock()
 			ff := ff
@@ -124,7 +119,7 @@ func main() {
 		node, pub := cfg.node()
 		mu.Lock()
 		defer mu.Unlock()
-		return map[string]any{"id": cfg.ID, "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "version": version, "ffmpeg": ffSnap(&ffMu, &ffState), "update": update, "node": node, "nodePub": pub, "server": cfg.Server, "audio": audioInfo(a)}
+		return map[string]any{"id": cfg.id(), "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "otp": cfg.otpSet(), "viewOnly": cfg.viewOnly(), "version": version, "ffmpeg": ffSnap(&ffMu, &ffState), "update": update, "node": node, "nodePub": pub, "server": cfg.server(), "audio": audioInfo(a)}
 	}
 	go watchUpdates(func(v string) { mu.Lock(); update = v; mu.Unlock() }) // окно опрашивает hostInfo
 	a.OnState = func(on bool, s string) {
@@ -141,6 +136,9 @@ func main() {
 	w.Bind("openSite", func() { exec.Command("rundll32", "url.dll,FileProtocolHandler", siteHome).Start() })
 	w.Bind("setPassword", cfg.setPassword)
 	w.Bind("setConfirm", cfg.setConfirm)
+	w.Bind("otpNew", cfg.otpNew)
+	w.Bind("setViewOnly", func(on bool) error { return setViewOnly(cfg, a, on) })
+	w.Bind("otpEnable", cfg.otpEnable)
 	run := &runner{a: a, ctx: ctx}
 	w.Bind("setNode", func(node string, public bool) (string, error) { return setNode(cfg, run, node, public) })
 	w.Bind("hostDisconnect", a.Disconnect)
@@ -150,6 +148,8 @@ func main() {
 	w.Bind("hostVerify", pake.HostVerifyB64)
 	w.Bind("knownGet", cfg.knownGet)
 	w.Bind("knownSet", cfg.knownSet)
+	w.Bind("savedGet", cfg.savedGet)
+	w.Bind("savedSet", cfg.savedSet)
 	fl := newFiles(agent.DownloadsDir()) // и клиент, и хост — в настоящие «Загрузки» (могут быть перенесены)
 	w.Bind("fileOpen", fl.Open)
 	w.Bind("fileWrite", fl.Write)
