@@ -16,7 +16,7 @@ import (
 	"anypc/agent"
 )
 
-const openCmd = "open"
+func openWindow(u string) { exec.Command("open", u).Start() }
 
 // Из launchd (автозапуск) и Finder PATH урезан до /usr/bin:/bin:/usr/sbin:/sbin — ffmpeg из Homebrew не находится.
 func init() { os.Setenv("PATH", brewPath(os.Getenv("PATH"))) }

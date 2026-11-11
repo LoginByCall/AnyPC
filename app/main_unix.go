@@ -142,7 +142,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Окно:", url)
 	}
 	if !*noBrowser { // аргументы браузера видны всем пользователям ПК (/proc/*/cmdline) — в них одноразовый код, не токен
-		exec.Command(openCmd, "http://"+addr+"/?n="+once.code).Start()
+		openWindow("http://" + addr + "/?n=" + once.code)
 	}
 	run.start(cfg.Server)
 	run.wait()
