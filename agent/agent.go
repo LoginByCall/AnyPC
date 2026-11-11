@@ -1003,6 +1003,9 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 				time.AfterFunc(otpWait90, func() {
 					s.mu.Lock()
 					waiting := otpN == n && otpWait != nil
+					if waiting {
+						otpWait = nil // код, пришедший следом, уже не проверяется: нет «ok» и тут же разрыва
+					}
 					s.mu.Unlock()
 					if waiting && !s.authed.Load() { // внятный отказ (и старому клиенту), а не обрыв связи
 						log.Printf("сессия %s: код TOTP не введён за %v", s.cid, otpWait90)
