@@ -207,7 +207,7 @@ func shimmed(server, token string) ([]byte, error) {
 	ws, _ := json.Marshal(server)
 	t, _ := json.Marshal(token)
 	js := fmt.Sprintf(`
-window.ANYPC = {ws: %s};
+window.ANYPC = {ws: %s, clipPoll: %t};
 (() => {
   const T = %s;
   const api = (n, ...a) => fetch('/api/' + n, {method: 'POST', headers: {'X-Token': T, 'Content-Type': 'application/json'}, body: JSON.stringify(a)})
@@ -216,7 +216,7 @@ window.ANYPC = {ws: %s};
   window.fullscreen = on => on ? document.documentElement.requestFullscreen().then(() => navigator.keyboard?.lock()).catch(() => {})
                                : document.fullscreenElement && document.exitFullscreen();
 })();
-`, ws, t)
+`, ws, agent.ClipCheap(), t)
 	// CSP страницы пускает встроенные скрипты только по хэшу: добавить хэш этого (токен в нём свой на каждый запуск)
 	sum := sha256.Sum256([]byte(js))
 	page := strings.Replace(string(b), "script-src 'self'", "script-src 'self' 'sha256-"+base64.StdEncoding.EncodeToString(sum[:])+"'", 1)

@@ -75,6 +75,7 @@ type session struct {
 	conn    *websocket.Conn // хаб, через который пришёл клиент
 	pc      *webrtc.PeerConnection
 	keys    held
+	copied  atomic.Bool // клиент нажал Ctrl+C/X — проверить буфер (clipOnCopy)
 	clip    clipSync
 	authed  atomic.Bool // до успешного CPace ни видео, ни ввод, ни буфер обмена, ни файлы не работают
 	audio   audioState
@@ -693,6 +694,9 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 		e, err := decode(msg.Data)
 		if err == nil {
 			s.keys.track(e)
+			if s.keys.copyKey(e) {
+				s.copied.Store(true)
+			}
 			err = sendInput(e, s.monitor())
 		}
 		if err != nil && bad < 10 { // не забивать журнал
@@ -1002,17 +1006,36 @@ func (s *session) sendMonitors() {
 // clipSeq, clipText — системный буфер (подменяются в тестах).
 var clipSeq, clipText, setClip = ClipSeq, ClipText, SetClipText
 
+// clipOnCopy — читать буфер хоста только после Ctrl+C/X клиента, а не опросом. Wayland (linux.go): у GNOME нет
+// data-control, и каждый wl-paste создаёт окно и забирает фокус — опрос раз в 0,5 с дёргал док, тормозил ввод
+// у человека за хостом и сворачивал выпадающие списки (владелец, 2026-11-11). Скопированное мышью через меню
+// клиенту не уйдёт. ponytail: буфер через портал RemoteDesktop (Clipboard) — если этого окажется мало.
+var clipOnCopy bool
+
+// ClipCheap — буфер обмена можно опрашивать без побочных эффектов (не Wayland): для программы-клиента (app).
+func ClipCheap() bool { return !clipOnCopy }
+
 // watchClip отправляет клиенту изменения буфера обмена хоста (только изменения после начала сессии).
 // Д-5: до успешного входа — ничего: иначе любой, кто знает ID, читал бы буфер хоста 20 с ожидания пароля.
 func (s *session) watchClip(ctx context.Context, send func([]byte)) {
 	seq := clipSeq()
 	t := time.NewTicker(500 * time.Millisecond)
 	defer t.Stop()
+	recheck := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		}
+		if clipOnCopy { // через 0,5, 1 и 1,5 с после Ctrl+C: приложение кладёт текст в буфер не сразу
+			if s.copied.Swap(false) {
+				recheck = 3
+			}
+			if recheck == 0 {
+				continue
+			}
+			recheck--
 		}
 		if n := clipSeq(); n != seq {
 			seq = n

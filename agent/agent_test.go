@@ -940,8 +940,8 @@ func TestHubSpoof(t *testing.T) {
 // TestClipBeforeAuth — Д-5: буфер хоста уходил в канал ctl до ввода пароля (20 с ожидания входа).
 func TestClipBeforeAuth(t *testing.T) {
 	var seq atomic.Uint32
-	defer func(a func() uint32, b func() (string, error)) { clipSeq, clipText = a, b }(clipSeq, clipText)
-	clipSeq, clipText = func() uint32 { return seq.Load() }, func() (string, error) { return "пароль от банка", nil }
+	defer func(a func() uint32, b func() (string, error), c bool) { clipSeq, clipText, clipOnCopy = a, b, c }(clipSeq, clipText, clipOnCopy)
+	clipSeq, clipText, clipOnCopy = func() uint32 { return seq.Load() }, func() (string, error) { return "пароль от банка", nil }, false
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sent := make(chan string, 4)
@@ -963,5 +963,55 @@ func TestClipBeforeAuth(t *testing.T) {
 		}
 	case <-time.After(1500 * time.Millisecond):
 		t.Fatal("после входа изменение буфера не ушло")
+	}
+}
+
+// TestClipOnCopy — Wayland (clipOnCopy): буфер хоста не опрашивается (каждый wl-paste в GNOME крадёт фокус), а
+// читается только после Ctrl+C/X клиента — не больше трёх раз.
+func TestClipOnCopy(t *testing.T) {
+	var seq, calls atomic.Uint32
+	defer func(a func() uint32, b func() (string, error), c bool) { clipSeq, clipText, clipOnCopy = a, b, c }(clipSeq, clipText, clipOnCopy)
+	clipSeq = func() uint32 { calls.Add(1); return seq.Load() }
+	clipText, clipOnCopy = func() (string, error) { return "скопировано", nil }, true
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sent := make(chan string, 4)
+	s := &session{}
+	s.authed.Store(true)
+	go s.watchClip(ctx, func(b []byte) { sent <- string(b) })
+	time.Sleep(100 * time.Millisecond) // начальное значение прочитано
+	seq.Add(1)
+	select {
+	case m := <-sent:
+		t.Fatalf("без Ctrl+C ушёл буфер: %s", m)
+	case <-time.After(1200 * time.Millisecond):
+	}
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("без Ctrl+C буфер читался %d раз (ждали 1 — при старте)", n)
+	}
+	var k held
+	for _, e := range []event{{key: true, scan: 0x1D}, {key: true, scan: 0x2E}} { // Ctrl, C
+		k.track(e)
+		if k.copyKey(e) {
+			s.copied.Store(true)
+		}
+	}
+	if !s.copied.Load() {
+		t.Fatal("Ctrl+C не распознан")
+	}
+	select {
+	case m := <-sent:
+		if !strings.Contains(m, "скопировано") {
+			t.Fatal(m)
+		}
+	case <-time.After(1500 * time.Millisecond):
+		t.Fatal("после Ctrl+C буфер не ушёл")
+	}
+	time.Sleep(2 * time.Second)
+	if n := calls.Load(); n > 4 {
+		t.Fatalf("после одного Ctrl+C буфер читался %d раз", n-1)
+	}
+	if k.copyKey(event{key: true, scan: 0x2E, flags: kUp}) || (&held{}).copyKey(event{key: true, scan: 0x2E}) {
+		t.Fatal("отпускание C или C без Ctrl приняты за копирование")
 	}
 }

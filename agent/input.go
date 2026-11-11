@@ -119,6 +119,19 @@ func (h *held) track(e event) {
 	}
 }
 
+// copyKey — e (уже учтённое track) — нажатие C или X при зажатом Ctrl или Win/Cmd: «копировать» или «вырезать».
+func (h *held) copyKey(e event) bool {
+	if !e.key || e.flags&kUp != 0 || (e.scan != 0x2E && e.scan != 0x2D) {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	_, ctrl := h.keys[0x1D]
+	_, l := h.keys[0x5B]
+	_, r := h.keys[0x5C]
+	return ctrl || l || r
+}
+
 // release возвращает события отпускания всего зажатого и очищает состояние.
 func (h *held) release() []event {
 	h.mu.Lock()
