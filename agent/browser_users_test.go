@@ -29,11 +29,22 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const state = () => ev("document.getElementById('msg').textContent + '|' + !document.getElementById('sess').classList.contains('hidden')");
   const until = async f => { for (let i = 0; i < 75; i++) { const s = await state(); if (f(s)) return s; await sleep(200); } return await state(); };
   await sleep(1000);
+  // без пароля не подключаться: пустой пароль — гарантированный «fail» и лишняя неудача в счётчике перебора
+  await ev("document.getElementById('id').value='123456789'; document.getElementById('user').value='ivan'; document.getElementById('go').click()");
+  await sleep(300);
+  console.log('nopw=' + await state());
   await ev("document.getElementById('id').value='123456789'; document.getElementById('user').value='ivan'; document.getElementById('pw').value='secret123'; document.getElementById('go').click()");
   console.log('wrong=' + await until(s => s.includes('rror')));
   await ev("document.getElementById('user').value=' Ivan'; document.getElementById('pw').value='ivan-pass1'; document.getElementById('remember').checked = true; document.getElementById('go').click()");
   console.log('ok=' + await until(s => s.endsWith('|true')));
   console.log('saved=' + await ev("localStorage.getItem('users')"));
+  await ev("document.getElementById('bye').click()");
+  await sleep(300);
+  // после «Разорвать» ID в поле остался: запомненный пароль подставлен снова, повторный вход проходит (доска владельца:
+  // «не запоминает пароль», «с именем не подключается» — пароль был пуст)
+  console.log('refill=' + await ev("document.getElementById('user').value + '|' + (document.getElementById('pw').value === 'ivan-pass1')"));
+  await ev("document.getElementById('go').click()");
+  console.log('again=' + await until(s => s.endsWith('|true')));
   await ev("document.getElementById('bye').click()");
   await sleep(300);
   await ev("document.getElementById('pw').value = document.getElementById('user').value = ''; const i = document.getElementById('id'); i.value = '123456789'; i.dispatchEvent(new Event('input'))");
@@ -85,9 +96,12 @@ func TestBrowserUsers(t *testing.T) {
 	go a.Run(ctx)
 	out := string(runCDP(t, ctx, chrome, cdpUsers, srv.URL+"/"))
 	for _, want := range []string{
+		"nopw=Enter the password|false",
 		"wrong=Error: wrong name or password|false",
 		"ok=|true",
 		`saved={"123456789":"Ivan"}`,
+		"refill=Ivan|true",
+		"again=|true",
 		"fill=Ivan|true",
 		"forgot={}",
 		"echo=Error: the remote PC could not be verified — connection may be intercepted|false",
