@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="ru">
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-XaFm+cfTaOOBOFQCcpajG2tMO8U7LezxfO+ts4Og0s8=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-8kuuJ/7KaiDNevib20uGKgdN/eak17DrH07AUst7Nt0=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AnyPC</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26'><style>.a{stroke:%2317181c}.b{fill:%23d2452d}@media(prefers-color-scheme:dark){.a{stroke:%23eceae4}.b{fill:%23ef6a52}}</style><rect class='a' x='1.5' y='3' width='15' height='11' rx='2' fill='none' stroke-width='2.6'/><rect class='b' x='10' y='12' width='15' height='11' rx='2'/></svg>">
@@ -611,18 +611,21 @@ function hostState(s) {
 async function pushClip() {
   if (!authed || ctl?.readyState !== 'open') return; // Д-2: буфер — только проверенному хосту
   let x = '';
-  try { x = APP ? await getClip() : document.hasFocus() ? await navigator.clipboard.readText() : ''; } catch {}
+  try { x = APPCLIP ? await getClip() : document.hasFocus() ? await navigator.clipboard.readText() : ''; } catch {}
   if (clipOK(x) && x !== lastClip) { lastClip = x; ctl.send(JSON.stringify({ t: 'clip', text: x })); }
 }
 // Опрос раз в секунду: в программе — своя привязка; в браузере — только с постоянным разрешением clipboard-read (Chrome после
 // «Разрешить»): по событию focus терялось скопированное в соседней вкладке. Firefox разрешения не даёт и на каждое чтение
 // показывает у курсора кнопку «Вставить» — там только при возврате фокуса.
 // Firefox такого разрешения не знает (query отвергается): там буфер уходит только по Ctrl+V в окне или кнопкой «Передать буфер».
+// APPCLIP — буфер через программу. Linux Wayland — нет (ANYPC.clipPoll false): wl-paste в GNOME при каждом чтении забирает фокус —
+// опрос раз в секунду дёргал док, тормозил ввод и сворачивал списки (владелец, 2026-11-11); там — как в браузере.
+const APPCLIP = APP && window.ANYPC?.clipPoll !== false;
 let clipGranted = false, clipPerm = false;
-const clipBtn = () => $('clipbtn').classList.toggle('hidden', APP || clipGranted);
+const clipBtn = () => $('clipbtn').classList.toggle('hidden', APPCLIP || clipGranted);
 navigator.permissions?.query({ name: 'clipboard-read' }).then(p => { clipPerm = true; const f = () => { clipGranted = p.state === 'granted'; clipBtn(); }; f(); p.onchange = f; }).catch(clipBtn);
 clipBtn();
-setInterval(() => (APP || clipGranted) && pushClip(), 1000); if (!APP) window.addEventListener('focus', () => clipPerm && pushClip());
+setInterval(() => (APPCLIP || clipGranted) && pushClip(), 1000); if (!APPCLIP) window.addEventListener('focus', () => clipPerm && pushClip());
 $('clipbtn').onclick = () => { lastClip = ''; pushClip(); v.focus(); }; // нажатие — действие человека: Firefox покажет «Вставить» один раз, по просьбе
 
 // Ctrl/Cmd+V в окне сеанса: сначала буфер этого ПК — на удалённый, потом само V (иначе там вставится старый буфер).
@@ -634,7 +637,7 @@ pasteBox.setAttribute('aria-hidden', 'true');
 pasteBox.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0';
 document.body.append(pasteBox);
 let pasting = null; // { timer, ups } — V отложено до paste; отпускания (и Ctrl) — после него, иначе там «v» без Ctrl
-const isPaste = e => !APP && authed && (e.ctrlKey || e.metaKey) && !e.altKey && e.code === 'KeyV';
+const isPaste = e => !APPCLIP && authed && (e.ctrlKey || e.metaKey) && !e.altKey && e.code === 'KeyV';
 function pasteNow(x) {
   if (!pasting || pasting.done) return;
   clearTimeout(pasting.timer); pasting.done = true; v.focus();
