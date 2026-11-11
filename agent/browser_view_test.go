@@ -75,6 +75,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await ev("document.getElementById('statbtn').click()"); await sleep(200);
   console.log('stat_shown=' + await vis('#csv'));
   await ev("document.getElementById('statbtn').click()"); await sleep(200);
+  // залипший Super (отпускание забрала система) отпускается при следующем нажатии; Ctrl+Alt+Enter — полный экран, не на удалённый ПК
+  console.log('mods=' + await ev("(() => { const out = [], o = dc.send; dc.send = x => { const m = JSON.parse(x); m.t === 'k' && out.push(m.c + (m.d ? '+' : '-')); }; try { const k = (code, mods = {}) => document.dispatchEvent(new KeyboardEvent('keydown', { code, ...mods, bubbles: true, cancelable: true })); k('MetaLeft', { metaKey: true }); k('KeyA'); k('ControlLeft', { ctrlKey: true }); k('AltLeft', { ctrlKey: true, altKey: true }); k('Enter', { ctrlKey: true, altKey: true }); return out.join(' ') + ' full=' + full; } finally { dc.send = o; setFs(false); } })()"));
   await ev("Object.defineProperty(navigator, 'clipboard', { value: { readText: async () => 'view-clip', writeText: async () => {} } }); clipBtn(); 1");
   await ev("sendFile(new File([new Uint8Array(1000)], 'view.bin'))");
   await until(async () => /view\.bin[^|]*[✓✗]/.test(await ev("document.getElementById('dlpop').innerText.replace(/\\n/g, ' | ')")), 50);
@@ -123,7 +125,8 @@ func TestBrowserView(t *testing.T) {
 	out := string(runCDP(t, ctx, chrome, cdpVisual, srv.URL+"/"))
 	for _, want := range []string{"tour_home=true", "tour_sess=true", "help=true sections=10", "help_link=site", "session=true", "ring=true cnt=6", "view_session=true",
 		"view_body=true keys_btn=false fsend=false clipbtn=false", "view only",
-		"eye=text/password", "stat_hidden=true view_mark=true", "stat_shown=true", "view.bin | ✗ View only: files are not sent"} {
+		"eye=text/password", "stat_hidden=true view_mark=true", "stat_shown=true",
+		"mods=MetaLeft+ MetaLeft- KeyA+ ControlLeft+ AltLeft+ KeyA- ControlLeft- AltLeft- full=true", "view.bin | ✗ View only: files are not sent"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("нет %q", want)
 		}

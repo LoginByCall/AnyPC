@@ -11,7 +11,17 @@ import (
 	"anypc/agent"
 )
 
-const openCmd = "xdg-open"
+// openWindow — окно AnyPC: Chrome/Chromium/Edge отдельным приложением (--app: без вкладок; в полноэкранном режиме
+// Esc, Alt+Tab и Win уходят на удалённый ПК — Keyboard Lock, а в Firefox, браузере Ubuntu по умолчанию, его нет:
+// Alt+Tab срабатывал на этом ПК, владелец 2026-11-11). Нет такого браузера — браузер по умолчанию.
+func openWindow(u string) {
+	for _, b := range []string{"google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge"} {
+		if p, err := exec.LookPath(b); err == nil && exec.Command(p, "--app="+u).Start() == nil {
+			return
+		}
+	}
+	exec.Command("xdg-open", u).Start()
+}
 
 func hostCapture(enc string) func(ctx context.Context, c agent.Cap) (*exec.Cmd, error) {
 	return agent.LinuxCapture(enc)
