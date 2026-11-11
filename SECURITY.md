@@ -7,3 +7,8 @@ AnyPC gives remote control of a computer, so please report vulnerabilities **pri
 **Security → Report a vulnerability** (link above).
 
 Поддерживается последняя версия / Only the latest release is supported. Подпись выпусков — `SHA256SUMS.sig`, открытый ключ — в README.
+
+Вход без подтверждения защищён вторым фактором TOTP (код из приложения-аутентификатора после пароля); файл настроек
+хоста содержит оба фактора (хэш пароля и секрет TOTP), поэтому TOTP защищает от утечки пароля, но не от кражи этого файла.
+Login without confirmation is protected by a TOTP second factor; the host's settings file holds both factors (password
+hash and TOTP secret), so TOTP protects against a leaked password, not against theft of that file.

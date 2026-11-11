@@ -313,8 +313,8 @@ func TestBrowserStateBeforeLogin(t *testing.T) {
 	defer srv.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
-	stateEvery = time.Hour
-	defer func() { stateEvery = 2 * time.Second }()
+	stateEvery.Store(int64(time.Hour))
+	defer stateEvery.Store(int64(2 * time.Second))
 	a := newAgent("ws"+strings.TrimPrefix(srv.URL, "http")+"/ws", "123456789", nil)
 	var once sync.Once
 	var t0 time.Time

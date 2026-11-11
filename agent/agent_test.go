@@ -137,7 +137,8 @@ func TestCaptureBlocked(t *testing.T) {
 // TestStateRepeat — D3: первый state мог потеряться (пришёл на клиент раньше входа) — пока экран заблокирован,
 // хост повторяет текущее состояние не чаще stateEvery.
 func TestStateRepeat(t *testing.T) {
-	lockPoll, stateEvery = 50*time.Millisecond, 300*time.Millisecond
+	lockPoll = 50 * time.Millisecond
+	stateEvery.Store(int64(300 * time.Millisecond))
 	const hold = 1500 * time.Millisecond
 	e2eAgent = func(a *Agent) {
 		var once sync.Once
@@ -166,11 +167,11 @@ func TestStateRepeat(t *testing.T) {
 			}
 			break
 		}
-		if most := int(hold/stateEvery) + 1; locked < 3 || locked > most {
-			t.Errorf("state locked за %v пришёл %d раз, ждали 3…%d (повтор раз в %v)", hold, locked, most, stateEvery)
+		if every := time.Duration(stateEvery.Load()); locked < 3 || locked > int(hold/every)+1 {
+			t.Errorf("state locked за %v пришёл %d раз, ждали 3…%d (повтор раз в %v)", hold, locked, int(hold/every)+1, every)
 		}
 	}
-	defer func() { lockPoll, stateEvery, e2eAgent, e2eCtl = 2*time.Second, 2*time.Second, nil, nil }()
+	defer func() { lockPoll, e2eAgent, e2eCtl = 2*time.Second, nil, nil; stateEvery.Store(int64(2 * time.Second)) }()
 	e2e(t, local(t), "123456789", false, nil, "secret123")
 }
 
@@ -349,12 +350,22 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 			dc.OnOpen(func() { dcOpen <- dc })
 		case "auth": // как клиент в ui/index.html + app: CPace с отпечатками из своих SDP
 			var wantConf []byte
+			otpN := 0
+			dc.OnClose(func() { // хост закрыл сессию (не дождался кода TOTP) — вход не состоялся
+				select {
+				case authed <- false:
+				default:
+				}
+			})
 			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 				if !msg.IsString { // браузер ждёт JSON строкой (регрессия: ArrayBuffer ломал вход в веб-клиенте)
 					t.Error("сообщение auth не текстовое")
 				}
 				var am authMsg
 				json.Unmarshal(msg.Data, &am)
+				if e2eSeen != nil {
+					e2eSeen(am)
+				}
 				switch am.T {
 				case "a":
 					b, conf, hc, err := pake.ClientRespond(pass, am.Salt, am.Msg, id,
@@ -382,6 +393,17 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 					}
 					gotOK.Store(true)
 					authed <- bytes.Equal(am.Conf, wantConf) && sigOK
+				case "otp": // второй фактор: хост уже доказал пароль (conf) и ключ (подпись), как в "ok"
+					if !bytes.Equal(am.Conf, wantConf) || pake.HostVerify(am.Pub, am.Sig, id, pake.Fingerprint(pc.LocalDescription().SDP), pake.Fingerprint(pc.RemoteDescription().SDP)) != nil {
+						t.Error("запрос кода TOTP без доказательства хоста")
+					}
+					otpN++
+					if e2eOTP != nil {
+						if code := e2eOTP(otpN); code != "" {
+							out, _ := json.Marshal(authMsg{T: "otp", Code: code})
+							dc.Send(out)
+						}
+					}
 				case "ask":
 					asked.Store(true)
 				case "fail", "denied", "locked":
@@ -434,7 +456,7 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 	case <-ctx.Done():
 		t.Fatal("вход не завершился за 20 с")
 	}
-	if pass != "secret123" || e2eDeny || e2eKey == "bad" { // ошибочный путь: отказ и никакого видео
+	if pass != "secret123" || e2eDeny || e2eKey == "bad" || e2eFail { // ошибочный путь: отказ и никакого видео
 		if ok {
 			t.Fatal("неверный пароль принят или отказ на хосте не сработал")
 		}
@@ -487,6 +509,9 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 	}
 	// bye от клиента → хост освобождается сразу, без 30-секундного тайм-аута ICE
 	time.Sleep(200 * time.Millisecond) // дать дойти нажатию
+	if e2eInput != nil {
+		e2eInput(t, a)
+	}
 	send("bye", "client")
 	for {
 		select {
@@ -587,9 +612,13 @@ var (
 	e2eTrack   func(*testing.T, *webrtc.PeerConnection, *webrtc.TrackRemote) // после 300 RTP видео у клиента
 	e2eDeny    bool                                                          // ожидать отказ человека на хосте (REQ-F-03)
 	e2eCtl     func(*testing.T, *webrtc.DataChannel, chan ctlMsg)
-	e2eSquat   int    // столько клиентов до настоящего шлют connect и молчат (У3, У9)
-	e2eKey     string // seed ключа клиента (base64): заявить в connect и подписать в «b» (У3); "bad" — заявить, подпись испортить
-	e2eNoVideo bool   // видео не ждать (захват отклонён на хосте) — сразу к e2eCtl
+	e2eSquat   int                      // столько клиентов до настоящего шлют connect и молчат (У3, У9)
+	e2eKey     string                   // seed ключа клиента (base64): заявить в connect и подписать в «b» (У3); "bad" — заявить, подпись испортить
+	e2eNoVideo bool                     // видео не ждать (захват отклонён на хосте) — сразу к e2eCtl
+	e2eOTP     func(n int) string       // код TOTP на n-й запрос хоста; "" — не отвечать
+	e2eSeen    func(authMsg)            // каждое сообщение auth от хоста
+	e2eFail    bool                     // ожидать отказ во входе (TOTP)
+	e2eInput   func(*testing.T, *Agent) // после нажатия ControlLeft клиентом, до bye
 )
 
 // squat — клиент, который получил offer и не отвечает: раньше одного такого хватало, чтобы хост 20 с был «занят».
@@ -940,13 +969,16 @@ func TestHubSpoof(t *testing.T) {
 // TestClipBeforeAuth — Д-5: буфер хоста уходил в канал ctl до ввода пароля (20 с ожидания входа).
 func TestClipBeforeAuth(t *testing.T) {
 	var seq atomic.Uint32
-	defer func(a func() uint32, b func() (string, error), c bool) { clipSeq, clipText, clipOnCopy = a, b, c }(clipSeq, clipText, clipOnCopy)
-	clipSeq, clipText, clipOnCopy = func() uint32 { return seq.Load() }, func() (string, error) { return "пароль от банка", nil }, false
+	defer func(a func() uint32, b func() (string, error), c bool) { clipSeq, clipText = a, b; clipOnCopy.Store(c) }(clipSeq, clipText, clipOnCopy.Load())
+	clipSeq, clipText = func() uint32 { return seq.Load() }, func() (string, error) { return "пароль от банка", nil }
+	clipOnCopy.Store(false)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sent := make(chan string, 4)
 	s := &session{}
-	go s.watchClip(ctx, func(b []byte) { sent <- string(b) })
+	done := make(chan struct{})
+	go func() { s.watchClip(ctx, func(b []byte) { sent <- string(b) }); close(done) }()
+	defer func() { cancel(); <-done }() // глобалы восстанавливаются только после выхода watchClip (гонка под -race)
 	time.Sleep(100 * time.Millisecond)
 	seq.Add(1) // буфер изменился, входа нет
 	select {
@@ -970,16 +1002,19 @@ func TestClipBeforeAuth(t *testing.T) {
 // читается только после Ctrl+C/X клиента — не больше трёх раз.
 func TestClipOnCopy(t *testing.T) {
 	var seq, calls atomic.Uint32
-	defer func(a func() uint32, b func() (string, error), c bool) { clipSeq, clipText, clipOnCopy = a, b, c }(clipSeq, clipText, clipOnCopy)
+	defer func(a func() uint32, b func() (string, error), c bool) { clipSeq, clipText = a, b; clipOnCopy.Store(c) }(clipSeq, clipText, clipOnCopy.Load())
 	clipSeq = func() uint32 { calls.Add(1); return seq.Load() }
-	clipText, clipOnCopy = func() (string, error) { return "скопировано", nil }, true
+	clipText = func() (string, error) { return "скопировано", nil }
+	clipOnCopy.Store(true)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sent := make(chan string, 4)
 	s := &session{}
 	s.authed.Store(true)
-	go s.watchClip(ctx, func(b []byte) { sent <- string(b) })
-	time.Sleep(100 * time.Millisecond) // начальное значение прочитано
+	done := make(chan struct{})
+	go func() { s.watchClip(ctx, func(b []byte) { sent <- string(b) }); close(done) }()
+	defer func() { cancel(); <-done }() // глобалы восстанавливаются только после выхода watchClip (гонка под -race)
+	time.Sleep(100 * time.Millisecond)  // начальное значение прочитано
 	seq.Add(1)
 	select {
 	case m := <-sent:

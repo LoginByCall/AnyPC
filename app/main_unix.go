@@ -89,6 +89,9 @@ func main() {
 		fmt.Println("пароль задан; если AnyPC уже запущен — перезапустите его")
 		return
 	}
+	if !cfg.confirm() && !cfg.otpSet() { // хост обновлён с выключенным подтверждением: без TOTP — снова окно «Разрешить»
+		log.Printf("ВНИМАНИЕ: вход без подтверждения выключен, пока не настроен второй фактор (TOTP): каждый вход спросит «Разрешить». Настройте: %s --confirm off", filepath.Base(os.Args[0]))
+	}
 	for _, b := range deps() {
 		if _, err := exec.LookPath(b); err != nil {
 			log.Printf("ВНИМАНИЕ: нет %s — %s", b, hint[b])
@@ -99,12 +102,8 @@ func main() {
 	defer stop()
 	a := &agent.Agent{Audio: true, Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, Key: cfg.key(), FPS: 30, Trusted: cfg.trusted, Trust: cfg.trust,
 		Bitrate: agent.Kbps(cfg.Bitrate),
-		Confirm: func(cid, peer string) agent.Answer {
-			if !cfg.confirm() {
-				return agent.Allow
-			}
-			return agent.AskAccept(cid, peer)
-		}, Capture: hostCapture(cfg.Enc), Locked: hostLocked, FileDir: downloads(), Stderr: logw}
+		Confirm: agent.AskAccept, Unattended: func() bool { return !cfg.confirm() }, OTP: cfg.otp, ViewOnly: cfg.viewOnly, // без подтверждения — с TOTP (PLAN.md)
+		Capture: hostCapture(cfg.Enc), Locked: hostLocked, FileDir: downloads(), Stderr: logw}
 	var mu sync.Mutex
 	online, session, update := false, "", ""
 	a.OnState = func(on bool, s string) { mu.Lock(); online, session = on, s; mu.Unlock() }
@@ -112,7 +111,7 @@ func main() {
 		node, pub := cfg.node()
 		mu.Lock()
 		defer mu.Unlock()
-		return map[string]any{"id": cfg.ID, "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "version": version, "update": update, "node": node, "nodePub": pub, "server": cfg.Server, "audio": audioInfo(a)}
+		return map[string]any{"id": cfg.id(), "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "otp": cfg.otpSet(), "viewOnly": cfg.viewOnly(), "version": version, "update": update, "node": node, "nodePub": pub, "server": cfg.server(), "audio": audioInfo(a)}
 	}
 	go watchUpdates(func(v string) { mu.Lock(); update = v; mu.Unlock() })
 
@@ -144,7 +143,15 @@ func main() {
 	if !*noBrowser { // аргументы браузера видны всем пользователям ПК (/proc/*/cmdline) — в них одноразовый код, не токен
 		openWindow("http://" + addr + "/?n=" + once.code)
 	}
-	run.start(cfg.Server)
+	srv := cfg.Server
+	go func() { // --view-only on при запущенной программе: вошедшая сессия с полным доступом рвётся (REQ-F-25)
+		for range time.Tick(2 * time.Second) {
+			if cfg.viewNow() {
+				a.DisconnectFull()
+			}
+		}
+	}()
+	run.start(srv) // настройки дальше — только под c.mu (опрос выше их перечитывает)
 	run.wait()
 }
 
@@ -212,7 +219,7 @@ window.ANYPC = {ws: %s, clipPoll: %t};
   const T = %s;
   const api = (n, ...a) => fetch('/api/' + n, {method: 'POST', headers: {'X-Token': T, 'Content-Type': 'application/json'}, body: JSON.stringify(a)})
     .then(async r => { const j = await r.json(); if (!r.ok) throw j.error; return j.result; });
-  for (const n of ['hostInfo', 'setPassword', 'setConfirm', 'setNode', 'quit', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'hostVerify', 'knownGet', 'knownSet', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort', 'audioAnswer', 'audioMic']) window[n] = (...a) => api(n, ...a);
+  for (const n of ['hostInfo', 'setPassword', 'setConfirm', 'setNode', 'quit', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'hostVerify', 'knownGet', 'knownSet', 'savedGet', 'savedSet', 'otpNew', 'otpEnable', 'setViewOnly', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort', 'audioAnswer', 'audioMic']) window[n] = (...a) => api(n, ...a);
   window.fullscreen = on => on ? document.documentElement.requestFullscreen().then(() => navigator.keyboard?.lock()).catch(() => {})
                                : document.fullscreenElement && document.exitFullscreen();
 })();
@@ -294,6 +301,20 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 		res = cfg.knownGet(str(0))
 	case "knownSet":
 		err = cfg.knownSet(str(0), str(1))
+	case "savedGet":
+		res = cfg.savedGet(str(0))
+	case "savedSet":
+		err = cfg.savedSet(str(0), str(1))
+	case "setViewOnly":
+		var on bool
+		if len(args) > 0 {
+			json.Unmarshal(args[0], &on)
+		}
+		err = setViewOnly(cfg, a, on)
+	case "otpNew":
+		res, err = cfg.otpNew()
+	case "otpEnable":
+		err = cfg.otpEnable(str(0), str(1))
 	case "pakeRespond":
 		res, err = pake.ClientRespondB64(str(0), str(1), str(2), str(3), str(4), str(5))
 	default:

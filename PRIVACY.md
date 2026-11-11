@@ -36,11 +36,11 @@ AnyPC — программа удалённого доступа с открыт
 ## Что хранится на вашем компьютере
 
 Эти данные не покидают компьютер.
-- Настройки (`config.json`, Windows: `%APPDATA%\AnyPC`, Linux: `~/.config/AnyPC`, macOS: `~/Library/Application Support/AnyPC`): ID, закрытый ключ компьютера, хэш пароля (Argon2id, сам пароль не хранится), адрес своего узла, ключи доверенных клиентов (до 20), отпечатки ключей компьютеров, к которым вы подключались.
+- Настройки (`config.json`, Windows: `%APPDATA%\AnyPC`, Linux: `~/.config/AnyPC`, macOS: `~/Library/Application Support/AnyPC`): ID, закрытый ключ компьютера, хэш пароля (Argon2id, сам пароль не хранится), адрес своего узла, ключи доверенных клиентов (до 20), отпечатки ключей компьютеров, к которым вы подключались, секрет второго фактора (TOTP) этого компьютера — открытым текстом, и, если вы отметили «Запомнить пароль», пароли удалённых компьютеров — открытым текстом.
 - Журнал (`anypc.log`, Windows: `%LOCALAPPDATA%\AnyPC`, Linux: `~/.cache/AnyPC`, macOS: `~/Library/Caches/AnyPC`): события сессий с ID клиентов, неудачные попытки входа, тип соединения (без IP-адресов), имена, размеры и контрольные суммы принятых и отправленных файлов. Журнал можно удалить в любой момент.
 - Принятые файлы — в папке «Загрузки».
 
-**В браузере** (веб-клиент, localStorage): до 8 последних ID, отпечатки ключей удалённых компьютеров, ключ клиента для каждого компьютера, настройки «Турбо», ретранслятора и подсказок. Пароль хранится только в памяти открытой вкладки. На сервер из этого уходит лишь открытый ключ клиента (для входа без повторной блокировки) — закрытая часть остаётся в браузере.
+**В браузере** (веб-клиент, localStorage): до 8 последних ID, отпечатки ключей удалённых компьютеров, ключ клиента для каждого компьютера, настройки «Турбо», ретранслятора и подсказок. Пароль хранится только в памяти открытой вкладки, а если отмечено «Запомнить пароль» — в localStorage открытым текстом (снимите галочку, чтобы удалить). На сервер из этого уходит лишь открытый ключ клиента (для входа без повторной блокировки) — закрытая часть остаётся в браузере.
 
 ## Свой узел
 
@@ -98,11 +98,11 @@ The project runs signaling servers (hk.anypc.org — Hong Kong, ru.anypc.org —
 ## What is stored on your computer
 
 This data does not leave your computer.
-- Settings (`config.json`; Windows: `%APPDATA%\AnyPC`, Linux: `~/.config/AnyPC`, macOS: `~/Library/Application Support/AnyPC`): ID, the computer's private key, the password hash (Argon2id; the password itself is not stored), your node address, trusted client keys (up to 20), key fingerprints of computers you connected to.
+- Settings (`config.json`; Windows: `%APPDATA%\AnyPC`, Linux: `~/.config/AnyPC`, macOS: `~/Library/Application Support/AnyPC`): ID, the computer's private key, the password hash (Argon2id; the password itself is not stored), your node address, trusted client keys (up to 20), key fingerprints of computers you connected to, this computer's second-factor (TOTP) secret in plain text and, if you ticked “Remember password”, the passwords of remote computers in plain text.
 - Log (`anypc.log`; Windows: `%LOCALAPPDATA%\AnyPC`, Linux: `~/.cache/AnyPC`, macOS: `~/Library/Caches/AnyPC`): session events with client IDs, failed login attempts, connection type (no IP addresses), names, sizes and checksums of received and sent files. You can delete it at any time.
 - Received files go to your Downloads folder.
 
-**In the browser** (web client, localStorage): up to 8 recent IDs, key fingerprints of remote computers, a client key per computer, Turbo, relay and tips settings. The password is kept only in the memory of the open tab. Of this, only the client's public key is sent (so that repeated logins are not locked out); the private part stays in the browser.
+**In the browser** (web client, localStorage): up to 8 recent IDs, key fingerprints of remote computers, a client key per computer, Turbo, relay and tips settings. The password is kept only in the memory of the open tab, or, if “Remember password” is ticked, in localStorage in plain text (untick it to delete). Of this, only the client's public key is sent (so that repeated logins are not locked out); the private part stays in the browser.
 
 ## Your own node
 

@@ -87,8 +87,18 @@ func (c *config) node() (string, bool) {
 func (c *config) setServer(s string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.reload()
 	c.Server = s
 	return c.save()
+}
+
+// setViewOnly — галочка «Только показ экрана» из окна: при включении идущая сессия с полным доступом рвётся.
+func setViewOnly(cfg *config, a *agent.Agent, on bool) error {
+	err := cfg.setViewOnly(on)
+	if err == nil && on {
+		a.DisconnectFull()
+	}
+	return err
 }
 
 // runner — регистрация хоста с перезапуском при смене узла: старый Run останавливается целиком
