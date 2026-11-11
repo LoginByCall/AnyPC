@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"runtime"
 	"syscall"
 	"unsafe"
@@ -37,7 +38,9 @@ type openFileName struct {
 
 // pickFile открывает на хосте окно выбора файла: оператор выбирает файл удалённой мышью.
 // ponytail: окно фонового процесса может открыться за другими окнами (мигает на панели задач).
-func pickFile() (string, bool) {
+// ponytail: ctx не закрывает окно GetOpenFileName — выбор после перехода в просмотр отбрасывает вызывающий; закрывать
+// через EndDialog по hwnd из хука, если понадобится.
+func pickFile(context.Context) (string, bool) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	buf := make([]uint16, 32768)

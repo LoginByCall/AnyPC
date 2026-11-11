@@ -176,11 +176,12 @@ func showIndicator(cid string, mode plaqueMode, onUserClose func()) (func(), err
 }
 
 // pickFile — окно выбора файла на хосте (zenity работает и в X11, и в Wayland).
-func pickFile() (string, bool) {
+// ctx кончился — окно закрывается.
+func pickFile(ctx context.Context) (string, bool) {
 	if fakeDesktop {
 		return "", false
 	}
-	out, err := exec.Command("zenity", "--file-selection", "--title=AnyPC").Output()
+	out, err := exec.CommandContext(ctx, "zenity", "--file-selection", "--title=AnyPC").Output()
 	p := strings.TrimRight(string(out), "\n")
 	return p, err == nil && p != ""
 }
@@ -250,4 +251,17 @@ func AskAccept(cid, peer string) Answer {
 		}
 		return Deny
 	})
+}
+
+// AskControl — окно «Разрешить управление?» (смена режима сессии «Спрашивать»): как AskAccept, без «Только просмотр».
+func AskControl(cid, peer string) bool {
+	if fakeDesktop {
+		return true
+	}
+	title, text, yes, no := askControlText(sysLang(), cid, peer, true)
+	return askLoop(func(left time.Duration) Answer {
+		err := exec.Command("zenity", "--question", "--default-cancel", "--width=460", "--title="+title, "--text="+pangoEscape(text),
+			"--ok-label="+yes, "--cancel-label="+no, "--timeout="+strconv.Itoa(int(left.Seconds()))).Run()
+		return map[bool]Answer{true: Allow}[err == nil]
+	}) == Allow
 }

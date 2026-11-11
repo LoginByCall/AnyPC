@@ -246,16 +246,21 @@ func fileID(path string, st os.FileInfo) string {
 // maxRecv — сколько файлов сессия принимает одновременно: каждый держит открытый файл и место на диске.
 const maxRecv = 4
 
-// receiveFile принимает файл от клиента в папку загрузок хоста; active — идущие приёмы этой сессии.
-func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32) {
+// receiveFile принимает файл от клиента в папку загрузок хоста; active — идущие приёмы этой сессии. Сессия ушла
+// в просмотр — приём обрывается сразу (REQ-F-26), ждавший очереди не открывается.
+func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32, s *session) {
 	r := NewReceiver(a.fileDir())
 	var mu sync.Mutex
-	state := "new" // new → wait → open → finished; в open занято место в active
+	state := "new"  // new → wait → open → finished; в open занято место в active
+	var done func() // снять обрыв при переходе в просмотр
 	end := func() {
 		if state == "open" {
 			active.Add(-1)
 		}
 		state = "finished"
+		if done != nil {
+			done()
+		}
 	}
 	fail := func(msg string) {
 		log.Printf("файл %q: %s", r.name, msg)
@@ -268,6 +273,10 @@ func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32) {
 		mu.Lock()
 		defer mu.Unlock()
 		if state == "finished" {
+			return
+		}
+		if !s.control() {
+			fail(viewFiles)
 			return
 		}
 		if !m.IsString {
@@ -303,6 +312,11 @@ func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32) {
 					active.Add(-1)
 					return
 				}
+				if !s.control() { // ушли в просмотр, пока ждали места
+					active.Add(-1)
+					fail(viewFiles)
+					return
+				}
 				off, err := r.Open(fm.Name, fm.Size, fm.ID)
 				if err != nil {
 					active.Add(-1)
@@ -332,6 +346,20 @@ func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32) {
 			fail("неожиданное сообщение")
 		}
 	})
+	d := s.whileControl(func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if state != "finished" {
+			fail(viewFiles)
+		}
+	})
+	mu.Lock()
+	if state == "finished" {
+		d()
+	} else {
+		done = d
+	}
+	mu.Unlock()
 	dc.OnClose(func() { // обрыв без done/cancel: часть остаётся для докачки
 		mu.Lock()
 		defer mu.Unlock()
