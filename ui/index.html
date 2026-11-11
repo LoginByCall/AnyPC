@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="ru">
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Gx9biHejlwWxXgZ3GIhEEyb/p9dUR0bK1nL9XZruP1w=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-4bH7ZFDPmRFYeQr1JM9ZmzhPZhS/8azhrk/jehzbm2o=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AnyPC</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26'><style>.a{stroke:%2317181c}.b{fill:%23d2452d}@media(prefers-color-scheme:dark){.a{stroke:%23eceae4}.b{fill:%23ef6a52}}</style><rect class='a' x='1.5' y='3' width='15' height='11' rx='2' fill='none' stroke-width='2.6'/><rect class='b' x='10' y='12' width='15' height='11' rx='2'/></svg>">
@@ -345,14 +345,20 @@ const saved = {
 };
 const idOnly = () => $('id').value.trim().split('@')[0].replace(/\D/g, '');
 let autoPw = false; // пароль в поле — подставленный, а не введённый
+// Подставленный пароль «глазиком» не показать: поле скрыто, глазик выключен; правка человека начинается с пустого поля.
+const pwAuto = on => {
+  const e = document.querySelector('[data-eye="pw"]');
+  autoPw = on; e.disabled = on;
+  if (on) { $('pw').type = 'password'; e.classList.remove('on'); }
+};
 async function fillSaved() {
   if (idOnly().length !== 9) return;
   const pw = await saved.get(idOnly());
-  if (pw) { $('pw').value = pw; $('remember').checked = true; autoPw = true; }
-  else if (autoPw) { $('pw').value = ''; $('remember').checked = false; autoPw = false; }
+  if (pw) { $('pw').value = pw; $('remember').checked = true; pwAuto(true); }
+  else if (autoPw) { $('pw').value = ''; $('remember').checked = false; pwAuto(false); }
 }
 $('id').oninput = fillSaved;
-$('pw').oninput = () => { autoPw = false; };
+$('pw').onbeforeinput = () => { if (autoPw) { $('pw').value = ''; pwAuto(false); } };
 $('remember').onchange = () => { if (!$('remember').checked && idOnly().length === 9) saved.set(idOnly(), '').catch(() => {}); }; // снять — забыть
 
 // ---------- Сессия ----------
@@ -613,7 +619,7 @@ async function onAuth(ch, e, mine) {
     if (was !== fp) await known.set(host, fp);
     again = { host: target, pw: $('pw').value || again?.pw, n: 0 };
     if ($('remember').checked && again.pw) saved.set(host, again.pw).catch(() => {});
-    show(true); v.focus(); $('pw').value = '';
+    show(true); v.focus(); $('pw').value = ''; pwAuto(false);
     store.set('recent', [target, ...store.get('recent', []).filter(x => x !== target)].slice(0, 8)); renderRecent();
   } else if (m.t === 'ask') { askNoOtp = !!m.nootp; $('msg').textContent = t('asking') + (askNoOtp ? ' — ' + t('ask_nootp') : ''); }
   else if (m.t === 'denied') end(t('err') + (otpStep ? t('e_otp_late') : t('e_denied') + (askNoOtp ? ' — ' + t('ask_nootp') : ''))); // на шаге кода — срок вышел

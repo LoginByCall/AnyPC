@@ -43,6 +43,12 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await ev("document.getElementById('pw').value=''; document.getElementById('remember').checked = false; const i = document.getElementById('id'); i.value = '123456789'; i.dispatchEvent(new Event('input'))");
   await sleep(300);
   console.log('fill=' + await ev("document.getElementById('pw').value + '|' + document.getElementById('remember').checked"));
+  // подставленный пароль «глазиком» не открыть; правка человека начинается с пустого поля
+  await ev("document.querySelector('[data-eye=pw]').click(); 1");
+  console.log('eye=' + await ev("document.getElementById('pw').type + '|' + document.querySelector('[data-eye=pw]').disabled"));
+  await ev("document.getElementById('pw').dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: 'x', cancelable: true })); 1");
+  console.log('edit=' + await ev("JSON.stringify(document.getElementById('pw').value) + '|' + document.querySelector('[data-eye=pw]').disabled"));
+  await ev("const i2 = document.getElementById('id'); i2.dispatchEvent(new Event('input')); 1"); await sleep(300); // снова подставить для «забыть»
   await ev("const r = document.getElementById('remember'); r.checked = false; r.dispatchEvent(new Event('change'))");
   await sleep(300);
   console.log('forgot=' + await ev("localStorage.getItem('pass')"));
@@ -58,6 +64,8 @@ func TestBrowserOTP(t *testing.T) {
 		"ok=|false|true",
 		`saved={"123456789":"secret123"}`,
 		"fill=secret123|true",
+		"eye=password|true",
+		`edit=""|false`,
 		"forgot={}",
 	} {
 		if !strings.Contains(out, want) {
