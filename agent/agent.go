@@ -1134,10 +1134,10 @@ var clipSeq, clipText, setClip = ClipSeq, ClipText, SetClipText
 // data-control, и каждый wl-paste создаёт окно и забирает фокус — опрос раз в 0,5 с дёргал док, тормозил ввод
 // у человека за хостом и сворачивал выпадающие списки (владелец, 2026-11-11). Скопированное мышью через меню
 // клиенту не уйдёт. ponytail: буфер через портал RemoteDesktop (Clipboard) — если этого окажется мало.
-var clipOnCopy bool
+var clipOnCopy atomic.Bool // атомарно: тесты меняют его, пока watchClip прошлой сессии ещё читает
 
 // ClipCheap — буфер обмена можно опрашивать без побочных эффектов (не Wayland): для программы-клиента (app).
-func ClipCheap() bool { return !clipOnCopy }
+func ClipCheap() bool { return !clipOnCopy.Load() }
 
 // watchClip отправляет клиенту изменения буфера обмена хоста (только изменения после начала сессии).
 // Д-5: до успешного входа — ничего: иначе любой, кто знает ID, читал бы буфер хоста 20 с ожидания пароля.
@@ -1152,7 +1152,7 @@ func (s *session) watchClip(ctx context.Context, send func([]byte)) {
 			return
 		case <-t.C:
 		}
-		if clipOnCopy { // через 0,5, 1 и 1,5 с после Ctrl+C: приложение кладёт текст в буфер не сразу
+		if clipOnCopy.Load() { // через 0,5, 1 и 1,5 с после Ctrl+C: приложение кладёт текст в буфер не сразу
 			if s.copied.Swap(false) {
 				recheck = 3
 			}
@@ -1183,7 +1183,10 @@ var ErrCaptureDenied = errors.New("доступ к экрану отклонён
 var lockPoll, noFramePause = 2 * time.Second, 2 * time.Second
 
 // stateEvery — не чаще чем раз в столько повторять клиенту текущее состояние, пока оно держится (D3).
-var stateEvery = 2 * time.Second
+// Атомарно (нс): тесты меняют его при живых сессиях.
+var stateEvery atomic.Int64
+
+func init() { stateEvery.Store(int64(2 * time.Second)) }
 
 func (a *Agent) stream(ctx context.Context, s *session, track *webrtc.TrackLocalStaticSample) {
 	for {
@@ -1253,7 +1256,7 @@ func (s *session) setState(st string) bool {
 // по каналу auth, state — по ctl, порядок между каналами не гарантирован, а клиент принимает state только после входа.
 func (s *session) repeatState() {
 	s.mu.Lock()
-	due := time.Since(s.stateAt) >= stateEvery
+	due := time.Since(s.stateAt) >= time.Duration(stateEvery.Load())
 	if due {
 		s.stateAt = time.Now()
 	}

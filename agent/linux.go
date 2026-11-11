@@ -79,7 +79,7 @@ func LinuxCapture(enc string) func(ctx context.Context, c Cap) (*exec.Cmd, error
 }
 
 func init() {
-	clipOnCopy = Wayland
+	clipOnCopy.Store(Wayland)
 	if !Wayland { // Wayland: курсор рисует портал (cursor_mode 2), отдельно его не отдать
 		cursorInfo = x11Cursor
 	}
