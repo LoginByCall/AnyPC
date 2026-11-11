@@ -315,7 +315,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer h.release(addr)
 	// Origin любой: страница одного хаба ходит в соседние (резервная сигнализация), окно AnyPC.exe — с 127.0.0.1.
 	// У сигнализации нет cookie/полномочий — то же доступно любому клиенту вне браузера; вход защищает CPace.
-	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
+	c, err := websocket.Accept(sndWriter{w}, r, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
 	if err != nil {
 		return
 	}
