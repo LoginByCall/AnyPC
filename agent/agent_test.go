@@ -507,6 +507,7 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 	}
 	select {
 	case dc := <-dcOpen:
+		e2eIn = dc
 		if err := dc.SendText(`{"t":"k","c":"ControlLeft","d":true}`); err != nil {
 			t.Fatal(err)
 		}
@@ -665,6 +666,7 @@ var (
 	e2eGood    string                   // верный пароль для e2eUser; "" — secret123
 	e2eTwice   bool                     // назвать имя дважды (хост обязан оборвать вход)
 	e2eInput   func(*testing.T, *Agent) // после нажатия ControlLeft клиентом, до bye
+	e2eIn      *webrtc.DataChannel      // канал input клиента (для e2eCtl): ставит e2e
 )
 
 // squat — клиент, который получил offer и не отвечает: раньше одного такого хватало, чтобы хост 20 с был «занят».

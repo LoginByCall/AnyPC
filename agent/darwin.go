@@ -346,6 +346,21 @@ return "no"`, title, text, yes, no, strconv.Itoa(int(left.Seconds())), view).Out
 	})
 }
 
+// AskControl — окно «Разрешить управление?» (смена режима сессии «Спрашивать»): как AskAccept, без «Только просмотр».
+func AskControl(cid, peer string) bool {
+	if fakeDesktop {
+		return true
+	}
+	title, text, yes, no := askControlText(sysLang(), cid, peer, true)
+	return askLoop(func(left time.Duration) Answer {
+		out, err := osa(`set r to display dialog (item 2 of argv) with title (item 1 of argv) buttons {item 4 of argv, item 3 of argv} default button 1 cancel button 1 giving up after ((item 5 of argv) as integer) with icon caution
+if gave up of r then return "no"
+if button returned of r is (item 3 of argv) then return "yes"
+return "no"`, title, text, yes, no, strconv.Itoa(int(left.Seconds()))).Output()
+		return map[bool]Answer{true: Allow}[err == nil && strings.TrimSpace(string(out)) == "yes"]
+	}) == Allow
+}
+
 func pickFile() (string, bool) {
 	if fakeDesktop {
 		return "", false
