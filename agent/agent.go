@@ -74,8 +74,8 @@ type Agent struct {
 	starting  int                  // занятые места pend, пока newSession шлёт offer (без a.mu)
 	fails     int
 	lockUntil time.Time
-	otpFails  int             // неверные коды TOTP от закреплённых ключей (У3): своя блокировка — чужой перебор паролей
-	otpLock   time.Time       // владельца с ключом не запирает, а украденный ключ код не переберёт
+	otpFails  int             // неверные коды TOTP от кого угодно — одна лестница на шаге кода; её смотрят все, а общую
+	otpLock   time.Time       // (пароли) — только чужие: перебор паролей не запирает владельца с закреплённым ключом (У3)
 	online    map[string]bool // хабы, на которых хост зарегистрирован
 }
 
@@ -956,10 +956,12 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 			s.asking.Store(true) // общий таймер входа не закрывает — у каждого запроса кода свой
 			var ask func()
 			check := func(code string) {
-				// Блокировка (REQ-S-04): чужим — общая с паролем; закреплённому ключу — своя по его неверным кодам (У3:
-				// знающий только ID перебором паролей владельца не запирает), и его неверные коды идут ещё и в общий счётчик.
+				// Блокировка (REQ-S-04): неверные коды от кого угодно — одна лестница otpFails/otpLock, её смотрят все (вор с
+				// паролем и ключом получает те же 5 кодов, не больше); чужой смотрит ещё и общую с паролями, закреплённый
+				// ключ — нет (У3: знающий только ID перебором паролей владельца не запирает).
 				lock := func() bool {
-					return time.Now().Before(map[bool]time.Time{false: a.lockUntil, true: a.otpLock}[trusted])
+					now := time.Now()
+					return now.Before(a.otpLock) || !trusted && now.Before(a.lockUntil)
 				}
 				a.mu.Lock()
 				if lock() {
@@ -968,14 +970,13 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 					return
 				}
 				_, ok := a.OTP(code)
-				switch {
-				case !trusted:
-					a.countAuth(s.cid, ok)
-				case ok:
-					a.otpFails = 0 // общий счётчик успех владельца не сбрасывает
-				default:
+				if ok {
+					a.otpFails = 0
+				} else {
 					lockStep(&a.otpFails, &a.otpLock)
-					a.countAuth(s.cid, false)
+				}
+				if !trusted || !ok { // неверные коды — и в общий счётчик (REQ-S-04); успех ключа общий не сбрасывает
+					a.countAuth(s.cid, ok)
 				}
 				locked := lock()
 				a.mu.Unlock()
