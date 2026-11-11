@@ -25,6 +25,13 @@ type account struct {
 
 // config — %APPDATA%\AnyPC\config.json. Enc/Bitrate/Server правятся вручную при необходимости.
 type config struct {
+	settings
+	mu   sync.Mutex
+	path string
+}
+
+// settings — то, что лежит в файле.
+type settings struct {
 	ID      string            `json:"id"`
 	Server  string            `json:"server"`
 	Enc     string            `json:"enc"`     // кодер H.264 в ffmpeg: libx264 | h264_nvenc | h264_qsv | h264_amf | h264_mf (VP9 выбирает клиент — «Турбо»)
@@ -38,9 +45,6 @@ type config struct {
 	Account account           `json:"account,omitzero"`    // учётная запись по умолчанию (PLAN.md: с учётными записями сюда переедут Salt/Hash)
 	Saved   map[string]string `json:"saved,omitempty"`     // ID удалённого ПК → запомненный пароль («Запомнить пароль» на управляющем ПК)
 	View    bool              `json:"view_only,omitempty"` // «Только показ экрана»: каждая входящая сессия — только просмотр (REQ-F-20)
-
-	mu   sync.Mutex
-	path string
 }
 
 const (
@@ -55,7 +59,7 @@ var version = "dev"
 var oldServers = []string{"wss://any.turboseller.xyz/ws", "wss://any-hk.turboseller.xyz/ws", "wss://any-hk.turboseller.xyz/ws,wss://any-ru.turboseller.xyz/ws"}
 
 func loadConfig(path string) (*config, error) {
-	c := &config{path: path, Server: DefaultServer, Enc: "libx264", Bitrate: "4M"}
+	c := &config{path: path, settings: settings{Server: DefaultServer, Enc: "libx264", Bitrate: "4M"}}
 	b, err := os.ReadFile(path)
 	if err == nil {
 		err = json.Unmarshal(b, c)
@@ -86,6 +90,15 @@ func loadConfig(path string) (*config, error) {
 	return c, nil
 }
 
+// reload — под c.mu перед правкой: файл с диска (его мог изменить ключ CLI при запущенной программе), иначе
+// запись целиком откатила бы чужую правку. Файл не читается — остаётся то, что в памяти.
+func (c *config) reload() {
+	var f settings
+	if b, err := os.ReadFile(c.path); err == nil && json.Unmarshal(b, &f) == nil && hub.IsHostID(f.ID) {
+		c.settings = f
+	}
+}
+
 func (c *config) save() error {
 	b, _ := json.MarshalIndent(c, "", "  ")
 	if err := os.MkdirAll(filepath.Dir(c.path), 0o700); err != nil {
@@ -106,6 +119,7 @@ func (c *config) setPassword(p string) error {
 	rand.Read(salt)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.reload()
 	c.Salt, c.Hash = salt, pake.KDF(p, salt)
 	c.Trusted = nil // новый пароль — доверие заново
 	return c.save()
@@ -121,6 +135,7 @@ func (c *config) confirm() bool {
 func (c *config) setConfirm(on bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.reload()
 	if !on && c.Account.TOTP == "" {
 		return errors.New("вход без подтверждения — только со вторым фактором (TOTP)")
 	}
@@ -146,6 +161,7 @@ func (c *config) otpEnable(secret, code string) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.reload()
 	off := false
 	c.Account, c.Confirm = account{TOTP: secret, TOTPStep: step}, &off // этот код уже не войдёт (повтор)
 	return c.save()
@@ -155,6 +171,7 @@ func (c *config) otpEnable(secret, code string) error {
 func (c *config) otp(code string) (set, ok bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.reload()
 	if c.Account.TOTP == "" {
 		return false, false
 	}
@@ -189,6 +206,7 @@ func (c *config) viewOnly() bool {
 func (c *config) setViewOnly(on bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.reload()
 	c.View = on
 	return c.save()
 }
@@ -217,6 +235,7 @@ func (c *config) knownSet(id, fp string) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.reload()
 	if c.Known == nil {
 		c.Known = map[string]string{}
 	}
@@ -238,6 +257,7 @@ func (c *config) savedSet(id, pw string) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.reload()
 	if pw == "" {
 		delete(c.Saved, id)
 	} else {
@@ -261,6 +281,7 @@ func (c *config) trusted(pub []byte) bool {
 func (c *config) trust(pub []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.reload()
 	c.Trusted = slices.DeleteFunc(c.Trusted, func(k []byte) bool { return bytes.Equal(k, pub) })
 	c.Trusted = append(c.Trusted, bytes.Clone(pub))
 	if n := len(c.Trusted) - maxTrusted; n > 0 {

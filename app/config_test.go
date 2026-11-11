@@ -170,3 +170,34 @@ func TestViewOnlySetting(t *testing.T) {
 		t.Fatal("не пережило перезапуск")
 	}
 }
+
+// TestConfigExternal — регрессия (приёмка Д3): ключ CLI при запущенной программе. Запущенный экземпляр держит
+// настройки в памяти и при входе по коду пишет файл — правка CLI («только показ», «подтверждать вход») не откатывается,
+// а отключённый CLI TOTP сразу не принимает коды.
+func TestConfigExternal(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	run, _ := loadConfig(p)
+	sec := totp.NewSecret()
+	code, _ := totp.Code(sec, time.Now().Add(-30*time.Second))
+	if err := run.otpEnable(sec, code); err != nil {
+		t.Fatal(err)
+	}
+	cli, _ := loadConfig(p) // anypc --view-only on
+	cli.setViewOnly(true)
+	now, _ := totp.Code(sec, time.Now())
+	if _, ok := run.otp(now); !ok {
+		t.Fatal("код не принят")
+	}
+	run.knownSet("123456789", "ab") // любая запись запущенного экземпляра
+	if c, _ := loadConfig(p); !c.viewOnly() || c.confirm() || !c.otpSet() || c.knownGet("123456789") != "ab" {
+		t.Fatalf("после записи запущенного: только показ=%v, подтверждать=%v, TOTP=%v", c.viewOnly(), c.confirm(), c.otpSet())
+	}
+	cli.setConfirm(true) // anypc --confirm on — TOTP отключён
+	next, _ := totp.Code(sec, time.Now().Add(30*time.Second))
+	if set, ok := run.otp(next); set || ok {
+		t.Fatal("TOTP, отключённый ключом CLI, ещё принимает коды")
+	}
+	if c, _ := loadConfig(p); !c.confirm() || c.otpSet() || !c.viewOnly() {
+		t.Fatal("правка CLI откатилась")
+	}
+}

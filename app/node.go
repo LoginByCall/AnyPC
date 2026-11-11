@@ -87,6 +87,7 @@ func (c *config) node() (string, bool) {
 func (c *config) setServer(s string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.reload()
 	c.Server = s
 	return c.save()
 }
