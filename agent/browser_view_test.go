@@ -65,11 +65,16 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await shot('08-list-done'); await dark(true); await sleep(300); await shot('09-list-done-dark'); await dark(false);
   // «Только просмотр»: выйти, включить галочку, войти снова
   await ev("document.getElementById('bye').click()"); await sleep(1500);
+  console.log('eye=' + await ev("document.querySelector('[data-eye=pw]').click(); const a = document.getElementById('pw').type; document.querySelector('[data-eye=pw]').click(); a + '/' + document.getElementById('pw').type"));
   await ev("document.getElementById('view').checked = true; document.getElementById('pw').value='secret123'; document.getElementById('go').click()");
   console.log('view_session=' + await until(sess));
   await sleep(2500);
   console.log('view_body=' + await ev("document.body.classList.contains('view')") + ' keys_btn=' + await vis('[data-keys]') + ' fsend=' + await vis('#fsend') + ' clipbtn=' + await vis('#clipbtn'));
   console.log('view_status=' + await ev("document.getElementById('st').textContent"));
+  console.log('stat_hidden=' + !(await vis('#csv')) + ' view_mark=' + await vis('#st')); // статистика по умолчанию скрыта, «только просмотр» видно
+  await ev("document.getElementById('statbtn').click()"); await sleep(200);
+  console.log('stat_shown=' + await vis('#csv'));
+  await ev("document.getElementById('statbtn').click()"); await sleep(200);
   await ev("Object.defineProperty(navigator, 'clipboard', { value: { readText: async () => 'view-clip', writeText: async () => {} } }); clipBtn(); 1");
   await ev("sendFile(new File([new Uint8Array(1000)], 'view.bin'))");
   await until(async () => /view\.bin[^|]*[✓✗]/.test(await ev("document.getElementById('dlpop').innerText.replace(/\\n/g, ' | ')")), 50);
@@ -117,7 +122,8 @@ func TestBrowserView(t *testing.T) {
 	go a.Run(ctx)
 	out := string(runCDP(t, ctx, chrome, cdpVisual, srv.URL+"/"))
 	for _, want := range []string{"tour_home=true", "tour_sess=true", "help=true sections=10", "help_link=site", "session=true", "ring=true cnt=6", "view_session=true",
-		"view_body=true keys_btn=false fsend=false clipbtn=false", "view only", "view.bin | ✗ View only: files are not sent"} {
+		"view_body=true keys_btn=false fsend=false clipbtn=false", "view only",
+		"eye=text/password", "stat_hidden=true view_mark=true", "stat_shown=true", "view.bin | ✗ View only: files are not sent"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("нет %q", want)
 		}
