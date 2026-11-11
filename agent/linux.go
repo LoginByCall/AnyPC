@@ -235,7 +235,7 @@ func AskAccept(cid, peer string) Answer {
 	if fakeDesktop {
 		return Allow
 	}
-	title, text, yes, no, view := askText(sysLang(), cid, peer)
+	title, text, yes, no, view := askText(sysLang(), cid, peer, true)
 	// zenity кнопку на время не выключает: согласие раньше AskDelay — окно снова (askLoop)
 	return askLoop(func(left time.Duration) Answer {
 		// дополнительная кнопка: zenity печатает её подпись и выходит с кодом 1, как «Отклонить»;

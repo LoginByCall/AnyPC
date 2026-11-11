@@ -42,6 +42,7 @@ type config struct {
 	path  string
 	kmu   sync.Mutex // кэш KDF одноразового кода: Argon2 — раз на код, не на каждый вход
 	kkey  string
+	mine  string // последний код, заданный этим процессом (setCode, под mu; reload его не трогает)
 	khash []byte
 }
 
@@ -322,7 +323,15 @@ func (c *config) setCode(code string) {
 		c.CodeSalt = make([]byte, 16)
 		rand.Read(c.CodeSalt)
 	}
-	c.Code = code
+	c.Code, c.mine = code, code
+}
+
+// ownCode — код задал этот процесс (↻, смена после сессии): его незавершённые входы уже закрыты, а начатые новым
+// кодом опрос закрывать не должен; чужой (ключ CLI в другом процессе) — закрыть.
+func (c *config) ownCode(code string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return code == c.mine
 }
 
 // code — одноразовый код для окна и --status; "" — не режим «Спрашивать».

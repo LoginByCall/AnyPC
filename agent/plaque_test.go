@@ -43,7 +43,7 @@ func TestAskText(t *testing.T) {
 				t.Errorf("%s: пустая строка %d", lang, i)
 			}
 		}
-		_, text, yes, no, view := askText(lang, "c123456789012", "203.0.113.7")
+		_, text, yes, no, view := askText(lang, "c123456789012", "203.0.113.7", false)
 		for _, want := range []string{"ID: c123456789012", "IP: 203.0.113.7", q[1], q[7]} {
 			if !strings.Contains(text, want) {
 				t.Errorf("%s: в тексте нет %q:\n%s", lang, want, text)
@@ -52,8 +52,11 @@ func TestAskText(t *testing.T) {
 		if yes != q[3] || no != q[4] || view != q[5] || winAskHint(lang) != q[6] {
 			t.Errorf("%s: кнопки %q %q %q", lang, yes, no, view)
 		}
+		if _, loop, _, _, _ := askText(lang, "c1", "ip", true); !strings.Contains(text, q[8]) || !strings.Contains(loop, q[9]) || strings.Contains(loop, q[8]) {
+			t.Errorf("%s: задержка — TaskDialog 3 с, окна askLoop 5 с", lang)
+		}
 	}
-	if _, text, _, _, _ := askText("xx", "c1", "ip"); !strings.Contains(text, "stranger") {
+	if _, text, _, _, _ := askText("xx", "c1", "ip", true); !strings.Contains(text, "stranger") {
 		t.Errorf("запасной язык: %q", text)
 	}
 }
