@@ -19,7 +19,7 @@ type otpHost struct {
 	last   int64
 }
 
-func (o *otpHost) check(code string) (set, ok bool) {
+func (o *otpHost) check(_, code string) (set, ok bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.secret == "" {
@@ -37,6 +37,16 @@ func lock(a *Agent) (int, time.Duration) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.fails, time.Until(a.lockUntil)
+}
+
+// nlock — счётчик неудач и блокировка имени записи (REQ-S-22).
+func nlock(a *Agent, user string) (int, time.Duration) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if n := a.names[user]; n != nil {
+		return n.fails, time.Until(n.until)
+	}
+	return 0, -1
 }
 
 func (o *otpHost) code() string { c, _ := totp.Code(o.secret, time.Now()); return c }
@@ -72,15 +82,15 @@ func TestOTP(t *testing.T) {
 	}
 	asks.Store(0)
 	e2e(t, local(t), "123456789", false, ff, "secret123")
-	if f, l := lock(ag); asks.Load() != 5 || f != 5 || l < 50*time.Second {
+	if f, l := nlock(ag, ""); asks.Load() != 5 || f != 5 || l < 50*time.Second {
 		t.Fatalf("повтор кода: запросов %d, неудач %d, блокировка %v", asks.Load(), f, l)
 	}
 
-	e2eAgent = func(a *Agent) { ag = a; a.OTP = o.check; a.fails = 4 }
+	e2eAgent = func(a *Agent) { ag = a; a.OTP = o.check; a.names = map[string]*nameLock{"": {fails: 4}} }
 	e2eOTP = func(int) string { c := []byte(o.code()); c[0] = '0' + (c[0]-'0'+1)%10; return string(c) }
 	asks.Store(0)
 	e2e(t, local(t), "123456789", false, ff, "secret123") // верный пароль не сбросил 4 неудачи: первый неверный код — блокировка
-	if f, l := lock(ag); asks.Load() != 1 || f != 5 || l < 50*time.Second {
+	if f, l := nlock(ag, ""); asks.Load() != 1 || f != 5 || l < 50*time.Second {
 		t.Fatalf("неверный код: запросов %d, неудач %d, блокировка %v", asks.Load(), f, l)
 	}
 
@@ -208,7 +218,7 @@ func TestOTPTrustedLock(t *testing.T) {
 		ag = a
 		a.OTP = o.check
 		a.fails, a.lockUntil = 9, time.Now().Add(time.Hour)
-		a.Trusted = func(p []byte) bool { return bytes.Equal(p, pub) }
+		a.Trusted = func(p []byte, _ string) bool { return bytes.Equal(p, pub) }
 	}
 	e2eSeen = func(m authMsg) {
 		if m.T == "otp" {
