@@ -2,14 +2,19 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +23,7 @@ import (
 	"anypc/ui"
 
 	"golang.org/x/crypto/acme/autocert"
+	"golang.org/x/net/netutil"
 )
 
 // newMux: хосты siteHosts → лендинг и /download/ (каталог dlDir); любой другой → веб-клиент и /ws.
@@ -92,35 +98,131 @@ func main() {
 	turn := flag.String("turn", "", "хосты STUN/TURN через запятую")
 	hubs := flag.String("hubs", "", "все хабы сигнализации через запятую (wss://…/ws), для веб-клиента; пусто — только этот")
 	certs := flag.String("certs", "certs", "каталог кэша сертификатов")
-	maxConns := flag.Int("maxconns", hub.MaxConnsDefault, "потолок соединений сигнализации (≈55 КБ на WS по TLS); сверх — 503; 0 — по умолчанию, < 0 — ошибка")
+	maxConns := flag.Int("maxconns", 0, "потолок соединений сигнализации; сверх — 503; 0 — из памяти узла (memory.max cgroup или 60 % ОЗУ, по 200 КБ на соединение, не больше 5000), < 0 — ошибка")
 	flag.Parse()
-	if *maxConns < 0 { // иначе хаб отвечал бы 503 на всё: cmp.Or подменяет на MaxConnsDefault только 0
-		log.Fatalf("-maxconns %d: нужен 0 (по умолчанию, %d) или больше", *maxConns, hub.MaxConnsDefault)
+	if *maxConns < 0 { // иначе хаб отвечал бы 503 на всё
+		log.Fatalf("-maxconns %d: нужен 0 (из памяти узла) или больше", *maxConns)
 	}
+	budget, from := memBudget(os.ReadFile)
+	conns := cmp.Or(*maxConns, hub.ConnsFor(budget)) // явный -maxconns важнее
+	if os.Getenv("GOMEMLIMIT") == "" && budget > 0 { // предел сборщика — запас до OOM; GOMEMLIMIT рантайм уже применил — он важнее
+		debug.SetMemoryLimit(budget * 8 / 10)
+	}
+	log.Print(memLine(budget, from, debug.SetMemoryLimit(-1), conns))
 
-	h := &hub.Hub{TurnHosts: list(*turn), TurnSecret: os.Getenv("ANYPC_TURN_SECRET"), Keys: filepath.Join(filepath.Dir(*certs), "hosts.json"), MaxConns: *maxConns}
+	h := &hub.Hub{TurnHosts: list(*turn), TurnSecret: os.Getenv("ANYPC_TURN_SECRET"), Keys: filepath.Join(filepath.Dir(*certs), "hosts.json"), MaxConns: conns}
 	mux := newMux(h, list(*siteHost), *dl, h.TurnHosts, list(*hubs))
 	if *domain == "" {
 		log.Println("HTTP", *addr)
-		log.Fatal(serve(*addr, mux).ListenAndServe())
+		log.Fatal(serve(*addr, mux).Serve(listen(*addr, tcpLimit(conns))))
 	}
 	hosts := list(*domain)
 	hosts = append(hosts, list(*siteHost)...)
 	m := &autocert.Manager{Prompt: autocert.AcceptTOS, HostPolicy: autocert.HostWhitelist(hosts...), Cache: autocert.DirCache(*certs)}
-	go func() { log.Fatal(serve(":80", m.HTTPHandler(nil)).ListenAndServe()) }()
+	go func() { log.Fatal(serve(":80", m.HTTPHandler(nil)).Serve(listen(":80", HTTPConns))) }()
 	srv := serve(":443", mux)
 	srv.TLSConfig = m.TLSConfig()
 	log.Println("AnyPC server", version, "HTTPS", hosts)
-	log.Fatal(srv.ListenAndServeTLS("", ""))
+	log.Fatal(srv.ServeTLS(listen(":443", tcpLimit(conns)), "", ""))
+}
+
+// HTTPConns — TCP-соединений сверх потолка WS (Д1″ приёмки-6, D5 приёмки-1): страница, сайт, загрузки, /turns, /hubs
+// и простаивающие keep-alive. Их не видят ни MaxConns, ни лимиты «на адрес» (≈20 КБ каждое: 3500 штук сверх 5000 WS
+// убивали хаб за 5 с), поэтому всё TCP на порту — под общим лимитом; сверх него новое соединение ждёт в очереди
+// ядра, пока не освободится место. На :80 (вызов ACME и редирект) — только он.
+const HTTPConns = 256
+
+// tcpLimit — всех TCP-соединений на порту сигнализации: WS плюс 10 % (не меньше HTTPConns) на HTTP.
+func tcpLimit(conns int) int { return conns + max(conns/10, HTTPConns) }
+
+// RcvBuf — приёмный буфер ядра у каждого принятого соединения (Д1″ (в) приёмки-6). По умолчанию ядро растит его до
+// мегабайт на сокет, а когда хаб под атакой не успевает читать (медленное ядро, поток хостов к клиентам), буферы
+// сокетов — вне предела Go — съедали 170–215 МиБ из 574. 32 КБ (ядро удваивает): сигнализации и загрузкам на узел
+// хватает (входящий поток — только сообщения ≤ 64 КБ и запросы), отправитель просто ждёт окна.
+const RcvBuf = 32 << 10
+
+type rcvListener struct{ net.Listener }
+
+func (l rcvListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if tc, ok := c.(*net.TCPConn); ok {
+		tc.SetReadBuffer(RcvBuf)
+	}
+	return c, err
+}
+
+// listen — TCP на addr не больше n соединений одновременно (netutil.LimitListener: n+1-е ждёт в Accept), RcvBuf у каждого.
+func listen(addr string, n int) net.Listener {
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return netutil.LimitListener(rcvListener{l}, n)
+}
+
+// memBudget — память узла для хаба: memory.max своей cgroup и её предков (наименьший; MemoryMax unit-файла —
+// у прода 60 % ОЗУ), иначе 60 % MemTotal; 0 — не узнать (тогда потолок — MinConns). from — откуда взято.
+func memBudget(read func(string) ([]byte, error)) (budget int64, from string) {
+	if b, err := read("/proc/self/cgroup"); err == nil {
+		for _, l := range strings.Split(string(b), "\n") {
+			p, ok := strings.CutPrefix(l, "0::")
+			if !ok {
+				continue
+			}
+			for dir := path.Clean(p); ; dir = path.Dir(dir) {
+				f := path.Join("/sys/fs/cgroup", dir, "memory.max")
+				if v, err := read(f); err == nil {
+					if n, err := strconv.ParseInt(strings.TrimSpace(string(v)), 10, 64); err == nil && n > 0 && (budget == 0 || n < budget) {
+						budget, from = n, f
+					}
+				}
+				if dir == "/" {
+					break
+				}
+			}
+		}
+	}
+	if budget > 0 {
+		return budget, from
+	}
+	if b, err := read("/proc/meminfo"); err == nil {
+		for _, l := range strings.Split(string(b), "\n") {
+			if f := strings.Fields(l); len(f) >= 2 && f[0] == "MemTotal:" {
+				if kb, err := strconv.ParseInt(f[1], 10, 64); err == nil {
+					return kb << 10 * 6 / 10, "60 % MemTotal"
+				}
+			}
+		}
+	}
+	return 0, "не определена"
+}
+
+// memLine — строка журнала при старте: откуда потолки.
+func memLine(budget int64, from string, goLimit int64, conns int) string {
+	return fmt.Sprintf("память: бюджет %s (%s), предел Go %s; соединений сигнализации %d, TCP %d", mib(budget), from, mib(goLimit), conns, tcpLimit(conns))
+}
+
+// mib — байты для журнала; без предела (math.MaxInt64 от SetMemoryLimit) и 0 — словами.
+func mib(n int64) string {
+	switch {
+	case n <= 0:
+		return "неизвестен"
+	case n >= 1<<62:
+		return "нет"
+	}
+	return strconv.FormatInt(n>>20, 10) + " МиБ"
 }
 
 // serve — сервер с таймаутами: без них простаивающие и медленные (slowloris) соединения копятся до OOM на VPS 1 ГБ.
 // ReadHeaderTimeout и IdleTimeout WebSocket после Upgrade не трогают — его живость проверяет hub.Keepalive.
 // ReadTimeout/WriteTimeout не ставить: дедлайн остаётся на захваченном соединении и рвёт WS через N секунд.
+// IdleTimeout (ожидание следующего запроса keep-alive) захваченный WS не трогает: Hijack снимает сроки соединения
+// (net/http, hijackLocked; TestIdleTimeoutKeepsWS). 30 с вместо 2 мин: простаивающее соединение занимает место
+// под общим лимитом TCP (listen), а браузеру хватает и этого.
 // MaxHeaderBytes 16 КБ (по умолчанию 1 МБ): наши запросы — сотни байт, а мегабайт заголовков на каждое
 // из тысяч соединений — память VPS.
 func serve(addr string, h http.Handler) *http.Server {
-	return &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 16 << 10}
+	return &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
 }
 
 // list — "a, b,,c,a" → [a b c]: пустые и повторы отбрасываются (повторный запуск sed по флагам дал дубль, 2026-11-06).

@@ -11,10 +11,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
+	"anypc/hub"
 	"anypc/site"
+
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 )
 
 func get(t *testing.T, h http.Handler, host, path string) (int, string) {
@@ -175,5 +180,128 @@ func TestMaxConnsFlag(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(string(out), "-maxconns") {
 		t.Fatalf("-maxconns -1: ждали ошибку при старте, получили %v: %s", err, out)
+	}
+}
+
+// TestMemBudget — потолки из памяти узла (Д1″ приёмки-6): memory.max cgroup (наименьший по пути вверх) важнее ОЗУ,
+// иначе 60 % MemTotal; потолок соединений — бюджет / ConnMem в [MinConns, MaxConnsDefault].
+func TestMemBudget(t *testing.T) {
+	fs := func(m map[string]string) func(string) ([]byte, error) {
+		return func(p string) ([]byte, error) {
+			if v, ok := m[p]; ok {
+				return []byte(v), nil
+			}
+			return nil, os.ErrNotExist
+		}
+	}
+	meminfo := "MemTotal:        1000000 kB\nMemFree:          500000 kB\n"
+	for _, c := range []struct {
+		name  string
+		files map[string]string
+		want  int64
+		conns int
+	}{
+		{"unit с MemoryMax (прод: 60 % от 1 ГБ)", map[string]string{
+			"/proc/self/cgroup": "0::/system.slice/anypc.service\n",
+			"/sys/fs/cgroup/system.slice/anypc.service/memory.max": "601636864\n",
+			"/sys/fs/cgroup/system.slice/memory.max":               "max\n",
+			"/proc/meminfo":                                        meminfo}, 601636864, 2937},
+		{"предел у предка меньше своего", map[string]string{
+			"/proc/self/cgroup": "0::/a/b\n", "/sys/fs/cgroup/a/b/memory.max": "209715200", "/sys/fs/cgroup/a/memory.max": "104857600",
+			"/proc/meminfo": meminfo}, 100 << 20, 512},
+		{"контейнер с cgroupns", map[string]string{"/proc/self/cgroup": "0::/\n", "/sys/fs/cgroup/memory.max": "31457280"}, 30 << 20, hub.MinConns},
+		{"без предела cgroup — 60 % ОЗУ", map[string]string{"/proc/self/cgroup": "0::/user.slice\n", "/sys/fs/cgroup/user.slice/memory.max": "max",
+			"/proc/meminfo": meminfo}, 1000000 << 10 * 6 / 10, 3000},
+		{"большой узел", map[string]string{"/proc/meminfo": "MemTotal: 16000000 kB\n"}, 16000000 << 10 * 6 / 10, hub.MaxConnsDefault},
+		{"ничего не прочитать", map[string]string{}, 0, hub.MinConns},
+	} {
+		got, from := memBudget(fs(c.files))
+		if got != c.want || hub.ConnsFor(got) != c.conns {
+			t.Errorf("%s: бюджет %d (%s), соединений %d; ждали %d и %d", c.name, got, from, hub.ConnsFor(got), c.want, c.conns)
+		}
+	}
+	if line := memLine(601636864, "x/memory.max", 1<<63-1, 2937); !strings.Contains(line, "бюджет 573 МиБ (x/memory.max)") ||
+		!strings.Contains(line, "предел Go нет") || !strings.Contains(line, "сигнализации 2937, TCP 3230") {
+		t.Errorf("журнал: %s", line)
+	}
+}
+
+// TestListenLimit — общий лимит TCP (Д1″ приёмки-6): простаивающее keep-alive занимает место, следующее соединение
+// ждёт, пока оно не освободится.
+func TestListenLimit(t *testing.T) {
+	l := listen("127.0.0.1:0", 1)
+	srv := serve("", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok") }))
+	go srv.Serve(l)
+	defer srv.Close()
+	url := "http://" + l.Addr().String() + "/"
+	idle := &http.Client{Transport: &http.Transport{}} // держит keep-alive
+	if r, err := idle.Get(url); err != nil {
+		t.Fatal(err)
+	} else {
+		io.ReadAll(r.Body)
+		r.Body.Close()
+	}
+	other := &http.Client{Transport: &http.Transport{}, Timeout: 500 * time.Millisecond}
+	if _, err := other.Get(url); err == nil {
+		t.Fatal("второе соединение принято сверх лимита 1")
+	}
+	idle.CloseIdleConnections()
+	other.Timeout = 5 * time.Second
+	if r, err := other.Get(url); err != nil {
+		t.Fatalf("после освобождения места: %v", err)
+	} else {
+		r.Body.Close()
+	}
+}
+
+// TestIdleTimeoutKeepsWS — IdleTimeout сервера (30 с) не рвёт захваченный WS: срок ожидания keep-alive заменяется
+// при начале запроса и снимается после заголовков.
+func TestIdleTimeoutKeepsWS(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	l := listen("127.0.0.1:0", 10)
+	srv := serve("", &hub.Hub{})
+	srv.IdleTimeout = 200 * time.Millisecond
+	go srv.Serve(l)
+	defer srv.Close()
+	c, _, err := websocket.Dial(ctx, "ws://"+l.Addr().String()+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	var m hub.Msg
+	if err := wsjson.Read(ctx, c, &m); err != nil || m.Type != "hello" {
+		t.Fatalf("hello: %v %+v", err, m)
+	}
+	time.Sleep(time.Second) // 5 × IdleTimeout
+	wsjson.Write(ctx, c, hub.Msg{Type: "ice", To: "123456789"})
+	if err := wsjson.Read(ctx, c, &m); err != nil || string(m.Data) != `"not_found"` {
+		t.Fatalf("WS после IdleTimeout: %v %+v", err, m)
+	}
+}
+
+// TestRcvBuf — приёмный буфер ядра у принятых соединений (Д1″ (в) приёмки-6); Linux удваивает заданное.
+func TestRcvBuf(t *testing.T) {
+	raw, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	go func() {
+		if c, err := net.Dial("tcp", raw.Addr().String()); err == nil {
+			defer c.Close()
+			time.Sleep(time.Second)
+		}
+	}()
+	c, err := rcvListener{raw}.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	rc, _ := c.(*net.TCPConn).SyscallConn()
+	n := 0
+	rc.Control(func(fd uintptr) { n, _ = syscall.GetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF) })
+	if n != 2*RcvBuf {
+		t.Fatalf("SO_RCVBUF %d, ждали %d", n, 2*RcvBuf)
 	}
 }
