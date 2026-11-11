@@ -3,16 +3,21 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"strings"
+
+	"anypc/totp"
 )
 
 // Ключи настройки без окна — для ПК, где некому открыть интерфейс (сервер, удалённая установка по ssh).
 // Каждый меняет настройки и выходит; уже запущенный AnyPC подхватит их после перезапуска.
 var (
-	cliConfirm   = flag.String("confirm", "", "окно «Разрешить» перед каждым входом по паролю: on или off; и выйти")
+	cliConfirm   = flag.String("confirm", "", "окно «Разрешить» перед каждым входом по паролю: on или off; и выйти.\noff — только со вторым фактором: QR и ключ TOTP в терминале, код из приложения — со stdin; on — TOTP отключается")
 	cliNode      = flag.String("node", "", "свой узел-хаб (например node.example.com), «-» — вернуть хабы AnyPC; и выйти")
 	cliPublic    = flag.Bool("node-public", false, "вместе с --node: хабы AnyPC остаются запасными")
 	cliStatus    = flag.Bool("status", false, "напечатать настройки и состояние автозапуска и выйти")
@@ -27,10 +32,14 @@ func runCLI(cfg *config) (done bool, err error) {
 		if *cliConfirm != "on" && *cliConfirm != "off" {
 			return true, errors.New("--confirm: on или off")
 		}
-		if err := cfg.setConfirm(*cliConfirm == "on"); err != nil {
+		if *cliConfirm == "off" {
+			if err := otpSetup(cfg, os.Stdin); err != nil {
+				return true, err
+			}
+		} else if err := cfg.setConfirm(true); err != nil {
 			return true, err
 		}
-		fmt.Println("окно «Разрешить»:", *cliConfirm, restartHint)
+		fmt.Println("окно «Разрешить»:", *cliConfirm, map[bool]string{true: "(второй фактор TOTP отключён)", false: "(второй фактор TOTP включён)"}[*cliConfirm == "on"], restartHint)
 	case *cliNode != "":
 		n := *cliNode
 		if n == "-" {
@@ -46,8 +55,8 @@ func runCLI(cfg *config) (done bool, err error) {
 		if node == "" {
 			node = "— (хабы AnyPC)"
 		}
-		fmt.Printf("AnyPC %s\nID: %s\nКлюч хоста: %s\nПароль задан: %s\nОкно «Разрешить»: %s\nУзел: %s (хабы AnyPC запасными: %s)\nАвтозапуск: %s\n",
-			version, cfg.ID, cfg.fingerprint(), yesNo(cfg.hasPass()), onOff(cfg.confirm()), node, yesNo(public), serviceState())
+		fmt.Printf("AnyPC %s\nID: %s\nКлюч хоста: %s\nПароль задан: %s\nОкно «Разрешить»: %s\nВторой фактор (TOTP): %s\nУзел: %s (хабы AnyPC запасными: %s)\nАвтозапуск: %s\n",
+			version, cfg.ID, cfg.fingerprint(), yesNo(cfg.hasPass()), onOff(cfg.confirm() || !cfg.otpSet()), yesNo(cfg.otpSet()), node, yesNo(public), serviceState())
 	case *cliInstall:
 		exe, err := os.Executable()
 		if err != nil {
@@ -66,6 +75,27 @@ func runCLI(cfg *config) (done bool, err error) {
 		return false, nil
 	}
 	return true, nil
+}
+
+// otpSetup — настройка TOTP в терминале: otpauth-URI и QR полублоками, код со stdin (первая строка).
+// Без верного кода вход без подтверждения не включается.
+func otpSetup(cfg *config, in io.Reader) error {
+	sec := totp.NewSecret()
+	u := totp.URI(cfg.ID, sec)
+	q, err := totp.Terminal(u)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Вход без подтверждения — только со вторым фактором (TOTP). Отсканируйте QR приложением-аутентификатором\n"+
+		"(Google Authenticator, Aegis…) или введите ключ вручную.\n\n%s\n%s\nКлюч: %s\n\nКод из приложения (6 цифр): ", q, u, sec)
+	line, _ := bufio.NewReader(in).ReadString('\n')
+	if err := cfg.otpEnable(sec, strings.TrimSpace(line)); err != nil {
+		if errors.Is(err, errBadCode) {
+			return errors.New("код неверный — вход без подтверждения не включён (проверьте время на телефоне и повторите)")
+		}
+		return err
+	}
+	return nil
 }
 
 const restartHint = "(если AnyPC запущен — перезапустите его)"

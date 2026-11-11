@@ -349,12 +349,22 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 			dc.OnOpen(func() { dcOpen <- dc })
 		case "auth": // как клиент в ui/index.html + app: CPace с отпечатками из своих SDP
 			var wantConf []byte
+			otpN := 0
+			dc.OnClose(func() { // хост закрыл сессию (не дождался кода TOTP) — вход не состоялся
+				select {
+				case authed <- false:
+				default:
+				}
+			})
 			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 				if !msg.IsString { // браузер ждёт JSON строкой (регрессия: ArrayBuffer ломал вход в веб-клиенте)
 					t.Error("сообщение auth не текстовое")
 				}
 				var am authMsg
 				json.Unmarshal(msg.Data, &am)
+				if e2eSeen != nil {
+					e2eSeen(am)
+				}
 				switch am.T {
 				case "a":
 					b, conf, hc, err := pake.ClientRespond(pass, am.Salt, am.Msg, id,
@@ -382,6 +392,17 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 					}
 					gotOK.Store(true)
 					authed <- bytes.Equal(am.Conf, wantConf) && sigOK
+				case "otp": // второй фактор: хост уже доказал пароль (conf) и ключ (подпись), как в "ok"
+					if !bytes.Equal(am.Conf, wantConf) || pake.HostVerify(am.Pub, am.Sig, id, pake.Fingerprint(pc.LocalDescription().SDP), pake.Fingerprint(pc.RemoteDescription().SDP)) != nil {
+						t.Error("запрос кода TOTP без доказательства хоста")
+					}
+					otpN++
+					if e2eOTP != nil {
+						if code := e2eOTP(otpN); code != "" {
+							out, _ := json.Marshal(authMsg{T: "otp", Code: code})
+							dc.Send(out)
+						}
+					}
 				case "ask":
 					asked.Store(true)
 				case "fail", "denied", "locked":
@@ -434,7 +455,7 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 	case <-ctx.Done():
 		t.Fatal("вход не завершился за 20 с")
 	}
-	if pass != "secret123" || e2eDeny || e2eKey == "bad" { // ошибочный путь: отказ и никакого видео
+	if pass != "secret123" || e2eDeny || e2eKey == "bad" || e2eFail { // ошибочный путь: отказ и никакого видео
 		if ok {
 			t.Fatal("неверный пароль принят или отказ на хосте не сработал")
 		}
@@ -587,9 +608,12 @@ var (
 	e2eTrack   func(*testing.T, *webrtc.PeerConnection, *webrtc.TrackRemote) // после 300 RTP видео у клиента
 	e2eDeny    bool                                                          // ожидать отказ человека на хосте (REQ-F-03)
 	e2eCtl     func(*testing.T, *webrtc.DataChannel, chan ctlMsg)
-	e2eSquat   int    // столько клиентов до настоящего шлют connect и молчат (У3, У9)
-	e2eKey     string // seed ключа клиента (base64): заявить в connect и подписать в «b» (У3); "bad" — заявить, подпись испортить
-	e2eNoVideo bool   // видео не ждать (захват отклонён на хосте) — сразу к e2eCtl
+	e2eSquat   int                // столько клиентов до настоящего шлют connect и молчат (У3, У9)
+	e2eKey     string             // seed ключа клиента (base64): заявить в connect и подписать в «b» (У3); "bad" — заявить, подпись испортить
+	e2eNoVideo bool               // видео не ждать (захват отклонён на хосте) — сразу к e2eCtl
+	e2eOTP     func(n int) string // код TOTP на n-й запрос хоста; "" — не отвечать
+	e2eSeen    func(authMsg)      // каждое сообщение auth от хоста
+	e2eFail    bool               // ожидать отказ во входе (TOTP)
 )
 
 // squat — клиент, который получил offer и не отвечает: раньше одного такого хватало, чтобы хост 20 с был «занят».

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
@@ -16,6 +17,7 @@ import (
 
 	"anypc/agent"
 	"anypc/pake"
+	"anypc/totp"
 )
 
 func TestLocalAPI(t *testing.T) {
@@ -145,8 +147,30 @@ func TestCLI(t *testing.T) {
 	if out, err := cli("--confirm", "maybe"); err == nil {
 		t.Errorf("--confirm maybe принят: %q", out)
 	}
-	if out, err := cli("--confirm", "off"); err != nil {
-		t.Errorf("--confirm off: %v %q", err, out)
+	if out, err := cli("--confirm", "off"); err == nil || !strings.Contains(out, "otpauth://totp/AnyPC:") || !strings.Contains(out, "▀") {
+		t.Errorf("--confirm off без кода TOTP принят или нет QR: %v %q", err, out)
+	}
+	if c, _ := loadConfig(filepath.Join(home, ".config", "AnyPC", "config.json")); !c.confirm() || c.otpSet() {
+		t.Error("без верного кода вход без подтверждения включился")
+	}
+	{ // TOTP в терминале: ключ из вывода → код в stdin
+		c := exec.Command(bin, "--confirm", "off")
+		c.Env = append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+home+"/.config", "XDG_CACHE_HOME="+home+"/.cache")
+		in, _ := c.StdinPipe()
+		outp, _ := c.StdoutPipe()
+		c.Start()
+		sc := bufio.NewScanner(outp)
+		var out strings.Builder
+		for sc.Scan() {
+			out.WriteString(sc.Text() + "\n")
+			if k, ok := strings.CutPrefix(sc.Text(), "Ключ: "); ok {
+				code, _ := totp.Code(k, time.Now())
+				io.WriteString(in, code+"\n")
+			}
+		}
+		if err := c.Wait(); err != nil || !strings.Contains(out.String(), "второй фактор TOTP включён") {
+			t.Errorf("--confirm off с кодом: %v %q", err, out.String())
+		}
 	}
 	if out, err := cli("--node", "bad node!"); err == nil {
 		t.Errorf("неверный узел принят: %q", out)
@@ -158,7 +182,7 @@ func TestCLI(t *testing.T) {
 	if cfg.confirm() || cfg.Server != DefaultServer {
 		t.Errorf("настройки после ключей: confirm=%v server=%q", cfg.confirm(), cfg.Server)
 	}
-	if out, _ := cli("--status"); !strings.Contains(out, cfg.ID) || !strings.Contains(out, "Пароль задан: да") || !strings.Contains(out, "«Разрешить»: off") {
+	if out, _ := cli("--status"); !strings.Contains(out, cfg.ID) || !strings.Contains(out, "Пароль задан: да") || !strings.Contains(out, "«Разрешить»: off") || !strings.Contains(out, "Второй фактор (TOTP): да") {
 		t.Errorf("--status: %q", out)
 	}
 	if u := serviceUnit("/opt/my apps/AnyPC"); !strings.Contains(u, `ExecStart="/opt/my apps/AnyPC" --no-browser`) || !strings.Contains(u, "WantedBy=graphical-session.target") {

@@ -57,6 +57,12 @@ type Agent struct {
 	Trust   func(pub []byte)                                    // закрепить ключ клиента после входа по паролю
 	Audio   bool                                                // окно хоста умеет звук (PLAN.md): клиент увидит кнопку микрофона
 	Locked  func() bool                                         // экран заблокирован — захват не запускать (macOS, F7); nil — не проверять
+	// Второй фактор входа без подтверждения (PLAN.md «TOTP»). Unattended — окно «Разрешить» выключено в настройках
+	// (Confirm == nil — тоже без подтверждения). OTP: set — секрет TOTP задан, тогда после пароля нужен код; ok — код
+	// верный (постоянное время и защита от повтора — у владельца секрета). Без секрета вход без подтверждения не
+	// работает: спрашивается Confirm («Разрешить»), а без Confirm — отказ. OTP == nil — TOTP нет вовсе (как раньше).
+	Unattended func() bool
+	OTP        func(code string) (set, ok bool)
 
 	mu        sync.Mutex
 	ice       []webrtc.ICEServer
@@ -81,7 +87,7 @@ type session struct {
 	audio   audioState
 	view    atomic.Bool // REQ-F-20 «только просмотр»: от клиента — ни ввода, ни буфера, ни файлов; буфер хоста ему не уходит
 	picking atomic.Bool // открыто окно выбора файла
-	asking  atomic.Bool // на хосте открыто окно «Разрешить / Отклонить»
+	asking  atomic.Bool // на хосте открыто окно «Разрешить / Отклонить» или ждём код TOTP
 	gone    atomic.Bool // сессия освобождена (release) — в pend не возвращать
 	ctl     *webrtc.DataChannel
 	peer    string // адрес клиента по выбранной паре ICE — для окна подтверждения
@@ -135,6 +141,9 @@ func (s *session) selectMonitor(i int) bool {
 
 // authMsg — канал "auth" (REQ-S-02): хост → {"t":"a",salt,msg}; клиент → {"t":"b",msg,conf};
 // хост → {"t":"ok",conf} | {"t":"fail"}. []byte — base64 в JSON.
+// Вход без подтверждения с TOTP: после верного пароля хост → {"t":"otp",conf,pub,sig} (доказательства — как в "ok"),
+// клиент → {"t":"otp","code":"123456"};
+// верный код → "ok", неверный → снова {"t":"otp"} или "locked" (счётчик перебора — общий с паролем).
 type authMsg struct {
 	T     string `json:"t"`
 	Salt  []byte `json:"salt,omitempty"`
@@ -146,6 +155,8 @@ type authMsg struct {
 	Audio bool   `json:"audio,omitempty"` // в "ok": хост умеет звук (окно хоста ответит на предложение)
 	CPub  []byte `json:"cpub,omitempty"`  // в "b": ключ клиента и его подпись над DTLS-отпечатками (У3)
 	CSig  []byte `json:"csig,omitempty"`
+	Code  string `json:"code,omitempty"`  // в "otp" от клиента: код TOTP
+	NoOTP bool   `json:"nootp,omitempty"` // в "ask": вход без подтверждения выключен, пока на хосте не настроят TOTP
 }
 
 // ctlMsg — канал "ctl": {"t":"clip","text":"…"} — буфер обмена в обе стороны (REQ-F-11);
@@ -588,7 +599,7 @@ func (a *Agent) countAuth(cid string, ok bool) {
 	if a.fails >= 5 {
 		a.lockUntil = time.Now().Add(min(time.Minute<<min(a.fails-5, 6), time.Hour))
 	}
-	log.Printf("неверный пароль от %s (%d)", cid, a.fails)
+	log.Printf("неверный пароль или код от %s (%d)", cid, a.fails)
 }
 
 // newAPI — WebRTC со стандартными интерсепторами (NACK, RTCP-отчёты, TWCC-ответы); при kbps > 0 ещё и
@@ -824,7 +835,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 }
 
 // authChannel: CPace по каналу "auth" после установления DTLS; при успехе — плашка, видео.
-// Без входа за 20 с сессия закрывается.
+// Без входа за authWait сессия закрывается; код TOTP ждём столько же на каждый запрос.
 func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.TrackLocalStaticSample) error {
 	ch, err := s.pc.CreateDataChannel("auth", nil)
 	if err != nil {
@@ -832,6 +843,8 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 	}
 	var st *cpace.State
 	var fpClient, fpHost string
+	var otpWait func(code string)                                               // ждём код TOTP (под s.mu); nil — не ждём
+	otpN := 0                                                                   // номер запроса кода: таймер закрывает сессию, только если на этот запрос не ответили
 	send := func(m authMsg) { b, _ := json.Marshal(m); ch.SendText(string(b)) } // JSON — текстом: браузер парсит строку
 	ch.OnOpen(func() {
 		salt, secret := a.Secret()
@@ -851,11 +864,22 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 	})
 	ch.OnMessage(func(msg webrtc.DataChannelMessage) {
 		var m authMsg
+		bad := json.Unmarshal(msg.Data, &m) != nil
+		if !bad && m.T == "otp" {
+			s.mu.Lock()
+			f := otpWait
+			otpWait = nil // один ответ на запрос
+			s.mu.Unlock()
+			if f != nil {
+				f(m.Code)
+			}
+			return
+		}
 		s.mu.Lock()
 		cur, fpc, fph := st, fpClient, fpHost
 		st = nil // одна попытка на сессию
 		s.mu.Unlock()
-		if cur == nil || json.Unmarshal(msg.Data, &m) != nil || m.T != "b" {
+		if cur == nil || bad || m.T != "b" {
 			return
 		}
 		keyOK := pake.ClientVerify(m.CPub, m.CSig, a.ID, fpc, fph) // клиент владеет ключом cpub
@@ -868,6 +892,11 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		}
 		// блокировка (REQ-S-04) — только для чужих; проверка и счёт под одним a.mu: параллельные входы
 		// не проскочат блокировку все сразу (HostFinish дешёвый — KDF посчитан заранее)
+		unattended := a.Confirm == nil || a.Unattended != nil && a.Unattended()
+		otpSet := false
+		if unattended && a.OTP != nil {
+			otpSet, _ = a.OTP("")
+		}
 		a.mu.Lock()
 		if !trusted && time.Now().Before(a.lockUntil) {
 			a.mu.Unlock()
@@ -875,7 +904,9 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 			return
 		}
 		conf, err := pake.HostFinish(cur, m.Msg, m.Conf)
-		if !trusted { // ponytail: опечатки доверенного не считаются — украденный ключ даёт перебор без блокировки; счётчик для доверенных, если понадобится
+		// ponytail: опечатки доверенного не считаются — украденный ключ даёт перебор без блокировки; счётчик для доверенных, если понадобится.
+		// С TOTP верный пароль счётчик не сбрасывает: иначе вор пароля чередовал бы его с перебором кода мимо блокировки.
+		if !trusted && (err != nil || !otpSet) {
 			a.countAuth(s.cid, err == nil)
 		}
 		a.mu.Unlock()
@@ -891,13 +922,64 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 			reject("busy")
 			return
 		}
-		if a.Confirm == nil {
+		if unattended && a.OTP == nil { // TOTP нет вовсе (встраивание без него) — как раньше
 			a.accept(ctx, s, track, send, conf, fpc, fph, pin)
+			return
+		}
+		noOTP := unattended && !otpSet // без подтверждения, а TOTP не настроен (хост после обновления) — спросить человека
+		if noOTP && a.Confirm == nil {
+			reject("denied")
+			return
+		}
+		if otpSet { // PLAN.md «TOTP»: код после пароля внутри канала; до верного кода — ни видео, ни ввода, ни файлов
+			s.asking.Store(true) // общий таймер входа не закрывает — у каждого запроса кода свой
+			var ask func()
+			check := func(code string) {
+				a.mu.Lock()
+				if time.Now().Before(a.lockUntil) { // и для доверенного ключа: украденный ключ не даёт перебор кода
+					a.mu.Unlock()
+					reject("locked")
+					return
+				}
+				_, ok := a.OTP(code)
+				a.countAuth(s.cid, ok) // общий счётчик перебора с паролем (REQ-S-04)
+				locked := time.Now().Before(a.lockUntil)
+				a.mu.Unlock()
+				switch {
+				case ctx.Err() != nil: // клиент ушёл
+				case ok:
+					s.asking.Store(false)
+					a.accept(ctx, s, track, send, conf, fpc, fph, pin)
+				case locked:
+					reject("locked")
+				default:
+					log.Printf("сессия %s: неверный код TOTP", s.cid)
+					ask()
+				}
+			}
+			ask = func() {
+				s.mu.Lock()
+				otpWait = check
+				otpN++
+				n := otpN
+				s.mu.Unlock()
+				// conf и подпись — как в "ok": клиент отдаёт код только хосту, доказавшему пароль и ключ (не хабу-самозванцу)
+				send(authMsg{T: "otp", Conf: conf, Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph)})
+				time.AfterFunc(authWait, func() {
+					s.mu.Lock()
+					waiting := otpN == n && otpWait != nil
+					s.mu.Unlock()
+					if waiting && !s.authed.Load() {
+						s.pc.Close()
+					}
+				})
+			}
+			ask()
 			return
 		}
 		// REQ-F-03: пароль верный — теперь спросить человека на хосте (до 30 с; ответ не держит канал)
 		s.asking.Store(true)
-		send(authMsg{T: "ask"})
+		send(authMsg{T: "ask", NoOTP: noOTP})
 		go func() {
 			s.mu.Lock()
 			peer := s.peer
@@ -917,13 +999,16 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 			}
 		}()
 	})
-	time.AfterFunc(20*time.Second, func() {
+	time.AfterFunc(authWait, func() {
 		if !s.authed.Load() && !s.asking.Load() {
 			s.pc.Close()
 		}
 	})
 	return nil
 }
+
+// authWait — сколько ждать входа после открытия канала auth и каждого кода TOTP.
+var authWait = 20 * time.Second
 
 // accept — вход разрешён: подпись хоста, плашка сессии, видео.
 func (a *Agent) accept(ctx context.Context, s *session, track *webrtc.TrackLocalStaticSample, send func(authMsg), conf []byte, fpc, fph string, pin []byte) {
