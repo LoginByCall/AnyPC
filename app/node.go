@@ -114,7 +114,9 @@ func pollConfig(cfg *config, a *agent.Agent, last *string) {
 	dropRevoked(a)
 	if c := cfg.code(); c != *last {
 		*last = c
-		dropPending(a)
+		if !cfg.ownCode(c) { // код сменил другой процесс: входы со старым кодом закрыть; свои смены закрыли их сами
+			dropPending(a)
+		}
 	}
 }
 

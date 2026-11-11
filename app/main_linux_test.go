@@ -97,11 +97,22 @@ func TestLocalAPI(t *testing.T) {
 	if code := call("newCode", `[]`); code != 200 || pend != 1 {
 		t.Errorf("↻: %d, DropPending %d", code, pend)
 	}
-	pollConfig(cfg, &agent.Agent{}, &last)
-	if pend != 2 || last != cfg.code() {
-		t.Errorf("опрос после смены кода: DropPending %d", pend)
+	pollConfig(cfg, &agent.Agent{}, &last) // свой ↻: входы уже закрыты, начатые новым кодом опрос не трогает
+	if pend != 1 || last != cfg.code() {
+		t.Errorf("опрос после своего ↻: DropPending %d", pend)
 	}
-	if code := call("setConfirm", `[true]`); code != 200 || drops != 6 { // смена режима рвёт сессию по паролю (Д4)
+	other, _ := loadConfig(cfg.path) // --confirm on в другом процессе: новый код в файле
+	other.newCode()
+	pollConfig(cfg, &agent.Agent{}, &last)
+	if pend != 2 || last != other.code() {
+		t.Errorf("опрос после чужой смены кода: DropPending %d", pend)
+	}
+	sec := totp.NewSecret() // включение TOTP из окна (режим пароля) — тоже через dropAfter (Д4)
+	otp, _ := totp.Code(sec, time.Now())
+	if code := call("otpEnable", `["`+sec+`","`+otp+`",""]`); code != 200 || drops != 7 {
+		t.Errorf("otpEnable: %d, DropRevoked %d", code, drops)
+	}
+	if code := call("setConfirm", `[true]`); code != 200 || drops != 8 { // смена режима рвёт сессию по паролю (Д4)
 		t.Errorf("setConfirm: %d, DropRevoked %d", code, drops)
 	}
 }

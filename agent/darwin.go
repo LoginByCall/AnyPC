@@ -331,7 +331,7 @@ func AskAccept(cid, peer string) Answer {
 	if fakeDesktop {
 		return Allow
 	}
-	title, text, yes, no, view := askText(sysLang(), cid, peer)
+	title, text, yes, no, view := askText(sysLang(), cid, peer, true)
 	// display dialog кнопку на время не выключает: согласие раньше AskDelay — окно снова (askLoop)
 	return askLoop(func(left time.Duration) Answer {
 		out, err := osa(`set r to display dialog (item 2 of argv) with title (item 1 of argv) buttons {item 4 of argv, item 6 of argv, item 3 of argv} default button 1 cancel button 1 giving up after ((item 5 of argv) as integer) with icon caution
