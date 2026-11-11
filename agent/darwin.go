@@ -82,6 +82,7 @@ static int anyLocked(void) {
 import "C"
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"hash/crc32"
@@ -253,40 +254,66 @@ func osa(script string, args ...string) *exec.Cmd {
 	return exec.Command("osascript", append([]string{"-e", "on run argv", "-e", script, "-e", "end run"}, args...)...)
 }
 
-// plaqueJS — плашка REQ-F-15: окно macOS поверх остальных, со значком в Dock; только «закрыть» (= разорвать):
-// «свернуть» оператор нажал бы сам и спрятал плашку.
-// Закрыли окно или нажали «OK» → osascript выходит → сессия рвётся. JXA: окно Cocoa без своего приложения.
+// plaqueJS — плашка REQ-F-15: полоса поверх остальных окон (на всех рабочих столах и над полноэкранными), без рамки —
+// ни «свернуть», ни «закрыть», перетаскивается за фон; фокус и значок в Dock не берёт. argv: подпись, кнопка, «x y» прежнего
+// места (пусто — правый нижний угол). Перемещение печатается в stdout. «Разорвать» → osascript выходит → сессия рвётся.
 const plaqueJS = `ObjC.import('Cocoa'); ObjC.import('stdlib');
 function run(argv) {
   const app = $.NSApplication.sharedApplication;
-  app.setActivationPolicy(0);
+  app.setActivationPolicy(1); // без значка в Доке; фокус не забирать
+  const out = $.NSFileHandle.fileHandleWithStandardOutput;
   ObjC.registerSubclass({ name: 'AnyPCPlaque', protocols: ['NSWindowDelegate'], methods: {
-    'windowWillClose:': { types: ['void', ['id']], implementation: function () { $.exit(0); } },
+    'windowDidMove:': { types: ['void', ['id']], implementation: function (n) {
+      const o = n.object.frame.origin;
+      out.writeData($(Math.round(o.x) + ' ' + Math.round(o.y) + '\n').dataUsingEncoding($.NSUTF8StringEncoding)); } },
     'ok:': { types: ['void', ['id']], implementation: function () { $.exit(0); } } } });
   const d = $.AnyPCPlaque.alloc.init;
-  const w = $.NSWindow.alloc.initWithContentRectStyleMaskBackingDefer($.NSMakeRect(0, 0, 440, 160), 3, 2, false);
-  w.title = argv[0]; w.delegate = d; w.releasedWhenClosed = false; w.level = 3;
-  const t = $.NSTextField.wrappingLabelWithString(argv[1]); t.frame = $.NSMakeRect(20, 56, 400, 90);
-  const b = $.NSButton.buttonWithTitleTargetAction('OK', d, 'ok:'); b.frame = $.NSMakeRect(330, 14, 90, 32); b.keyEquivalent = '\r';
+  const t = $.NSTextField.labelWithString(argv[0]); t.font = $.NSFont.systemFontOfSize(12); t.sizeToFit;
+  const b = $.NSButton.buttonWithTitleTargetAction(argv[1], d, 'ok:'); b.sizeToFit;
+  const tw = t.frame.size.width, bw = b.frame.size.width, W = 10 + tw + 10 + bw + 6, H = 34;
+  const vf = $.NSScreen.mainScreen.visibleFrame;
+  let x = vf.origin.x + vf.size.width - W - 8, y = vf.origin.y + 8;
+  if (argv[2]) { // прежнее место — если оно на каком-нибудь экране
+    const [px, py] = argv[2].split(' ').map(Number), ss = $.NSScreen.screens;
+    for (let i = 0; i < ss.count; i++) if ($.NSPointInRect($.NSMakePoint(px + 5, py + 5), ss.objectAtIndex(i).frame)) { x = px; y = py; }
+  }
+  const w = $.NSWindow.alloc.initWithContentRectStyleMaskBackingDefer($.NSMakeRect(x, y, W, H), 0, 2, false);
+  w.delegate = d; w.releasedWhenClosed = false; w.level = 3; w.movableByWindowBackground = true; w.hasShadow = true;
+  w.collectionBehavior = 1 | 256; // на всех рабочих столах и поверх полноэкранных
+  t.frameOrigin = $.NSMakePoint(10, (H - t.frame.size.height) / 2);
+  b.frameOrigin = $.NSMakePoint(W - bw - 6, (H - b.frame.size.height) / 2);
   w.contentView.addSubview(t); w.contentView.addSubview(b);
-  w.center; w.makeKeyAndOrderFront(null); app.activateIgnoringOtherApps(true);
+  w.orderFrontRegardless;
   app.run;
 }`
 
-// showIndicator — плашка; закрыл её человек (или osascript упал — тогда без плашки сессии не быть) → разорвать сессию.
+// plaquePos — где человек оставил плашку («x y» в координатах Cocoa): новая плашка (включение микрофона, следующая
+// сессия) встаёт туда же, а не в угол заново (владелец, 2026-11-11: прежняя каждый раз вставала в центр экрана).
+var plaquePos atomic.Value
+
+// showIndicator — плашка: полоса с подписью и «Разорвать» (как на Windows), без фокуса, перетаскивается за фон.
+// Закрыл её человек (или osascript упал — тогда без плашки сессии не быть) → разорвать сессию.
 func showIndicator(cid string, mode plaqueMode, onUserClose func()) (func(), error) {
 	if fakeDesktop {
 		return func() {}, nil
 	}
-	title, text := plaqueText(sysLang(), cid, mode)
-	cmd := exec.Command("osascript", "-l", "JavaScript", "-e", plaqueJS, title, text)
+	label, btn := plaqueBar(sysLang(), cid, mode)
+	pos, _ := plaquePos.Load().(string)
+	cmd := exec.Command("osascript", "-l", "JavaScript", "-e", plaqueJS, label, btn, pos)
 	var errb strings.Builder
 	cmd.Stderr = &errb
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
 	var byUs atomic.Bool
 	go func() {
+		for sc := bufio.NewScanner(out); sc.Scan(); { // windowDidMove: «x y»
+			plaquePos.Store(sc.Text())
+		}
 		err := cmd.Wait()
 		if !byUs.Load() {
 			if err != nil {
