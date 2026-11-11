@@ -974,7 +974,9 @@ func TestClipBeforeAuth(t *testing.T) {
 	defer cancel()
 	sent := make(chan string, 4)
 	s := &session{}
-	go s.watchClip(ctx, func(b []byte) { sent <- string(b) })
+	done := make(chan struct{})
+	go func() { s.watchClip(ctx, func(b []byte) { sent <- string(b) }); close(done) }()
+	defer func() { cancel(); <-done }() // глобалы восстанавливаются только после выхода watchClip (гонка под -race)
 	time.Sleep(100 * time.Millisecond)
 	seq.Add(1) // буфер изменился, входа нет
 	select {
@@ -1006,7 +1008,9 @@ func TestClipOnCopy(t *testing.T) {
 	sent := make(chan string, 4)
 	s := &session{}
 	s.authed.Store(true)
-	go s.watchClip(ctx, func(b []byte) { sent <- string(b) })
+	done := make(chan struct{})
+	go func() { s.watchClip(ctx, func(b []byte) { sent <- string(b) }); close(done) }()
+	defer func() { cancel(); <-done }() // глобалы восстанавливаются только после выхода watchClip (гонка под -race)
 	time.Sleep(100 * time.Millisecond) // начальное значение прочитано
 	seq.Add(1)
 	select {
