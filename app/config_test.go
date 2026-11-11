@@ -288,3 +288,34 @@ func TestConfigTwoWriters(t *testing.T) {
 		t.Fatal("запущенная программа не видит --view-only")
 	}
 }
+
+// TestConfigBadFile — регрессия (Н5): файл испортили руками (нет ключа) при запущенной программе — reload оставляет
+// прежние настройки, отпечаток не паникует.
+func TestConfigBadFile(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	c, _ := loadConfig(p)
+	fp := c.fingerprint()
+	os.WriteFile(p, []byte(`{"id":"123456789","confirm":true,"view_only":true}`), 0o600)
+	if c.viewNow() || c.fingerprint() != fp {
+		t.Fatal("негодный файл подхвачен")
+	}
+}
+
+// TestConfigReadDuringReload — регрессия (Н4, под -race): окно (hostInfo) читает ID, хаб и отпечаток, пока опрос
+// перечитывает файл.
+func TestConfigReadDuringReload(t *testing.T) {
+	c, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 200 {
+			c.viewNow()
+		}
+	}()
+	for range 200 {
+		if c.id() == "" || c.server() == "" || c.fingerprint() == "" {
+			t.Fatal("пусто")
+		}
+	}
+	<-done
+}

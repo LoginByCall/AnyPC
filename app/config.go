@@ -94,7 +94,8 @@ func loadConfig(path string) (*config, error) {
 // запись целиком откатила бы чужую правку. Файл не читается — остаётся то, что в памяти.
 func (c *config) reload() {
 	f := defaults() // поля, которых нет в файле, — как при запуске (loadConfig), а не пустые
-	if b, err := os.ReadFile(c.path); err == nil && json.Unmarshal(b, &f) == nil && hub.IsHostID(f.ID) {
+	// файл негодный (правлен руками: нет ID или ключа) — остаются прежние настройки
+	if b, err := os.ReadFile(c.path); err == nil && json.Unmarshal(b, &f) == nil && hub.IsHostID(f.ID) && len(f.Key) == ed25519.PrivateKeySize {
 		c.settings = f
 	}
 }
@@ -209,7 +210,7 @@ func (c *config) otp(code string) (set, ok bool) {
 // otpNew — новый секрет для окна настройки TOTP: ключ, otpauth-URI и QR (SVG). Сохраняется только otpEnable.
 func (c *config) otpNew() (map[string]string, error) {
 	sec := totp.NewSecret()
-	u := totp.URI(c.ID, sec)
+	u := totp.URI(c.id(), sec)
 	svg, err := totp.SVG(u)
 	return map[string]string{"secret": sec, "uri": u, "svg": svg}, err
 }
@@ -240,7 +241,24 @@ func (c *config) hasPass() bool {
 	return len(c.Hash) > 0
 }
 
-func (c *config) key() ed25519.PrivateKey { return ed25519.PrivateKey(c.Key) }
+// key, id, server — под c.mu: reload (опрос раз в 2 с) меняет настройки на ходу.
+func (c *config) key() ed25519.PrivateKey {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return ed25519.PrivateKey(c.Key)
+}
+
+func (c *config) id() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ID
+}
+
+func (c *config) server() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Server
+}
 
 func (c *config) fingerprint() string {
 	return pake.KeyFingerprint(c.key().Public().(ed25519.PublicKey))
