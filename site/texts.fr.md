@@ -57,6 +57,12 @@
 - `f5d`: Installez votre propre nœud sur un VPS en une commande et basculez le programme dessus — les données de connexion restent chez vous.
 - `f6t`: Plusieurs nœuds à vous
 - `f6d`: AnyPC vous permet de déployer plusieurs nœuds relais à vous et de passer de l’un à l’autre — automatiquement, par la route la plus rapide selon le ping des deux côtés, ou à la main.
+- `f7t`: Protection contre les connexions d’autrui
+- `f7d`: Se connecter sans confirmation exige aussi un code à usage unique d’une application d’authentification (TOTP) : un mot de passe seul, même volé, ne suffit pas.
+- `f8t`: Voix pendant la session
+- `f8d`: Parlez avec la personne devant le PC distant directement dans la session, sans appel séparé. Les micros restent coupés tant que chacun n’allume pas le sien.
+- `f9t`: Fichiers dans les deux sens
+- `f9d`: Envoyez un fichier au PC distant ou récupérez-en un — avec les boutons de la barre de session.
 - `tab_mac`: macOS
 - `dl_mac`: Télécharger pour macOS
 - `sys_mac`: macOS 12 ou ultérieur, Intel et Apple Silicon · bêta

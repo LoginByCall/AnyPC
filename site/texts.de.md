@@ -57,6 +57,12 @@
 - `f5d`: Richten Sie mit einem Befehl einen eigenen Knoten auf einem VPS ein und stellen Sie das Programm darauf um – die Verbindungsdaten bleiben bei Ihnen.
 - `f6t`: Mehrere eigene Knoten
 - `f6d`: Mit AnyPC können Sie mehrere eigene Relay-Knoten betreiben und zwischen ihnen wechseln – automatisch über die schnellste Route anhand des Pings beider Seiten oder von Hand.
+- `f7t`: Schutz vor fremder Anmeldung
+- `f7d`: Für Verbindungen ohne Bestätigung ist zusätzlich ein Einmalcode aus einer Authenticator-App (TOTP) nötig: Ein Passwort allein, auch ein gestohlenes, reicht nicht.
+- `f8t`: Sprechen während der Sitzung
+- `f8d`: Sprechen Sie direkt in der Sitzung mit der Person am entfernten PC, ohne separaten Anruf. Die Mikrofone bleiben aus, bis jede Seite ihres einschaltet.
+- `f9t`: Dateien in beide Richtungen
+- `f9d`: Senden Sie eine Datei an den entfernten PC oder holen Sie eine von dort – mit Schaltflächen in der Sitzungsleiste.
 - `tab_mac`: macOS
 - `dl_mac`: Für macOS herunterladen
 - `sys_mac`: macOS 12 oder neuer, Intel und Apple Silicon · Beta
