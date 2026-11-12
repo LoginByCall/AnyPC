@@ -147,7 +147,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const rows = () => ev("[...document.querySelectorAll('#ulist .row')].map(r => r.textContent).join(';') + '|' + document.querySelectorAll('#ulist b b').length + '|' + document.getElementById('ustate').textContent + '|' + calls.join(',')");
   const btn = (row, k) => ev("document.querySelectorAll('#ulist .row')[" + row + "].querySelectorAll('button')[" + k + "].click(); 1");
   await call('Page.navigate', { url }); await sleep(1500);
-  console.log('list=' + await rows() + '|' + await ev("!document.getElementById('users').classList.contains('hidden')"));
+  console.log('list=' + await rows() + '|' + await ev("!document.getElementById('users').classList.contains('hidden') + '|' + !document.getElementById('uhow').classList.contains('hidden')"));
   await ev("document.getElementById('uname').value = 'petr'; document.getElementById('upw').value = 'short'; document.getElementById('uadd').click(); 1"); await sleep(300);
   console.log('short=' + await rows());
   await ev("document.getElementById('upw').value = 'petr-pass1'; document.getElementById('uright').value = 'view'; document.getElementById('uadd').click(); 1"); await sleep(300);
@@ -161,7 +161,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await btn(1, 2); await sleep(300);
   console.log('done=' + await rows());
   await ev("window.hostInfo = async () => ({ id: '123456789', confirm: true, otp: false, hasPass: true, users: [] }); onHostState({ id: '123456789', confirm: true, otp: false, hasPass: true, users: [] }); 1");
-  console.log('confirm=' + await ev("!document.getElementById('users').classList.contains('hidden')"));
+  console.log('confirm=' + await ev("!document.getElementById('users').classList.contains('hidden') + '|' + !document.getElementById('uhow').classList.contains('hidden')"));
   process.exit(0);
 })();`
 
@@ -180,12 +180,12 @@ func TestBrowserHostUsers(t *testing.T) {
 	defer cancel()
 	out := string(runCDP(t, ctx, chrome, cdpHostUsers, srv.URL+"/"))
 	for _, want := range []string{
-		"list=<b>x</b>Full controlPasswordSet up TOTPDelete;olgaView only · TOTPPasswordTurn off TOTPDelete|0|||true\n",
+		"list=<b>x</b>Full controlPasswordSet up TOTPDelete;olgaView only · TOTPPasswordTurn off TOTPDelete|0|||true|false\n",
 		"short=<b>x</b>Full controlPasswordSet up TOTPDelete;olgaView only · TOTPPasswordTurn off TOTPDelete|0|Password must be at least 8 characters.|\n",
 		"|set:petr:petr-pass1:view|\n",
 		"pw=olga|view\n",
 		"totp=Second factor (TOTP) — petr|true\n",
-		"confirm=false\n", // «Спрашивать перед каждым подключением» — блок скрыт
+		"confirm=false|true\n", // «Спрашивать перед каждым подключением» — блок скрыт, вместо него — как открыть
 		"done=<b>x</b>Full controlPasswordSet up TOTPDelete;petrView only · TOTPPasswordTurn off TOTPDelete|0||set:petr:petr-pass1:view,new:petr,enable:123456:petr,off:olga,del:olga\n",
 	} {
 		if !strings.Contains(out, want) {
