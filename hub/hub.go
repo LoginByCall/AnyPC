@@ -67,6 +67,8 @@ type Hub struct {
 	fresh   map[string]*bucket // новые клиентские WS по адресу
 	in      map[string]*hostIn // байт от клиентов к хосту по его ID
 	sweepAt time.Time
+
+	st stats // суточная сводка (stats.go)
 }
 
 // NewPerHour — новых ID с одного IP в час. Привязка вечная, файл переписывается целиком:
@@ -98,6 +100,7 @@ func (h *Hub) bind(id, key, ip string) string {
 	}
 	h.news[ip]++
 	h.keys[id] = key
+	h.Count("new_id", 1)
 	if h.Keys != "" {
 		b, _ := json.Marshal(h.keys)
 		tmp := h.Keys + ".tmp"
@@ -300,16 +303,19 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if id == "" && !h.notFound(addr, false) {
 		w.Header().Set("Retry-After", "60")
 		http.Error(w, "too many not_found", http.StatusTooManyRequests)
+		h.Count("refused", 1)
 		return
 	}
 	if id == "" && !h.newClient(addr) {
 		w.Header().Set("Retry-After", "1")
 		http.Error(w, "too many new connections", http.StatusTooManyRequests)
+		h.Count("refused", 1)
 		return
 	}
 	if code := h.acquire(addr); code != 0 {
 		w.Header().Set("Retry-After", "60")
 		http.Error(w, "too many connections", code)
+		h.Count("refused", 1)
 		return
 	}
 	defer h.release(addr)
@@ -334,6 +340,12 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer h.del(id, c)
 	isHost := IsHostID(id)
+	q := r.URL.Query()
+	h.online(isHost, id, osVer(q.Get("os"), q.Get("v")), 1)
+	defer h.online(isHost, id, "", -1)
+	if !isHost { // ?c= — окно программы, браузер или anypc-probe; старые клиенты без него
+		h.Count("client_"+cmp.Or(map[string]string{"app": "app", "web": "web", "probe": "probe"}[q.Get("c")], "?"), 1)
+	}
 	if isHost {
 		h.hostOpen(id, c)
 		defer h.hostClose(id, c)
@@ -398,7 +410,11 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			send(ctx, c, errMsg("not_found"))
+			h.Count("not_found", 1)
 			continue
+		}
+		if m.Type != "ice" { // connect, offer, answer, error, bye; ice — десятки на сессию, шум
+			h.Count(m.Type, 1)
 		}
 		var fresh []byte
 		if m.Type == "connect" { // пароль TURN живёт TurnTTL, а хост в сети неделями — свежий перед каждой сессией

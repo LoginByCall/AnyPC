@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
@@ -9,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime/debug"
 	"slices"
@@ -31,6 +33,18 @@ func newMux(h http.Handler, siteHosts []string, dlDir string, turns, hubs []stri
 			json.NewEncoder(w).Encode(append([]string{}, l...))
 		}
 	}
+	count := func(string, int) {}
+	if c, ok := h.(interface{ Count(string, int) }); ok { // суточная сводка хаба (hub/stats.go)
+		count = c.Count
+	}
+	page := func(key string, next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/" {
+				count(key, 1)
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 	app, www := http.NewServeMux(), http.NewServeMux()
 	for _, m := range []*http.ServeMux{app, www} {
 		// TURN без учёток — клиент мерит до них пинг до подключения; хабы (wss://…/ws) — веб-клиент стучится во все,
@@ -41,6 +55,11 @@ func newMux(h http.Handler, siteHosts []string, dlDir string, turns, hubs []stri
 			fs := heavy(dlPool, http.StripPrefix("/download/", http.FileServer(http.Dir(dlDir))))
 			m.Handle("/download/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Access-Control-Allow-Origin", "*")
+				if name := path.Base(r.URL.Path); name != "/" && name != "." {
+					if _, err := os.Stat(filepath.Join(dlDir, name)); err == nil { // только свои файлы: имена от сканеров не копятся
+						count("dl/"+name, 1)
+					}
+				}
 				if !strings.HasSuffix(r.URL.Path, "SHA256SUMS") {
 					w.Header().Set("Content-Disposition", "attachment") // ссылка с чужого узла: атрибут download там не действует
 				}
@@ -49,8 +68,8 @@ func newMux(h http.Handler, siteHosts []string, dlDir string, turns, hubs []stri
 		}
 	}
 	app.Handle("/ws", h)
-	app.Handle("/", heavy(pagePool, http.FileServer(http.FS(ui.FS)))) // pake.wasm — 4 МБ, страница — 165 КБ
-	www.Handle("/", heavy(pagePool, http.FileServer(http.FS(site.FS))))
+	app.Handle("/", page("page_app", heavy(pagePool, http.FileServer(http.FS(ui.FS))))) // pake.wasm — 4 МБ, страница — 165 КБ
+	www.Handle("/", page("page_www", heavy(pagePool, http.FileServer(http.FS(site.FS)))))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// срок записи прошлого тяжёлого ответа на этом keep-alive (heavy оставляет его на хвост) — снять
 		http.NewResponseController(w).SetWriteDeadline(time.Time{})
@@ -109,6 +128,7 @@ func main() {
 
 	h := &hub.Hub{TurnHosts: list(*turn), TurnSecret: os.Getenv("ANYPC_TURN_SECRET"), Keys: filepath.Join(filepath.Dir(*certs), "hosts.json"), MaxConns: lim.conns}
 	mux := newMux(h, list(*siteHost), *dl, h.TurnHosts, list(*hubs))
+	go h.StatsLoop(context.Background(), filepath.Dir(*certs), 10*time.Minute) // рядом с hosts.json: stats.jsonl — по строке на сутки
 	port := *addr
 	if *domain != "" {
 		port = ":443"

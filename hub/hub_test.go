@@ -43,8 +43,14 @@ func dial(t *testing.T, ctx context.Context, url string) (*websocket.Conn, strin
 // dialHost — хост: подключение с ключом, подпись вызова сервера (sign=false — подписать мусор).
 func dialHost(t *testing.T, ctx context.Context, url, id string, priv ed25519.PrivateKey, sign bool) (*websocket.Conn, Msg) {
 	t.Helper()
+	return dialHostQ(t, ctx, url, id, priv, sign, "")
+}
+
+// dialHostQ — dialHost с добавкой к запросу (q: "&os=…&v=…").
+func dialHostQ(t *testing.T, ctx context.Context, url, id string, priv ed25519.PrivateKey, sign bool, q string) (*websocket.Conn, Msg) {
+	t.Helper()
 	pub := priv.Public().(ed25519.PublicKey)
-	c, _, err := websocket.Dial(ctx, url+"?host="+id+"&key="+base64.RawURLEncoding.EncodeToString(pub), nil)
+	c, _, err := websocket.Dial(ctx, url+"?host="+id+"&key="+base64.RawURLEncoding.EncodeToString(pub)+q, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
