@@ -57,6 +57,12 @@
 - `f5d`: Set up your own node on a VPS with one command and switch the program to it — connection records stay with you.
 - `f6t`: Several nodes of your own
 - `f6d`: AnyPC lets you deploy several relay nodes of your own and switch between them — automatically, by the fastest route given the ping of both sides, or by hand.
+- `f7t`: Protection from someone else signing in
+- `f7d`: Connecting without confirmation also needs a one-time code from an authenticator app (TOTP): a password alone, even a stolen one, is not enough.
+- `f8t`: Voice during the session
+- `f8d`: Talk to the person at the remote PC right in the session, no separate call needed. Microphones stay off until each side turns its own on.
+- `f9t`: Files both ways
+- `f9d`: Send a file to the remote PC or take one from it — with buttons on the session bar.
 - `tab_mac`: macOS
 - `dl_mac`: Download for macOS
 - `sys_mac`: macOS 12 or later, Intel and Apple Silicon · beta

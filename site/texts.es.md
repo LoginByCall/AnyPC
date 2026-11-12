@@ -57,6 +57,12 @@
 - `f5d`: Instala tu propio nodo en un VPS con un solo comando y cambia el programa a él: los datos de conexión se quedan contigo.
 - `f6t`: Varios nodos propios
 - `f6d`: AnyPC te permite desplegar varios nodos de relé propios y cambiar entre ellos: automáticamente, por la ruta más rápida según el ping de ambos lados, o a mano.
+- `f7t`: Protección contra accesos ajenos
+- `f7d`: Para conectarse sin confirmación también hace falta un código de un solo uso de una app de autenticación (TOTP): la contraseña sola, aunque la roben, no basta.
+- `f8t`: Voz durante la sesión
+- `f8d`: Habla con la persona del PC remoto en la propia sesión, sin llamada aparte. Los micrófonos están apagados hasta que cada uno active el suyo.
+- `f9t`: Archivos en ambos sentidos
+- `f9d`: Envía un archivo al PC remoto o tráelo desde allí, con los botones de la barra de la sesión.
 - `tab_mac`: macOS
 - `dl_mac`: Descargar para macOS
 - `sys_mac`: macOS 12 o posterior, Intel y Apple Silicon · beta
