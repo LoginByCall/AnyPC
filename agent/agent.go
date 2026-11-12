@@ -111,6 +111,7 @@ type session struct {
 	authed  atomic.Bool // до успешного CPace ни видео, ни ввод, ни буфер обмена, ни файлы не работают
 	audio   audioState
 	view    atomic.Bool  // REQ-F-20 «только просмотр»: от клиента — ни ввода, ни буфера, ни файлов; буфер хоста ему не уходит
+	forced  atomic.Bool  // просмотр навязан только «Только показ экрана»: выключат — управление вернётся (ViewOnlyChanged)
 	picking atomic.Bool  // открыто окно выбора файла
 	asking  atomic.Bool  // на хосте открыто окно «Разрешить / Отклонить» или ждём код TOTP
 	byAsk   atomic.Bool  // сессия одноразового кода (запись по умолчанию через «Разрешить»): режим можно менять (REQ-F-26)
@@ -344,17 +345,46 @@ func (a *Agent) Disconnect() {
 	s.pc.Close()
 }
 
-// DisconnectFull — хост включил «Только показ экрана»: вошедшую сессию с полным доступом разорвать (новая войдёт
-// только просмотром); сессию «только просмотр» и ещё не вошедшую (шаг кода, окно «Разрешить») не трогать — accept
-// сам выставит ей просмотр.
-func (a *Agent) DisconnectFull() {
+// ViewOnlyChanged — хост включил или выключил «Только показ экрана» (окно; опрос настроек раз в 2 с — повтор безвреден).
+// Включили — вошедшая сессия с полным доступом переходит в просмотр без разрыва (ToDo 2026-11-12: разрыв мешал);
+// выключили — управление возвращается сессии, у которой просмотр навязан только галочкой (forced), а не правами
+// записи, ответом в окне «Разрешить» или просьбой клиента. Клиенту — {"t":"mode"} (REQ-F-26): v0.1.20+ меняет
+// панель сам, старый клиент остаётся с кнопками, но ввод хост не принимает. Ещё не вошедшую не трогать — accept сам
+// выставит ей просмотр.
+func (a *Agent) ViewOnlyChanged(on bool) {
 	a.mu.Lock()
 	s := a.sess
 	a.mu.Unlock()
-	if s != nil && s.authed.Load() && !s.view.Load() {
-		log.Printf("сессия %s: включён «Только показ экрана» — разорвана", s.cid)
-		a.Disconnect()
+	if s == nil || !s.authed.Load() {
+		return
 	}
+	switch {
+	case on && !s.view.Load():
+		s.modeGen.Add(1) // открытое окно «Разрешить управление?» управления уже не даст
+		s.forced.Store(true)
+		s.view.Store(true)
+		s.dropControl()
+		log.Printf("сессия %s: включён «Только показ экрана» — только просмотр", s.label())
+	case !on && s.forced.Swap(false):
+		if gone, v := a.revoked(s); gone || v {
+			return
+		}
+		s.view.Store(false)
+		log.Printf("сессия %s: выключен «Только показ экрана» — управление возвращено", s.label())
+	default:
+		return
+	}
+	a.replaque(s)
+	s.sendMode(modeMsg{T: "mode", View: on, OK: !on, Why: map[bool]string{true: "viewonly"}[on]})
+}
+
+// sendMode — режим сессии клиенту по ctl по воле хоста (ViewOnlyChanged).
+func (s *session) sendMode(m modeMsg) {
+	if s.ctl == nil || s.ctl.ReadyState() != webrtc.DataChannelStateOpen {
+		return
+	}
+	b, _ := json.Marshal(m)
+	s.ctl.SendText(string(b))
 }
 
 // DropRevoked — запись вошедшей сессии удалили, сменили ей пароль (новая соль) или сузили права до «просмотр»:
@@ -1322,14 +1352,16 @@ func init() { otpWait90.Store(int64(90 * time.Second)) }
 
 // accept — вход разрешён: подпись хоста, плашка сессии, видео.
 func (a *Agent) accept(ctx context.Context, s *session, track *webrtc.TrackLocalStaticSample, send func(authMsg), conf []byte, fpc, fph string, pin []byte) {
+	asked := s.view.Load()                 // просмотр по просьбе клиента или ответу «Только просмотр» в окне «Разрешить»
 	if a.ViewOnly != nil && a.ViewOnly() { // хост сужает права сам — и «Разрешить» в окне даёт только просмотр
 		s.view.Store(true)
 	}
 	s.authed.Store(true)
-	// ещё раз после authed: галочку могли включить между проверкой выше и authed, а DisconnectFull не вошедшую не рвёт
+	// ещё раз после authed: галочку могли включить между проверкой выше и authed, а ViewOnlyChanged не вошедшую не трогает
 	if a.ViewOnly != nil && a.ViewOnly() {
 		s.view.Store(true)
 	}
+	s.forced.Store(s.view.Load() && !asked) // выключат галочку — управление вернётся (права записи проверит ViewOnlyChanged)
 	// и запись: её могли удалить или сменить ей пароль, пока ждали «Разрешить» или код, — DropRevoked не вошедшую не рвёт,
 	// а на Windows опроса настроек нет; права сузили — только просмотр
 	if gone, v := a.revoked(s); gone {
@@ -1422,7 +1454,8 @@ func (a *Agent) setMode(ctx context.Context, s *session, view *bool, reply func(
 		no("rights")
 		return
 	case *view:
-		s.modeGen.Add(1) // до Swap: окно, открытое раньше, управления уже не даст
+		s.modeGen.Add(1)      // до Swap: окно, открытое раньше, управления уже не даст
+		s.forced.Store(false) // клиент сам выбрал просмотр — выключение галочки управление не вернёт
 		if !s.view.Swap(true) {
 			s.dropControl()
 			log.Printf("сессия %s: клиент перешёл в «только просмотр»", s.label())
@@ -1469,7 +1502,7 @@ func (a *Agent) setMode(ctx context.Context, s *session, view *bool, reply func(
 		}
 		if why == "" {
 			s.view.Store(false)
-			// ещё раз после: DisconnectFull и DropRevoked сессию «просмотр» не рвут; клиент мог сам попросить просмотр
+			// ещё раз после: ViewOnlyChanged и DropRevoked сессию «просмотр» не рвут; клиент мог сам попросить просмотр
 			if why = forced(); why == "" && s.modeGen.Load() != gen {
 				why = "cancel"
 			}

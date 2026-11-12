@@ -9,10 +9,12 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -58,6 +60,7 @@ type settings struct {
 	Confirm *bool             `json:"confirm"`             // REQ-F-03: окно «Разрешить / Отклонить» на каждое подключение
 	Saved   map[string]string `json:"saved,omitempty"`     // ID удалённого ПК → запомненный пароль («Запомнить пароль» на управляющем ПК)
 	View    bool              `json:"view_only,omitempty"` // «Только показ экрана»: каждая входящая сессия — только просмотр (REQ-F-20)
+	UIPort  int               `json:"ui_port,omitempty"`   // порт окна на 127.0.0.1 (listenUI)
 	// Одноразовый код (REQ-S-23): в режиме «Спрашивать» — пароль записи по умолчанию; меняется после каждой сессии,
 	// блокировки и по ↻. В файле (0600, как запомненные пароли): окно, ключи CLI и запущенная программа видят один код.
 	Code     string `json:"code,omitempty"`
@@ -169,6 +172,32 @@ func (c *config) save() error {
 		os.Remove(f.Name())
 	}
 	return err
+}
+
+// listenUI — окно программы на постоянном порту 127.0.0.1. localStorage у браузера и WebView2 — свой на каждый порт:
+// со случайным портом каждый запуск начинался с пустого (недавние ID, имена записей, ключи клиента, тур — ToDo
+// 2026-11-12, Ubuntu). Порт занят (вторая копия, чужая программа) — новый случайный, запоминается он.
+func (c *config) listenUI() (net.Listener, error) {
+	c.mu.Lock()
+	p := c.UIPort
+	c.mu.Unlock()
+	if p != 0 {
+		if l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(p))); err == nil {
+			return l, nil
+		}
+	}
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reload()
+	c.UIPort = l.Addr().(*net.TCPAddr).Port
+	if err := c.save(); err != nil {
+		log.Printf("порт окна не запомнен: %v", err)
+	}
+	return l, nil
 }
 
 // viewNow — «Только показ экрана» по файлу (его мог включить ключ CLI при запущенной программе).

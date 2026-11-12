@@ -92,7 +92,7 @@ func (c *config) setServer(s string) error {
 	return c.save()
 }
 
-// setViewOnly — галочка «Только показ экрана» из окна: при включении идущая сессия с полным доступом рвётся.
+// setViewOnly — галочка «Только показ экрана» из окна: идущая сессия переходит в просмотр и обратно без разрыва.
 // dropAfter — правка записей удалась: сессия записи, которую удалили, сменили пароль или сузили права, рвётся.
 func dropAfter(a *agent.Agent, err error) error {
 	if err == nil {
@@ -105,12 +105,10 @@ func dropAfter(a *agent.Agent, err error) error {
 var dropRevoked = (*agent.Agent).DropRevoked
 
 // pollConfig — опрос настроек раз в 2 с (Linux/Mac): правку ключом CLI при запущенной программе видно сразу —
-// «Только показ экрана» рвёт сессию с полным доступом (REQ-F-25), --user / --user-del и смена режима — сессию
+// «Только показ экрана» переводит сессию в просмотр и обратно (REQ-F-25), --user / --user-del и смена режима — сессию
 // отозванной записи, новый одноразовый код (--confirm on) — незавершённые входы со старым. last — код прошлого опроса.
 func pollConfig(cfg *config, a *agent.Agent, last *string) {
-	if cfg.viewNow() { // перечитывает файл целиком
-		a.DisconnectFull()
-	}
+	a.ViewOnlyChanged(cfg.viewNow()) // перечитывает файл целиком
 	dropRevoked(a)
 	if c := cfg.code(); c != *last {
 		*last = c
@@ -134,8 +132,8 @@ func newCode(cfg *config, a *agent.Agent) (string, error) {
 
 func setViewOnly(cfg *config, a *agent.Agent, on bool) error {
 	err := cfg.setViewOnly(on)
-	if err == nil && on {
-		a.DisconnectFull()
+	if err == nil {
+		a.ViewOnlyChanged(on)
 	}
 	return err
 }

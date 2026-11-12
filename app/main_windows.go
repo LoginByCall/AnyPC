@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -83,7 +82,7 @@ func main() {
 			time.Sleep(30 * time.Second)
 		}
 	}()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	l, err := cfg.listenUI()
 	if err != nil {
 		fatal("Локальный порт интерфейса: " + err.Error())
 	}

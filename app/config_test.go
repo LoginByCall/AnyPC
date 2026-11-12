@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -516,5 +517,33 @@ func TestCodeMode(t *testing.T) {
 	}
 	if len(seen) < 1980 || len(first) != 10 { // из 10^6 ожидаемо ≈2 совпадения; из 10^3 — сотни
 		t.Fatalf("разных кодов %d из 2000, первых цифр %d", len(seen), len(first))
+	}
+}
+
+// TestListenUI — регрессия ToDo 2026-11-12 (Ubuntu): порт окна случайный — localStorage страницы новый каждый запуск
+// (недавние ID, имена записей, тур). Порт запоминается и переживает перезапуск; занят — другой, и запоминается он.
+func TestListenUI(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	c, _ := loadConfig(p)
+	l, err := c.listenUI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := l.Addr().String()
+	l.Close()
+	c2, _ := loadConfig(p) // перезапуск программы
+	l, err = c2.listenUI()
+	if err != nil || l.Addr().String() != port {
+		t.Fatalf("после перезапуска порт %v, был %s (%v)", l.Addr(), port, err)
+	}
+	c3, _ := loadConfig(p) // вторая копия, пока первая держит порт
+	l2, err := c3.listenUI()
+	if err != nil || l2.Addr().String() == port {
+		t.Fatalf("занятый порт: %v %v", l2.Addr(), err)
+	}
+	l.Close()
+	l2.Close()
+	if c4, _ := loadConfig(p); c4.UIPort != l2.Addr().(*net.TCPAddr).Port {
+		t.Fatalf("запомнен %d, ждали новый %s", c4.UIPort, l2.Addr())
 	}
 }

@@ -10,6 +10,8 @@ import (
 
 	"anypc/pake"
 	"anypc/totp"
+
+	"github.com/pion/webrtc/v4"
 )
 
 // otpHost — второй фактор хоста как в app/config.go: секрет (пусто — не настроен) и шаг последнего принятого кода.
@@ -280,37 +282,73 @@ func TestOTPTrustedLock(t *testing.T) {
 	e2e(t, local(t), "123456789", false, ff, "secret123")
 }
 
-// TestViewOnlyDrop — регрессия (приёмка Д4): «Только показ экрана» включили во время сессии с полным доступом —
-// она разорвана; сессию «только просмотр» включение не рвёт.
-func TestViewOnlyDrop(t *testing.T) {
+// TestViewOnlyLive — регрессия ToDo 2026-11-12 (Ubuntu → Win): «Только показ экрана» во время сессии рвал её, а
+// выключение управления не возвращало. Теперь: включили — та же сессия в просмотре (ввод не принимается), клиенту
+// {"t":"mode","view":true}; выключили — управление вернулось. Сессия, вошедшая при галочке, после выключения —
+// с управлением; клиент, сам выбравший просмотр, и запись «просмотр» остаются просмотром.
+func TestViewOnlyLive(t *testing.T) {
 	var on atomic.Bool
-	var gone atomic.Bool
-	e2eAgent = func(a *Agent) { a.ViewOnly = on.Load }
-	e2eInput = func(t *testing.T, a *Agent) {
-		on.Store(true) // хозяин поставил галочку
-		a.DisconnectFull()
-		for range 30 {
-			a.mu.Lock()
-			s := a.sess
-			a.mu.Unlock()
-			if s == nil {
-				gone.Store(true)
-				return
+	var ag *Agent
+	e2eAgent = func(a *Agent) { ag = a; a.ViewOnly = on.Load }
+	defer func() { e2eAgent, e2eCtl = nil, nil }()
+	sess := func() *session { ag.mu.Lock(); defer ag.mu.Unlock(); return ag.sess }
+	mode := func(t *testing.T, msgs chan ctlMsg) {
+		t.Helper()
+		for end := time.After(3 * time.Second); ; {
+			select {
+			case m := <-msgs:
+				if m.T == "mode" {
+					return
+				}
+			case <-end:
+				t.Fatal("клиенту не пришёл mode")
 			}
-			time.Sleep(100 * time.Millisecond)
 		}
-		gone.Store(false)
 	}
-	defer func() { e2eAgent, e2eInput = nil, nil }()
+	flip := func(t *testing.T, msgs chan ctlMsg, v bool) {
+		t.Helper()
+		s := sess()
+		on.Store(v)
+		ag.ViewOnlyChanged(v)
+		mode(t, msgs)
+		if sess() != s || s.control() == v {
+			t.Fatalf("галочка %v: сессия %p→%p, управление %v", v, s, sess(), s.control())
+		}
+		ag.ViewOnlyChanged(v) // опрос раз в 2 с повторяет — ничего не меняет
+		if s.control() == v {
+			t.Fatalf("повтор %v сменил режим", v)
+		}
+	}
 	ff := FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000})
+	e2eCtl = func(t *testing.T, _ *webrtc.DataChannel, msgs chan ctlMsg) {
+		flip(t, msgs, true)
+		flip(t, msgs, false)
+	}
 	e2e(t, local(t), "123456789", false, ff, "secret123")
-	if !gone.Load() {
-		t.Fatal("сессия с полным доступом не разорвана")
+
+	on.Store(true) // галочка уже стоит при входе
+	e2eCtl = func(t *testing.T, _ *webrtc.DataChannel, msgs chan ctlMsg) {
+		if sess().control() {
+			t.Fatal("вошла с управлением при галочке")
+		}
+		flip(t, msgs, false)
 	}
-	e2e(t, local(t), "123456789", false, ff, "secret123") // галочка уже стоит: сессия — просмотр, её не рвать
-	if gone.Load() {
-		t.Fatal("сессия «только просмотр» разорвана")
+	e2e(t, local(t), "123456789", false, ff, "secret123")
+
+	on.Store(true) // клиент сам выбрал просмотр, пока стояла галочка, — выключение не даёт управления
+	e2eCtl = func(t *testing.T, dc *webrtc.DataChannel, msgs chan ctlMsg) {
+		s := sess()
+		s.byAsk.Store(true)
+		ag.ConfirmControl = func(string, string) bool { return false }
+		dc.SendText(`{"t":"mode","view":true}`)
+		mode(t, msgs)
+		on.Store(false)
+		ag.ViewOnlyChanged(false)
+		if s.control() {
+			t.Fatal("просмотр по выбору клиента сменился на управление")
+		}
 	}
+	e2e(t, local(t), "123456789", false, ff, "secret123")
 }
 
 // TestOTPLateCode — код пришёл сразу после срока: хост его уже не проверяет — "denied" без «ok» следом.
@@ -336,7 +374,7 @@ func TestOTPLateCode(t *testing.T) {
 	}
 }
 
-// TestViewOnlyPending — регрессия (приёмка Б1): опрос «Только показ экрана» (DisconnectFull раз в 2 с) не рвёт
+// TestViewOnlyPending — регрессия (приёмка Б1): опрос «Только показ экрана» (ViewOnlyChanged раз в 2 с) не рвёт
 // сессию, ещё не вошедшую — на шаге кода и при открытом окне «Разрешить»; после кода и «Разрешить» она входит
 // просмотром. Галочка, включённая между проверкой в accept и authed, тоже даёт просмотр.
 func TestViewOnlyPending(t *testing.T) {
@@ -353,7 +391,7 @@ func TestViewOnlyPending(t *testing.T) {
 	yes := func() bool { return true }
 
 	e2eAgent = func(a *Agent) { ag = a; a.OTP = o.check; a.ViewOnly = yes }
-	e2eOTP = func(int) string { ag.DisconnectFull(); time.Sleep(300 * time.Millisecond); return o.code() } // опрос на шаге кода
+	e2eOTP = func(int) string { ag.ViewOnlyChanged(true); time.Sleep(300 * time.Millisecond); return o.code() } // опрос на шаге кода
 	e2e(t, local(t), "123456789", false, ff, "secret123")
 	if !gotView.Load() {
 		t.Fatal("шаг кода: сессия вошла не просмотром")
@@ -364,7 +402,11 @@ func TestViewOnlyPending(t *testing.T) {
 		ag = a
 		a.ViewOnly = yes
 		a.Unattended = func() bool { return false }
-		a.Confirm = func(string, string) Answer { ag.DisconnectFull(); time.Sleep(300 * time.Millisecond); return Allow } // опрос при открытом окне
+		a.Confirm = func(string, string) Answer {
+			ag.ViewOnlyChanged(true)
+			time.Sleep(300 * time.Millisecond)
+			return Allow
+		} // опрос при открытом окне
 	}
 	gotView.Store(false)
 	e2e(t, local(t), "123456789", false, ff, "secret123")

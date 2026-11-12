@@ -19,7 +19,6 @@ import (
 	"io"
 	"io/fs"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -131,7 +130,7 @@ func main() {
 	}
 	go watchUpdates(func(v string) { mu.Lock(); update = v; mu.Unlock() })
 
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	l, err := cfg.listenUI()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -161,7 +160,7 @@ func main() {
 	}
 	srv := cfg.Server
 	code := cfg.code()
-	go func() { // --view-only on при запущенной программе: вошедшая сессия с полным доступом рвётся (REQ-F-25)
+	go func() { // --view-only on/off при запущенной программе: идущая сессия — в просмотр и обратно (REQ-F-25)
 		for range time.Tick(2 * time.Second) {
 			pollConfig(cfg, a, &code)
 		}
