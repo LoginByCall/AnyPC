@@ -8,7 +8,7 @@
 - `req`: Windows 10/11 · Linux (X11, Wayland) · macOS 12+
 - `whyT`: Por qué AnyPC
 - `f1t`: Atraviesa cualquier NAT
-- `f1d`: Se conecta directamente y, cuando no es posible, a través de un servidor de retransmisión. No hace falta configurar el router.
+- `f1d`: Se conecta directamente y, cuando no es posible, a través de un servidor de retransmisión. No hace falta configurar el router. Funciona en todo el mundo.
 - `f2t`: Cifrado de extremo a extremo
 - `f2d`: La pantalla y la entrada viajan por DTLS-SRTP. El servidor de retransmisión solo reenvía datos cifrados.
 - `f3t`: Un único ejecutable

@@ -8,7 +8,7 @@
 - `req`: Windows 10/11 · Linux (X11, Wayland) · macOS 12+
 - `whyT`: Warum AnyPC
 - `f1t`: Funktioniert hinter jedem NAT
-- `f1d`: Verbindet direkt; wo das nicht geht, über einen Relay-Server. Am Router müssen Sie nichts einstellen.
+- `f1d`: Verbindet direkt; wo das nicht geht, über einen Relay-Server. Am Router müssen Sie nichts einstellen. Funktioniert weltweit.
 - `f2t`: Ende-zu-Ende-Verschlüsselung
 - `f2d`: Bild und Eingaben laufen über DTLS-SRTP. Der Relay-Server leitet nur verschlüsselte Daten weiter.
 - `f3t`: Eine einzige ausführbare Datei
