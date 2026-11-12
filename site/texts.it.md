@@ -8,7 +8,7 @@
 - `req`: Windows 10/11 · Linux (X11, Wayland) · macOS 12+
 - `whyT`: Perché AnyPC
 - `f1t`: Supera qualsiasi NAT
-- `f1d`: Si connette direttamente e, quando non è possibile, tramite un server relay. Nessuna configurazione del router.
+- `f1d`: Si connette direttamente e, quando non è possibile, tramite un server relay. Nessuna configurazione del router. Funziona in tutto il mondo.
 - `f2t`: Crittografia end-to-end
 - `f2d`: Schermo e input viaggiano su DTLS-SRTP. Il server relay inoltra solo dati cifrati.
 - `f3t`: Un unico eseguibile

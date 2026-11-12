@@ -8,7 +8,7 @@
 - `req`: Windows 10/11 · Linux (X11, Wayland) · macOS 12+
 - `whyT`: Why AnyPC
 - `f1t`: Gets through any NAT
-- `f1d`: Connects directly; when that isn’t possible, it goes through a relay server. No router setup needed.
+- `f1d`: Connects directly; when that isn’t possible, it goes through a relay server. No router setup needed. Works all over the world.
 - `f2t`: End-to-end encryption
 - `f2d`: Screen and input travel over DTLS-SRTP. The relay server forwards only ciphertext.
 - `f3t`: A single executable
