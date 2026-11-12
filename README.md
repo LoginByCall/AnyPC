@@ -68,7 +68,7 @@ No Ctrl+Alt+Del / UAC / lock screen yet (needs service mode); bitrate adapts to 
 
 ## Privacy
 
-No accounts, analytics or telemetry; what the servers see and what stays on your PC — [PRIVACY.md](PRIVACY.md) (also at https://www.anypc.org/privacy.html).
+No accounts or telemetry, only daily totals on the servers; what the servers see and what stays on your PC — [PRIVACY.md](PRIVACY.md) (also at https://www.anypc.org/privacy.html).
 
 ## License
 MIT — see `LICENSE`. FFmpeg is not bundled: on first launch the Windows app downloads FFmpeg 9.0.2 (GPLv3) from the gyan.dev builds and verifies its SHA-256; on Linux the system ffmpeg is used.

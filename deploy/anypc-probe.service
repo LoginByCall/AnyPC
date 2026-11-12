@@ -1,0 +1,17 @@
+# anypc-probe — внешняя проверка узлов AnyPC (MONITORING.md). Ставится deploy/probe-install.sh на US.
+[Unit]
+Description=AnyPC external probe
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/anypc-probe.env
+ExecStart=/usr/local/bin/anypc-probe
+# root — ради чтения static-auth-secret из /etc/turnserver.conf; пишет только своё состояние
+ProtectSystem=strict
+ReadWritePaths=/var/lib/anypc-probe
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+TimeoutStartSec=3min

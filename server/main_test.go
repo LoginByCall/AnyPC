@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -367,5 +368,27 @@ func TestMainHelperExits(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		cmd.Process.Kill()
 		t.Fatal("помощник не вышел после закрытия stdin")
+	}
+}
+
+type counter map[string]int
+
+func (c counter) Count(k string, n int)                            { c[k] += n }
+func (c counter) ServeHTTP(w http.ResponseWriter, _ *http.Request) {}
+
+// TestMuxCounts — суточная сводка: открытия лендинга и клиента, загрузки только существующих файлов.
+func TestMuxCounts(t *testing.T) {
+	dl := t.TempDir()
+	os.WriteFile(filepath.Join(dl, "AnyPC.exe"), []byte("MZ-test"), 0o644)
+	c := counter{}
+	h := newMux(c, []string{"www.example.com"}, dl, nil, nil)
+	get(t, h, "www.example.com", "/")
+	get(t, h, "www.example.com", "/site.css")
+	get(t, h, "hk.example.com", "/")
+	get(t, h, "hk.example.com", "/download/AnyPC.exe")
+	get(t, h, "hk.example.com", "/download/wp-login.php") // сканер: имени нет в каталоге
+	get(t, h, "hk.example.com", "/download/")
+	if fmt.Sprint(c) != "map[dl/AnyPC.exe:1 page_app:1 page_www:1]" {
+		t.Fatalf("счётчики: %v", c)
 	}
 }

@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,6 +49,8 @@ import (
 type Agent struct {
 	Server string // wss://…/ws; несколько хабов — через запятую (хост в сети на каждом)
 	ID     string // 9 цифр
+	// Version — версия программы: хаб считает разные хосты по «ОС версия» за сутки (hub/stats.go); "" — не сообщать
+	Version string
 	// Secret — учётная запись по имени (UserKey; "" — по умолчанию, REQ-S-20): соль, KDF(пароль, соль), права
 	// «просмотр»; пустой secret — нет такой записи или пароль не задан.
 	Secret  func(user string) (salt, secret []byte, view bool)
@@ -543,7 +546,11 @@ func dial(ctx context.Context, u string) (*websocket.Conn, error) {
 
 func (a *Agent) run(ctx context.Context, server string) error {
 	pub := base64.RawURLEncoding.EncodeToString(a.Key.Public().(ed25519.PublicKey))
-	c, err := dial(ctx, server+"?host="+a.ID+"&key="+pub)
+	q := "?host=" + a.ID + "&key=" + pub
+	if a.Version != "" {
+		q += "&os=" + runtime.GOOS + "&v=" + url.QueryEscape(a.Version)
+	}
+	c, err := dial(ctx, server+q)
 	if err != nil {
 		return err
 	}
