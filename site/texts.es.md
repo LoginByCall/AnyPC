@@ -55,10 +55,8 @@
 - `bug`: Informar de un error
 - `foot`: AnyPC beta. En el primer inicio, la versión para Windows descarga FFmpeg (GPLv3) de las compilaciones de gyan.dev. Se ofrece «tal cual», sin garantía.
 - `privacy`: Privacidad
-- `f5t`: Funciona con tu propio servidor
-- `f5d`: Instala tu propio nodo en un VPS con un solo comando y cambia el programa a él: los datos de conexión se quedan contigo.
-- `f6t`: Varios nodos propios
-- `f6d`: AnyPC te permite desplegar varios nodos de relé propios y cambiar entre ellos: automáticamente, por la ruta más rápida según el ping de ambos lados, o a mano.
+- `f5t`: Con tu propio servidor
+- `f5d`: Instala uno o varios nodos de retransmisión propios en un VPS con un solo comando y apunta la aplicación hacia ellos: automáticamente por la ruta más rápida (según el ping de ambos lados) o manualmente. Los registros de conexión se quedan solo contigo.
 - `f7t`: Protección contra accesos ajenos
 - `f7d`: Para conectarse sin confirmación también hace falta un código de un solo uso de una app de autenticación (TOTP): la contraseña sola, aunque la roben, no basta.
 - `f8t`: Voz durante la sesión

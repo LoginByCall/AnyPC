@@ -55,10 +55,8 @@
 - `bug`: Fehler melden
 - `foot`: AnyPC Beta. Die Windows-Version lädt beim ersten Start FFmpeg (GPLv3) aus den Builds von gyan.dev herunter. Bereitgestellt „wie besehen“, ohne Gewährleistung.
 - `privacy`: Datenschutz
-- `f5t`: Auch mit eigenem Server
-- `f5d`: Richten Sie mit einem Befehl einen eigenen Knoten auf einem VPS ein und stellen Sie das Programm darauf um – die Verbindungsdaten bleiben bei Ihnen.
-- `f6t`: Mehrere eigene Knoten
-- `f6d`: Mit AnyPC können Sie mehrere eigene Relay-Knoten betreiben und zwischen ihnen wechseln – automatisch über die schnellste Route anhand des Pings beider Seiten oder von Hand.
+- `f5t`: Mit eigenem Server
+- `f5d`: Richten Sie einen oder mehrere eigene Relay-Knoten auf einem VPS mit einem einzigen Befehl ein und richten Sie die App darauf aus – automatisch über den schnellsten Pfad (anhand des Pings beider Seiten) oder manuell. Verbindungsdaten bleiben allein bei Ihnen.
 - `f7t`: Schutz vor fremder Anmeldung
 - `f7d`: Für Verbindungen ohne Bestätigung ist zusätzlich ein Einmalcode aus einer Authenticator-App (TOTP) nötig: Ein Passwort allein, auch ein gestohlenes, reicht nicht.
 - `f8t`: Sprechen während der Sitzung

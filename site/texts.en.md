@@ -55,10 +55,8 @@
 - `bug`: Report a bug
 - `foot`: AnyPC beta. On first launch, the Windows version downloads FFmpeg (GPLv3) from the gyan.dev builds. Provided “as is”, without warranty.
 - `privacy`: Privacy
-- `f5t`: Works with your own server
-- `f5d`: Set up your own node on a VPS with one command and switch the program to it — connection records stay with you.
-- `f6t`: Several nodes of your own
-- `f6d`: AnyPC lets you deploy several relay nodes of your own and switch between them — automatically, by the fastest route given the ping of both sides, or by hand.
+- `f5t`: Run your own server
+- `f5d`: Set up one or several of your own relay nodes on a VPS with a single command and point the app at them — automatically over the fastest path (based on ping from both sides) or manually. Connection records stay with you alone.
 - `f7t`: Protection from someone else signing in
 - `f7d`: Connecting without confirmation also needs a one-time code from an authenticator app (TOTP): a password alone, even a stolen one, is not enough.
 - `f8t`: Voice during the session
