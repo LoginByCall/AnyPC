@@ -1,14 +1,14 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
+	"slices"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 
@@ -79,7 +79,12 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   console.log('nokey=' + await until(s => s.includes('rror')) + '|' + await ev(login) + '|' + await ev("document.getElementById('keylogin').checked"));
   await ev(go); await sleep(300);
   console.log('nopw=' + await state());
-  await ev("const ks = JSON.parse(localStorage.getItem('ckeys')); for (const k of Object.values(ks)) { k.login = true; k.lu = ''; } localStorage.setItem('ckeys', JSON.stringify(ks)); const i4 = document.getElementById('id'); i4.dispatchEvent(new Event('input')); 1");
+  // снова «Доверять» (новый ключ), отпечаток у галочки; снятие галочки — забыть и попросить отозвать
+  await ev("document.getElementById('pw').value='secret123'; document.getElementById('keylogin').checked = true; document.getElementById('go').click()");
+  await otp();
+  await until(s => s.endsWith('|true'));
+  await ev("document.getElementById('bye').click()"); await sleep(300);
+  await ev("const i4 = document.getElementById('id'); i4.dispatchEvent(new Event('input')); 1");
   await sleep(300);
   console.log('fp=' + await ev("document.getElementById('keyfp').textContent + '|' + document.getElementById('keylogin').checked"));
   await ev("const c = document.getElementById('keylogin'); c.checked = false; c.dispatchEvent(new Event('change')); 1"); await sleep(300);
@@ -121,11 +126,14 @@ func TestBrowserKeyLogin(t *testing.T) {
 	defer cancel()
 	a := newAgent("ws"+strings.TrimPrefix(srv.URL, "http")+"/ws", "123456789", nil)
 	a.OTP = o.check
-	var added atomic.Value // ключ, добавленный по «Доверять»: его отпечаток клиент показывает у галочки
+	var mu sync.Mutex
+	var added []string // отпечатки ключей, добавленных по «Доверять»: клиент показывает свой у галочки
 	a.KeyLogin = ks.login
 	a.KeyTrust = func(p []byte, u string, salt []byte) {
 		if salt != nil {
-			added.Store(bytes.Clone(p))
+			mu.Lock()
+			added = append(added, pake.KeyFingerprint(p)[:9])
+			mu.Unlock()
 		}
 		ks.add(p, u, salt)
 	}
@@ -134,36 +142,41 @@ func TestBrowserKeyLogin(t *testing.T) {
 	}
 	go a.Run(ctx)
 	out := string(runCDP(t, ctx, chrome, cdpKeyLogin, srv.URL+"/"))
-	pub, _ := added.Load().([]byte)
-	fp := pake.KeyFingerprint(pub)[:9]
+	mu.Lock()
+	fps := slices.Clone(added)
+	mu.Unlock()
+	if len(fps) != 2 {
+		t.Fatalf("добавлено ключей %d: %v", len(fps), fps)
+	}
+	fp, fp2 := fps[0], fps[1]
 	for _, want := range []string{
 		"trust=|false|true|[[true,\"\"]]|🔑 " + fp + "\n",
 		"early=Error: the remote PC could not be verified — connection may be intercepted|false|false",
 		"earlyno=false|[[true,\"\"]]",
 		"earlyask=Enter the 6-digit code from the authenticator app for this PC|true|false",
 		"noknown=Error: the remote PC does not accept sign-in without a password — enter the password|false|false|[[true,\"\"]]",
-		"fp=🔑 " + fp + "|true",
-		"forgot=Sign-in without a password from this PC is off. Also revoke key " + fp + " in the remote PC’s window|{}|\n",
+		"fp=🔑 " + fp2 + "|true",
+		"forgot=Sign-in without a password from this PC is off. Also revoke key " + fp2 + " in the remote PC’s window|{}|\n",
 		"box=true",
 		"ask=Enter the 6-digit code from the authenticator app for this PC|true|false",
 		"key=|false|true",
 		"fake=Error: the remote PC key has changed. If AnyPC was not reinstalled there, do not connect|false|false|false",
 		"old=Error: the remote PC does not accept sign-in without a password — enter the password|false|false|[[true,\"\"]]",
-		"nokey=Error: the remote PC does not accept sign-in without a password — enter the password|false|false|[[null,null]]|false",
+		"nokey=Error: the remote PC does not accept sign-in without a password — enter the password. Sign-in without a password from this PC is off. Also revoke key " + fp + " in the remote PC’s window|false|false|[]|false",
 		"nopw=Enter the password|false|false",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("нет %q", want)
 		}
 	}
-	if f, _ := nlock(a, ""); f != 1 { // засчитан только отозванный ключ
-		t.Errorf("неудач записи по умолчанию: %d", f)
+	if f, _ := lock(a); f != 1 { // засчитан только отозванный ключ (счёт записи сбросил последний вход, общий — нет)
+		t.Errorf("неудач по хосту: %d", f)
 	}
 }
 
 // cdpHostKeys — окно хоста: ключи входа без пароля (REQ-S-24) под своей записью (и под паролем этого ПК) —
-// короткий отпечаток, даты; «Отозвать» зовёт keyDel(запись, полный отпечаток), строка исчезает. Программа переносит
-// ключи клиента из localStorage окна в настройки (ckeySet) и стирает их из localStorage.
+// короткий отпечаток, даты; «Отозвать» зовёт keyDel(запись, полный отпечаток), строка исчезает. Ключ клиента,
+// подложенный в localStorage окна программы, в настройки не переносится и стирается (галочка сама не встаёт).
 const cdpHostKeys = `
 const [, , port, url] = process.argv;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -181,14 +194,15 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
              { user: 'ivan', fp: '<b>e</b>ee ffff 0000', added: '2026-11-11T10:00:00Z', last: '0001-01-01T00:00:00Z' }] };
     window.calls = []; window.confirm = () => true;
     window.hostInfo = async () => JSON.parse(JSON.stringify(st));
-    localStorage.setItem('ckeys', JSON.stringify({ '123456789': { seed: 'S', pub: 'P', login: true, lu: '' } })); // как до переноса в настройки
+    localStorage.setItem('ckeys', JSON.stringify({ '123456789': { seed: 'S', pub: 'P', login: true, lu: '' } })); // подложенный в localStorage окна
     window.ck = {}; window.ckeyGet = async id => ck[id] || ''; window.ckeySet = async (id, v) => { if (v) ck[id] = v; else delete ck[id]; };
     window.keyDel = async (n, fp) => { calls.push('kdel:' + n + ':' + fp); st.keys = st.keys.filter(k => k.fp !== fp); };
   ` + "`" + ` });
   const list = () => ev("[...document.getElementById('ulist').children].map(r => r.textContent).join(';') + '|' + document.querySelectorAll('#ulist b b').length + '|' + calls.join(',')");
   await call('Page.navigate', { url }); await sleep(1500);
   console.log('keys=' + await list());
-  console.log('migr=' + await ev("localStorage.getItem('ckeys') + '|' + JSON.stringify(ck)"));
+  await ev("const i = document.getElementById('id'); i.value = '123456789'; i.dispatchEvent(new Event('input')); 1"); await sleep(300);
+  console.log('migr=' + await ev("localStorage.getItem('ckeys') + '|' + JSON.stringify(ck) + '|' + document.getElementById('keylogin').checked"));
   await ev("[...document.querySelectorAll('#ulist button')].find(b => b.parentNode.textContent.includes('aaaa')).click(); 1"); await sleep(300);
   console.log('revoked=' + await list());
   process.exit(0);
@@ -210,7 +224,7 @@ func TestBrowserHostKeys(t *testing.T) {
 	out := string(runCDP(t, ctx, chrome, cdpHostKeys, srv.URL+"/"))
 	for _, want := range []string{
 		"keys=This PC’s password;🔑 aaaa bbbb · added 11/10/2026 · last sign-in 11/12/2026Revoke;ivanFull control · TOTPPasswordTurn off TOTPDelete;🔑 <b>e</b>e · added 11/11/2026 · last sign-in —Revoke|0|\n",
-		`migr=null|{"123456789":"{\"seed\":\"S\",\"pub\":\"P\",\"login\":true,\"lu\":\"\"}"}` + "\n", // программа: ключи — в настройки, из localStorage стёрты
+		"migr=null|{}|false\n", // программа: ключ из localStorage окна в настройки не попал, стёрт; галочка не встала сама
 		"revoked=ivanFull control · TOTPPasswordTurn off TOTPDelete;🔑 <b>e</b>e · added 11/11/2026 · last sign-in —Revoke|0|kdel::aaaa bbbb cccc dddd\n",
 	} {
 		if !strings.Contains(out, want) {

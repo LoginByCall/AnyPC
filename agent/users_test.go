@@ -83,7 +83,7 @@ func TestUsers(t *testing.T) {
 	var view atomic.Bool
 	var pinned atomic.Value
 	hosts := usersHost(accounts)
-	e2eAgent = func(a *Agent) { hosts(a); a.Trust = func(_ []byte, u string) { pinned.Store(u) } }
+	e2eAgent = func(a *Agent) { hosts(a); a.Trust = func(_ []byte, u string, _ []byte) { pinned.Store(u) } }
 	e2eSeen = func(m authMsg) {
 		if m.T == "ok" {
 			view.Store(m.View)

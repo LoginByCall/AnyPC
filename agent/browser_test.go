@@ -128,7 +128,7 @@ func TestBrowserClient(t *testing.T) {
 	}
 	var twcc, claimed atomic.Bool
 	var enrolled atomic.Value // У3: ключ браузера, закреплённый после входа; при переподключении он приходит заявкой
-	a.Trust = func(p []byte, _ string) { enrolled.Store(string(p)) }
+	a.Trust = func(p []byte, _ string, _ []byte) { enrolled.Store(string(p)) }
 	a.Trusted = func(p []byte, _ string) bool {
 		k, _ := enrolled.Load().(string)
 		claimed.Store(claimed.Load() || k == string(p))

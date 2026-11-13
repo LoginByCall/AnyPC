@@ -101,9 +101,9 @@ func TestTrusted(t *testing.T) {
 	key := func(i int) []byte { return bytes.Repeat([]byte{byte(i)}, 32) }
 	passwordMode(t, c) // в режиме кода закреплений нет (TestCodeTrust)
 	for i := range maxTrusted + 2 {
-		c.trust(key(i), "")
+		c.trust(key(i), "", c.Users[0].Salt)
 	}
-	c.trust(key(5), "")
+	c.trust(key(5), "", c.Users[0].Salt)
 	if len(c.Users[0].Trusted) != maxTrusted || c.trusted(key(0), "") || c.trusted(key(1), "") || !c.trusted(key(2), "") || !c.trusted(key(5), "") {
 		t.Fatalf("доверенных %d", len(c.Users[0].Trusted))
 	}
@@ -382,7 +382,7 @@ func TestUsersConfig(t *testing.T) {
 		t.Fatal("несуществующая запись")
 	}
 	k := bytes.Repeat([]byte{2}, 32)
-	c.trust(k, "ivan")
+	c.trust(k, "ivan", c.user("ivan").Salt)
 	if c.trusted(k, "") || !c.trusted(k, "ivan") || !c.trusted(k, agent.AnyUser) {
 		t.Fatal("ключ закреплён не за своей записью")
 	}
@@ -483,12 +483,12 @@ func passwordMode(t *testing.T, c *config) {
 func TestCodeTrust(t *testing.T) {
 	c, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
 	k, k2 := bytes.Repeat([]byte{7}, 32), bytes.Repeat([]byte{8}, 32)
-	c.trust(k, "") // вход кодом + «Разрешить»
+	c.trust(k, "", c.Users[0].Salt) // вход кодом + «Разрешить»
 	if c.trusted(k, "") || c.trusted(k, agent.AnyUser) || len(c.Users[0].Trusted) != 0 {
 		t.Fatal("в режиме кода ключ закреплён")
 	}
 	passwordMode(t, c)
-	c.trust(k2, "")
+	c.trust(k2, "", c.Users[0].Salt)
 	if !c.trusted(k2, "") {
 		t.Fatal("в режиме пароля ключ не закреплён")
 	}
@@ -613,23 +613,43 @@ func TestKeyLoginConfig(t *testing.T) {
 	}
 }
 
-// TestKeyDelTrusted — приёмка REQ-S-24 №1: отзыв ключа входа без пароля убирает его и из закреплённых У3 записи —
-// отозванный ключ не обходит блокировки перебора.
+// TestKeyDelTrusted — приёмка REQ-S-24 №1 и раунд 2 №3: отзыв ключа входа без пароля убирает его из закреплённых У3
+// всех записей — отозванный ключ не обходит блокировки перебора нигде.
 func TestKeyDelTrusted(t *testing.T) {
 	c, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
 	k := bytes.Repeat([]byte{7}, 32)
 	passwordMode(t, c)
 	c.setPassword("пароль-этого-пк")
-	c.trust(k, "")
+	c.setUser("ivan", "ivan-pass1", "full")
+	c.trust(k, "", c.Users[0].Salt)
+	c.trust(k, "ivan", c.user("ivan").Salt)
 	c.keyTrust(k, "", c.Users[0].Salt)
-	if !c.trusted(k, "") {
+	if !c.trusted(k, "") || !c.trusted(k, "ivan") {
 		t.Fatal("ключ не закреплён")
 	}
 	if err := c.keyDel("", pake.KeyFingerprint(k)); err != nil {
 		t.Fatal(err)
 	}
-	if c.trusted(k, "") || c.trusted(k, agent.AnyUser) {
+	if c.trusted(k, "") || c.trusted(k, "ivan") || c.trusted(k, agent.AnyUser) {
 		t.Fatal("отозванный ключ остался в закреплённых У3")
+	}
+}
+
+// TestTrustSalt — раунд 2 №5: закрепление У3 после входа не проходит, если пароль записи сменили за время входа.
+func TestTrustSalt(t *testing.T) {
+	c, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
+	k := bytes.Repeat([]byte{7}, 32)
+	passwordMode(t, c)
+	c.setPassword("пароль-этого-пк")
+	old := bytes.Clone(c.Users[0].Salt)
+	c.setPassword("другой-пароль-пк")
+	c.trust(k, "", old)
+	if c.trusted(k, "") {
+		t.Fatal("ключ закреплён за записью со сменённым паролем")
+	}
+	c.trust(k, "", c.Users[0].Salt)
+	if !c.trusted(k, "") {
+		t.Fatal("с той же солью не закреплён")
 	}
 }
 
@@ -655,9 +675,21 @@ func TestKeyTrustRace(t *testing.T) {
 // TestCKeys — приёмка №2: ключ клиента для удалённого ПК в программе — в config.json (0600), забыть — "".
 func TestCKeys(t *testing.T) {
 	c, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
-	v := `{"seed":"AAAA","pub":"BBBB","login":true,"lu":""}`
-	if c.ckeySet("12345", v) == nil || c.ckeySet("123456789", "{не json") == nil || c.ckeySet("123456789", strings.Repeat("x", 600)) == nil {
-		t.Fatal("неверный ID или ключ принят")
+	k, _ := pake.ClientSignB64("", "", "", "")
+	other, _ := pake.ClientSignB64("", "", "", "")
+	v := `{"seed":"` + k["seed"] + `","pub":"` + k["pub"] + `","login":true,"lu":""}`
+	for _, bad := range []string{"{не json", strings.Repeat("x", 600), "[]", `"x"`, "123", "null", "{}",
+		`{"seed":"AAAA","pub":"BBBB"}`,                                       // seed не 32 байта
+		`{"seed":"` + k["seed"] + `","pub":"` + other["pub"] + `"}`,          // pub не из этого seed
+		`{"seed":"` + k["seed"] + `","pub":"` + k["pub"] + `","x":1}`,        // лишнее поле
+		`{"seed":"` + k["seed"] + `","pub":"` + k["pub"] + `"} {"seed":"x"}`, // хвост
+	} {
+		if c.ckeySet("123456789", bad) == nil {
+			t.Fatalf("принят ключ %s", bad)
+		}
+	}
+	if c.ckeySet("12345", v) == nil {
+		t.Fatal("неверный ID принят")
 	}
 	if err := c.ckeySet("123456789", v); err != nil {
 		t.Fatal(err)
