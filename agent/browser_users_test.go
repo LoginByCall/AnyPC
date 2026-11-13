@@ -121,7 +121,7 @@ func TestBrowserUsers(t *testing.T) {
 	}
 }
 
-// cdpHostUsers — блок «Пользователи» в окне хоста с подменёнными привязками: список (имя — текстом), добавление
+// cdpHostUsers — блок «Учётные записи AnyPC» в окне хоста с подменёнными привязками: список (имя — текстом), добавление
 // (короткий пароль — отказ), «Пароль» заполняет форму, TOTP записи — окно настройки с её именем, удаление.
 const cdpHostUsers = `
 const [, , port, url] = process.argv;
@@ -165,7 +165,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   process.exit(0);
 })();`
 
-// TestBrowserHostUsers — окно хоста: блок «Пользователи».
+// TestBrowserHostUsers — окно хоста: блок «Учётные записи AnyPC».
 func TestBrowserHostUsers(t *testing.T) {
 	chrome, err := exec.LookPath("google-chrome")
 	if err != nil {
