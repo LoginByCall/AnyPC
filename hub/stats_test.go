@@ -82,12 +82,13 @@ func TestStats(t *testing.T) {
 // TestStatsRoll — смена суток: прошлые — в очередь записи, множество хостов и соль новые; потолок ключей.
 func TestStatsRoll(t *testing.T) {
 	h := &Hub{}
-	d1 := time.Date(2026, 11, 12, 23, 59, 0, 0, time.UTC)
+	// online/Count берут time.Now: первые сутки — сегодняшние (с датой, зашитой в тест, он падал на следующий день)
+	d1 := time.Now().UTC().Truncate(24 * time.Hour).Add(23*time.Hour + 59*time.Minute)
 	h.st.roll(d1)
 	salt := h.st.salt
 	h.online(true, "123456789", "windows v1", 1)
 	h.st.roll(d1.Add(2 * time.Minute))
-	if len(h.st.done) != 1 || h.st.done[0].Day != "2026-11-12" || h.st.done[0].Hosts != 1 {
+	if len(h.st.done) != 1 || h.st.done[0].Day != d1.Format(time.DateOnly) || h.st.done[0].Hosts != 1 {
 		t.Fatalf("прошлые сутки: %+v", h.st.done)
 	}
 	if h.st.salt == salt || h.st.d.HostsMax != 1 { // хост в сети и в новых сутках — максимум с него
