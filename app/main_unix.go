@@ -27,7 +27,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -142,8 +141,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	rand.Read(tok)
-	once := &onceCode{code: hex.EncodeToString(tok)}
+	once := &onceCode{}
 	run := &runner{a: a, ctx: ctx}
 	h := handler(addr, token, page, cfg, a, run, info, newFiles(downloads()), once)
 	go http.Serve(l, h)
@@ -156,7 +154,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Окно:", url)
 	}
 	if !*noBrowser { // аргументы браузера видны всем пользователям ПК (/proc/*/cmdline) — в них одноразовый код, не токен
-		openWindow("http://" + addr + "/?n=" + once.code)
+		openWindow("http://" + addr + "/?n=" + once.issue())
+	}
+	if startTray != nil { // значок в трее (Linux): окно — повторно, каждый раз новым одноразовым кодом
+		go startTray(ctx, cfg.ID, func() { openWindow("http://" + addr + "/?n=" + once.issue()) }, func() { quitNow(a) })
 	}
 	srv := cfg.Server
 	code := cfg.code()
@@ -169,17 +170,48 @@ func main() {
 	run.wait()
 }
 
-// onceCode — код для первого открытия окна. Токен в аргументах xdg-open/open читал бы любой пользователь ПК;
+// startTray — значок в трее до конца ctx (tray_linux.go; на Маке nil): id — ID этого ПК, open — окно, quit — выход.
+var startTray func(ctx context.Context, id string, open, quit func())
+
+// quitNow — выход по кнопке окна или пункту трея: сессию закрыть, ответу на запрос дать уйти.
+func quitNow(a *agent.Agent) {
+	a.Disconnect()
+	go func() { time.Sleep(300 * time.Millisecond); os.Exit(0) }()
+}
+
+// onceCode — коды открытия окна (при запуске и из трея). Токен в аргументах xdg-open/open читал бы любой пользователь ПК;
 // код годен один раз, и браузер тратит его сразу. Файл со ссылкой не годится: Firefox из snap (Ubuntu) не читает ~/.config.
 // ponytail: локальный пользователь, опрашивающий /proc в цикле, может успеть раньше браузера — тогда окно владельца
 // покажет «ссылка уже использована» (заметно); закрыть совсем — ключ через stdin браузера, которого у xdg-open нет.
 type onceCode struct {
-	code string
-	used atomic.Bool
+	mu    sync.Mutex
+	codes []string // выданные и ещё не использованные
+}
+
+// issue — новый код на одно открытие.
+func (o *onceCode) issue() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	c := hex.EncodeToString(b)
+	o.mu.Lock()
+	o.codes = append(o.codes, c)
+	o.mu.Unlock()
+	return c
 }
 
 func (o *onceCode) use(c string) bool {
-	return o != nil && c != "" && subtle.ConstantTimeCompare([]byte(c), []byte(o.code)) == 1 && o.used.CompareAndSwap(false, true)
+	if o == nil || c == "" {
+		return false
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for i, k := range o.codes {
+		if subtle.ConstantTimeCompare([]byte(c), []byte(k)) == 1 {
+			o.codes = slices.Delete(o.codes, i, i+1)
+			return true
+		}
+	}
+	return false
 }
 
 // handler — интерфейс и API. Чужие страницы не могут ни прочитать токен, ни вызвать API:
@@ -301,8 +333,7 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 		}
 		res, err = setNode(cfg, run, str(0), pub)
 	case "quit": // вкладка браузера — не процесс: без кнопки программа живёт до Ctrl+C
-		a.Disconnect()
-		go func() { time.Sleep(300 * time.Millisecond); os.Exit(0) }()
+		quitNow(a)
 	case "hostDisconnect":
 		a.Disconnect()
 	case "getClip":
