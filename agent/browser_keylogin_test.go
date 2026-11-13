@@ -162,7 +162,7 @@ func TestBrowserKeyLogin(t *testing.T) {
 		"key=|false|true",
 		"fake=Error: the remote PC key has changed. If AnyPC was not reinstalled there, do not connect|false|false|false",
 		"old=Error: the remote PC does not accept sign-in without a password — enter the password|false|false|[[true,\"\"]]",
-		"nokey=Error: the remote PC does not accept sign-in without a password — enter the password. Sign-in without a password from this PC is off. Also revoke key " + fp + " in the remote PC’s window|false|false|[]|false",
+		"nokey=Error: this PC’s key was not accepted: it was revoked, or the remote PC has no TOTP code or has “Ask before each connection” on — sign in with the password. Sign-in without a password from this PC is off. Also revoke key " + fp + " in the remote PC’s window|false|false|[]|false",
 		"nopw=Enter the password|false|false",
 	} {
 		if !strings.Contains(out, want) {
