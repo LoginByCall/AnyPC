@@ -78,13 +78,15 @@ func newMux(h http.Handler, siteHosts []string, dlDir string, turns, hubs []stri
 			host = hp
 		}
 		if slices.ContainsFunc(siteHosts, func(s string) bool { return strings.EqualFold(host, s) }) {
-			secure(w, r, site.CSP)
+			secure(w, r, site.CSP, "DENY")
 			www.ServeHTTP(w, r)
 			return
 		}
 		// Клиенту — только frame-ancestors: полная политика у него в <meta> (ui/index.html), а две полные
 		// действовали бы обе, и расхождение хешей убило бы страницу; окно программы отдаёт ту же страницу без заголовка.
-		secure(w, r, "frame-ancestors 'none'")
+		// «Мои ПК» (С4): клиент открывает свои ПК во фреймах того же источника — рамка своему источнику разрешена
+		// (SAMEORIGIN / frame-ancestors 'self'); чужой источник по-прежнему встроить не может.
+		secure(w, r, "frame-ancestors 'self'", "SAMEORIGIN")
 		app.ServeHTTP(w, r)
 	})
 }
@@ -93,9 +95,9 @@ func newMux(h http.Handler, siteHosts []string, dlDir string, turns, hubs []stri
 // HSTS — только по TLS и без includeSubDomains/preload: с апекса он накрыл бы us.anypc.org:8080 (HTTP),
 // а свой узел за обратным прокси (-addr без TLS) не должен навязывать HSTS домену оператора.
 // max-age=86400 — первая неделя (сутки обратимы); год (31536000) — после недели без жалоб.
-func secure(w http.ResponseWriter, r *http.Request, csp string) {
+func secure(w http.ResponseWriter, r *http.Request, csp, frameOpt string) {
 	h := w.Header()
-	h.Set("X-Frame-Options", "DENY")
+	h.Set("X-Frame-Options", frameOpt)
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Referrer-Policy", "no-referrer") // Origin у WebSocket и CORS от этого не обнуляется
 	h.Set("Content-Security-Policy", csp)

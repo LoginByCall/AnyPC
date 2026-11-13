@@ -4,5 +4,5 @@ package ui
 
 import "embed"
 
-//go:embed index.html pake.wasm wasm_exec.js
+//go:embed index.html embed.js pake.wasm wasm_exec.js
 var FS embed.FS
