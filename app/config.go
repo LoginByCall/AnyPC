@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"math/big"
 	"net"
@@ -566,7 +567,11 @@ func (c *config) ckeyGet(id string) string {
 
 // ckeySet — запомнить ключ клиента для удалённого ПК; "" — забыть.
 func (c *config) ckeySet(id, k string) error {
-	if !hub.IsHostID(id) || len(k) > 512 || k != "" && !validCKey(k) {
+	ok := true
+	if k != "" {
+		k, ok = normCKey(k)
+	}
+	if !hub.IsHostID(id) || len(k) > 512 || !ok {
 		return errors.New("неверный ID или ключ")
 	}
 	c.mu.Lock()
@@ -583,23 +588,38 @@ func (c *config) ckeySet(id, k string) error {
 	return c.save()
 }
 
-// validCKey — ключ клиента от окна: объект {seed, pub, login?, lu?}, seed — 32 байта base64, pub выводится из него.
-func validCKey(k string) bool {
-	var v struct {
-		Seed, Pub string
-		Login     bool
-		Lu        string
-	}
+// normCKey — ключ клиента от окна, как он ляжет в файл: один объект {seed, pub, login?, lu?} (имена полей точно, без
+// регистровых дублей), seed — 32 байта base64, pub выводится из него. Хранится разобранное заново, не присланная
+// строка.
+func normCKey(k string) (string, bool) {
+	var raw map[string]json.RawMessage
 	d := json.NewDecoder(strings.NewReader(k))
-	d.DisallowUnknownFields()
-	if d.Decode(&v) != nil || d.More() {
-		return false
+	if d.Decode(&raw) != nil || raw == nil {
+		return "", false
+	}
+	if _, err := d.Token(); err != io.EOF { // после объекта — ничего, даже «}» или «]»
+		return "", false
+	}
+	for f := range raw {
+		if f != "seed" && f != "pub" && f != "login" && f != "lu" {
+			return "", false
+		}
+	}
+	var v struct {
+		Seed  string `json:"seed"`
+		Pub   string `json:"pub"`
+		Login bool   `json:"login"`
+		Lu    string `json:"lu"`
+	}
+	if json.Unmarshal([]byte(k), &v) != nil {
+		return "", false
 	}
 	seed, err := base64.StdEncoding.DecodeString(v.Seed)
-	if err != nil || len(seed) != ed25519.SeedSize {
-		return false
+	if err != nil || len(seed) != ed25519.SeedSize || base64.StdEncoding.EncodeToString(ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)) != v.Pub {
+		return "", false
 	}
-	return base64.StdEncoding.EncodeToString(ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)) == v.Pub
+	b, _ := json.Marshal(v)
+	return string(b), true
 }
 
 // savedGet — запомненный пароль удалённого ПК ("" — нет).
