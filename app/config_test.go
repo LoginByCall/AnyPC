@@ -550,10 +550,12 @@ func TestListenUI(t *testing.T) {
 
 // TestKeyLoginConfig — REQ-S-24: ключ во входе без пароля — за своей записью, не больше maxTrusted (вытесняются давно
 // не входившие), вход отмечается, переживает перезапуск; отзыв по отпечатку; смена пароля и удаление записи — сброс;
-// в режиме «Спрашивать» не действует и не добавляется.
+// в режиме «Спрашивать» в списке, но не действует (on) и не добавляется.
 func TestKeyLoginConfig(t *testing.T) {
 	c, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
 	key := func(i int) []byte { return bytes.Repeat([]byte{byte(i)}, 32) }
+	on := func(pub []byte, user string) bool { _, ok := c.keyLogin(pub, user); return ok }
+	salt := func(user string) []byte { return bytes.Clone(c.user(user).Salt) }
 	passwordMode(t, c)
 	if err := c.setPassword("пароль-этого-пк"); err != nil {
 		t.Fatal(err)
@@ -562,51 +564,113 @@ func TestKeyLoginConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := range maxTrusted + 2 {
-		c.keyTrust(key(i), "")
+		c.keyTrust(key(i), "", salt(""))
 	}
 	added := c.Users[0].KeyLogin[0].Added // key(2): старейший оставшийся
 	time.Sleep(10 * time.Millisecond)
-	c.keyTrust(key(2), "") // вход им: в конец, дата добавления та же
+	c.keyTrust(key(2), "", nil) // вход им: в конец, дата добавления та же
 	l := c.Users[0].KeyLogin
-	if len(l) != maxTrusted || c.keyLogin(key(0), "") || c.keyLogin(key(1), "") || !bytes.Equal(l[len(l)-1].Pub, key(2)) ||
+	if len(l) != maxTrusted || on(key(0), "") || on(key(1), "") || !bytes.Equal(l[len(l)-1].Pub, key(2)) ||
 		!l[len(l)-1].Added.Equal(added) || !l[len(l)-1].Last.After(added) {
 		t.Fatalf("ключей %d, последний %v", len(l), l[len(l)-1])
 	}
-	if !c.keyLogin(key(5), "") || !c.keyLogin(key(5), agent.AnyUser) || c.keyLogin(key(5), "ivan") || c.trusted(key(5), "") {
+	if !on(key(5), "") || !on(key(5), agent.AnyUser) || on(key(5), "ivan") || c.trusted(key(5), "") {
 		t.Fatal("ключ не за своей записью или попал в закреплённые У3")
 	}
-	c.keyTrust(key(30), "ivan")
-	c.keyTrust(key(30), "nobody") // нет такой записи — не добавляется
+	c.keyTrust(key(30), "ivan", salt("ivan"))
+	c.keyTrust(key(30), "nobody", salt("ivan")) // нет такой записи — не добавляется
 	c2, _ := loadConfig(c.path)
-	if !c2.keyLogin(key(30), "ivan") || !c2.keyLogin(key(5), "") || c2.keyLogin(key(30), "nobody") {
+	if in, ok := c2.keyLogin(key(30), "ivan"); !in || !ok || !on(key(5), "") || on(key(30), "nobody") {
 		t.Fatal("не сохранилось")
 	}
 	kl := c.keyList()
 	if len(kl) != maxTrusted+1 || kl[len(kl)-1]["user"] != "ivan" || kl[len(kl)-1]["fp"] != pake.KeyFingerprint(key(30)) {
 		t.Fatalf("список для окна: %d, %v", len(kl), kl[len(kl)-1])
 	}
-	if c.keyDel("Ivan", pake.KeyFingerprint(key(5))) == nil || c.keyDel("ivan", pake.KeyFingerprint(key(30))) != nil || c.keyLogin(key(30), "ivan") {
+	if c.keyDel("Ivan", pake.KeyFingerprint(key(5))) == nil || c.keyDel("ivan", pake.KeyFingerprint(key(30))) != nil || on(key(30), "ivan") {
 		t.Fatal("отзыв: чужой записи — не ошибка, или свой не отозван")
 	}
-	c.keyTrust(key(30), "ivan")
+	c.keyTrust(key(30), "ivan", salt("ivan"))
 	c.setUser("ivan", "ivan-pass2", "")
-	if c.keyLogin(key(30), "ivan") {
+	if on(key(30), "ivan") {
 		t.Fatal("смена пароля записи не сбросила вход по ключу")
 	}
-	c.keyTrust(key(30), "ivan")
+	c.keyTrust(key(30), "ivan", salt("ivan"))
 	c.delUser("ivan")
 	c.setUser("ivan", "ivan-pass1", "full")
-	if c.keyLogin(key(30), "ivan") || c.keyLogin(key(30), agent.AnyUser) {
+	if on(key(30), "ivan") || on(key(30), agent.AnyUser) {
 		t.Fatal("удаление записи не убрало её ключи")
 	}
 	c.setPassword("новый-пароль-пк")
-	if c.keyLogin(key(5), "") || len(c.Users[0].KeyLogin) != 0 {
+	if on(key(5), "") || len(c.Users[0].KeyLogin) != 0 {
 		t.Fatal("смена пароля этого ПК не сбросила вход по ключу")
 	}
-	c.keyTrust(key(5), "")
+	c.keyTrust(key(5), "", salt(""))
 	c.setConfirm(true)
-	c.keyTrust(key(6), "")
-	if c.keyLogin(key(5), "") || c.keyLogin(key(5), agent.AnyUser) || len(c.Users[0].KeyLogin) != 1 {
-		t.Fatal("в режиме «Спрашивать» вход по ключу действует или добавляется")
+	c.keyTrust(key(6), "", salt(""))
+	if in, ok := c.keyLogin(key(5), ""); !in || ok || on(key(5), agent.AnyUser) || len(c.Users[0].KeyLogin) != 1 {
+		t.Fatalf("режим «Спрашивать»: в списке %v, действует %v, ключей %d", in, ok, len(c.Users[0].KeyLogin))
+	}
+}
+
+// TestKeyDelTrusted — приёмка REQ-S-24 №1: отзыв ключа входа без пароля убирает его и из закреплённых У3 записи —
+// отозванный ключ не обходит блокировки перебора.
+func TestKeyDelTrusted(t *testing.T) {
+	c, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
+	k := bytes.Repeat([]byte{7}, 32)
+	passwordMode(t, c)
+	c.setPassword("пароль-этого-пк")
+	c.trust(k, "")
+	c.keyTrust(k, "", c.Users[0].Salt)
+	if !c.trusted(k, "") {
+		t.Fatal("ключ не закреплён")
+	}
+	if err := c.keyDel("", pake.KeyFingerprint(k)); err != nil {
+		t.Fatal(err)
+	}
+	if c.trusted(k, "") || c.trusted(k, agent.AnyUser) {
+		t.Fatal("отозванный ключ остался в закреплённых У3")
+	}
+}
+
+// TestKeyTrustRace — приёмка №4: отметка входа ключом не возвращает ключ, отозванный за время входа; добавление по
+// «Доверять» не проходит, если пароль записи сменили за время входа (соль другая).
+func TestKeyTrustRace(t *testing.T) {
+	c, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
+	k := bytes.Repeat([]byte{7}, 32)
+	passwordMode(t, c)
+	c.setPassword("пароль-этого-пк")
+	c.keyTrust(k, "", nil) // сессия ключом, ключ отозвали до accept
+	if in, _ := c.keyLogin(k, ""); in {
+		t.Fatal("отметка входа вернула отозванный ключ")
+	}
+	old := bytes.Clone(c.Users[0].Salt)
+	c.setPassword("другой-пароль-пк")
+	c.keyTrust(k, "", old) // вход паролем с «Доверять», пароль сменили до accept
+	if in, _ := c.keyLogin(k, ""); in {
+		t.Fatal("ключ добавлен к записи со сменённым паролем")
+	}
+}
+
+// TestCKeys — приёмка №2: ключ клиента для удалённого ПК в программе — в config.json (0600), забыть — "".
+func TestCKeys(t *testing.T) {
+	c, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
+	v := `{"seed":"AAAA","pub":"BBBB","login":true,"lu":""}`
+	if c.ckeySet("12345", v) == nil || c.ckeySet("123456789", "{не json") == nil || c.ckeySet("123456789", strings.Repeat("x", 600)) == nil {
+		t.Fatal("неверный ID или ключ принят")
+	}
+	if err := c.ckeySet("123456789", v); err != nil {
+		t.Fatal(err)
+	}
+	c2, _ := loadConfig(c.path)
+	if c2.ckeyGet("123456789") != v {
+		t.Fatal("не сохранилось")
+	}
+	if st, _ := os.Stat(c.path); st.Mode().Perm() != 0o600 {
+		t.Fatalf("права файла %v", st.Mode().Perm())
+	}
+	c.ckeySet("123456789", "")
+	if c.ckeyGet("123456789") != "" {
+		t.Fatal("не забыт")
 	}
 }

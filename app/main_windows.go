@@ -155,6 +155,8 @@ func main() {
 	w.Bind("clientSign", pake.ClientSignB64) // ключ клиента на хост (У3, REQ-S-24), как clientSign из pake.wasm
 	w.Bind("knownGet", cfg.knownGet)
 	w.Bind("knownSet", cfg.knownSet)
+	w.Bind("ckeyGet", cfg.ckeyGet)
+	w.Bind("ckeySet", cfg.ckeySet)
 	w.Bind("savedGet", cfg.savedGet)
 	w.Bind("savedSet", cfg.savedSet)
 	fl := newFiles(agent.DownloadsDir()) // и клиент, и хост — в настоящие «Загрузки» (могут быть перенесены)

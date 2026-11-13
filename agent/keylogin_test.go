@@ -13,27 +13,32 @@ import (
 	"anypc/totp"
 )
 
-// keyStore — списки входа без пароля по записям, как account.KeyLogin в app/config.go (REQ-S-24).
+// keyStore — списки входа без пароля по записям, как account.KeyLogin в app/config.go (REQ-S-24); ask — режим
+// «Спрашивать»: ключи в списке, но не действуют (как config.keyLogin в режиме кода).
 type keyStore struct {
 	mu   sync.Mutex
 	keys map[string][][]byte
+	ask  bool
 }
 
-func (k *keyStore) has(pub []byte, user string) bool {
+func (k *keyStore) in(pub []byte, user string) bool { in, _ := k.login(pub, user); return in }
+
+func (k *keyStore) login(pub []byte, user string) (in, on bool) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	for u, l := range k.keys {
 		if (user == AnyUser || u == user) && slices.ContainsFunc(l, func(p []byte) bool { return bytes.Equal(p, pub) }) {
-			return true
+			return true, !k.ask
 		}
 	}
-	return false
+	return false, false
 }
 
-func (k *keyStore) add(pub []byte, user string) {
+// add — как config.keyTrust: salt == nil — только отметка входа (отозванный не возвращается). Соль в тестах не меняется.
+func (k *keyStore) add(pub []byte, user string, salt []byte) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	if !slices.ContainsFunc(k.keys[user], func(p []byte) bool { return bytes.Equal(p, pub) }) {
+	if !slices.ContainsFunc(k.keys[user], func(p []byte) bool { return bytes.Equal(p, pub) }) && salt != nil {
 		k.keys[user] = append(k.keys[user], bytes.Clone(pub))
 	}
 }
@@ -65,7 +70,7 @@ func TestKeyLogin(t *testing.T) {
 	e2eAgent = func(a *Agent) {
 		ag = a
 		hosts(a)
-		a.KeyLogin, a.KeyTrust = ks.has, ks.add
+		a.KeyLogin, a.KeyTrust = ks.login, ks.add
 		a.Unattended = func() bool { return unattended }
 		a.Confirm = func(string, string) Answer { asked.Store(true); return Allow }
 		if hostLocked { // хост заперт чужим перебором: ключ своей записи блокировку паролей не смотрит (У3)
@@ -108,8 +113,8 @@ func TestKeyLogin(t *testing.T) {
 	e2eByKey, e2eFail, e2eTrust = false, false, true
 	reset()
 	e2e(t, local(t), "123456789", false, ff, "ivan-pass1")
-	if !ks.has(pub, "ivan") || ks.has(pub, "") || !okKey.Load() || !okConf.Load() {
-		t.Fatalf("после «Доверять»: у ivan %v, у записи по умолчанию %v, key в ok %v, conf %v", ks.has(pub, "ivan"), ks.has(pub, ""), okKey.Load(), okConf.Load())
+	if !ks.in(pub, "ivan") || ks.in(pub, "") || !okKey.Load() || !okConf.Load() {
+		t.Fatalf("после «Доверять»: у ivan %v, у записи по умолчанию %v, key в ok %v, conf %v", ks.in(pub, "ivan"), ks.in(pub, ""), okKey.Load(), okConf.Load())
 	}
 
 	// ключ без пароля + верный код — сессия; CPace не было: ни в "otp", ни в "ok" conf нет
@@ -154,6 +159,7 @@ func TestKeyLogin(t *testing.T) {
 			ks.set(c.keys, pub)
 		}
 		unattended, e2eUser = c.unattended, c.user
+		ks.ask = !c.unattended // как config.keyLogin: в режиме кода ключ в списке, но не действует
 		reset()
 		e2e(t, local(t), "123456789", false, ff, "ivan-pass1")
 		f, _ := nlock(ag, c.user)
@@ -164,11 +170,12 @@ func TestKeyLogin(t *testing.T) {
 
 	// «Доверять» у записи без TOTP (вход через «Разрешить») ключ не добавляет: по нему всё равно не войти
 	ks.set("")
+	ks.ask = false
 	unattended, e2eByKey, e2eTrust, e2eFail, e2eUser, e2eGood, e2eOTP = true, false, true, false, "olga", "olga-pass1", nil
 	reset()
 	e2e(t, local(t), "123456789", false, ff, "olga-pass1")
-	if ks.has(pub, "olga") || okKey.Load() || !asked.Load() {
-		t.Fatalf("olga без TOTP: ключ добавлен %v, key в ok %v, окно %v", ks.has(pub, "olga"), okKey.Load(), asked.Load())
+	if ks.in(pub, "olga") || okKey.Load() || !asked.Load() {
+		t.Fatalf("olga без TOTP: ключ добавлен %v, key в ok %v, окно %v", ks.in(pub, "olga"), okKey.Load(), asked.Load())
 	}
 }
 
@@ -184,7 +191,7 @@ func TestKeyLoginBadSig(t *testing.T) {
 	e2eAgent = func(a *Agent) {
 		ag = a
 		hosts(a)
-		a.KeyLogin, a.KeyTrust = ks.has, ks.add
+		a.KeyLogin, a.KeyTrust = ks.login, ks.add
 		a.Unattended = func() bool { return true }
 	}
 	defer e2eReset()
@@ -207,7 +214,7 @@ func TestKeyLoginRevoke(t *testing.T) {
 	var revoke, gone atomic.Bool
 	e2eAgent = func(a *Agent) {
 		hosts(a)
-		a.KeyLogin, a.KeyTrust = ks.has, ks.add
+		a.KeyLogin, a.KeyTrust = ks.login, ks.add
 		a.Unattended = func() bool { return true }
 	}
 	e2eInput = func(t *testing.T, a *Agent) {
@@ -241,5 +248,57 @@ func TestKeyLoginRevoke(t *testing.T) {
 		if gone.Load() != c.gone {
 			t.Fatalf("по ключу %v, отзыв %v: разорвана %v", c.byKey, c.revoke, gone.Load())
 		}
+	}
+}
+
+// TestKeyLoginRevokeOTP — приёмка №8: ключ отозвали, пока хост ждал код TOTP: верный код уже не входит ("ok" нет),
+// отметка входа ключ в список не возвращает.
+func TestKeyLoginRevokeOTP(t *testing.T) {
+	k, _ := pake.ClientSignB64(e2eSeed(), "", "", "")
+	pub, _ := base64.StdEncoding.DecodeString(k["pub"])
+	ivan := &otpHost{secret: totp.NewSecret()}
+	hosts := usersHost(map[string]testUser{"": {pass: "secret123"}, "ivan": {pass: "ivan-pass1", otp: ivan}})
+	ks := &keyStore{}
+	ks.set("ivan", pub)
+	var ok atomic.Bool
+	e2eAgent = func(a *Agent) {
+		hosts(a)
+		a.KeyLogin, a.KeyTrust = ks.login, ks.add
+		a.Unattended = func() bool { return true }
+	}
+	e2eSeen = func(m authMsg) { ok.Store(ok.Load() || m.T == "ok") }
+	defer e2eReset()
+	e2eKey, e2eByKey, e2eFail, e2eUser, e2eGood = "ok", true, true, "ivan", "ivan-pass1"
+	e2eOTP = func(int) string { ks.set(""); return ivan.code() } // отзыв в окне хоста, пока клиент вводит код
+	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000}), "ivan-pass1")
+	if ok.Load() || ks.in(pub, "ivan") {
+		t.Fatalf("отзыв во время кода: ok %v, ключ вернулся %v", ok.Load(), ks.in(pub, "ivan"))
+	}
+}
+
+// TestKeyLoginOtherDTLS — приёмка №8: верная подпись ключа из списка, но над DTLS-отпечатками другого соединения
+// (повтор перехваченной подписи) — "nokey" и неудача.
+func TestKeyLoginOtherDTLS(t *testing.T) {
+	k, _ := pake.ClientSignB64(e2eSeed(), "", "", "")
+	pub, _ := base64.StdEncoding.DecodeString(k["pub"])
+	ivan := &otpHost{secret: totp.NewSecret()}
+	hosts := usersHost(map[string]testUser{"": {pass: "secret123"}, "ivan": {pass: "ivan-pass1", otp: ivan}})
+	ks := &keyStore{}
+	ks.set("ivan", pub)
+	var ag *Agent
+	var nokey atomic.Bool
+	e2eAgent = func(a *Agent) {
+		ag = a
+		hosts(a)
+		a.KeyLogin, a.KeyTrust = ks.login, ks.add
+		a.Unattended = func() bool { return true }
+	}
+	e2eSeen = func(m authMsg) { nokey.Store(nokey.Load() || m.T == "nokey") }
+	defer e2eReset()
+	e2eKey, e2eByKey, e2eFail, e2eUser = "other", true, true, "ivan"
+	e2eOTP = func(int) string { return ivan.code() }
+	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000}), "ivan-pass1")
+	if f, _ := nlock(ag, "ivan"); f != 1 || !nokey.Load() {
+		t.Fatalf("подпись чужого соединения: nokey %v, неудач %d", nokey.Load(), f)
 	}
 }

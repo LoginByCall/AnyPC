@@ -396,7 +396,17 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 						if hostKeys != 1 {
 							t.Error("хост не объявил keys в первом a")
 						}
-						k, _ := pake.ClientSignB64(e2eSeed(), id, pc.LocalDescription().SDP, pc.RemoteDescription().SDP)
+						local := pc.LocalDescription().SDP
+						if e2eKey == "other" { // подпись над отпечатком другого соединения клиента
+							p2, _ := webrtc.NewPeerConnection(webrtc.Configuration{})
+							p2.CreateDataChannel("x", nil)
+							o, _ := p2.CreateOffer(nil)
+							p2.Close()
+							if local = o.SDP; pake.Fingerprint(local) == "" || pake.Fingerprint(local) == pake.Fingerprint(pc.LocalDescription().SDP) {
+								t.Error("нет другого DTLS-отпечатка")
+							}
+						}
+						k, _ := pake.ClientSignB64(e2eSeed(), id, local, pc.RemoteDescription().SDP)
 						bm := authMsg{T: "b", Key: true}
 						bm.CPub, _ = base64.StdEncoding.DecodeString(k["pub"])
 						bm.CSig, _ = base64.StdEncoding.DecodeString(k["sig"])
@@ -499,7 +509,7 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 		t.Fatal("вход не завершился за 20 с")
 	}
 	good := cmp.Or(e2eGood, "secret123")
-	if pass != good || e2eDeny || e2eKey == "bad" || e2eFail { // ошибочный путь: отказ и никакого видео
+	if pass != good || e2eDeny || e2eKey == "bad" || e2eKey == "other" || e2eFail { // ошибочный путь: отказ и никакого видео
 		if ok {
 			t.Fatal("неверный пароль принят или отказ на хосте не сработал")
 		}
@@ -678,7 +688,7 @@ var (
 	e2eDeny    bool                                                          // ожидать отказ человека на хосте (REQ-F-03)
 	e2eCtl     func(*testing.T, *webrtc.DataChannel, chan ctlMsg)
 	e2eSquat   int                      // столько клиентов до настоящего шлют connect и молчат (У3, У9)
-	e2eKey     string                   // seed ключа клиента (base64): заявить в connect и подписать в «b» (У3); "bad" — заявить, подпись испортить
+	e2eKey     string                   // seed ключа клиента (base64): заявить в connect и подписать в «b» (У3); "bad" — заявить, подпись испортить; "other" — подписать отпечаток другого соединения (вход по ключу)
 	e2eNoVideo bool                     // видео не ждать (захват отклонён на хосте) — сразу к e2eCtl
 	e2eOTP     func(n int) string       // код TOTP на n-й запрос хоста; "" — не отвечать
 	e2eSeen    func(authMsg)            // каждое сообщение auth от хоста
