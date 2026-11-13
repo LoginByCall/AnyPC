@@ -289,7 +289,13 @@ func TestOTPTrustedLock(t *testing.T) {
 func TestViewOnlyLive(t *testing.T) {
 	var on atomic.Bool
 	var ag *Agent
-	e2eAgent = func(a *Agent) { ag = a; a.ViewOnly = on.Load }
+	e2eAgent = func(a *Agent) {
+		ag = a
+		a.ViewOnly = on.Load
+		// «Отклонить» — до Run: хост читает поле в горутинах сессий, запись на ходу была гонкой самого теста (-race);
+		// сессиям без byAsk поле не важно (mode в "ok" и setMode смотрят byAsk)
+		a.ConfirmControl = func(string, string) bool { return false }
+	}
 	defer func() { e2eAgent, e2eCtl = nil, nil }()
 	sess := func() *session { ag.mu.Lock(); defer ag.mu.Unlock(); return ag.sess }
 	mode := func(t *testing.T, msgs chan ctlMsg) {
@@ -339,7 +345,6 @@ func TestViewOnlyLive(t *testing.T) {
 	e2eCtl = func(t *testing.T, dc *webrtc.DataChannel, msgs chan ctlMsg) {
 		s := sess()
 		s.byAsk.Store(true)
-		ag.ConfirmControl = func(string, string) bool { return false }
 		dc.SendText(`{"t":"mode","view":true}`)
 		mode(t, msgs)
 		on.Store(false)
