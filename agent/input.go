@@ -280,20 +280,41 @@ func askBody(q [15]string, question, cid, peer, delay string) string {
 var AskDelay, askSpawn = 3 * time.Second, 2 * time.Second
 
 // askLoop — окно «Разрешить» там, где кнопку нельзя выключить на время (zenity, osascript, MessageBox): show
-// показывает окно не дольше left; согласие раньше AskDelay+askSpawn от запуска не засчитывается — окно показывается снова (в тексте
-// сказано про 3 с), отказ — сразу. Всего — не дольше AskTimeout.
-func askLoop(show func(left time.Duration) Answer) Answer {
-	end := time.Now().Add(AskTimeout)
-	for {
+// показывает окно не дольше left; согласие раньше AskDelay+askSpawn от ПЕРВОГО окна не засчитывается — окно показывается
+// снова с пояснением сверху (again, tooEarly), отказ — сразу. Всего — не дольше AskTimeout.
+// Отсчёт от первого окна, не от каждого: иначе рефлекторный щелчок в каждом новом окне давал «окно снова и снова» (канбан 2026-11-13).
+func askLoop(show func(left time.Duration, again bool) Answer) Answer {
+	t0 := time.Now()
+	end := t0.Add(AskTimeout)
+	for again := false; ; again = true {
 		left := time.Until(end)
 		if left < time.Second {
 			return Deny
 		}
-		t0 := time.Now()
-		if a := show(left); a == Deny || time.Since(t0) >= AskDelay+askSpawn {
+		if a := show(left, again); a == Deny || time.Since(t0) >= AskDelay+askSpawn {
 			return a
 		}
 	}
+}
+
+// tooEarly — строка над текстом повторного окна askLoop: почему окно появилось снова.
+func tooEarly(lang string, control bool) string {
+	q, ok := asks[lang]
+	if !ok {
+		q = asks["en"]
+	}
+	if control {
+		return "⚠ " + q[13]
+	}
+	return "⚠ " + q[9]
+}
+
+// againText — текст окна askLoop: при повторе сверху пояснение tooEarly.
+func againText(text, lang string, control, again bool) string {
+	if again {
+		return tooEarly(lang, control) + "\n\n" + text
+	}
+	return text
 }
 
 // plaqueBar — однострочная плашка (Windows, macOS): подпись и кнопка «Разорвать».

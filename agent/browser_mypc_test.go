@@ -152,7 +152,9 @@ func TestBrowserMyPC(t *testing.T) {
 
 	mux := http.NewServeMux()
 	mux.Handle("/ws", &hub.Hub{})
-	mux.HandleFunc("/ckey", func(w http.ResponseWriter, _ *http.Request) { json.NewEncoder(w).Encode(map[string]string{"seed": seedB64, "pub": ck["pub"]}) })
+	mux.HandleFunc("/ckey", func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(map[string]string{"seed": seedB64, "pub": ck["pub"]})
+	})
 	mux.HandleFunc("/fp", func(w http.ResponseWriter, r *http.Request) { // отпечаток ключа хоста (клиент пинит его как «Известный хост»)
 		if a := agents[r.URL.Query().Get("id")]; a != nil {
 			w.Write([]byte(pake.KeyFingerprint(a.Key.Public().(ed25519.PublicKey))))
@@ -217,20 +219,20 @@ func TestBrowserMyPC(t *testing.T) {
 
 	out := string(runCDP(t, ctx, chrome, cdpMyPC, srv.URL+"/"))
 	for _, want := range []string{
-		"toplink=noenter\n",                                   // ?embed в верхнем окне не вошёл (строка целиком)
+		"toplink=noenter\n", // ?embed в верхнем окне не вошёл (строка целиком)
 		`connected=["connected","connected","connected"]`,
 		`authed=["ok","ok","ok"]`,
-		`mine=["111111111","222222222","333333333"]`,          // вход по ключу пополнил «Мои ПК» (m.key)
+		`mine=["111111111","222222222","333333333"]`, // вход по ключу пополнил «Мои ПК» (m.key)
 		`clickactive=0`,
-		`keyactive=1`,                                         // Ctrl+Alt+2 переключил на вторую вкладку
-		`switch=true|drops=0|`,                                // 20 переключений: 0 обрывов/переподключений, мгновенно
+		`keyactive=1`,          // Ctrl+Alt+2 переключил на вторую вкладку
+		`switch=true|drops=0|`, // 20 переключений: 0 обрывов/переподключений, мгновенно
 		`stillconnected=["connected","connected","connected"]`,
-		`held=[0,0,0]`,                                        // залипших клавиш не осталось
-		`active=[false,true,false]`,                           // буфер/звук — только у активной (второй) вкладки
-		`brokenms=true|`,                                      // метка «разорвано» за ≤ 1 с через событие (не из тормозимого таймера)
-		`afterbye=["connected","connected","broken"]`,         // обрыв третьего не тронул первые два; его вкладка «разорвано»
-		`afternokey=["222222222","333333333"]`,                // "nokey" убрал первый из «Мои ПК»
-		`afteruntrust=["333333333"]`,                          // снятие «Доверять» убрало второй
+		`held=[0,0,0]`,                                // залипших клавиш не осталось
+		`active=[false,true,false]`,                   // буфер/звук — только у активной (второй) вкладки
+		`brokenms=true|`,                              // метка «разорвано» за ≤ 1 с через событие (не из тормозимого таймера)
+		`afterbye=["connected","connected","broken"]`, // обрыв третьего не тронул первые два; его вкладка «разорвано»
+		`afternokey=["222222222","333333333"]`,        // "nokey" убрал первый из «Мои ПК»
+		`afteruntrust=["333333333"]`,                  // снятие «Доверять» убрало второй
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("нет %q", want)

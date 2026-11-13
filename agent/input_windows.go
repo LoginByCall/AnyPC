@@ -124,9 +124,9 @@ func askMessageBox(cid, peer string) Answer {
 	lang := uiLang()
 	title, text, _, _, _ := askText(lang, cid, peer, true)
 	t, _ := syscall.UTF16PtrFromString(title)
-	m, _ := syscall.UTF16PtrFromString(text + "\n\n" + winAskHint(lang))
 	const flags = 0x3 | 0x20 | 0x200 | 0x1000 | 0x10000 | 0x40000 // YESNOCANCEL | ICONQUESTION | DEFBUTTON3 (Enter = «Отмена» = отказ) | SYSTEMMODAL | SETFOREGROUND | TOPMOST
-	return askLoop(func(left time.Duration) Answer {              // у MessageBox кнопку не выключить: согласие раньше AskDelay — окно снова
+	return askLoop(func(left time.Duration, again bool) Answer {  // у MessageBox кнопку не выключить: согласие раньше AskDelay — окно снова
+		m, _ := syscall.UTF16PtrFromString(againText(text, lang, false, again) + "\n\n" + winAskHint(lang))
 		r, _, _ := p.Call(0, uintptr(unsafe.Pointer(m)), uintptr(unsafe.Pointer(t)), flags, 0, uintptr(left/time.Millisecond))
 		switch r {
 		case 6: // IDYES
@@ -158,9 +158,9 @@ func AskControl(cid, peer string) bool {
 		q = asks["en"]
 	}
 	t, _ := syscall.UTF16PtrFromString(title)
-	m, _ := syscall.UTF16PtrFromString(text + "\n\n" + q[14])     // кнопки системные: «Да» = «Разрешить»
 	const flags = 0x4 | 0x20 | 0x100 | 0x1000 | 0x10000 | 0x40000 // YESNO | ICONQUESTION | DEFBUTTON2 (Enter = «Нет») | SYSTEMMODAL | SETFOREGROUND | TOPMOST
-	return askLoop(func(left time.Duration) Answer {
+	return askLoop(func(left time.Duration, again bool) Answer {
+		m, _ := syscall.UTF16PtrFromString(againText(text, lang, true, again) + "\n\n" + q[14]) // кнопки системные: «Да» = «Разрешить»
 		r, _, _ := p.Call(0, uintptr(unsafe.Pointer(m)), uintptr(unsafe.Pointer(t)), flags, 0, uintptr(left/time.Millisecond))
 		return map[bool]Answer{true: Allow}[r == 6] // IDYES; IDNO, крестик, 32000 — истекло время
 	}) == Allow
