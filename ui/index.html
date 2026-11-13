@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="ru">
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-yiRgnrM2ESTrudeA9m2xnsMBK/ZGeVQqtBrZ0DrUyEE=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-FQB/EBNXnXV8r6Np1X/n9dTU69kqov7sF6hUG0tA4s0=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AnyPC</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26'><style>.a{stroke:%2317181c}.b{fill:%23d2452d}@media(prefers-color-scheme:dark){.a{stroke:%23eceae4}.b{fill:%23ef6a52}}</style><rect class='a' x='1.5' y='3' width='15' height='11' rx='2' fill='none' stroke-width='2.6'/><rect class='b' x='10' y='12' width='15' height='11' rx='2'/></svg>">
@@ -1555,19 +1555,15 @@ if (!EMBED) {
   window.myPcRender = myPcRender;
   window.myPcKey = code => code === 'ArrowLeft' ? switchRel(-1) : code === 'ArrowRight' ? switchRel(1)
     : (n => n >= 1 && n <= pcs.length && switchTo(n - 1))(+code.replace('Digit', '')); // Ctrl+Alt+1..9 — по номеру
-  const typingInActive = () => {
-    const p = pcs[active]; if (!p) return false;
-    if (p.state === 'pw') return true;
-    try { const a = p.frame.contentDocument?.activeElement; return document.activeElement === p.frame && /^(INPUT|TEXTAREA)$/.test(a?.tagName || ''); } catch { return false; }
-  };
   window.myPcState = (id, s) => { // фрейм сообщил состояние: метка вкладки и очередь кода
     const p = pcs.find(x => x.id === id); if (!p) return;
     p.state = s; codeQ = codeQ.filter(x => x !== id);
     if (s === 'code') codeQ.push(id);
     $('mccode').classList.toggle('hidden', !codeQ.length);
     $('mcfor').textContent = codeQ.length ? myPcs.label(codeQ[0]) : ''; // человеку видно, для какого ПК код
-    // фокус в поле кода — только если человек не печатает в активной вкладке (пароль во фрейме ушёл бы в #mcot)
-    if (codeQ.length && !atHome && (pcs[active]?.id === id && s === 'code' || !typingInActive())) $('mcot').focus();
+    // фокус в поле кода — только когда код просит сама активная вкладка: иначе набираемое (пароль во фрейме или на
+    // удалённом ПК) ушло бы в открытое поле #mcot; запрос фоновой вкладки виден строкой кода с именем ПК
+    if (!atHome && pcs[active]?.id === id && s === 'code') $('mcot').focus();
     renderTabs();
   };
   window.myPcCodeWanted = () => codeQ[0] || ''; // для теста: какой ПК сейчас ждёт код
