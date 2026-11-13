@@ -357,8 +357,8 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 			dc.OnOpen(func() { dcOpen <- dc })
 		case "auth": // как клиент в ui/index.html + app: CPace с отпечатками из своих SDP
 			var wantConf []byte
-			otpN := 0
-			dc.OnClose(func() { // хост закрыл сессию (не дождался кода TOTP) — вход не состоялся
+			otpN, hostKeys := 0, -1 // hostKeys: первое "a" хоста объявило вход по ключу (REQ-S-24); -1 — "a" ещё не было
+			dc.OnClose(func() {     // хост закрыл сессию (не дождался кода TOTP) — вход не состоялся
 				select {
 				case authed <- false:
 				default:
@@ -375,6 +375,9 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 				}
 				switch am.T {
 				case "a":
+					if hostKeys < 0 {
+						hostKeys = map[bool]int{true: 1}[am.Keys]
+					}
 					if e2eUser != "" && am.User == "" { // как ui/index.html: запись по имени — первое "a" (по умолчанию) не для нас
 						if !am.Users {
 							t.Error("хост не объявил users в первом a")
@@ -389,6 +392,21 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 					if am.User != e2eUser {
 						t.Errorf("ответ хоста на имя %q, а не %q", am.User, e2eUser)
 					}
+					if e2eByKey { // как ui/index.html: пустой пароль и ключ во входе без пароля — "b" без CPace
+						if hostKeys != 1 {
+							t.Error("хост не объявил keys в первом a")
+						}
+						k, _ := pake.ClientSignB64(e2eSeed(), id, pc.LocalDescription().SDP, pc.RemoteDescription().SDP)
+						bm := authMsg{T: "b", Key: true}
+						bm.CPub, _ = base64.StdEncoding.DecodeString(k["pub"])
+						bm.CSig, _ = base64.StdEncoding.DecodeString(k["sig"])
+						if e2eKey == "bad" {
+							bm.CSig[0] ^= 1
+						}
+						out, _ := json.Marshal(bm)
+						dc.Send(out)
+						return
+					}
 					b, conf, hc, err := pake.ClientRespond(pass, am.Salt, am.Msg, id,
 						pake.Fingerprint(pc.LocalDescription().SDP), pake.Fingerprint(pc.RemoteDescription().SDP))
 					if err != nil {
@@ -396,7 +414,7 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 						return
 					}
 					wantConf = hc
-					bm := authMsg{T: "b", Msg: b, Conf: conf}
+					bm := authMsg{T: "b", Msg: b, Conf: conf, Trust: e2eTrust}
 					if e2eKey != "" {
 						k, _ := pake.ClientSignB64(e2eSeed(), id, pc.LocalDescription().SDP, pc.RemoteDescription().SDP)
 						bm.CPub, _ = base64.StdEncoding.DecodeString(k["pub"])
@@ -418,6 +436,9 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 					if !bytes.Equal(am.Conf, wantConf) || pake.HostVerify(am.Pub, am.Sig, id, pake.Fingerprint(pc.LocalDescription().SDP), pake.Fingerprint(pc.RemoteDescription().SDP)) != nil {
 						t.Error("запрос кода TOTP без доказательства хоста")
 					}
+					if e2eByKey && !bytes.Equal(am.Pub, a.Key.Public().(ed25519.PublicKey)) { // клиент сверяет с закреплённым ключом
+						t.Error("запрос кода по ключу подписан не ключом хоста")
+					}
 					otpN++
 					if e2eOTP != nil {
 						if code := e2eOTP(otpN); code != "" {
@@ -427,7 +448,7 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 					}
 				case "ask":
 					asked.Store(true)
-				case "fail", "denied", "locked":
+				case "fail", "denied", "locked", "nokey":
 					denied.Store(am.T == "denied")
 					authed <- false
 				}
@@ -665,6 +686,8 @@ var (
 	e2eUser    string                   // имя учётной записи клиента (REQ-S-20); "" — как старый клиент: запись по умолчанию
 	e2eGood    string                   // верный пароль для e2eUser; "" — secret123
 	e2eTwice   bool                     // назвать имя дважды (хост обязан оборвать вход)
+	e2eByKey   bool                     // REQ-S-24: вход ключом e2eSeed без пароля (CPace не начинать; conf в "otp"/"ok" нет)
+	e2eTrust   bool                     // в "b" со входом паролем — trust (ключ во вход без пароля)
 	e2eInput   func(*testing.T, *Agent) // после нажатия ControlLeft клиентом, до bye
 	e2eIn      *webrtc.DataChannel      // канал input клиента (для e2eCtl): ставит e2e
 	e2eWait    = 20 * time.Second       // весь e2e: вход, видео, e2eCtl

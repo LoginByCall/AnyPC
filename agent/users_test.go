@@ -57,6 +57,7 @@ var accounts = map[string]testUser{"": {pass: "secret123"}, "ivan": {pass: "ivan
 // e2eReset — вернуть общие крючки e2e.
 func e2eReset() {
 	e2eAgent, e2eSeen, e2eInput, e2eOTP, e2eUser, e2eGood, e2eKey, e2eFail, e2eDeny = nil, nil, nil, nil, "", "", "", false, false
+	e2eByKey, e2eTrust = false, false
 }
 
 // sessHeld — после входа: подпись клиента (плашка, журнал) и сколько клавиш зажато (ввод дошёл).

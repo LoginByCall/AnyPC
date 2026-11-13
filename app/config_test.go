@@ -547,3 +547,66 @@ func TestListenUI(t *testing.T) {
 		t.Fatalf("запомнен %d, ждали новый %s", c4.UIPort, l2.Addr())
 	}
 }
+
+// TestKeyLoginConfig — REQ-S-24: ключ во входе без пароля — за своей записью, не больше maxTrusted (вытесняются давно
+// не входившие), вход отмечается, переживает перезапуск; отзыв по отпечатку; смена пароля и удаление записи — сброс;
+// в режиме «Спрашивать» не действует и не добавляется.
+func TestKeyLoginConfig(t *testing.T) {
+	c, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
+	key := func(i int) []byte { return bytes.Repeat([]byte{byte(i)}, 32) }
+	passwordMode(t, c)
+	if err := c.setPassword("пароль-этого-пк"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.setUser("Ivan", "ivan-pass1", "full"); err != nil {
+		t.Fatal(err)
+	}
+	for i := range maxTrusted + 2 {
+		c.keyTrust(key(i), "")
+	}
+	added := c.Users[0].KeyLogin[0].Added // key(2): старейший оставшийся
+	time.Sleep(10 * time.Millisecond)
+	c.keyTrust(key(2), "") // вход им: в конец, дата добавления та же
+	l := c.Users[0].KeyLogin
+	if len(l) != maxTrusted || c.keyLogin(key(0), "") || c.keyLogin(key(1), "") || !bytes.Equal(l[len(l)-1].Pub, key(2)) ||
+		!l[len(l)-1].Added.Equal(added) || !l[len(l)-1].Last.After(added) {
+		t.Fatalf("ключей %d, последний %v", len(l), l[len(l)-1])
+	}
+	if !c.keyLogin(key(5), "") || !c.keyLogin(key(5), agent.AnyUser) || c.keyLogin(key(5), "ivan") || c.trusted(key(5), "") {
+		t.Fatal("ключ не за своей записью или попал в закреплённые У3")
+	}
+	c.keyTrust(key(30), "ivan")
+	c.keyTrust(key(30), "nobody") // нет такой записи — не добавляется
+	c2, _ := loadConfig(c.path)
+	if !c2.keyLogin(key(30), "ivan") || !c2.keyLogin(key(5), "") || c2.keyLogin(key(30), "nobody") {
+		t.Fatal("не сохранилось")
+	}
+	kl := c.keyList()
+	if len(kl) != maxTrusted+1 || kl[len(kl)-1]["user"] != "ivan" || kl[len(kl)-1]["fp"] != pake.KeyFingerprint(key(30)) {
+		t.Fatalf("список для окна: %d, %v", len(kl), kl[len(kl)-1])
+	}
+	if c.keyDel("Ivan", pake.KeyFingerprint(key(5))) == nil || c.keyDel("ivan", pake.KeyFingerprint(key(30))) != nil || c.keyLogin(key(30), "ivan") {
+		t.Fatal("отзыв: чужой записи — не ошибка, или свой не отозван")
+	}
+	c.keyTrust(key(30), "ivan")
+	c.setUser("ivan", "ivan-pass2", "")
+	if c.keyLogin(key(30), "ivan") {
+		t.Fatal("смена пароля записи не сбросила вход по ключу")
+	}
+	c.keyTrust(key(30), "ivan")
+	c.delUser("ivan")
+	c.setUser("ivan", "ivan-pass1", "full")
+	if c.keyLogin(key(30), "ivan") || c.keyLogin(key(30), agent.AnyUser) {
+		t.Fatal("удаление записи не убрало её ключи")
+	}
+	c.setPassword("новый-пароль-пк")
+	if c.keyLogin(key(5), "") || len(c.Users[0].KeyLogin) != 0 {
+		t.Fatal("смена пароля этого ПК не сбросила вход по ключу")
+	}
+	c.keyTrust(key(5), "")
+	c.setConfirm(true)
+	c.keyTrust(key(6), "")
+	if c.keyLogin(key(5), "") || c.keyLogin(key(5), agent.AnyUser) || len(c.Users[0].KeyLogin) != 1 {
+		t.Fatal("в режиме «Спрашивать» вход по ключу действует или добавляется")
+	}
+}
