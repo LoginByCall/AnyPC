@@ -236,9 +236,11 @@ func AskAccept(cid, peer string) Answer {
 	if fakeDesktop {
 		return Allow
 	}
-	title, text, yes, no, view := askText(sysLang(), cid, peer, true)
+	lang := sysLang()
+	title, text, yes, no, view := askText(lang, cid, peer, true)
 	// zenity кнопку на время не выключает: согласие раньше AskDelay — окно снова (askLoop)
-	return askLoop(func(left time.Duration) Answer {
+	return askLoop(func(left time.Duration, again bool) Answer {
+		text := againText(text, lang, false, again)
 		// дополнительная кнопка: zenity печатает её подпись и выходит с кодом 1, как «Отклонить»;
 		// --default-cancel — Enter = «Отклонить»; перенос строк по ширине вместо --no-wrap (длинное предупреждение)
 		out, err := exec.Command("zenity", "--question", "--default-cancel", "--width=460", "--title="+title, "--text="+pangoEscape(text),
@@ -258,8 +260,10 @@ func AskControl(cid, peer string) bool {
 	if fakeDesktop {
 		return true
 	}
-	title, text, yes, no := askControlText(sysLang(), cid, peer, true)
-	return askLoop(func(left time.Duration) Answer {
+	lang := sysLang()
+	title, text, yes, no := askControlText(lang, cid, peer, true)
+	return askLoop(func(left time.Duration, again bool) Answer {
+		text := againText(text, lang, true, again)
 		err := exec.Command("zenity", "--question", "--default-cancel", "--width=460", "--title="+title, "--text="+pangoEscape(text),
 			"--ok-label="+yes, "--cancel-label="+no, "--timeout="+strconv.Itoa(int(left.Seconds()))).Run()
 		return map[bool]Answer{true: Allow}[err == nil]

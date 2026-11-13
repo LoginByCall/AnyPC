@@ -331,9 +331,11 @@ func AskAccept(cid, peer string) Answer {
 	if fakeDesktop {
 		return Allow
 	}
-	title, text, yes, no, view := askText(sysLang(), cid, peer, true)
+	lang := sysLang()
+	title, text, yes, no, view := askText(lang, cid, peer, true)
 	// display dialog кнопку на время не выключает: согласие раньше AskDelay — окно снова (askLoop)
-	return askLoop(func(left time.Duration) Answer {
+	return askLoop(func(left time.Duration, again bool) Answer {
+		text := againText(text, lang, false, again)
 		out, err := osa(`set r to display dialog (item 2 of argv) with title (item 1 of argv) buttons {item 4 of argv, item 6 of argv, item 3 of argv} default button 1 cancel button 1 giving up after ((item 5 of argv) as integer) with icon caution
 if gave up of r then return "no"
 if button returned of r is (item 3 of argv) then return "yes"
@@ -351,8 +353,10 @@ func AskControl(cid, peer string) bool {
 	if fakeDesktop {
 		return true
 	}
-	title, text, yes, no := askControlText(sysLang(), cid, peer, true)
-	return askLoop(func(left time.Duration) Answer {
+	lang := sysLang()
+	title, text, yes, no := askControlText(lang, cid, peer, true)
+	return askLoop(func(left time.Duration, again bool) Answer {
+		text := againText(text, lang, true, again)
 		out, err := osa(`set r to display dialog (item 2 of argv) with title (item 1 of argv) buttons {item 4 of argv, item 3 of argv} default button 1 cancel button 1 giving up after ((item 5 of argv) as integer) with icon caution
 if gave up of r then return "no"
 if button returned of r is (item 3 of argv) then return "yes"

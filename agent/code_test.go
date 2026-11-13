@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -80,8 +81,8 @@ func TestAskLoop(t *testing.T) {
 	defer func() { AskDelay, askSpawn = d, sp }()
 	AskDelay, askSpawn = 150*time.Millisecond, 50*time.Millisecond
 	shows := 0
-	early := func(wait time.Duration, a Answer) func(time.Duration) Answer {
-		return func(left time.Duration) Answer {
+	early := func(wait time.Duration, a Answer) func(time.Duration, bool) Answer {
+		return func(left time.Duration, _ bool) Answer {
 			shows++
 			if left > to {
 				t.Errorf("окно дольше AskTimeout: %v", left)
@@ -106,8 +107,32 @@ func TestAskLoop(t *testing.T) {
 	}
 	t0 := time.Now()
 	AskDelay = time.Hour // согласие всегда «раньше» — до конца AskTimeout и отказ
-	if a := askLoop(func(left time.Duration) Answer { time.Sleep(min(left, 5*time.Second)); return Allow }); a != Deny || time.Since(t0) > to+time.Second {
+	if a := askLoop(func(left time.Duration, _ bool) Answer { time.Sleep(min(left, 5*time.Second)); return Allow }); a != Deny || time.Since(t0) > to+time.Second {
 		t.Fatalf("без засчитанного согласия: %v за %v", a, time.Since(t0))
+	}
+}
+
+// TestAskLoopFromFirst — регрессия (канбан 2026-11-13, «окно запроса всплывает снова и снова»): задержка считается от
+// ПЕРВОГО окна. Раньше отсчёт начинался заново в каждом окне, и щелчок через 120 мс в каждом окне давал бесконечный повтор.
+// Повторное окно получает again=true (пояснение сверху), первое — false.
+func TestAskLoopFromFirst(t *testing.T) {
+	d, sp := AskDelay, askSpawn
+	defer func() { AskDelay, askSpawn = d, sp }()
+	AskDelay, askSpawn = 150*time.Millisecond, 50*time.Millisecond // порог 200 мс
+	var flags []bool
+	a := askLoop(func(left time.Duration, again bool) Answer {
+		flags = append(flags, again)
+		time.Sleep(120 * time.Millisecond) // каждое окно — раньше порога, вместе — позже
+		return Allow
+	})
+	if a != Allow || len(flags) != 2 || flags[0] || !flags[1] {
+		t.Fatalf("ожидалось «Разрешить» со 2-го окна (again=false,true), получено %v, окна %v", a, flags)
+	}
+	if s := againText("T", "ru", false, true); !strings.HasPrefix(s, "⚠ ") || !strings.HasSuffix(s, "\n\nT") {
+		t.Fatalf("пояснение повтора: %q", s)
+	}
+	if againText("T", "ru", true, false) != "T" {
+		t.Fatal("первое окно — без пояснения")
 	}
 }
 
