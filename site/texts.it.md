@@ -55,10 +55,8 @@
 - `bug`: Segnala un errore
 - `foot`: AnyPC beta. Al primo avvio, la versione per Windows scarica FFmpeg (GPLv3) dalle build di gyan.dev. Fornito «così com’è», senza garanzia.
 - `privacy`: Privacy
-- `f5t`: Anche con il tuo server
-- `f5d`: Installa il tuo nodo su un VPS con un solo comando e passa il programma su di esso: i dati delle connessioni restano a te.
-- `f6t`: Più nodi propri
-- `f6d`: AnyPC ti permette di installare più nodi relay propri e passare dall’uno all’altro: automaticamente, sul percorso più veloce in base al ping di entrambi i lati, oppure a mano.
+- `f5t`: Con il tuo server
+- `f5d`: Installa uno o più nodi relay tuoi su un VPS con un solo comando e indirizza l’app verso di essi: automaticamente lungo il percorso più veloce (in base al ping di entrambi i lati) o manualmente. I registri delle connessioni restano solo a te.
 - `f7t`: Protezione da accessi altrui
 - `f7d`: Per connettersi senza conferma serve anche un codice monouso da un’app di autenticazione (TOTP): la sola password, anche se rubata, non basta.
 - `f8t`: Voce durante la sessione
