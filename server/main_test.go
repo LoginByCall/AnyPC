@@ -74,7 +74,9 @@ func TestRouting(t *testing.T) {
 }
 
 // TestHeaders — F2: заголовки безопасности на обоих mux; HSTS только по TLS; полная CSP — только лендингу
-// (у клиента она в <meta>, вторая полная политика с другим хешем убила бы страницу).
+// (у клиента она в <meta>, вторая полная политика с другим хешем убила бы страницу). «Мои ПК» (С4): клиент
+// встраивает свои ПК во фреймы того же источника, поэтому у него SAMEORIGIN / frame-ancestors 'self'
+// (ослабление только до своего источника); лендинг — по-прежнему DENY / 'none'.
 func TestHeaders(t *testing.T) {
 	ws := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "WS") })
 	h := newMux(ws, []string{"www.example.com"}, t.TempDir(), nil, nil)
@@ -88,19 +90,20 @@ func TestHeaders(t *testing.T) {
 		h.ServeHTTP(w, r)
 		return w.Result()
 	}
-	for _, c := range []struct{ host, path, csp string }{
-		{"www.example.com", "/", site.CSP},
-		{"www.example.com", "/privacy.html", site.CSP},
-		{"any.example.com", "/", "frame-ancestors 'none'"},
-		{"any.example.com", "/pake.wasm", "frame-ancestors 'none'"},
-		{"any.example.com", "/ws", "frame-ancestors 'none'"},
+	for _, c := range []struct{ host, path, csp, xfo string }{
+		{"www.example.com", "/", site.CSP, "DENY"},
+		{"www.example.com", "/privacy.html", site.CSP, "DENY"},
+		{"any.example.com", "/", "frame-ancestors 'self'", "SAMEORIGIN"},
+		{"any.example.com", "/pake.wasm", "frame-ancestors 'self'", "SAMEORIGIN"},
+		{"any.example.com", "/embed.js", "frame-ancestors 'self'", "SAMEORIGIN"},
+		{"any.example.com", "/ws", "frame-ancestors 'self'", "SAMEORIGIN"},
 	} {
 		for _, tls := range []bool{false, true} {
 			r := resp(c.host, c.path, tls)
 			if r.StatusCode != 200 {
 				t.Errorf("%s%s: %d", c.host, c.path, r.StatusCode)
 			}
-			for k, v := range map[string]string{"X-Frame-Options": "DENY", "X-Content-Type-Options": "nosniff",
+			for k, v := range map[string]string{"X-Frame-Options": c.xfo, "X-Content-Type-Options": "nosniff",
 				"Referrer-Policy": "no-referrer", "Content-Security-Policy": c.csp} {
 				if got := r.Header.Get(k); got != v {
 					t.Errorf("%s%s: %s = %q, ждали %q", c.host, c.path, k, got, v)

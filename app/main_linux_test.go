@@ -148,7 +148,8 @@ func TestShimCSP(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(page)
-	i, j := strings.Index(s, "<script>"), strings.Index(s, "</script>")
+	i := strings.Index(s, "<script>") // первый встроенный (без src) — скрипт привязок; внешний embed.js закрыт раньше
+	j := strings.Index(s[i:], "</script>") + i
 	if !strings.Contains(s[i:j], "tok123") {
 		t.Fatal("первый скрипт — не привязки")
 	}

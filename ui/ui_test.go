@@ -17,7 +17,15 @@ func TestCSPHash(t *testing.T) {
 		t.Fatal(err)
 	}
 	html := string(b)
-	if n := strings.Count(html, "<script"); n != 1 {
+	// Ровно два <script: внешний embed.js (того же источника, разрешён 'self', хэша не требует) и один
+	// встроенный (в CSP по хэшу). Иначе новый встроенный скрипт прошёл бы мимо проверки хэша.
+	if n := strings.Count(html, "<script"); n != 2 {
+		t.Fatalf("тегов <script: %d — ожидалось 2 (embed.js + один встроенный)", n)
+	}
+	if !strings.Contains(html, `<script src="embed.js"></script>`) {
+		t.Fatal("нет внешнего <script src=\"embed.js\"> — фрейму «Мои ПК» нужны привязки родителя")
+	}
+	if n := strings.Count(html, "<script>"); n != 1 {
 		t.Fatalf("встроенных <script>: %d — каждому нужен свой хэш в CSP", n)
 	}
 	if m := regexp.MustCompile(`\son[a-z]+=["']`).FindString(html); m != "" {
@@ -27,7 +35,8 @@ func TestCSPHash(t *testing.T) {
 	if csp == nil {
 		t.Fatal("нет CSP")
 	}
-	i, j := strings.Index(html, "<script>"), strings.Index(html, "</script>")
+	i := strings.Index(html, "<script>")
+	j := strings.Index(html[i:], "</script>") + i // закрытие именно встроенного скрипта (внешний embed.js закрыт раньше)
 	sum := sha256.Sum256([]byte(html[i+len("<script>") : j]))
 	want := "'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
 	if !strings.Contains(csp[1], "script-src 'self' "+want) {
