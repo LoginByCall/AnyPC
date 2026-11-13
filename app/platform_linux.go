@@ -16,11 +16,31 @@ import (
 // Alt+Tab срабатывал на этом ПК, владелец 2026-11-11). Нет такого браузера — браузер по умолчанию.
 func openWindow(u string) {
 	for _, b := range []string{"google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge"} {
-		if p, err := exec.LookPath(b); err == nil && exec.Command(p, "--app="+u).Start() == nil {
+		if p, err := exec.LookPath(b); err == nil && launch(p, "--app="+u) == nil {
 			return
 		}
 	}
-	exec.Command("xdg-open", u).Start()
+	launch("xdg-open", u)
+}
+
+// launch — запустить и не ждать (Wait в горутине — без зомби). Под systemd (служба: INVOCATION_ID) — в своём scope:
+// иначе браузер попадёт в cgroup anypc.service, и остановка или обновление службы убьёт его окна.
+func launch(name string, args ...string) error {
+	c := launchCmd(name, args...)
+	if err := c.Start(); err != nil {
+		return err
+	}
+	go c.Wait()
+	return nil
+}
+
+func launchCmd(name string, args ...string) *exec.Cmd {
+	if os.Getenv("INVOCATION_ID") != "" {
+		if sr, err := exec.LookPath("systemd-run"); err == nil {
+			return exec.Command(sr, append([]string{"--user", "--scope", "--quiet", "--", name}, args...)...)
+		}
+	}
+	return exec.Command(name, args...)
 }
 
 func hostCapture(enc string) func(ctx context.Context, c agent.Cap) (*exec.Cmd, error) {
