@@ -100,7 +100,7 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	a := &agent.Agent{Audio: true,
-		Version: version, Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, Key: cfg.key(), FPS: 30, Stderr: logf, Trusted: cfg.trusted, Trust: cfg.trust,
+		Version: version, Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, Key: cfg.key(), FPS: 30, Stderr: logf, Trusted: cfg.trusted, Trust: cfg.trust, KeyLogin: cfg.keyLogin, KeyTrust: cfg.keyTrust,
 		Bitrate: agent.Kbps(cfg.Bitrate),
 		Confirm: agent.AskAccept, ConfirmControl: agent.AskControl, Unattended: func() bool { return !cfg.confirm() }, OTP: cfg.otp, ViewOnly: cfg.viewOnly, // без подтверждения — с TOTP (PLAN.md)
 		CodeUsed: cfg.codeUsed, // «Спрашивать»: код сменить после сессии и блокировки (REQ-S-23)
@@ -120,7 +120,7 @@ func main() {
 		node, pub := cfg.node()
 		mu.Lock()
 		defer mu.Unlock()
-		return map[string]any{"id": cfg.id(), "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "otp": cfg.otpSet(), "users": cfg.users(), "code": cfg.code(), "viewOnly": cfg.viewOnly(), "version": version, "ffmpeg": ffSnap(&ffMu, &ffState), "update": update, "node": node, "nodePub": pub, "server": cfg.server(), "audio": audioInfo(a)}
+		return map[string]any{"id": cfg.id(), "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "otp": cfg.otpSet(), "users": cfg.users(), "keys": cfg.keyList(), "code": cfg.code(), "viewOnly": cfg.viewOnly(), "version": version, "ffmpeg": ffSnap(&ffMu, &ffState), "update": update, "node": node, "nodePub": pub, "server": cfg.server(), "audio": audioInfo(a)}
 	}
 	go watchUpdates(func(v string) { mu.Lock(); update = v; mu.Unlock() }) // окно опрашивает hostInfo
 	a.OnState = func(on bool, s string) {
@@ -144,6 +144,7 @@ func main() {
 	w.Bind("newCode", func() (string, error) { return newCode(cfg, a) })
 	w.Bind("userSet", func(name, pw, rights string) error { return dropAfter(a, cfg.setUser(name, pw, rights)) })
 	w.Bind("userDel", func(name string) error { return dropAfter(a, cfg.delUser(name)) })
+	w.Bind("keyDel", func(name, fp string) error { return dropAfter(a, cfg.keyDel(name, fp)) }) // REQ-S-24: его сессия рвётся
 	run := &runner{a: a, ctx: ctx}
 	w.Bind("setNode", func(node string, public bool) (string, error) { return setNode(cfg, run, node, public) })
 	w.Bind("hostDisconnect", a.Disconnect)
@@ -151,6 +152,7 @@ func main() {
 	w.Bind("minimize", func() { user32.NewProc("ShowWindowAsync").Call(uintptr(w.Window()), 6) }) // SW_MINIMIZE
 	w.Bind("pakeRespond", pake.ClientRespondB64)
 	w.Bind("hostVerify", pake.HostVerifyB64)
+	w.Bind("clientSign", pake.ClientSignB64) // ключ клиента на хост (У3, REQ-S-24), как clientSign из pake.wasm
 	w.Bind("knownGet", cfg.knownGet)
 	w.Bind("knownSet", cfg.knownSet)
 	w.Bind("savedGet", cfg.savedGet)

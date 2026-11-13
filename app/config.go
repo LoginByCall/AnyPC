@@ -35,6 +35,15 @@ type account struct {
 	TOTP     string   `json:"totp,omitempty"`      // секрет TOTP, base32 без '=' (файл настроек — 0600, как хэш пароля)
 	TOTPStep int64    `json:"totp_step,omitempty"` // шаг последнего принятого кода: тот же и более ранний — повтор, отказ
 	Trusted  [][]byte `json:"trusted,omitempty"`   // У3: ключи клиентов, входивших этой записью (старые — в начале); сброс при смене пароля
+	// REQ-S-24: ключи входа без пароля (с TOTP); давно не входившие — в начале; сброс при смене пароля
+	KeyLogin []loginKey `json:"key_login,omitempty"`
+}
+
+// loginKey — ключ клиента во входе без пароля (REQ-S-24): когда добавлен и когда им входили последний раз.
+type loginKey struct {
+	Pub   []byte    `json:"pub"`
+	Added time.Time `json:"added"`
+	Last  time.Time `json:"last"`
 }
 
 // config — %APPDATA%\AnyPC\config.json. Enc/Bitrate/Server правятся вручную при необходимости.
@@ -270,7 +279,7 @@ func (c *config) setAccount(name, p, rights string) error {
 		c.Users = append(c.Users, account{Name: name, View: true}) // новая без явных прав — «просмотр»
 		u = &c.Users[len(c.Users)-1]
 	}
-	u.Salt, u.Hash, u.Trusted = salt, hash, nil
+	u.Salt, u.Hash, u.Trusted, u.KeyLogin = salt, hash, nil, nil
 	if rights != "" {
 		u.View = rights == "view" && name != ""
 	}
@@ -606,6 +615,71 @@ func (c *config) trust(pub []byte, user string) {
 		u.Trusted = u.Trusted[n:]
 	}
 	c.save()
+}
+
+// keyLogin — agent.Agent.KeyLogin (REQ-S-24): ключ во входе без пароля записи user (agent.AnyUser — любой).
+// В режиме «Спрашивать» входа по ключу нет (ключи хранятся), как и закреплённых (trusted).
+func (c *config) keyLogin(pub []byte, user string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.codeModeLocked() {
+		return false
+	}
+	return slices.ContainsFunc(c.Users, func(u account) bool {
+		return (user == agent.AnyUser || u.Name == user) && slices.ContainsFunc(u.KeyLogin, func(k loginKey) bool { return bytes.Equal(k.Pub, pub) })
+	})
+}
+
+// keyTrust — agent.Agent.KeyTrust: ключ во вход без пароля записи user или отметка входа им; лишние — давно не входившие.
+func (c *config) keyTrust(pub []byte, user string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reload()
+	u := c.user(user)
+	if c.codeModeLocked() || u == nil { // запись удалили, пока шёл вход
+		return
+	}
+	now := time.Now()
+	k := loginKey{Pub: bytes.Clone(pub), Added: now, Last: now}
+	if i := slices.IndexFunc(u.KeyLogin, func(k loginKey) bool { return bytes.Equal(k.Pub, pub) }); i >= 0 {
+		k.Added = u.KeyLogin[i].Added
+		u.KeyLogin = slices.Delete(u.KeyLogin, i, i+1)
+	}
+	u.KeyLogin = append(u.KeyLogin, k)
+	if n := len(u.KeyLogin) - maxTrusted; n > 0 {
+		u.KeyLogin = u.KeyLogin[n:]
+	}
+	c.save()
+}
+
+// keyDel — отозвать ключ входа без пароля записи user (fp — pake.KeyFingerprint, как в окне хоста).
+func (c *config) keyDel(user, fp string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reload()
+	u := c.user(agent.UserKey(user))
+	if u == nil {
+		return errors.New("нет такой учётной записи")
+	}
+	n := len(u.KeyLogin)
+	u.KeyLogin = slices.DeleteFunc(u.KeyLogin, func(k loginKey) bool { return pake.KeyFingerprint(k.Pub) == fp })
+	if len(u.KeyLogin) == n {
+		return errors.New("нет такого ключа")
+	}
+	return c.save()
+}
+
+// keyList — ключи входа без пароля всех записей для окна хоста: запись, отпечаток, когда добавлен, последний вход.
+func (c *config) keyList() []map[string]any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	l := []map[string]any{}
+	for _, u := range c.Users {
+		for _, k := range u.KeyLogin {
+			l = append(l, map[string]any{"user": u.Name, "fp": pake.KeyFingerprint(k.Pub), "added": k.Added, "last": k.Last})
+		}
+	}
+	return l
 }
 
 // secret — запись user для CPace (agent.Agent.Secret): соль, KDF(пароль, соль), права «просмотр»; нет — пустой hash.
