@@ -66,6 +66,7 @@ type Agent struct {
 	Trusted func(pub []byte, user string) bool                  // У3: ключ клиента закреплён за записью user (вход с ним был; AnyUser — за любой); nil — без доверенных
 	Trust   func(pub []byte, user string, salt []byte)          // закрепить ключ клиента за записью после входа по паролю (соль та же, что при входе)
 	Audio   bool                                                // окно хоста умеет звук (PLAN.md): клиент увидит кнопку микрофона
+	Pause   bool                                                // REQ-F-27: хост умеет паузу видео неактивной вкладки «Моих ПК» (pause:true в "ok"); клиент фоновой вкладки шлёт {"t":"pause","on":true}
 	Locked  func() bool                                         // экран заблокирован — захват не запускать (macOS, F7); nil — не проверять
 	// REQ-S-24: вход по ключу без пароля (ключ вместо пароля, код TOTP обязателен). KeyLogin: in — ключ в списке входа
 	// без пароля записи user (AnyUser — любой), on — и вход им сейчас разрешён (не режим «Спрашивать»). KeyTrust:
@@ -119,6 +120,7 @@ type session struct {
 	authed  atomic.Bool // до успешного CPace ни видео, ни ввод, ни буфер обмена, ни файлы не работают
 	audio   audioState
 	view    atomic.Bool  // REQ-F-20 «только просмотр»: от клиента — ни ввода, ни буфера, ни файлов; буфер хоста ему не уходит
+	paused  atomic.Bool  // REQ-F-27: вкладка «Моих ПК» ушла в фон — видеокадры не пишутся; плашка и прочее идут как раньше
 	forced  atomic.Bool  // просмотр навязан только «Только показ экрана»: выключат — управление вернётся (ViewOnlyChanged)
 	picking atomic.Bool  // открыто окно выбора файла
 	asking  atomic.Bool  // на хосте открыто окно «Разрешить / Отклонить» или ждём код TOTP
@@ -180,6 +182,29 @@ func (s *session) selectMonitor(i int) bool {
 	return true
 }
 
+// setPaused — REQ-F-27: вкладка «Моих ПК» ушла в фон (on=true) или вернулась (on=false). В паузе видеокадры не
+// пишутся (streamVP9/streamOnce пропускают WriteSample), плашка и остальные каналы идут как раньше. Возврат H.264/ffmpeg
+// просит IDR существующим путём PLI (новый процесс захвата); VP9 в процессе IDR не нужен — следующий разностный кадр
+// кодируется от сохранённой опорной, возврат за 1 кадр.
+func (s *session) setPaused(on bool) {
+	if !on && s.paused.Load() && !s.inproc.Load() {
+		s.resumeIDR() // сперва убить старый ffmpeg (paused ещё true — его разностные кадры не уходят), потом снять флаг
+	}
+	s.paused.Store(on)
+}
+
+// resumeIDR — перезапустить захват ради ключевого кадра (H.264: IDR даёт только новый процесс ffmpeg). В отличие от
+// PLI (onRTCP) без порога pliHold: возврат из паузы должен дать опорный кадр сразу, иначе клиент покажет артефакты.
+func (s *session) resumeIDR() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.capCancel != nil {
+		s.capStart = time.Now()
+		s.switched.Store(true)
+		s.capCancel()
+	}
+}
+
 // authMsg — канал "auth" (REQ-S-02): хост → {"t":"a",salt,msg}; клиент → {"t":"b",msg,conf};
 // хост → {"t":"ok",conf} | {"t":"fail"}. []byte — base64 в JSON.
 // Вход без подтверждения с TOTP: после верного пароля хост → {"t":"otp",conf,pub,sig} (доказательства — как в "ok"),
@@ -202,6 +227,7 @@ type authMsg struct {
 	View  bool   `json:"view,omitempty"`  // в "ok": сессия «только просмотр» (REQ-F-20)
 	Audio bool   `json:"audio,omitempty"` // в "ok": хост умеет звук (окно хоста ответит на предложение)
 	Mode  bool   `json:"mode,omitempty"`  // в "ok": сессию можно переключать просмотр ↔ управление (REQ-F-26, modeMsg)
+	Pause bool   `json:"pause,omitempty"` // в "ok": хост умеет паузу видео неактивной вкладки (REQ-F-27); старый хост поля не шлёт — клиент не паузит
 	CPub  []byte `json:"cpub,omitempty"`  // в "b": ключ клиента и его подпись над DTLS-отпечатками (У3)
 	CSig  []byte `json:"csig,omitempty"`
 	Keys  bool   `json:"keys,omitempty"`  // в первом "a" хоста: хост принимает вход по ключу без пароля (REQ-S-24)
@@ -230,6 +256,7 @@ type ctlMsg struct {
 	SDP  string    `json:"sdp,omitempty"` // "audio": предложение клиента / ответ окна хоста (PLAN.md, звук)
 	Err  string    `json:"err,omitempty"` // "audio": "closed" — окно хоста не ответило
 	S    string    `json:"s,omitempty"`   // "state": "locked" | "nocapture" | "ok" (F7; старый клиент неизвестный t пропускает)
+	On   bool      `json:"on,omitempty"`  // "pause": true — остановить видео (фоновая вкладка), false — возобновить (REQ-F-27)
 }
 
 // modeMsg — канал "ctl", смена режима сессии без разрыва (REQ-F-26; только у сессии с mode в "ok"):
@@ -1019,6 +1046,11 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 		if !s.authed.Load() || json.Unmarshal(msg.Data, &m) != nil {
 			return
 		}
+		if m.T == "pause" { // тест: любое "pause" до гейта a.Pause (старый хост их получать не должен)
+			if f := pauseRecv.Load(); f != nil {
+				(*f)(a, m.On)
+			}
+		}
 		switch {
 		case m.T == "clip" && s.control() && s.clip.fromRemote(m.Text):
 			if err := setClip(m.Text); err != nil {
@@ -1032,6 +1064,8 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 			a.setMode(sctx, s, mm.View, func(r modeMsg) { b, _ := json.Marshal(r); ctl.SendText(string(b)) })
 		case m.T == "audio" && m.SDP != "" && a.Audio:
 			s.audioOffer(m.SDP)
+		case m.T == "pause" && a.Pause: // REQ-F-27: фоновая вкладка «Моих ПК» просит остановить/возобновить видео
+			s.setPaused(m.On)
 		case m.T == "monitor":
 			if s.selectMonitor(m.I) {
 				log.Printf("сессия %s: монитор %d", s.cid, m.I+1)
@@ -1439,7 +1473,7 @@ func (a *Agent) accept(ctx context.Context, s *session, track *webrtc.TrackLocal
 		a.KeyTrust(kp, s.user, salt) // добавление — в журнал пишет сам (только если добавил)
 	}
 	view := s.view.Load()
-	send(authMsg{T: "ok", Conf: conf, Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph), View: view, Audio: a.Audio, Mode: s.byAsk.Load() && a.ConfirmControl != nil, Key: kp != nil})
+	send(authMsg{T: "ok", Conf: conf, Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph), View: view, Audio: a.Audio, Mode: s.byAsk.Load() && a.ConfirmControl != nil, Pause: a.Pause, Key: kp != nil})
 	log.Printf("сессия %s: вход выполнен%s", s.label(), map[bool]string{true: " (только просмотр)"}[view]) // REQ-F-16, F-24
 	s.sendMonitors()
 	closeInd, err := indicator(s.label(), s.plaque(), a.userClose(s)) // REQ-F-15, F-24
@@ -1854,6 +1888,23 @@ func (s *session) noMonitors() bool {
 	return len(s.mons) == 0
 }
 
+// vp9Encoder — кодер VP9 в процессе (vp9.go/vp9_stub.go). Интерфейс нужен ради подмены в тестах (newVP9Enc).
+type vp9Encoder interface {
+	setRate(kbps, fps int) error
+	encode(frame []byte, dur time.Duration, key bool) ([]byte, bool, error)
+	close()
+}
+
+// newVP9Enc — конструктор кодера VP9; тест подменяет его заглушкой без libvpx (TestPause).
+var newVP9Enc = func(w, h, kbps int) (vp9Encoder, error) { return newVP9(w, h, kbps) }
+
+// videoSent — тестовый крючок: вызывается на каждый отправленный видеокадр (для подсчёта кадров хоста); nil в проде.
+// Атомарный (как stateEvery): тест ставит и сбрасывает его при живых сессиях, читается из горутины stream.
+var videoSent atomic.Pointer[func(a *Agent)]
+
+// pauseRecv — тестовый крючок: вызывается на каждое полученное от клиента "pause" до гейта a.Pause; nil в проде.
+var pauseRecv atomic.Pointer[func(a *Agent, on bool)]
+
 // streamVP9 — кадры Y4M из ffmpeg → libvpx в процессе → трек. Битрейт и частота кадров берутся из rate на каждом
 // кадре (прореживание кадров источника), ключевой кадр — по keyReq (PLI): ничего из этого не перезапускает ffmpeg.
 // onFrame зовётся на первом отправленном кадре; true — кадр был.
@@ -1865,7 +1916,7 @@ func (a *Agent) streamVP9(ctx context.Context, s *session, out io.Reader, track 
 		}
 		return
 	}
-	enc, err := newVP9(y.w, y.h, c.Kbps)
+	enc, err := newVP9Enc(y.w, y.h, c.Kbps)
 	if err != nil {
 		log.Printf("%v", err)
 		return
@@ -1886,6 +1937,9 @@ func (a *Agent) streamVP9(ctx context.Context, s *session, out io.Reader, track 
 				log.Printf("поток: %v", err)
 			}
 			return
+		}
+		if s.paused.Load() { // REQ-F-27: пауза — кадр до кодера пропускаем, опорная libvpx не меняется; возврат за 1 разностный кадр
+			continue
 		}
 		s.mu.Lock()
 		kbps, fps := s.rate.cur, s.rate.fps()
@@ -1914,6 +1968,9 @@ func (a *Agent) streamVP9(ctx context.Context, s *session, out io.Reader, track 
 		}
 		if err := track.WriteSample(media.Sample{Data: data, Duration: skipped}); err != nil {
 			return
+		}
+		if f := videoSent.Load(); f != nil {
+			(*f)(a)
 		}
 		if !got {
 			got = true
@@ -1983,12 +2040,20 @@ func (a *Agent) streamOnce(ctx context.Context, s *session, track *webrtc.TrackL
 		if nal.UnitType == h264reader.NalUnitTypeCodedSliceIdr || nal.UnitType == h264reader.NalUnitTypeCodedSliceNonIdr {
 			d = frame
 		}
+		if s.paused.Load() { // REQ-F-27: пауза — сэмплы не пишем, но поток ffmpeg читаем (дренаж пайпа); возврат просит IDR (resumeIDR → новый процесс)
+			continue
+		}
 		if err := track.WriteSample(media.Sample{Data: nal.Data, Duration: d}); err != nil {
 			return
 		}
-		if d != 0 && !got {
-			got = true
-			onFrame()
+		if d != 0 {
+			if f := videoSent.Load(); f != nil {
+				(*f)(a)
+			}
+			if !got {
+				got = true
+				onFrame()
+			}
 		}
 	}
 }

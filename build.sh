@@ -22,7 +22,7 @@ VPX=$PWD/third_party/libvpx
 vpx() { [ -f "$VPX/$1/lib/libvpx.a" ] && echo "CGO_ENABLED=1 CGO_CFLAGS=-I$VPX/$1/include CGO_LDFLAGS=-L$VPX/$1/lib"; }
 if [ "$(vpx linux-amd64)" ]; then
   env $(vpx linux-amd64) go vet -tags vp9 ./agent
-  env $(vpx linux-amd64) go test -count=1 -tags vp9 -run '^(TestVP9|TestE2EVP9)$' ./agent
+  env $(vpx linux-amd64) go test -count=1 -tags vp9 -run '^(TestVP9|TestE2EVP9|TestPause|TestPauseIDR|TestBrowserPause)$' ./agent
   env $(vpx linux-amd64) GOOS=linux GOARCH=amd64 go build -tags vp9,netgo,osusergo -ldflags="-s -w -X main.version=$V -linkmode external -extldflags -static" -o bin/AnyPC-linux-amd64 ./app
 else
   GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=$V" -o bin/AnyPC-linux-amd64 ./app
