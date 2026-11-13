@@ -16,7 +16,10 @@ func init() { peerOK = samePeerUID }
 // samePeerUID — TCP-партнёр запроса (браузер на loopback) принадлежит пользователю, запустившему AnyPC.
 // Сокет клиента ищется в /proc/net/tcp{,6} по паре «его адрес → наш адрес»; не нашёлся — отказ.
 // Браузер того же пользователя (Chrome, Firefox из snap) проходит: сокеты его сетевого процесса — с нашим uid.
-func samePeerUID(r *http.Request) bool {
+func samePeerUID(r *http.Request) bool { return peerUIDIs(r, os.ReadFile, os.Getuid()) }
+
+// peerUIDIs — samePeerUID с подменяемым чтением /proc и uid (тесты).
+func peerUIDIs(r *http.Request, read func(string) ([]byte, error), uid int) bool {
 	la, _ := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
 	if la == nil {
 		return false
@@ -30,12 +33,12 @@ func samePeerUID(r *http.Request) bool {
 		path string
 		v6   bool
 	}{{"/proc/net/tcp", false}, {"/proc/net/tcp6", true}} {
-		b, err := os.ReadFile(f.path)
+		b, err := read(f.path)
 		if err != nil {
 			continue
 		}
-		if uid, ok := tcpUID(string(b), peer, local, f.v6); ok {
-			return uid == os.Getuid()
+		if u, ok := tcpUID(string(b), peer, local, f.v6); ok {
+			return u == uid
 		}
 	}
 	return false

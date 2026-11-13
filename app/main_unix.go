@@ -219,7 +219,12 @@ func (o *onceCode) issue() string {
 	return c
 }
 
-func (o *onceCode) use(c string) bool {
+func (o *onceCode) use(c string) bool { return o.find(c, true) }
+
+// has — код выдан и не просрочен; не тратит его.
+func (o *onceCode) has(c string) bool { return o.find(c, false) }
+
+func (o *onceCode) find(c string, spend bool) bool {
 	if o == nil || c == "" {
 		return false
 	}
@@ -228,7 +233,9 @@ func (o *onceCode) use(c string) bool {
 	o.prune()
 	for i, e := range o.codes {
 		if subtle.ConstantTimeCompare([]byte(c), []byte(e.code)) == 1 {
-			o.codes = slices.Delete(o.codes, i, i+1)
+			if spend {
+				o.codes = slices.Delete(o.codes, i, i+1)
+			}
 			return true
 		}
 	}
@@ -257,11 +264,18 @@ func handler(addr, token string, page []byte, cfg *config, a *agent.Agent, run *
 			}
 			api(w, r, strings.TrimPrefix(r.URL.Path, "/api/"), cfg, a, run, info, fl)
 		case r.URL.Path == "/" && r.URL.Query().Has("n"): // одноразовый код из аргументов браузера → страница с токеном
-			if peerOK != nil && !peerOK(r) { // до use: чужой пользователь не сжигает код владельца
+			// порядок: код жив (без траты; /proc не читается на любой /?n=x) → партнёр того же uid (чужой не сжигает
+			// код владельца) → погасить
+			n := r.URL.Query().Get("n")
+			if !once.has(n) {
+				http.Error(w, "Ссылка уже использована — откройте адрес из журнала AnyPC", http.StatusForbidden)
+				return
+			}
+			if peerOK != nil && !peerOK(r) {
 				http.Error(w, "Окно AnyPC открывает только пользователь, запустивший программу", http.StatusForbidden)
 				return
 			}
-			if !once.use(r.URL.Query().Get("n")) {
+			if !once.use(n) {
 				http.Error(w, "Ссылка уже использована — откройте адрес из журнала AnyPC", http.StatusForbidden)
 				return
 			}

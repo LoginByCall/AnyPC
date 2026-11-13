@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -383,19 +384,100 @@ func TestPeerUID(t *testing.T) {
 	}
 }
 
-// TestLaunchCmd: под systemd (INVOCATION_ID) браузер — в своём scope, не в cgroup службы.
+// TestLaunchCmd: под systemd (INVOCATION_ID) браузер — в своём scope с описанием (не командной строкой с кодом);
+// systemd-run упал — браузер напрямую; отработал — второго запуска нет.
 func TestLaunchCmd(t *testing.T) {
 	t.Setenv("INVOCATION_ID", "")
-	if c := launchCmd("/usr/bin/chrome", "--app=x"); strings.Join(c.Args, " ") != "/usr/bin/chrome --app=x" {
+	if c, scoped := launchCmd("/usr/bin/chrome", "--app=x"); scoped || strings.Join(c.Args, " ") != "/usr/bin/chrome --app=x" {
 		t.Errorf("без systemd: %q", c.Args)
 	}
-	t.Setenv("INVOCATION_ID", "abc")
-	c := launchCmd("/usr/bin/chrome", "--app=x")
-	if _, err := exec.LookPath("systemd-run"); err != nil {
-		t.Skip("нет systemd-run")
+	for _, rc := range []string{"1", "0"} {
+		dir := t.TempDir()
+		os.WriteFile(filepath.Join(dir, "systemd-run"), []byte("#!/bin/sh\nexit "+rc+"\n"), 0o755)
+		mark := filepath.Join(dir, "started")
+		browser := filepath.Join(dir, "browser")
+		os.WriteFile(browser, []byte("#!/bin/sh\necho \"$@\" > "+mark+"\n"), 0o755)
+		t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+		t.Setenv("INVOCATION_ID", "abc")
+		c, scoped := launchCmd(browser, "--app=x")
+		if !scoped || c.Args[0] != filepath.Join(dir, "systemd-run") ||
+			strings.Join(c.Args[1:], " ") != "--user --scope --quiet --description=AnyPC window -- "+browser+" --app=x" {
+			t.Errorf("служба: %q", c.Args)
+		}
+		if err := launch(browser, "--app=x"); err != nil {
+			t.Fatal(err)
+		}
+		started := false
+		for i := 0; i < 30 && !started; i++ {
+			time.Sleep(100 * time.Millisecond)
+			b, _ := os.ReadFile(mark)
+			started = strings.TrimSpace(string(b)) == "--app=x"
+		}
+		if started != (rc == "1") {
+			t.Errorf("systemd-run вышел с %s: браузер напрямую запущен = %v", rc, started)
+		}
 	}
-	if !strings.HasSuffix(c.Args[0], "systemd-run") || strings.Join(c.Args[1:], " ") != "--user --scope --quiet -- /usr/bin/chrome --app=x" {
-		t.Errorf("служба: %q", c.Args)
+}
+
+// TestPeerHandler: обработчик кода зовёт peerOK — отказ партнёру не тратит код; неизвестный код /proc не читает.
+func TestPeerHandler(t *testing.T) {
+	defer func(p func(*http.Request) bool) { peerOK = p }(peerOK)
+	var calls atomic.Int32
+	allow := false
+	peerOK = func(*http.Request) bool { calls.Add(1); return allow }
+	cfg, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
+	once := &onceCode{}
+	h := handler("127.0.0.1:5000", "tok123", []byte("page"), cfg, &agent.Agent{}, nil, nil, newFiles(t.TempDir()), once)
+	get := func(path string) int {
+		r := httptest.NewRequest("GET", path, nil)
+		r.Host = "127.0.0.1:5000"
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w.Code
+	}
+	if c := get("/?n=nosuch"); c != 403 || calls.Load() != 0 {
+		t.Errorf("неизвестный код: %d, peerOK вызван %d раз (ждали 0)", c, calls.Load())
+	}
+	code := once.issue()
+	if c := get("/?n=" + code); c != 403 || calls.Load() != 1 || !once.has(code) {
+		t.Errorf("чужой uid: %d, peerOK %d, код цел %v", c, calls.Load(), once.has(code))
+	}
+	allow = true
+	if c := get("/?n=" + code); c != 303 || once.has(code) {
+		t.Errorf("свой uid: %d, код погашен %v", c, !once.has(code))
+	}
+}
+
+// TestPeerUIDTable: samePeerUID на фиксированной таблице — свой uid да, чужой нет, не найдено — нет.
+func TestPeerUIDTable(t *testing.T) {
+	if binary.NativeEndian.Uint16([]byte{1, 0}) != 1 {
+		t.Skip("таблица записана для порядка байт младшим вперёд")
+	}
+	const tab = `  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   1: 0100007F:D431 0100007F:1F90 01 00000000:00000000 00:00000000 00000000  1234        0 2 1 0000000000000000 20 4 30 10 -1
+   2: 0100007F:1F90 0100007F:D431 01 00000000:00000000 00:00000000 00000000  1000        0 3 1 0000000000000000 20 4 30 10 -1`
+	read := func(p string) ([]byte, error) {
+		if p == "/proc/net/tcp" {
+			return []byte(tab), nil
+		}
+		return nil, os.ErrNotExist
+	}
+	req := func(remote string) *http.Request {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.RemoteAddr = remote
+		return r.WithContext(context.WithValue(r.Context(), http.LocalAddrContextKey, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 8080}))
+	}
+	if !peerUIDIs(req("127.0.0.1:54321"), read, 1234) {
+		t.Error("свой uid не прошёл")
+	}
+	if peerUIDIs(req("127.0.0.1:54321"), read, 1000) { // сокет сервера (uid 1000) — не партнёр
+		t.Error("чужой uid прошёл")
+	}
+	if peerUIDIs(req("127.0.0.1:1"), read, 1234) {
+		t.Error("не найдено → должен быть отказ")
+	}
+	if peerUIDIs(req("127.0.0.1:54321"), func(string) ([]byte, error) { return nil, os.ErrPermission }, 1234) {
+		t.Error("/proc не читается → должен быть отказ")
 	}
 }
 
