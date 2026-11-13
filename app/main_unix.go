@@ -233,7 +233,7 @@ window.ANYPC = {ws: %s, clipPoll: %t};
   const T = %s;
   const api = (n, ...a) => fetch('/api/' + n, {method: 'POST', headers: {'X-Token': T, 'Content-Type': 'application/json'}, body: JSON.stringify(a)})
     .then(async r => { const j = await r.json(); if (!r.ok) throw j.error; return j.result; });
-  for (const n of ['hostInfo', 'setPassword', 'setConfirm', 'setNode', 'quit', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'hostVerify', 'knownGet', 'knownSet', 'savedGet', 'savedSet', 'otpNew', 'otpEnable', 'otpOff', 'newCode', 'userSet', 'userDel', 'keyDel', 'clientSign', 'setViewOnly', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort', 'audioAnswer', 'audioMic']) window[n] = (...a) => api(n, ...a);
+  for (const n of ['hostInfo', 'setPassword', 'setConfirm', 'setNode', 'quit', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'hostVerify', 'knownGet', 'knownSet', 'savedGet', 'savedSet', 'otpNew', 'otpEnable', 'otpOff', 'newCode', 'userSet', 'userDel', 'keyDel', 'clientSign', 'ckeyGet', 'ckeySet', 'setViewOnly', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort', 'audioAnswer', 'audioMic']) window[n] = (...a) => api(n, ...a);
   window.fullscreen = on => on ? document.documentElement.requestFullscreen().then(() => navigator.keyboard?.lock()).catch(() => {})
                                : document.fullscreenElement && document.exitFullscreen();
 })();
@@ -315,6 +315,10 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 		res = cfg.knownGet(str(0))
 	case "knownSet":
 		err = cfg.knownSet(str(0), str(1))
+	case "ckeyGet":
+		res = cfg.ckeyGet(str(0))
+	case "ckeySet":
+		err = cfg.ckeySet(str(0), str(1))
 	case "savedGet":
 		res = cfg.savedGet(str(0))
 	case "savedSet":

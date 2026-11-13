@@ -67,11 +67,12 @@ type Agent struct {
 	Trust   func(pub []byte, user string)                       // закрепить ключ клиента за записью после входа по паролю
 	Audio   bool                                                // окно хоста умеет звук (PLAN.md): клиент увидит кнопку микрофона
 	Locked  func() bool                                         // экран заблокирован — захват не запускать (macOS, F7); nil — не проверять
-	// REQ-S-24: вход по ключу без пароля (ключ вместо пароля, код TOTP обязателен). KeyLogin — ключ в списке входа без
-	// пароля записи user; KeyTrust — добавить его туда (вход паролем с «Доверять этому ПК») или отметить вход им.
-	// KeyLogin == nil — входа по ключу нет.
-	KeyLogin func(pub []byte, user string) bool
-	KeyTrust func(pub []byte, user string)
+	// REQ-S-24: вход по ключу без пароля (ключ вместо пароля, код TOTP обязателен). KeyLogin: in — ключ в списке входа
+	// без пароля записи user (AnyUser — любой), on — и вход им сейчас разрешён (не режим «Спрашивать»). KeyTrust:
+	// salt == nil — отметить вход ключом (только если он ещё в списке), иначе — добавить его (вход паролем с «Доверять
+	// этому ПК»), если соль записи всё та же. KeyLogin == nil — входа по ключу нет.
+	KeyLogin func(pub []byte, user string) (in, on bool)
+	KeyTrust func(pub []byte, user string, salt []byte)
 	// Второй фактор входа без подтверждения (PLAN.md «TOTP»). Unattended — окно «Разрешить» выключено в настройках
 	// (Confirm == nil — тоже без подтверждения). OTP: set — секрет TOTP задан, тогда после пароля нужен код; ok — код
 	// верный (постоянное время и защита от повтора — у владельца секрета). Без секрета вход без подтверждения не
@@ -425,7 +426,14 @@ func (a *Agent) revoked(s *session) (gone, view bool) {
 	user, was, key := s.user, s.salt, s.byKey
 	s.mu.Unlock()
 	salt, secret, view := a.Secret(user)
-	return len(secret) == 0 || !bytes.Equal(salt, was) || key != nil && !a.KeyLogin(key, user), view
+	if len(secret) == 0 || !bytes.Equal(salt, was) {
+		return true, view
+	}
+	if key != nil {
+		_, on := a.KeyLogin(key, user)
+		return !on, view
+	}
+	return false, view
 }
 
 func (a *Agent) setOnline(hub string, on bool) {
@@ -691,8 +699,9 @@ func (a *Agent) onConnect(ctx context.Context, c *websocket.Conn, m hub.Msg) {
 	var req connectReq
 	json.Unmarshal(m.Data, &req)                                                                          // старый клиент шлёт {} — выбора нет, ICE получает все серверы
 	trusted := a.Trusted != nil && len(req.CPub) == ed25519.PublicKeySize && a.Trusted(req.CPub, AnyUser) // имя ещё не известно
-	// и ключ входа без пароля (REQ-S-24)
-	trusted = trusted || a.KeyLogin != nil && len(req.CPub) == ed25519.PublicKeySize && a.KeyLogin(req.CPub, AnyUser)
+	if !trusted && a.KeyLogin != nil && len(req.CPub) == ed25519.PublicKeySize {
+		_, trusted = a.KeyLogin(req.CPub, AnyUser) // и ключ входа без пароля (REQ-S-24)
+	}
 	extra := 0
 	if trusted { // молчуны не займут места владельца; заявка без ключа отсеется в auth и освободит место
 		extra = 2
@@ -1199,8 +1208,17 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		if cur == nil || bad || m.T != "b" {
 			return
 		}
-		keyOK := pake.ClientVerify(m.CPub, m.CSig, a.ID, fpc, fph)                  // клиент владеет ключом cpub
-		keyLogin := m.Key && keyOK && a.KeyLogin != nil && a.KeyLogin(m.CPub, user) // REQ-S-24: ключ входа без пароля этой записи
+		keyOK := pake.ClientVerify(m.CPub, m.CSig, a.ID, fpc, fph) // клиент владеет ключом cpub
+		unattended := a.Confirm == nil || a.Unattended != nil && a.Unattended()
+		otpSet := false
+		if unattended && a.OTP != nil {
+			otpSet, _ = a.OTP(user, "")
+		}
+		keyIn, keyOn := false, false // REQ-S-24: ключ в списке входа без пароля этой записи; вход им разрешён
+		if m.Key && keyOK && a.KeyLogin != nil {
+			keyIn, keyOn = a.KeyLogin(m.CPub, user)
+		}
+		keyLogin := keyOn && otpSet                                                 // otpSet — только без подтверждения
 		trusted := keyOK && a.Trusted != nil && a.Trusted(m.CPub, user) || keyLogin // ключ закреплён за этой записью: права другой записи он не перебирает
 		reject := func(t string) {
 			send(authMsg{T: t})
@@ -1210,11 +1228,6 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		}
 		// блокировка (REQ-S-04, по имени и по хосту — REQ-S-22) — только для чужих; проверка и счёт под одним a.mu:
 		// параллельные входы не проскочат блокировку все сразу (HostFinish дешёвый — KDF посчитан заранее)
-		unattended := a.Confirm == nil || a.Unattended != nil && a.Unattended()
-		otpSet := false
-		if unattended && a.OTP != nil {
-			otpSet, _ = a.OTP(user, "")
-		}
 		a.mu.Lock()
 		if !trusted && a.pwLocked(user, time.Now()) {
 			a.mu.Unlock()
@@ -1223,11 +1236,11 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		}
 		var conf []byte
 		var err error
-		if m.Key { // REQ-S-24: ключ вместо пароля — только своей записи, без подтверждения и с TOTP (otpSet — только unattended)
-			if !keyLogin { // чужой ключ — неудача, как неверный пароль: перебор ключей не бесплатен
+		if m.Key { // REQ-S-24: ключ вместо пароля — только своей записи, без подтверждения и с TOTP
+			if !keyIn { // ключа нет в списке записи — неудача, как неверный пароль: перебор ключей не бесплатен
 				a.countAuth(s.cid, user, false)
 			}
-			if !keyLogin || !otpSet {
+			if !keyLogin { // ключ записи, но режим «Спрашивать» или нет TOTP — отказ без неудачи
 				a.mu.Unlock()
 				reject("nokey")
 				return
@@ -1413,7 +1426,14 @@ func (a *Agent) accept(ctx context.Context, s *session, track *webrtc.TrackLocal
 	kp := s.keyPin
 	s.mu.Unlock()
 	if kp != nil && a.KeyTrust != nil {
-		a.KeyTrust(kp, s.user)
+		s.mu.Lock()
+		byKey, salt := s.byKey != nil, s.salt
+		s.mu.Unlock()
+		if byKey { // только отметить вход: ключ, отозванный за время входа, не вернётся (revoked выше — не под той же блокировкой)
+			salt = nil
+			log.Printf("сессия %s: вход по ключу %s", s.label(), pake.KeyFingerprint(kp)[:9])
+		}
+		a.KeyTrust(kp, s.user, salt) // добавление — в журнал пишет сам (только если добавил)
 	}
 	view := s.view.Load()
 	send(authMsg{T: "ok", Conf: conf, Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph), View: view, Audio: a.Audio, Mode: s.byAsk.Load() && a.ConfirmControl != nil, Key: kp != nil})
