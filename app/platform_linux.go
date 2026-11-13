@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"anypc/agent"
 )
@@ -25,22 +27,45 @@ func openWindow(u string) {
 
 // launch — запустить и не ждать (Wait в горутине — без зомби). Под systemd (служба: INVOCATION_ID) — в своём scope:
 // иначе браузер попадёт в cgroup anypc.service, и остановка или обновление службы убьёт его окна.
+// systemd-run быстро вышел с ошибкой (нет менеджера пользователя) — браузер напрямую, как без службы.
 func launch(name string, args ...string) error {
-	c := launchCmd(name, args...)
+	c, scoped := launchCmd(name, args...)
 	if err := c.Start(); err != nil {
 		return err
 	}
-	go c.Wait()
+	if !scoped {
+		go c.Wait()
+		return nil
+	}
+	go func() {
+		done := make(chan error, 1)
+		go func() { done <- c.Wait() }()
+		select {
+		case err := <-done:
+			if err == nil {
+				return
+			}
+			log.Printf("окно: systemd-run --scope не сработал (%v) — запускаю браузер напрямую", err) // без аргументов: в них код
+			if d := exec.Command(name, args...); d.Start() == nil {
+				go d.Wait()
+			}
+		case <-time.After(launchGrace):
+		}
+	}()
 	return nil
 }
 
-func launchCmd(name string, args ...string) *exec.Cmd {
+var launchGrace = 2 * time.Second // сколько ждать отказа systemd-run
+
+// launchCmd — команда запуска и признак «через systemd-run». --description: иначе scope назван командной строкой,
+// и код окна из аргументов попадает в журнал systemd (измерено).
+func launchCmd(name string, args ...string) (*exec.Cmd, bool) {
 	if os.Getenv("INVOCATION_ID") != "" {
 		if sr, err := exec.LookPath("systemd-run"); err == nil {
-			return exec.Command(sr, append([]string{"--user", "--scope", "--quiet", "--", name}, args...)...)
+			return exec.Command(sr, append([]string{"--user", "--scope", "--quiet", "--description=AnyPC window", "--", name}, args...)...), true
 		}
 	}
-	return exec.Command(name, args...)
+	return exec.Command(name, args...), false
 }
 
 func hostCapture(enc string) func(ctx context.Context, c agent.Cap) (*exec.Cmd, error) {
