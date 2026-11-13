@@ -223,3 +223,11 @@
   - macOS: своё окно в полноэкранном режиме получает отдельный Space, окон может быть несколько; поместить в заданный Space нельзя. Нужны свои NSWindow.
   - Windows: `MoveWindowToDesktop` для своих окон — да; создать стол и переключиться — только недокументированным API.
 - **Следствие:** «ПК как монитор/стол» на Linux и Маке требует собственного окна вместо браузера — выбор архитектуры (A2 #5), решение владельца.
+
+## Своё окно на Linux и Маке — сравнение маршрутов 2026-11-13 (пробы: spike/window/)
+
+- **`[измерено]` В штатном WebKitGTK Ubuntu 26.04 (2.52.6) WebRTC нет**: `typeof RTCPeerConnection = undefined` при любом `enable-webrtc`; выключено при сборке (bugs.webkit.org 274711). Страница ui/index.html в таком окне картинку не покажет → маршруты «cgo/purego + WebKitGTK, страница как есть» — тупик.
+- **`[измерено]` WebCodecs в том же WebKitGTK декодирует** VP9, VP8 и H.264 (только AVCC с avcC; Annex-B — Decode error). AV1 нет. `gtk_window_fullscreen_on_monitor` работает.
+- **`[измерено]` Chrome по CDP**: `Browser.setWindowBounds` → fullscreen; `Target.createTarget newWindow` → второе окно; `grantPermissions(windowManagement)` + `requestFullscreen({screen})` без запроса у человека; `keyboard.lock` работает. **Не проверено: выбор монитора (на машине он один).** Проба: `python3 spike/window/cdp.py`.
+- Маршруты Linux: **L3** Chrome + CDP (≈350 строк, статическая сборка цела, но окно остаётся Chrome, отладочный порт на 127.0.0.1 открыт локальным процессам); **L2'** своё окно WebKitGTK + WebRTC в Go (pion) + WebCodecs на странице (≈1200–1800 строк `[ПРЕДПОЛОЖЕНИЕ]`, второй видеопуть, звук и микрофон заново, нет keyboard.lock); **L4** свой клиент Wayland без HTML (5000+).
+- macOS `[прочитано, противоречиво]`: WKWebView в своих NSWindow; RTCPeerConnection и VP9 именно в WKWebView не подтверждены — нужна проба на Маке (≈60 строк).

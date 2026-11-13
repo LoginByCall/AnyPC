@@ -1,0 +1,35 @@
+<!doctype html><meta charset=utf-8><title>start</title><body style="background:#123;color:#fff">probe2<canvas id=c width=320 height=240></canvas>
+<script>
+const out=[];const log=(k,v)=>{out.push(k+'='+v);};const flush=()=>{document.title='R:'+JSON.stringify(out);};
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+async function rt(codec,extra){
+  const cfg=Object.assign({codec,width:320,height:240,bitrate:500000,framerate:30},extra||{});
+  let es='n/a',ds='n/a';
+  try{es=(await VideoEncoder.isConfigSupported(cfg)).supported;}catch(e){es='ERR '+e.name;}
+  try{ds=(await VideoDecoder.isConfigSupported({codec,codedWidth:320,codedHeight:240})).supported;}catch(e){ds='ERR '+e.name;}
+  let r='encSup='+es+',decSup='+ds;
+  if(es!==true||ds!==true) return r;
+  let dec=0,enc=0,err='';
+  const d=new VideoDecoder({output:f=>{dec++;f.close();},error:e=>{err+='D:'+e.message+';';}});
+  let configured=false;
+  const e=new VideoEncoder({output:(ch,meta)=>{enc++; if(!configured){const dc={codec,codedWidth:320,codedHeight:240}; if(meta&&meta.decoderConfig&&meta.decoderConfig.description){dc.description=meta.decoderConfig.description;r+=',descLen='+dc.description.byteLength;} r+=',first='+ch.type+'/'+ch.byteLength; d.configure(dc);configured=true;} try{d.decode(ch);}catch(x){err+='d:'+x.message+';';}},error:x=>{err+='E:'+x.message+';';}});
+  e.configure(cfg);
+  const c=document.getElementById('c'),g=c.getContext('2d');
+  for(let i=0;i<20;i++){g.fillStyle='hsl('+i*17+',80%,50%)';g.fillRect(0,0,320,240);const f=new VideoFrame(c,{timestamp:i*33333});e.encode(f,{keyFrame:i==0});f.close();}
+  try{await Promise.race([e.flush().then(()=>d.flush()),sleep(4000)]);}catch(x){err+='F:'+x.message;}
+  return r+',encoded='+enc+',decoded='+dec+(err?',err='+err:'');
+}
+(async()=>{
+  try{
+    log('typeofRTCPeerConnection',typeof RTCPeerConnection);
+    log('VideoDecoder',typeof VideoDecoder);log('VideoEncoder',typeof VideoEncoder);log('AudioDecoder',typeof AudioDecoder);
+    log('WebSocket',typeof WebSocket);log('WebTransport',typeof WebTransport);log('MediaSource',typeof MediaSource);log('ManagedMediaSource',typeof ManagedMediaSource);
+    flush();
+    if(typeof VideoDecoder=='function'){
+      for(const [c,x] of [['avc1.42E01F',{avc:{format:'avc'}}],['avc1.42001f'],['avc1.64001f',{avc:{format:'annexb'}}]]){try{log(c+JSON.stringify(x||0),await rt(c,x));}catch(e){log(c,'ERR '+e);} flush();}
+      try{const d=(await VideoDecoder.isConfigSupported({codec:'avc1.640028',codedWidth:1920,codedHeight:1080,hardwareAcceleration:'prefer-hardware'}));log('avcHigh1080',d.supported);}catch(e){log('avcHigh1080','ERR '+e.name);}
+    }
+  }catch(e){log('FATAL',String(e));}
+  out.push('DONE');flush();
+})();
+</script>
