@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="ru">
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Qa9/Ln5RYRjHReJw2L90lMbtNk7+ltrn+Jv+tM2kIM8=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-RrxDwqnUqJv1ugVzADS+Uxr1ibbjpsLZ/oMuMmYwfBo=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AnyPC</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26'><style>.a{stroke:%2317181c}.b{fill:%23d2452d}@media(prefers-color-scheme:dark){.a{stroke:%23eceae4}.b{fill:%23ef6a52}}</style><rect class='a' x='1.5' y='3' width='15' height='11' rx='2' fill='none' stroke-width='2.6'/><rect class='b' x='10' y='12' width='15' height='11' rx='2'/></svg>">
@@ -560,7 +560,7 @@ for (const s of [$('turn'), $('turn2')]) s.onchange = () => {
 function end(reason, keep) {
   hostDenied = false;
   if (!keep) again = null;
-  expect = ''; authed = false; // Д-1: подтверждение входа — только от CPace этой попытки
+  expect = ''; authed = false; hostPause = false; // Д-1: подтверждение входа — только от CPace этой попытки; пауза — заново по "ok"
   otpCh = null; otpSent = otpStep = false; askNoOtp = false; $('otpbox').classList.add('hidden');
   if (!socks.length && !pc) return;
   releaseAll();
@@ -724,6 +724,10 @@ $('trust').onclick = () => { $('trust').classList.add('hidden'); $('go').click()
 
 // ---------- Вход по CPace (REQ-S-02): пароль не покидает этот ПК, сервер его не видит ----------
 let expect = '', authed = false; // authed — хост доказал CPace и ключ (Д-1, Д-2)
+let hostPause = false; // REQ-F-27: хост прислал pause:true в "ok" — фоновой вкладке «Моих ПК» можно паузить видео
+// Пауза видео неактивной вкладки: активная (embActive) шлёт on:false — возобновить, фоновая on:true — остановить.
+// Только хосту, который это умеет (hostPause); старый хост поля не шлёт, и только после "ok" (authed) при открытом ctl.
+const sendPause = () => { if (hostPause && authed && ctl?.readyState === 'open') ctl.send(JSON.stringify({ t: 'pause', on: !embActive() })); };
 // Автопереподключение после обрыва (через relay рвётся на плохих линиях): до 3 попыток подряд.
 // Пароль — только в памяти этой вкладки и только до конца сессии.
 let again = null;
@@ -813,6 +817,7 @@ async function onAuth(ch, e, mine) {
     trustNext = null; expect = ''; authed = true; otpCh = null; $('otpbox').classList.add('hidden'); $('msg').textContent = ''; hostState(lastState);
     document.body.classList.toggle('view', !!m.view); // REQ-F-20: режим сессии решает хост (мог сузить сам)
     modeUI(!!m.mode); // REQ-F-26: старый хост и вход паролем, записью, TOTP поля не шлют — кнопки нет
+    hostPause = !!m.pause; sendPause(); // REQ-F-27: умеет ли хост паузу; фоновая вкладка сразу просит остановить видео (старый хост поля нет — не паузим)
     if (m.audio) audioOffer(); // хост умеет звук (PLAN.md); старый хост поля не шлёт — кнопки 🎤 нет
     if (was !== fp) await known.set(host, fp);
     if (m.key) { // REQ-S-24: дальше — без пароля
@@ -1387,7 +1392,7 @@ window.sessState = () => (pc && pc.connectionState) || ''; // соединени
 window.sessHeld = () => held.size;                          // зажатые клавиши (защита от залипания при переключении)
 window.sessActive = () => embActive();                     // активна ли вкладка (буфер/звук только у активной)
 window.embedCode = c => { $('otp').value = String(c); $('otpgo').click(); }; // код из окна-родителя → в ожидающий фрейм
-window.embedSetActive = on => { embActiveFlag = !!on; if (au.el) { au.el.muted = !on; if (on) au.el.play().catch(() => {}); } }; // родитель переключил вкладку
+window.embedSetActive = on => { embActiveFlag = !!on; if (au.el) { au.el.muted = !on; if (on) au.el.play().catch(() => {}); } sendPause(); }; // родитель переключил вкладку: звук и (REQ-F-27) видео — пауза фоновой
 window.embedFsExit = () => { full = false; document.body.classList.remove('fs'); $('fsbtn').textContent = t('fs'); }; // родитель вышел из полного экрана
 window.embedBye = () => { try { end(''); } catch {} }; // родитель закрывает вкладку — завершить сессию (end шлёт bye хосту)
 
