@@ -15,6 +15,8 @@
 - `f3d`: Un même programme affiche votre ID et votre mot de passe et se connecte à d’autres PC. Aucune installation.
 - `f4t`: Fluide et réactif
 - `f4d`: Vidéo VP9 (ou H.264) jusqu’en 1080p à 30 i/s ; le débit et la cadence s’adaptent à la connexion à la volée, sans pause ; statistiques de connexion en temps réel.
+- `f10t`: Vos PC en onglets
+- `f10d`: Les ordinateurs auxquels vous vous connectez avec « Faire confiance à ce PC » s’ouvrent en onglets dans une seule fenêtre : passez de l’un à l’autre d’un clic, sans vous reconnecter. La vidéo d’un onglet inactif se met en pause et économise la bande passante.
 - `getT`: Télécharger AnyPC
 - `tab_win`: Windows
 - `tab_lin`: Linux

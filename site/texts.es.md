@@ -15,6 +15,8 @@
 - `f3d`: Un mismo programa muestra tu ID y tu contraseña y se conecta a otros PC. No requiere instalación.
 - `f4t`: Fluido y ágil
 - `f4d`: Vídeo VP9 (o H.264) hasta 1080p a 30 fps; la tasa de bits y los fotogramas por segundo se adaptan a la conexión al vuelo, sin pausas; estadísticas de conexión en tiempo real.
+- `f10t`: Tus PC en pestañas
+- `f10d`: Los equipos a los que accedes con «Confiar en este PC» se abren como pestañas en una sola ventana: cambia entre ellos con un clic, sin volver a iniciar sesión. El vídeo de una pestaña inactiva se pausa y ahorra ancho de banda.
 - `getT`: Descargar AnyPC
 - `tab_win`: Windows
 - `tab_lin`: Linux

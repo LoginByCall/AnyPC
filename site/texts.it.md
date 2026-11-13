@@ -15,6 +15,8 @@
 - `f3d`: Lo stesso programma mostra il tuo ID e la password e si connette ad altri PC. Nessuna installazione.
 - `f4t`: Fluido e reattivo
 - `f4d`: Video VP9 (o H.264) fino a 1080p a 30 fps; bitrate e frequenza dei fotogrammi si adattano alla connessione al volo, senza pause; statistiche di connessione in tempo reale.
+- `f10t`: I tuoi PC in schede
+- `f10d`: I computer a cui accedi con «Fidati di questo PC» si aprono come schede in un’unica finestra: passa dall’uno all’altro con un clic, senza eseguire di nuovo l’accesso. Il video di una scheda inattiva va in pausa e risparmia banda.
 - `getT`: Scarica AnyPC
 - `tab_win`: Windows
 - `tab_lin`: Linux

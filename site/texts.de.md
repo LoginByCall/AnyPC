@@ -15,6 +15,8 @@
 - `f3d`: Ein Programm zeigt Ihre ID und Ihr Passwort an und verbindet sich mit anderen PCs. Keine Installation nötig.
 - `f4t`: Flüssig und reaktionsschnell
 - `f4d`: VP9- (oder H.264-)Video bis 1080p mit 30 fps; Bitrate und Bildrate passen sich der Verbindung laufend und ohne Pausen an; Verbindungsstatistik live.
+- `f10t`: Mehrere eigene PCs
+- `f10d`: Die Rechner, bei denen Sie sich mit «Diesem PC vertrauen» anmelden, öffnen sich als Tabs in einem Fenster – wechseln Sie per Klick, ohne erneute Anmeldung. Video in einem inaktiven Tab pausiert und spart Bandbreite.
 - `getT`: AnyPC herunterladen
 - `tab_win`: Windows
 - `tab_lin`: Linux
