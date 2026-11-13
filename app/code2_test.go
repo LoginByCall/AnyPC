@@ -18,7 +18,7 @@ func TestCodeTrustModes(t *testing.T) {
 		t.Logf("%-46s режим кода %-5v | ключ эпохи кода: закреплён %-5v | ключ эпохи пароля: закреплён %-5v (за любой %v) | в файле ключей %d",
 			when, c.codeMode(), c.trusted(kc, ""), c.trusted(kp, ""), c.trusted(kp, agent.AnyUser), len(c.Users[0].Trusted))
 	}
-	c.trust(kc, "") // вход кодом + «Разрешить»
+	c.trust(kc, "", c.Users[0].Salt) // вход кодом + «Разрешить»
 	st("новая установка, вход кодом:")
 	if c.trusted(kc, "") || c.trusted(kc, agent.AnyUser) || len(c.Users[0].Trusted) != 0 {
 		t.Fatal("в режиме кода ключ закреплён")
@@ -33,11 +33,11 @@ func TestCodeTrustModes(t *testing.T) {
 	if c.trusted(kc, "") {
 		t.Fatal("ключ эпохи кода закреплён в режиме пароля")
 	}
-	c.trust(kp, "") // вход постоянным паролем
+	c.trust(kp, "", c.Users[0].Salt) // вход постоянным паролем
 	st("вход постоянным паролем:")
 	for i := range 3 { // туда-обратно
 		c.setConfirm(true)
-		c.trust(kc, "")
+		c.trust(kc, "", c.Users[0].Salt)
 		c.codeUsed()
 		st("«Спрашивать» включили, вход кодом, смена кода:")
 		if c.trusted(kc, "") || c.trusted(kp, "") || c.trusted(kp, agent.AnyUser) || c.trusted(kc, agent.AnyUser) {

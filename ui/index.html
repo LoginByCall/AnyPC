@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="ru">
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-gUeI59M5uKoEhYVGmqzgeiN0rtO/0cilOBkFm+kKODA=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-iJbkthWsQYU5a5jZSW5cwrA/bz2QXkrhjZRtUfY+Jqc=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AnyPC</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26'><style>.a{stroke:%2317181c}.b{fill:%23d2452d}@media(prefers-color-scheme:dark){.a{stroke:%23eceae4}.b{fill:%23ef6a52}}</style><rect class='a' x='1.5' y='3' width='15' height='11' rx='2' fill='none' stroke-width='2.6'/><rect class='b' x='10' y='12' width='15' height='11' rx='2'/></svg>">
@@ -418,12 +418,9 @@ const ckey = {
   get: async id => { try { return (APP ? JSON.parse(await ckeyGet(id) || 'null') : store.get('ckeys', {})[id]) || null; } catch { return null; } },
   set: async (id, k) => { if (APP) return ckeySet(id, k ? JSON.stringify(k) : ''); const ks = store.get('ckeys', {}); if (k) ks[id] = k; else delete ks[id]; store.set('ckeys', ks); },
 };
-if (APP) (async () => { // до REQ-S-24 программа держала ключи в localStorage окна — перенести в настройки и стереть
-  const old = store.get('ckeys', null);
-  if (!old) return;
-  for (const [id, k] of Object.entries(old)) if (!await ckey.get(id)) await ckey.set(id, k).catch(() => {});
-  try { localStorage.removeItem('ckeys'); } catch {}
-})();
+// В программе ключи из localStorage окна не переносить, а стереть: выпущенные версии их там не держали (clientSign не был
+// привязан), а 127.0.0.1:порт мог занять другой пользователь ПК и подложить свой seed с login — он ушёл бы с trust
+if (APP) try { localStorage.removeItem('ckeys'); } catch {}
 // отпечаток ключа коротко — как в окне хоста (первые 4 байта SHA-256, pake.KeyFingerprint)
 async function keyFp(pub) {
   try { const h = [...new Uint8Array(await crypto.subtle.digest('SHA-256', Uint8Array.from(atob(pub), c => c.charCodeAt(0))))].slice(0, 4).map(b => b.toString(16).padStart(2, '0')).join(''); return h.slice(0, 4) + ' ' + h.slice(4); } catch { return ''; }
@@ -778,9 +775,10 @@ async function onAuth(ch, e, mine) {
   else if (m.t === 'busy') end(t('err') + t('e_busy')); // пароль верный, но другой вход успел раньше
   else if (m.t === 'locked') end(t('err') + t('e_locked'));
   else if (m.t === 'nokey' && mine === pc && mine.bykey) { // ключ отозван или вход без пароля там выключен; только на свой «b» по ключу
-    const k = await ckey.get(host); // метку снять до end: он подставляет сохранённое заново (fillSaved)
-    if (k?.login) { delete k.login; delete k.lu; await ckey.set(host, k).catch(() => {}); }
-    keyShow(null); end(t('err') + t('e_nokey'));
+    // забыть ключ целиком (до end: он подставляет сохранённое заново) — на хосте он мог остаться (режим, TOTP): отозвать
+    const k = await ckey.get(host), fp = k?.pub ? await keyFp(k.pub) : '';
+    await ckey.set(host, null).catch(() => {}); keyShow(null);
+    end(t('err') + t('e_nokey') + (fp ? '. ' + t('k_forgot').replace('%s', fp) : ''));
   }
 }
 

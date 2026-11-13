@@ -735,7 +735,7 @@ func TestTrustedLocked(t *testing.T) {
 	e2eAgent = func(a *Agent) {
 		a.fails, a.lockUntil = 9, time.Now().Add(time.Hour)
 		a.Trusted = func(p []byte, _ string) bool { return trusted.Load() && bytes.Equal(p, pub) }
-		a.Trust = func(p []byte, _ string) { trusted.Store(bytes.Equal(p, pub)) }
+		a.Trust = func(p []byte, _ string, _ []byte) { trusted.Store(bytes.Equal(p, pub)) }
 	}
 	defer func() { e2eAgent, e2eKey = nil, "" }()
 	trusted.Store(true)
@@ -748,7 +748,7 @@ func TestTrustedLocked(t *testing.T) {
 // TestTrustEnroll — верный пароль с подписью ключа закрепляет ключ; неверный — нет.
 func TestTrustEnroll(t *testing.T) {
 	var got atomic.Bool
-	e2eAgent = func(a *Agent) { a.Trust = func([]byte, string) { got.Store(true) } }
+	e2eAgent = func(a *Agent) { a.Trust = func([]byte, string, []byte) { got.Store(true) } }
 	defer func() { e2eAgent, e2eKey = nil, "" }()
 	e2eKey = "ok"
 	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000}), "wrong-pass")
@@ -967,7 +967,7 @@ func TestTrustDenied(t *testing.T) {
 	answer := Deny
 	e2eAgent = func(a *Agent) {
 		a.Confirm = func(string, string) Answer { return answer }
-		a.Trust = func([]byte, string) { pinned.Store(true) }
+		a.Trust = func([]byte, string, []byte) { pinned.Store(true) }
 	}
 	defer func() { e2eAgent, e2eDeny, e2eKey = nil, false, "" }()
 	e2eDeny, e2eKey = true, "ok"

@@ -64,7 +64,7 @@ type Agent struct {
 	Bitrate int                                                 // кбит/с — потолок адаптивного битрейта (REQ-N-03); 0 — постоянный
 	Confirm func(cid, peer string) Answer                       // REQ-F-03: спросить человека на хосте после верного пароля; nil — не спрашивать (unattended)
 	Trusted func(pub []byte, user string) bool                  // У3: ключ клиента закреплён за записью user (вход с ним был; AnyUser — за любой); nil — без доверенных
-	Trust   func(pub []byte, user string)                       // закрепить ключ клиента за записью после входа по паролю
+	Trust   func(pub []byte, user string, salt []byte)          // закрепить ключ клиента за записью после входа по паролю (соль та же, что при входе)
 	Audio   bool                                                // окно хоста умеет звук (PLAN.md): клиент увидит кнопку микрофона
 	Locked  func() bool                                         // экран заблокирован — захват не запускать (macOS, F7); nil — не проверять
 	// REQ-S-24: вход по ключу без пароля (ключ вместо пароля, код TOTP обязателен). KeyLogin: in — ключ в списке входа
@@ -1420,7 +1420,10 @@ func (a *Agent) accept(ctx context.Context, s *session, track *webrtc.TrackLocal
 		s.view.Store(true)
 	}
 	if pin != nil && a.Trust != nil {
-		a.Trust(pin, s.user)
+		s.mu.Lock()
+		salt := s.salt
+		s.mu.Unlock()
+		a.Trust(pin, s.user, salt) // пароль сменили после revoked выше — не закрепит
 	}
 	s.mu.Lock()
 	kp := s.keyPin

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -565,7 +566,7 @@ func (c *config) ckeyGet(id string) string {
 
 // ckeySet — запомнить ключ клиента для удалённого ПК; "" — забыть.
 func (c *config) ckeySet(id, k string) error {
-	if !hub.IsHostID(id) || len(k) > 512 || k != "" && !json.Valid([]byte(k)) {
+	if !hub.IsHostID(id) || len(k) > 512 || k != "" && !validCKey(k) {
 		return errors.New("неверный ID или ключ")
 	}
 	c.mu.Lock()
@@ -580,6 +581,25 @@ func (c *config) ckeySet(id, k string) error {
 		c.CKeys[id] = k
 	}
 	return c.save()
+}
+
+// validCKey — ключ клиента от окна: объект {seed, pub, login?, lu?}, seed — 32 байта base64, pub выводится из него.
+func validCKey(k string) bool {
+	var v struct {
+		Seed, Pub string
+		Login     bool
+		Lu        string
+	}
+	d := json.NewDecoder(strings.NewReader(k))
+	d.DisallowUnknownFields()
+	if d.Decode(&v) != nil || d.More() {
+		return false
+	}
+	seed, err := base64.StdEncoding.DecodeString(v.Seed)
+	if err != nil || len(seed) != ed25519.SeedSize {
+		return false
+	}
+	return base64.StdEncoding.EncodeToString(ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)) == v.Pub
 }
 
 // savedGet — запомненный пароль удалённого ПК ("" — нет).
@@ -625,7 +645,9 @@ func (c *config) trusted(pub []byte, user string) bool {
 	})
 }
 
-func (c *config) trust(pub []byte, user string) {
+// trust — agent.Agent.Trust: закрепить ключ за записью user, если её соль та же, что при входе (пароль не сменили
+// за время входа — иначе ключ остался бы закреплённым за новым паролем).
+func (c *config) trust(pub []byte, user string, salt []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
@@ -633,7 +655,7 @@ func (c *config) trust(pub []byte, user string) {
 		return
 	}
 	u := c.user(user)
-	if u == nil { // запись удалили, пока шёл вход
+	if u == nil || !bytes.Equal(u.Salt, salt) { // запись удалили или сменили ей пароль, пока шёл вход
 		return
 	}
 	u.Trusted = slices.DeleteFunc(u.Trusted, func(k []byte) bool { return bytes.Equal(k, pub) })
@@ -686,7 +708,7 @@ func (c *config) keyTrust(pub []byte, user string, salt []byte) {
 }
 
 // keyDel — отозвать ключ входа без пароля записи user (fp — pake.KeyFingerprint, как в окне хоста); и из
-// закреплённых У3 этой записи: отозванный ключ не обходит блокировки перебора.
+// закреплённых У3 всех записей: отозванный ключ не обходит блокировки перебора.
 func (c *config) keyDel(user, fp string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -701,7 +723,9 @@ func (c *config) keyDel(user, fp string) error {
 	}
 	pub := u.KeyLogin[i].Pub
 	u.KeyLogin = slices.Delete(u.KeyLogin, i, i+1)
-	u.Trusted = slices.DeleteFunc(u.Trusted, func(k []byte) bool { return bytes.Equal(k, pub) })
+	for j := range c.Users { // из закреплённых У3 всех записей: ключ один на клиента, отозван — не доверенный нигде
+		c.Users[j].Trusted = slices.DeleteFunc(c.Users[j].Trusted, func(k []byte) bool { return bytes.Equal(k, pub) })
+	}
 	log.Printf("ключ %s отозван (запись %q)", fp[:min(len(fp), 9)], u.Name)
 	return c.save()
 }
