@@ -635,6 +635,24 @@ func TestKeyDelTrusted(t *testing.T) {
 	}
 }
 
+// TestTrustSecretSalt — раунд 3 №2: соль, которую agent берёт из secret(user) при входе (s.salt), та же, что сверяет
+// trust, — закрепление У3 после входа на настоящем config проходит (заглушки в agent соль не смотрят).
+func TestTrustSecretSalt(t *testing.T) {
+	c, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
+	k := bytes.Repeat([]byte{7}, 32)
+	passwordMode(t, c)
+	c.setPassword("пароль-этого-пк")
+	c.setUser("ivan", "ivan-pass1", "full")
+	for _, u := range []string{"", "ivan"} {
+		salt, _, _ := c.secret(u)
+		c.trust(k, u, salt)
+		c.keyTrust(k, u, salt)
+		if in, on := c.keyLogin(k, u); !c.trusted(k, u) || !in || !on {
+			t.Fatalf("запись %q: соль из secret не подошла trust/keyTrust", u)
+		}
+	}
+}
+
 // TestTrustSalt — раунд 2 №5: закрепление У3 после входа не проходит, если пароль записи сменили за время входа.
 func TestTrustSalt(t *testing.T) {
 	c, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
@@ -683,6 +701,9 @@ func TestCKeys(t *testing.T) {
 		`{"seed":"` + k["seed"] + `","pub":"` + other["pub"] + `"}`,          // pub не из этого seed
 		`{"seed":"` + k["seed"] + `","pub":"` + k["pub"] + `","x":1}`,        // лишнее поле
 		`{"seed":"` + k["seed"] + `","pub":"` + k["pub"] + `"} {"seed":"x"}`, // хвост
+		`{"seed":"` + k["seed"] + `","pub":"` + k["pub"] + `"}}`,             // хвост «}»
+		`{"seed":"` + k["seed"] + `","pub":"` + k["pub"] + `"}]`,             // хвост «]»
+		`{"seed":"` + k["seed"] + `","pub":"` + k["pub"] + `","Seed":"x"}`,   // дубль поля в другом регистре
 	} {
 		if c.ckeySet("123456789", bad) == nil {
 			t.Fatalf("принят ключ %s", bad)
