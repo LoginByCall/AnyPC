@@ -121,7 +121,7 @@ func TestLocalAPI(t *testing.T) {
 // переадресация на страницу с токеном, повторный и чужой код — отказ.
 func TestOnceCode(t *testing.T) {
 	cfg, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
-	once := &onceCode{code: "abc123"}
+	once := &onceCode{codes: []string{"abc123"}}
 	h := handler("127.0.0.1:5000", "tok123", []byte("page"), cfg, &agent.Agent{}, nil, nil, newFiles(t.TempDir()), once)
 	get := func(path string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest("GET", path, nil)
