@@ -213,7 +213,7 @@
 
 ## Трей и «ПК как рабочий стол ОС» — разведка 2026-11-13
 
-- **Трей Linux чистым Go (godbus, без cgo) — реализуем.** `spike/tray/main.go`, 343 строки: StatusNotifierItem + com.canonical.dbusmenu. `[измерено]` на настоящей шине: `Event clicked` переключает флажок, уходят `ItemsPropertiesUpdated` и `LayoutUpdated`. `[эмулятор]` регистрация у Watcher и чтение меню (`GetLayout`, `AboutToShow`). **Глазами и с настоящей оболочкой не проверено**: экран был заблокирован. Повтор: `go run ./spike/tray -t 25s`, в логе ждать `IN GetLayout`.
+- **Трей Linux чистым Go (godbus, без cgo) — реализуем.** `spike/tray/main.go`, 343 строки: StatusNotifierItem + com.canonical.dbusmenu. `[измерено]` на настоящей шине: `Event clicked` переключает флажок, уходят `ItemsPropertiesUpdated` и `LayoutUpdated`. `[эмулятор]` регистрация у Watcher и чтение меню (`GetLayout`, `AboutToShow`). **V2 владельца 2026-11-13: успешно** — значок и меню в панели Ubuntu видны (ИЗМЕРЕНИЕ #1). Повтор: `go run ./spike/tray -t 25s`, в логе ждать `IN GetLayout`.
 - **Блокировка экрана убирает `org.kde.StatusNotifierWatcher`** `[измерено]` — слушать `NameOwnerChanged` и регистрироваться заново.
 - **GNOME без расширения AppIndicator** — Watcher нет, значка не будет; определяется через `NameHasOwner`. Нужен запасной вход (окно). `[прочитано]`
 - **Собственное окно есть только на Windows** (go-webview2). На Маке — `open <url>` (браузер), на Linux — Chrome `--app=` (`app/platform_darwin.go:19`, `app/platform_linux.go:17`). Чужим окном браузера управлять нельзя.
