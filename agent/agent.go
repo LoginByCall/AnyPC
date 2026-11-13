@@ -88,6 +88,12 @@ type Agent struct {
 	// ConfirmControl — окно «Разрешить управление?» (REQ-F-26): сессия, вошедшая через «Разрешить», просит из просмотра
 	// управление; nil — смены режима нет (клиент кнопки не покажет).
 	ConfirmControl func(cid, peer string) bool
+	// «Моё пространство», Э2 (space.go, UI-REDESIGN.md): состав M для сессии записи по умолчанию, вошедшей паролем и
+	// кодом TOTP. SpaceGet(salt) — запись M (salt — соль записи при входе; nil — пространства нет или пароль не его);
+	// SpaceJoin(m, pub) — принять M следующей эпохи, где добавлен ровно ПК с ключом pub (ключ клиента, доказанный
+	// подписью в "b"). SpaceGet == nil — хост пространства не знает (ctl "sp" пропускается, как у старой версии).
+	SpaceGet  func(salt []byte) []byte
+	SpaceJoin func(m []byte, pub ed25519.PublicKey) error
 
 	mu        sync.Mutex
 	ice       []webrtc.ICEServer
@@ -128,6 +134,9 @@ type session struct {
 	modeAsk atomic.Bool  // открыто окно «Разрешить управление?» этой сессии
 	modeGen atomic.Int32 // просьбы просмотра: сменилась за время окна — «Разрешить» не повышает
 	gone    atomic.Bool  // сессия освобождена (release) — в pend не возвращать
+	spaceOK atomic.Bool  // Э2: вход записью по умолчанию паролем и кодом TOTP (не ключом, не одноразовым кодом) — ctl "sp" можно
+	spJoin  atomic.Bool  // Э2: SpaceJoin уже был в этой сессии (одно вступление на сессию)
+	cpub    []byte       // под mu: ключ клиента, доказанный подписью в "b" (pake.ClientVerify); nil — не доказан
 	ctl     *webrtc.DataChannel
 	peer    string // адрес клиента по выбранной паре ICE — для окна подтверждения
 	ice     iceCap // потолок удалённых ICE-кандидатов (F5, icecap.go)
@@ -235,6 +244,7 @@ type authMsg struct {
 	Trust bool   `json:"trust,omitempty"` // в "b" со входом паролем: «Доверять этому ПК» — ключ cpub во вход без пароля
 	Code  string `json:"code,omitempty"`  // в "otp" от клиента: код TOTP
 	NoOTP bool   `json:"nootp,omitempty"` // в "ask": вход без подтверждения выключен, пока на хосте не настроят TOTP
+	Space bool   `json:"space,omitempty"` // в первом "a" хоста: хост понимает ctl "sp" (Э2, space.go)
 }
 
 // ctlMsg — канал "ctl": {"t":"clip","text":"…"} — буфер обмена в обе стороны (REQ-F-11);
@@ -1062,6 +1072,8 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 				mm.View = nil
 			}
 			a.setMode(sctx, s, mm.View, func(r modeMsg) { b, _ := json.Marshal(r); ctl.SendText(string(b)) })
+		case m.T == "sp" && a.SpaceGet != nil: // Э2: состав пространства (space.go)
+			a.spaceCtl(s, msg.Data, func(r spMsg) { b, _ := json.Marshal(r); ctl.SendText(string(b)) })
 		case m.T == "audio" && m.SDP != "" && a.Audio:
 			s.audioOffer(m.SDP)
 		case m.T == "pause" && a.Pause: // REQ-F-27: фоновая вкладка «Моих ПК» просит остановить/возобновить видео
@@ -1197,7 +1209,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		s.mu.Lock()
 		st, view, s.salt = state, v, salt
 		s.mu.Unlock()
-		send(authMsg{T: "a", Salt: salt, Msg: msgA, Users: true, Keys: a.KeyLogin != nil})
+		send(authMsg{T: "a", Salt: salt, Msg: msgA, Users: true, Keys: a.KeyLogin != nil, Space: a.SpaceGet != nil})
 	})
 	ch.OnMessage(func(msg webrtc.DataChannelMessage) {
 		var m authMsg
@@ -1300,6 +1312,9 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 			pin = m.CPub
 		}
 		s.mu.Lock()
+		if keyOK {
+			s.cpub = m.CPub
+		}
 		if keyLogin {
 			s.byKey, s.keyPin = m.CPub, m.CPub
 		} else if keyOK && m.Trust && otpSet && a.KeyLogin != nil { // без TOTP по ключу не войти — и не добавлять
@@ -1357,6 +1372,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 				case ctx.Err() != nil: // клиент ушёл
 				case ok:
 					s.asking.Store(false)
+					s.spaceOK.Store(user == "" && !m.Key) // Э2: пароль записи по умолчанию + код, не ключ
 					a.accept(ctx, s, track, send, conf, fpc, fph, pin)
 				case locked:
 					reject("locked")
