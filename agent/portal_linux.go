@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,7 +31,8 @@ type portal struct {
 	obj     dbus.BusObject
 	session dbus.ObjectPath
 	node    uint32
-	w, h    float64
+	w, h    float64 // размер потока для NotifyPointerMotionAbsolute (логический × масштаб mutter, mutterScale)
+	x, y    int32   // логическое положение потока (props position) — по нему ищем монитор в mutterScale
 	fd      int
 	closed  atomic.Bool
 	wheelV  int32
@@ -140,6 +142,10 @@ func (p *portal) start() error {
 	if err := p.parseStream(res["streams"].Value()); err != nil {
 		return err
 	}
+	if k := mutterScale(p.conn, p.x, p.y); k != 1 {
+		log.Printf("портал: поток %.0f×%.0f логических, масштаб mutter %.3f — координаты мыши в %.0f×%.0f", p.w, p.h, k, p.w*k, p.h*k)
+		p.w, p.h = p.w*k, p.h*k
+	}
 	var fd dbus.UnixFD
 	if err := p.obj.Call(pSC+".OpenPipeWireRemote", 0, p.session, vmap{}).Store(&fd); err != nil {
 		return err
@@ -176,10 +182,50 @@ func (p *portal) parseStream(v any) error {
 		h, _ := sz[1].(int32)
 		p.w, p.h = float64(w), float64(h)
 	}
+	if pos, ok := props["position"].Value().([]any); ok && len(pos) == 2 {
+		p.x, _ = pos[0].(int32)
+		p.y, _ = pos[1].(int32)
+	}
 	if p.node == 0 || p.w <= 0 || p.h <= 0 {
 		return fmt.Errorf("поток без node или размера: %v", list[0])
 	}
 	return nil
+}
+
+// mutterScale — масштаб монитора GNOME в точке (x, y) логических координат, если mutter делит абсолютные координаты
+// потока на масштаб (layout-mode «logical», по умолчанию в Wayland): портал сообщает логический размер потока
+// (1536×960), а NotifyPointerMotionAbsolute mutter считает в точках кадра (2560×1600 при 166 %) — без поправки курсор
+// хоста уходил к 60 % пути (канбан 2026-11-13, «указатели расползлись»; FINDINGS). Не GNOME (KDE) или ошибка — 1.
+func mutterScale(conn *dbus.Conn, x, y int32) float64 {
+	c := conn.Object("org.gnome.Mutter.DisplayConfig", "/org/gnome/Mutter/DisplayConfig").Call("org.gnome.Mutter.DisplayConfig.GetCurrentState", 0)
+	if c.Err != nil {
+		return 1
+	}
+	return scaleFrom(c.Body, x, y)
+}
+
+// scaleFrom — разбор ответа GetCurrentState: (serial, monitors, logical_monitors a(iiduba(ssss)a{sv}), properties).
+func scaleFrom(body []any, x, y int32) float64 {
+	if len(body) < 4 {
+		return 1
+	}
+	if props, ok := body[3].(map[string]dbus.Variant); ok {
+		if m, ok := props["layout-mode"].Value().(uint32); ok && m != 1 { // 2 — physical: mutter не делит на масштаб
+			return 1
+		}
+	}
+	lms, _ := body[2].([][]any)
+	for _, lm := range lms {
+		if len(lm) < 3 {
+			continue
+		}
+		lx, _ := lm[0].(int32)
+		ly, _ := lm[1].(int32)
+		if k, ok := lm[2].(float64); ok && lx == x && ly == y && k > 0 {
+			return k
+		}
+	}
+	return 1
 }
 
 func (p *portal) alive() bool { return !p.closed.Load() }
