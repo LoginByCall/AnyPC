@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -121,7 +122,9 @@ func TestLocalAPI(t *testing.T) {
 // переадресация на страницу с токеном, повторный и чужой код — отказ.
 func TestOnceCode(t *testing.T) {
 	cfg, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
-	once := &onceCode{codes: []string{"abc123"}}
+	once := &onceCode{codes: []onceEntry{{"abc123", time.Now()}}}
+	defer func(p func(*http.Request) bool) { peerOK = p }(peerOK)
+	peerOK = func(*http.Request) bool { return true } // проверку партнёра по /proc/net/tcp — в TestPeerUID
 	h := handler("127.0.0.1:5000", "tok123", []byte("page"), cfg, &agent.Agent{}, nil, nil, newFiles(t.TempDir()), once)
 	get := func(path string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest("GET", path, nil)
@@ -159,6 +162,12 @@ func TestShimCSP(t *testing.T) {
 	}
 }
 
+// cliEnv — окружение бинарника в тестах: свои ~/.config и ~/.cache, без сессионной шины разработчика
+// (иначе значок AnyPC встаёт в его трей на каждый go test).
+func cliEnv(home string) []string {
+	return append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+home+"/.config", "XDG_CACHE_HOME="+home+"/.cache", "DBUS_SESSION_BUS_ADDRESS=")
+}
+
 // TestCLI — ключи командной строки: --version печатает версию из -ldflags, --id — ID из настроек, --help — список ключей;
 // ни один не запускает хост.
 func TestCLI(t *testing.T) {
@@ -169,7 +178,7 @@ func TestCLI(t *testing.T) {
 	home := t.TempDir() // свои ~/.config и ~/.cache: не трогать настройки разработчика
 	run := func(arg string) string {
 		c := exec.Command(bin, arg)
-		c.Env = append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+home+"/.config", "XDG_CACHE_HOME="+home+"/.cache")
+		c.Env = cliEnv(home)
 		out, _ := c.CombinedOutput()
 		return string(out)
 	}
@@ -181,7 +190,7 @@ func TestCLI(t *testing.T) {
 	}
 	pw := func(in string) (string, error) {
 		c := exec.Command(bin, "--password-stdin")
-		c.Env = append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+home+"/.config", "XDG_CACHE_HOME="+home+"/.cache")
+		c.Env = cliEnv(home)
 		c.Stdin = strings.NewReader(in)
 		out, err := c.CombinedOutput()
 		return string(out), err
@@ -198,14 +207,14 @@ func TestCLI(t *testing.T) {
 	}
 	cli := func(args ...string) (string, error) {
 		c := exec.Command(bin, args...)
-		c.Env = append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+home+"/.config", "XDG_CACHE_HOME="+home+"/.cache")
+		c.Env = cliEnv(home)
 		out, err := c.CombinedOutput()
 		return string(out), err
 	}
 	{ // учётные записи (REQ-S-20): --user имя --password-stdin [--rights], список в --status, --user-del
 		user := func(in string, args ...string) (string, error) {
 			c := exec.Command(bin, append([]string{"--password-stdin"}, args...)...)
-			c.Env = append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+home+"/.config", "XDG_CACHE_HOME="+home+"/.cache")
+			c.Env = cliEnv(home)
 			c.Stdin = strings.NewReader(in)
 			out, err := c.CombinedOutput()
 			return string(out), err
@@ -257,7 +266,7 @@ func TestCLI(t *testing.T) {
 	}
 	{ // TOTP в терминале: ключ из вывода → код в stdin
 		c := exec.Command(bin, "--confirm", "off")
-		c.Env = append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+home+"/.config", "XDG_CACHE_HOME="+home+"/.cache")
+		c.Env = cliEnv(home)
 		in, _ := c.StdinPipe()
 		outp, _ := c.StdoutPipe()
 		c.Start()
@@ -320,7 +329,12 @@ func TestCLI(t *testing.T) {
 	b, _ = json.Marshal(m)
 	os.WriteFile(cp, b, 0o600)
 	c := exec.Command(bin, "--no-browser")
-	c.Env = append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+home+"/.config", "XDG_CACHE_HOME="+home+"/.cache")
+	c.Env = cliEnv(home)
+	var w *fakeWatcher // трей поднимается и при --no-browser (служба): на своей шине с поддельным Watcher
+	if bus := startBus(t); bus != "" {
+		w = newWatcher(t, bus)
+		c.Env = append(c.Env, "DBUS_SESSION_BUS_ADDRESS="+bus)
+	}
 	var stderr bytes.Buffer
 	c.Stderr = &stderr
 	if err := c.Start(); err != nil {
@@ -332,6 +346,9 @@ func TestCLI(t *testing.T) {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+	if w != nil {
+		w.next(t)
 	}
 	c.Process.Kill()
 	c.Wait()

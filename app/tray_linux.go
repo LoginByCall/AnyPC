@@ -9,7 +9,9 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/introspect"
@@ -62,8 +64,28 @@ func trayMenu(title string, open, quit func()) *trayItem {
 		// TODO(ui): в ui/index.html нет адреса экрана подключения к другому ПК — пока открывается главное окно.
 		{id: 2, label: "Помочь кому-то…", act: open},
 		{id: 3, sep: true},
-		{id: 4, label: "Выйти", act: quit},
+		{id: trayQuit, label: "Выйти", act: quit},
 	}}
+}
+
+const trayQuit = 4 // id пункта «Выйти»: единственный, кто не открывает окно
+
+// trayOpenGap — окно открывается не чаще; лишние щелчки (или поток вызовов от любого клиента шины) — мимо.
+var trayOpenGap = time.Second
+
+// trayGate — true не чаще раза в gap.
+func trayGate(gap time.Duration) func() bool {
+	var mu sync.Mutex
+	var last time.Time
+	return func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if now := time.Now(); last.IsZero() || now.Sub(last) >= gap {
+			last = now
+			return true
+		}
+		return false
+	}
 }
 
 type vmap = map[string]dbus.Variant
@@ -121,8 +143,11 @@ func (it *trayItem) find(id int32) *trayItem {
 	return nil
 }
 
-// trayMenuObj — com.canonical.dbusmenu.
-type trayMenuObj struct{ root *trayItem }
+// trayMenuObj — com.canonical.dbusmenu; gate — общий с traySNI предел открытий окна.
+type trayMenuObj struct {
+	root *trayItem
+	gate func() bool
+}
 
 func (m trayMenuObj) GetLayout(parent, depth int32, names []string) (uint32, trayLayout, *dbus.Error) {
 	it := m.root.find(parent)
@@ -182,16 +207,19 @@ func (m trayMenuObj) AboutToShowGroup(ids []int32) ([]int32, []int32, *dbus.Erro
 }
 
 func (m trayMenuObj) event(id int32, ev string) {
-	if it := m.root.find(id); ev == "clicked" && it != nil && it.act != nil {
+	if it := m.root.find(id); ev == "clicked" && it != nil && it.act != nil && (it.id == trayQuit || m.gate()) {
 		go it.act() // не держать обработчик шины (открытие окна запускает процесс)
 	}
 }
 
 // traySNI — методы org.kde.StatusNotifierItem; щелчок по значку там, где оболочка его передаёт, — главное окно.
-type traySNI struct{ open func() }
+type traySNI struct {
+	open func()
+	gate func() bool
+}
 
 func (s traySNI) Activate(x, y int32) *dbus.Error {
-	if s.open != nil {
+	if s.open != nil && s.gate() {
 		go s.open()
 	}
 	return nil
@@ -234,16 +262,23 @@ var trayN atomic.Int32 // номер значка в имени на шине (�
 // отсутствовать (GNOME без расширения AppIndicator) и пропадать (блокировка экрана, измерено) — тогда ждём
 // его появления по NameOwnerChanged и регистрируемся заново.
 func serveTray(ctx context.Context, addr string, root *trayItem, open func()) error {
-	conn, err := dbus.Connect(addr)
+	conn, err := dbus.Connect(addr, dbus.WithContext(ctx)) // отмена ctx закрывает соединение и рвёт ждущие вызовы
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-	m := trayMenuObj{root}
+	// call — вызов с пределом 5 с: молчащий Watcher не вешает трей
+	call := func(o dbus.BusObject, method string, args ...any) *dbus.Call {
+		c, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		return o.CallWithContext(c, method, 0, args...)
+	}
+	gate := trayGate(trayOpenGap)
+	m := trayMenuObj{root, gate}
 	if err := conn.Export(m, menuPath, menuIface); err != nil {
 		return err
 	}
-	if err := conn.Export(traySNI{open}, sniPath, sniIface); err != nil {
+	if err := conn.Export(traySNI{open, gate}, sniPath, sniIface); err != nil {
 		return err
 	}
 	ro := func(v any) *prop.Prop { return &prop.Prop{Value: v, Emit: prop.EmitFalse} }
@@ -279,29 +314,35 @@ func serveTray(ctx context.Context, addr string, root *trayItem, open func()) er
 	}}), menuPath, "org.freedesktop.DBus.Introspectable")
 
 	name := fmt.Sprintf("org.kde.StatusNotifierItem-%d-%d", os.Getpid(), trayN.Add(1))
-	if r, err := conn.RequestName(name, dbus.NameFlagDoNotQueue); err != nil || r != dbus.RequestNameReplyPrimaryOwner {
+	var r uint32
+	if err := call(conn.BusObject(), "org.freedesktop.DBus.RequestName", name, uint32(dbus.NameFlagDoNotQueue)).Store(&r); err != nil ||
+		r != uint32(dbus.RequestNameReplyPrimaryOwner) {
 		return fmt.Errorf("имя %s: %v %v", name, r, err)
 	}
 	sig := make(chan *dbus.Signal, 8)
 	conn.Signal(sig)
-	if err := conn.AddMatchSignal(dbus.WithMatchInterface("org.freedesktop.DBus"), dbus.WithMatchMember("NameOwnerChanged"),
-		dbus.WithMatchArg(0, watcherName)); err != nil {
+	mctx, mcancel := context.WithTimeout(ctx, 5*time.Second)
+	err = conn.AddMatchSignalContext(mctx, dbus.WithMatchSender("org.freedesktop.DBus"), dbus.WithMatchInterface("org.freedesktop.DBus"),
+		dbus.WithMatchMember("NameOwnerChanged"), dbus.WithMatchArg(0, watcherName))
+	mcancel()
+	if err != nil {
 		return err
 	}
 	register := func() {
 		w := conn.Object(watcherName, watcherPath)
-		if err := w.Call(watcherName+".RegisterStatusNotifierItem", 0, name).Err; err != nil {
+		if err := call(w, watcherName+".RegisterStatusNotifierItem", name).Err; err != nil {
 			log.Printf("трей: регистрация у %s не удалась: %v", watcherName, err)
 			return
 		}
-		if v, err := w.GetProperty(watcherName + ".IsStatusNotifierHostRegistered"); err == nil && v.Value() == false {
+		var v dbus.Variant
+		if call(w, "org.freedesktop.DBus.Properties.Get", watcherName, "IsStatusNotifierHostRegistered").Store(&v) == nil && v.Value() == false {
 			log.Print("трей: нет хоста значков (StatusNotifierHost) — значка не видно, окно — как обычно")
 			return
 		}
 		log.Print("трей: значок зарегистрирован")
 	}
 	var has bool
-	conn.BusObject().Call("org.freedesktop.DBus.NameHasOwner", 0, watcherName).Store(&has)
+	call(conn.BusObject(), "org.freedesktop.DBus.NameHasOwner", watcherName).Store(&has)
 	if has {
 		register()
 	} else {
@@ -313,9 +354,13 @@ func serveTray(ctx context.Context, addr string, root *trayItem, open func()) er
 			return nil
 		case s, ok := <-sig:
 			if !ok {
+				if ctx.Err() != nil {
+					return nil
+				}
 				return fmt.Errorf("сессионная шина закрыта")
 			}
-			if s.Name != "org.freedesktop.DBus.NameOwnerChanged" || len(s.Body) != 3 {
+			// только настоящий сигнал шины о Watcher: адресный «NameOwnerChanged» может прислать любой клиент
+			if s.Sender != "org.freedesktop.DBus" || s.Name != "org.freedesktop.DBus.NameOwnerChanged" || len(s.Body) != 3 || s.Body[0] != watcherName {
 				continue
 			}
 			if owner, _ := s.Body[2].(string); owner != "" {

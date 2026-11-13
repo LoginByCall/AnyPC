@@ -183,9 +183,28 @@ func quitNow(a *agent.Agent) {
 // код годен один раз, и браузер тратит его сразу. Файл со ссылкой не годится: Firefox из snap (Ubuntu) не читает ~/.config.
 // ponytail: локальный пользователь, опрашивающий /proc в цикле, может успеть раньше браузера — тогда окно владельца
 // покажет «ссылка уже использована» (заметно); закрыть совсем — ключ через stdin браузера, которого у xdg-open нет.
+// Код живёт onceTTL, живых не больше onceMax (старые вытесняются): браузер тратит код за секунды.
 type onceCode struct {
 	mu    sync.Mutex
-	codes []string // выданные и ещё не использованные
+	codes []onceEntry // выданные и ещё не использованные, старые первыми
+}
+
+type onceEntry struct {
+	code string
+	at   time.Time
+}
+
+const (
+	onceTTL = time.Minute
+	onceMax = 8
+)
+
+// prune — убрать просроченные и лишние; под o.mu.
+func (o *onceCode) prune() {
+	o.codes = slices.DeleteFunc(o.codes, func(e onceEntry) bool { return time.Since(e.at) > onceTTL })
+	if n := len(o.codes) - onceMax; n > 0 {
+		o.codes = slices.Delete(o.codes, 0, n)
+	}
 }
 
 // issue — новый код на одно открытие.
@@ -194,7 +213,8 @@ func (o *onceCode) issue() string {
 	rand.Read(b)
 	c := hex.EncodeToString(b)
 	o.mu.Lock()
-	o.codes = append(o.codes, c)
+	o.codes = append(o.codes, onceEntry{c, time.Now()})
+	o.prune()
 	o.mu.Unlock()
 	return c
 }
@@ -205,14 +225,19 @@ func (o *onceCode) use(c string) bool {
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	for i, k := range o.codes {
-		if subtle.ConstantTimeCompare([]byte(c), []byte(k)) == 1 {
+	o.prune()
+	for i, e := range o.codes {
+		if subtle.ConstantTimeCompare([]byte(c), []byte(e.code)) == 1 {
 			o.codes = slices.Delete(o.codes, i, i+1)
 			return true
 		}
 	}
 	return false
 }
+
+// peerOK — запрос с кодом пришёл от процесса того же пользователя (peer_linux.go; на Маке nil — не проверяется):
+// код виден в аргументах браузера всем пользователям ПК.
+var peerOK func(r *http.Request) bool
 
 // handler — интерфейс и API. Чужие страницы не могут ни прочитать токен, ни вызвать API:
 // страница отдаётся только с ?t=токен, API требует заголовок X-Token (кросс-доменный запрос с ним
@@ -232,6 +257,10 @@ func handler(addr, token string, page []byte, cfg *config, a *agent.Agent, run *
 			}
 			api(w, r, strings.TrimPrefix(r.URL.Path, "/api/"), cfg, a, run, info, fl)
 		case r.URL.Path == "/" && r.URL.Query().Has("n"): // одноразовый код из аргументов браузера → страница с токеном
+			if peerOK != nil && !peerOK(r) { // до use: чужой пользователь не сжигает код владельца
+				http.Error(w, "Окно AnyPC открывает только пользователь, запустивший программу", http.StatusForbidden)
+				return
+			}
 			if !once.use(r.URL.Query().Get("n")) {
 				http.Error(w, "Ссылка уже использована — откройте адрес из журнала AnyPC", http.StatusForbidden)
 				return
