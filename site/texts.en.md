@@ -67,7 +67,7 @@
 - `dl_mac`: Download for macOS
 - `sys_mac`: macOS 12 or later, Intel and Apple Silicon · beta
 - `m1`: Install ffmpeg (via Homebrew):
-- `m2`: Allow it to run and start it in Terminal — the AnyPC window opens in a browser tab:
+- `m2`: Open Terminal, go to the folder you downloaded the app to (usually Downloads — that is the first command; if you saved it elsewhere, use that folder) and run the commands one by one. “chmod +x” allows the file to run. “xattr -d com.apple.quarantine” removes the “downloaded from the internet” mark: AnyPC has no Apple developer certificate, so you give the permission to run it yourself, otherwise macOS will not open it. The last command starts AnyPC — its window opens in a browser tab:
 - `m3`: macOS will ask to allow Terminal “Screen Recording” and “Accessibility” (System Settings → Privacy & Security). Allow both and restart AnyPC.
 - `mchk`: Verify the file — the checksum must match the one above:
 - `tab_srv`: Own server
