@@ -26,8 +26,12 @@ import (
 // пополнение списка `mine` (на m.key); 20 переключений щелчком и Ctrl+Alt+2 (Input.dispatchKeyEvent, в т.ч.
 // автоповтор) не рвут соединений (drops=0), не плодят входов (на хосте по 1) и не оставляют залипших клавиш;
 // буфер/звук — только у активной вкладки (sessActive); обрыв ("bye") метит вкладку «разорвано» за ≤ 1 с через
-// событие; переподключение оборванной; «nokey» (отзыв на хосте) и снятие «Доверять» убирают из `mine`; открытие
-// ?embed=<ID> в ВЕРХНЕМ окне не входит само (защита). Пиксельная задержка картинки ≤ 1 с (MULTI-PC.md) — свойство
+// событие; переподключение оборванной; открытие ?embed=<ID> в ВЕРХНЕМ окне не входит само (защита).
+// Карточка канбана (имена и явное добавление): `mine` — [{id,name}], прежний формат (массив ID) мигрирует на чтении;
+// переименование ✎ на месте (Enter — сохранить, Esc — отмена, пустое — ID, ≤ 40 символов) видно на вкладке;
+// ★ на панели сессии убирает/добавляет ПК и сразу даёт поле имени; × в списке — явное удаление; «nokey» и снятие
+// «Доверять» ПК из `mine` НЕ убирают (было в фазе 1): вкладка честно «нужен пароль», во фрейме — карточка входа
+// с объяснением; подсказка про вход без пароля видна и в пустом, и в непустом списке. Пиксельная задержка картинки ≤ 1 с (MULTI-PC.md) — свойство
 // реального браузера (headless приостанавливает декод скрытого видео), проверяется вживую (V2); тест гейтит то,
 // что контролирует код: соединение не рвётся и входов на хосте по 1.
 const cdpMyPC = `
@@ -43,7 +47,12 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const ids = ['111111111', '222222222', '333333333'];
   const pcState = () => ev("JSON.stringify([...document.querySelectorAll('#frames iframe')].map(f => { try { return f.contentWindow.sessState(); } catch { return 'x'; } }))");
   const tabState = () => ev("JSON.stringify(myPcStates())");
-  const mine = async () => JSON.parse(await ev("JSON.stringify((JSON.parse(localStorage.getItem('mine')||'[]')).sort())"));
+  const mine = async () => JSON.parse(await ev("JSON.stringify((JSON.parse(localStorage.getItem('mine')||'[]')).map(x => x.id || x).sort())"));
+  const names = () => ev("JSON.stringify(Object.fromEntries(JSON.parse(localStorage.getItem('mine')||'[]').map(x => [x.id, x.name])))");
+  const tabClick = i => ev("[...document.querySelectorAll('#tabs .tab .nm')].find(n => n.dataset.id === '" + i + "').parentNode.click(); 1");
+  // правка имени в поле .nmedit документа d (родитель или фрейм): значение и клавиша
+  const nmKey = (d, val, key) => d + ".querySelector('input.nmedit').value = " + JSON.stringify(val) + "; " + d + ".querySelector('input.nmedit').dispatchEvent(new KeyboardEvent('keydown', { key: '" + key + "', bubbles: true })); 1";
+  const ren = async (i, val, key) => { await ev("document.querySelector('#minelist .mpc[data-id=\"" + i + "\"] .mpcren').click(); 1"); await ev(nmKey('document', val, key)); };
   await sleep(800);
   // ВЕРХНЕЕ окно: ?embed=<ID> не должно входить само (parent===window) даже с готовым ключом — пробуем до засева
   const top = await (await fetch('http://127.0.0.1:' + port + '/json/new?' + url + '?embed=111111111', { method: 'PUT' })).json();
@@ -83,7 +92,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   }
   console.log('switch=' + (drops === 0 && maxSw <= 1000) + '|drops=' + drops + '|sw=' + Math.round(maxSw));
   // переключение щелчком по вкладке — на первую (у вкладок есть ещё ⌂ и ×, поэтому выбираем по id)
-  await ev("[...document.querySelectorAll('#tabs .tab .nm')].find(n => n.textContent.replace(/\\D/g,'') === '" + ids[0] + "').parentNode.click(); 1"); await sleep(300);
+  await tabClick(ids[0]); await sleep(300);
   console.log('clickactive=' + await ev("myPcActive()"));
   // переключение с клавиатуры: Ctrl+Alt+2 через Input.dispatchKeyEvent (работает и когда фокус во фрейме)
   const key = (type, extra) => cmd('Input.dispatchKeyEvent', Object.assign({ type }, extra));
@@ -102,6 +111,30 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   console.log('held=' + await ev("JSON.stringify([...document.querySelectorAll('#frames iframe')].map(f => { try { return f.contentWindow.sessHeld(); } catch { return -1; } }))"));
   // буфер/звук — только у активной вкладки (активна вторая: Ctrl+Alt+2)
   console.log('active=' + await ev("JSON.stringify([...document.querySelectorAll('#frames iframe')].map(f => { try { return f.contentWindow.sessActive(); } catch { return 'x'; } }))"));
+  // переименование в списке «Мои ПК» (⌂): Enter сохраняет, Esc отменяет, пробелы — снова ID, длинное — до 40 символов
+  await ev("document.getElementById('tabhome').click(); 1"); await sleep(200);
+  await ren(ids[1], 'Офис', 'Enter');
+  await ren(ids[1], 'Не то', 'Escape');
+  await ren(ids[2], '   ', 'Enter');
+  await ren(ids[0], 'A'.repeat(50), 'Enter');
+  console.log('names=' + await names());
+  // переименование в списке освежило имя на панели сессии открытой вкладки (родитель → embedStar)
+  console.log('renstar=' + await ev("document.querySelectorAll('#frames iframe')[1].contentWindow.document.getElementById('starnm').textContent"));
+  console.log('listnames=' + await ev("JSON.stringify([...document.querySelectorAll('#minelist .mpcopen')].map(b => b.textContent).sort())"));
+  // ★ на панели сессии третьего ПК: снять — ушёл из списка; поставить — вернулся и сразу поле имени
+  await tabClick(ids[2]); await sleep(200);
+  const f2 = "document.querySelectorAll('#frames iframe')[2].contentWindow.document";
+  const star = () => ev(f2 + ".getElementById('starbtn').getAttribute('aria-pressed')");
+  const s0 = await star();
+  await ev(f2 + ".getElementById('starbtn').click(); 1");
+  const s1 = await star(), m1 = await mine();
+  await ev(f2 + ".getElementById('starbtn').click(); 1");
+  const edit = await ev("!!" + f2 + ".querySelector('#bar input.nmedit')");
+  await ev(nmKey(f2, 'Дом', 'Enter'));
+  console.log('star=' + [s0, s1, JSON.stringify(m1), await star(), edit].join('|'));
+  console.log('starlabel=' + await ev(f2 + ".getElementById('starnm').textContent"));
+  console.log('names2=' + await names());
+  console.log('tabnames=' + await ev("JSON.stringify([...document.querySelectorAll('#tabs .tab .nm')].map(n => n.textContent))"));
   // обрыв ("bye" от хоста) метит вкладку «разорвано» за ≤ 1 с — ждём по событию (poll 20 мс), не sleep
   const t0 = Date.now(); await fetch(url + 'bye?id=' + ids[2]);
   let bms = -1; for (let k = 0; k < 60; k++) { const st = JSON.parse(await tabState()); if (st[2] === 'broken') { bms = Date.now() - t0; break; } await sleep(20); }
@@ -109,16 +142,65 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   // прочие ПК не тронуты (соединения живы), а вкладка третьего помечена «разорвано» (метка — по событию)
   const ps = JSON.parse(await pcState()), ts = JSON.parse(await tabState());
   console.log('afterbye=' + JSON.stringify([ps[0], ps[1], ts[2]]));
-  // отзыв ключа на хосте → переподключение оборванной вкладки → "nokey" → из «Мои ПК» убран
+  // отзыв ключа на хосте → переподключение оборванной вкладки → "nokey" → ПК ОСТАЁТСЯ в «Моих ПК», вкладка — «нужен пароль»
   await fetch(url + 'revoke?id=' + ids[0]); await fetch(url + 'bye?id=' + ids[0]);
   for (let k = 0; k < 60 && JSON.parse(await tabState())[0] !== 'broken'; k++) await sleep(50);
-  await ev("[...document.querySelectorAll('#tabs .tab .nm')].find(n => n.textContent.replace(/\\D/g,'') === '" + ids[0] + "').parentNode.click(); 1"); // клик по оборванной — переподключить
-  for (let k = 0; k < 80 && (await mine()).includes(ids[0]); k++) await sleep(100);
-  console.log('afternokey=' + JSON.stringify(await mine()));
-  // снятие «Доверять» у второго ПК (его фрейм) — забыть ключ и убрать из «Мои ПК»
+  await tabClick(ids[0]); // клик по оборванной — переподключить
+  for (let k = 0; k < 100 && JSON.parse(await tabState())[0] !== 'pw'; k++) await sleep(100);
+  console.log('afternokey=' + JSON.stringify(await mine()) + '|' + JSON.parse(await tabState())[0]);
+  console.log('pwlabel=' + await ev("[...document.querySelectorAll('#tabs .tab')].find(b => b.querySelector('.nm')?.dataset.id === '" + ids[0] + "').querySelector('.stt').textContent === t('st_pw')"));
+  const f0 = "document.querySelectorAll('#frames iframe')[0].contentWindow";
+  console.log('pwform=' + await ev("(() => { const w = " + f0 + ", d = w.document; return [d.body.classList.contains('needpw'), d.getElementById('home').checkVisibility(), d.getElementById('pw').checkVisibility(), !d.getElementById('me').checkVisibility(), d.getElementById('msg').textContent.includes(t('e_nokey_why'))].join('|'); })()"));
+  // приёмка: вкладка — только к своему ID. «Недавние» во фрейме скрыты; подмена поля скриптом и щелчок по недавнему
+  // чужому ID не подключают к нему (на чужом хосте новых входов нет — проверка logins ниже), вкладка не «на связи»
+  const fd = f0 + ".document";
+  console.log('recenthidden=' + await ev("!" + fd + ".getElementById('recentbox').checkVisibility() && " + fd + ".querySelectorAll('#recent button').length > 0"));
+  await ev("(() => { const b = [..." + fd + ".querySelectorAll('#recent button')].find(b => b.textContent === '" + ids[2] + "'); b.click(); return 1; })()"); await sleep(300);
+  await ev("(() => { const d = " + fd + "; d.getElementById('pw').value = 'secret123'; d.getElementById('go').click(); return 1; })()"); await sleep(1500);
+  const hj1 = [JSON.parse(await tabState())[0], await ev(f0 + ".sessState()"), await ev(fd + ".getElementById('id').value"), await ev("myPcCodeWanted()")].join('|');
+  await ev("(() => { const d = " + fd + "; d.getElementById('id').value = '" + ids[2] + "'; d.getElementById('pw').value = 'secret123'; d.getElementById('go').click(); return 1; })()"); await sleep(1500);
+  const hj2 = [JSON.parse(await tabState())[0], await ev(f0 + ".sessState()"), await ev(fd + ".getElementById('id').value"), await ev("myPcCodeWanted()")].join('|');
+  console.log('hijack=' + hj1 + '/' + hj2);
+  // приёмка: печать пароля во фрейме + запрос кода от другой вкладки — фокус не уходит в #mcot
+  await ev("(() => { const w = " + f0 + "; w.focus(); const i = w.document.getElementById('pw'); i.value = ''; i.focus(); return 1; })()");
+  await cmd('Input.insertText', { text: 'Se' });
+  await ev("myPcState('" + ids[2] + "', 'code'); 1"); await sleep(100);
+  await cmd('Input.insertText', { text: 'cr3' });
+  console.log('typefocus=' + await ev(fd + ".getElementById('pw').value + '|' + document.getElementById('mcot').value"));
+  await ev("myPcState('" + ids[2] + "', 'broken'); " + fd + ".getElementById('pw').value = ''; 1");
+  // вход паролем в карточке фрейма: неверный — метка остаётся «нужен пароль» (не «разорвано»); верный + код — на связи
+  const pwGo = pw => ev("(() => { const d = " + f0 + ".document; d.getElementById('pw').value = '" + pw + "'; d.getElementById('go').click(); return 1; })()");
+  await pwGo('wrong-pass');
+  for (let k = 0; k < 100 && !(await ev(f0 + ".document.getElementById('msg').textContent.includes(t('e_auth'))")); k++) await sleep(100);
+  console.log('wrongpw=' + JSON.parse(await tabState())[0] + '|' + await ev(f0 + ".document.body.classList.contains('needpw')"));
+  await pwGo('secret123');
+  for (let k = 0; k < 150; k++) {
+    if (await ev("myPcCodeWanted()") === ids[0]) { const c = await (await fetch(url + 'code?id=' + ids[0])).text(); await ev("document.getElementById('mcot').value='" + c + "'; document.getElementById('mcgo').click()"); await sleep(300); continue; }
+    if (JSON.parse(await tabState())[0] === 'ok') break;
+    await sleep(100);
+  }
+  console.log('pwlogin=' + JSON.parse(await tabState())[0] + '|' + await ev(f0 + ".document.body.classList.contains('needpw')") + '|' + await ev(f0 + ".sessState()"));
+  // снятие «Доверять» у второго ПК (его фрейм) — забыть ключ, но из «Моих ПК» не убирать
   await ev("const f = document.querySelectorAll('#frames iframe')[1]; const d = f.contentWindow.document; const c = d.getElementById('keylogin'); c.checked = false; c.dispatchEvent(new Event('change')); 1");
-  for (let k = 0; k < 40 && (await mine()).includes(ids[1]); k++) await sleep(100);
-  console.log('afteruntrust=' + JSON.stringify(await mine()));
+  for (let k = 0; k < 40 && await ev("!!JSON.parse(localStorage.getItem('ckeys'))['" + ids[1] + "']"); k++) await sleep(100);
+  console.log('afteruntrust=' + JSON.stringify(await mine()) + '|key=' + await ev("!!JSON.parse(localStorage.getItem('ckeys'))['" + ids[1] + "']"));
+  // явное удаление: × в списке «Мои ПК»
+  await ev("document.getElementById('tabhome').click(); 1"); await sleep(200);
+  await ev("document.querySelector('#minelist .mpc[data-id=\"" + ids[0] + "\"] .mpcdel').click(); 1");
+  console.log('afterdel=' + JSON.stringify(await mine()));
+  console.log('delstar=' + await ev(fd + ".getElementById('starbtn').getAttribute('aria-pressed')")); // × в списке освежил ★ открытой вкладки
+  // подсказка про вход без пароля: видна в непустом и в пустом списке
+  const hint = () => ev("[document.getElementById('minehow').checkVisibility() && document.getElementById('minehow').textContent.includes('TOTP'), document.getElementById('mineempty').checkVisibility()].join(',')");
+  const h1 = await hint();
+  await ev("localStorage.setItem('mine', '[]'); myPcRender(); 1");
+  console.log('hint=' + h1 + '|' + await hint());
+  // миграция прежнего формата (массив ID) при загрузке окна: мусор и повторы отброшены, имена — ID
+  await ev("localStorage.setItem('mine', JSON.stringify(['111111111', 5, { id: 'x' }, null, '222222222', '111111111', { id: '333333333', name: 'Склад' }])); 1");
+  await tev("location.reload(); 1"); await sleep(1500);
+  console.log('migrated=' + await tev("localStorage.getItem('mine')"));
+  console.log('miglist=' + await tev("JSON.stringify([...document.querySelectorAll('#minelist .mpcopen')].map(b => b.textContent))"));
+  await ev("localStorage.setItem('mine', '{\"bad\":1}'); 1");
+  console.log('garbage=' + await ev("JSON.stringify(myPcs.get())"));
   process.exit(0);
 })();`
 
@@ -231,16 +313,43 @@ func TestBrowserMyPC(t *testing.T) {
 		`active=[false,true,false]`,                   // буфер/звук — только у активной (второй) вкладки
 		`brokenms=true|`,                              // метка «разорвано» за ≤ 1 с через событие (не из тормозимого таймера)
 		`afterbye=["connected","connected","broken"]`, // обрыв третьего не тронул первые два; его вкладка «разорвано»
-		`afternokey=["222222222","333333333"]`,        // "nokey" убрал первый из «Мои ПК»
-		`afteruntrust=["333333333"]`,                  // снятие «Доверять» убрало второй
+		// имена: Enter сохранил, Esc отменил, пробелы → ID, длинное обрезано до 40
+		`names={"111111111":"` + strings.Repeat("A", 40) + `","222222222":"Офис","333333333":"333333333"}`,
+		`listnames=["333 333 333","` + strings.Repeat("A", 40) + `111 111 111","Офис222 222 222"]`, // имя + ID мелко; без имени — ID (сортировка: порядок входов не задан)
+		`star=true|false|["111111111","222222222"]|true|true`,                                      // ★ снял — ушёл; поставил — вернулся, поле имени сразу
+		`starlabel=Дом ✎`,
+		`names2={"111111111":"` + strings.Repeat("A", 40) + `","222222222":"Офис","333333333":"Дом"}`,
+		`tabnames=["` + strings.Repeat("A", 40) + `","Офис","Дом"]`, // на вкладках — имена
+		// карточка канбана: БЫЛО (фаза 1) — "nokey" и снятие «Доверять» убирали ПК из `mine`
+		// (afternokey=["222222222","333333333"], afteruntrust=["333333333"]); СТАЛО — удаление только явное
+		`afternokey=["111111111","222222222","333333333"]|pw`, // "nokey": ПК остался, вкладка «нужен пароль»
+		`pwlabel=true`,
+		`pwform=true|true|true|true|true`, // во фрейме — карточка входа (без «Это рабочее место») и объяснение
+		`wrongpw=pw|true`,                 // неверный пароль во фрейме: метка «нужен пароль», карточка входа осталась
+		`pwlogin=ok|false|connected`,      // верный пароль + код TOTP из окна-родителя: вкладка на связи
+		`afteruntrust=["111111111","222222222","333333333"]|key=false`, // ключ забыт, ПК в списке остался
+		`afterdel=["222222222","333333333"]`,
+		`delstar=false`,                        // × в списке — ★ во вкладке снята
+		`renstar=Офис ✎`,                       // ✎ в списке — имя на панели вкладки обновилось
+		`recenthidden=true`,                    // «Недавние» во фрейме скрыты (кнопки есть)
+		`hijack=pw||111111111|/pw||111111111|`, // ни недавний, ни подмена поля не подключили вкладку к чужому ID
+		`typefocus=Secr3|`,                     // символы остались в пароле, #mcot пуст                           // × — явное удаление
+		`hint=true,false|true,true`,            // подсказка видна в непустом и пустом списке
+		`migrated=[{"id":"111111111","name":"111111111"},{"id":"222222222","name":"222222222"},{"id":"333333333","name":"Склад"}]`,
+		`miglist=["111 111 111","222 222 222","Склад333 333 333"]`,
+		`garbage=[]`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("нет %q", want)
 		}
 	}
-	for _, id := range ids { // после первых трёх входов по ключу переключение/обрыв новых входов не создаёт
-		if n := logins[id].Load(); n != 1 {
-			t.Errorf("ПК %s: входов %d, ожидалось 1", id, n)
+	for _, id := range ids { // после первых трёх входов по ключу переключение/обрыв новых входов не создаёт;
+		want := int32(1) // у первого — ещё один: вход паролем во фрейме после "nokey"
+		if id == ids[0] {
+			want = 2
+		}
+		if n := logins[id].Load(); n != want {
+			t.Errorf("ПК %s: входов %d, ожидалось %d", id, n, want)
 		}
 	}
 	if t.Failed() {
