@@ -23,7 +23,7 @@ import (
 )
 
 var spaceNames = []string{"spaceCreate", "spaceCreateOK", "spaceCreateNo", "spaceEnter", "spaceOp", "spaceConfirm",
-	"workHere", "passOff", "spaceExclude", "spaceLogin", "spaceLeave", "spaceSync"}
+	"spaceOpClear", "workHere", "passOff", "spaceExclude", "spaceLogin", "spaceLeave", "spaceSync"}
 
 // spaceCodes — ошибка ядра → код окна (первое совпадение по errors.Is).
 var spaceCodes = []struct {
@@ -83,14 +83,19 @@ func spaceCall(c *config, name string, args []json.RawMessage) (any, error) {
 
 func spaceDo(c *config, name string, str func(int) string, flag func(int) bool) (any, error) {
 	switch name {
-	case "spaceCreate":
-		ph, err := c.spaceDraft(str(0))
+	case "spaceCreate": // создание и выход — синхронно, но как операция: вступление в полёте они бы сломали
+		var ph string
+		err := spaceOps.hold("create", func() (err error) { ph, err = c.spaceDraft(str(0)); return })
 		if err != nil {
 			return nil, err
 		}
 		return map[string]string{"phrase": ph}, nil
 	case "spaceCreateOK":
-		return nil, c.spaceCreateOK(str(0))
+		err := spaceOps.hold("create", func() error { return c.spaceCreateOK(str(0)) })
+		if errors.Is(err, errSpaceForeign) { // у черновика ключ из этой же фразы: не совпал — опечатка, не чужое пространство
+			err = errSpacePhrase
+		}
+		return nil, err
 	case "spaceCreateNo":
 		c.spaceCreateNo()
 		return nil, nil
@@ -107,6 +112,8 @@ func spaceDo(c *config, name string, str func(int) string, flag func(int) bool) 
 		return spaceOps.snap(true), nil
 	case "spaceConfirm":
 		return nil, spaceOps.confirm(flag(0))
+	case "spaceOpClear":
+		return nil, spaceOps.clear()
 	case "workHere":
 		if passes.cfg != c {
 			return nil, errSpaceNotIn
@@ -143,12 +150,12 @@ func spaceDo(c *config, name string, str func(int) string, flag func(int) bool) 
 			return spaceEditJSON(c, func(s *spaceSyncer) ([]spaceResult, error) { return s.spaceChangeLogin(ctx, ph, pw, code) })
 		})
 	case "spaceLeave":
-		if spaceOps.busy() {
-			return nil, errSpaceBusy
-		}
-		return nil, c.spaceLeave(str(0), str(1))
+		return nil, spaceOps.hold("leave", func() error { return c.spaceLeave(str(0), str(1)) })
 	case "spaceSync":
 		return nil, spaceOps.start("sync", func(ctx context.Context, _ func(spacePreview), _ <-chan bool) (any, error) {
+			if c.spaceDamaged() {
+				return nil, errSpaceDamaged
+			}
 			if c.spaceOthers() == nil {
 				return nil, errSpaceNotIn
 			}
@@ -206,7 +213,9 @@ func syncRows(rs []spaceResult) []map[string]string {
 func rowJSON(id, state string, err error) map[string]string {
 	m := map[string]string{"id": id, "state": state}
 	if err != nil {
-		m["err"] = spaceErrCode(err)
+		if m["err"] = spaceErrCode(err); m["err"] == "other" {
+			log.Printf("пространство: %s: %v", id, err)
+		}
 	}
 	return m
 }

@@ -12,6 +12,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"os"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -123,6 +125,7 @@ func TestSpaceErrCode(t *testing.T) {
 		{spacePhraseOK(strings.Join(strings.Fields(spacePhraseNew())[:9], " ") + " zzzz"), "phrase_word:10"},
 		{fmt.Errorf("%w: none", agent.ErrSpaceRefused), "refused"}, {agent.ErrSpaceAuth, "auth"}, {errSpaceSlow, "slow"},
 		{errSpaceBusy, "busy"}, {errNoLockDetector, "nolock"}, {context.Canceled, "cancel"}, {errSpaceHostID, "id"},
+		{fmt.Errorf("пространство: нет ответа вовремя (%w)", context.DeadlineExceeded), "timeout"}, // agent/space.go
 		{errors.New("тайна ядра"), "other"},
 	} {
 		if got := spaceErrCode(c.err); got != c.code {
@@ -131,6 +134,112 @@ func TestSpaceErrCode(t *testing.T) {
 	}
 	if _, err := spaceCall(spaceCfg(t, spacePass, totp.NewSecret()), "spaceCreateOK", []json.RawMessage{[]byte(`"x"`)}); err == nil || err.Error() != "space:draft" {
 		t.Errorf("spaceCreateOK без черновика: %v", err)
+	}
+	var logs syncLog // неизвестная ошибка: окну — только код, текст — в журнал
+	log.SetOutput(&logs)
+	defer log.SetOutput(os.Stderr)
+	if _, err := spaceCall(spaceCfg(t, spacePass, totp.NewSecret()), "нет-такого", nil); err == nil || err.Error() != "space:other" ||
+		!strings.Contains(logs.String(), "неизвестный вызов") {
+		t.Errorf("неизвестная ошибка: %v; журнал %q", err, logs.String())
+	}
+	if r := rowJSON("200000001", "refused", errors.New("тайна строки")); r["err"] != "other" || !strings.Contains(logs.String(), "тайна строки") {
+		t.Errorf("строка итога: %v; журнал %q", r, logs.String())
+	}
+}
+
+// TestSpaceOpOtherLogged — ошибка other фоновой операции: окну — код, текст — в журнал; испорченное пространство —
+// damaged и у сверки.
+func TestSpaceOpOtherLogged(t *testing.T) {
+	opsReset(t)
+	var logs syncLog
+	log.SetOutput(&logs)
+	defer log.SetOutput(os.Stderr)
+	n := spaceCfg(t, spacePass, totp.NewSecret())
+	host := spaceCfg(t, spacePass, totp.NewSecret()).id()
+	call := apiHandler(n)
+	withSpaceNet(t, func(context.Context, agent.SpaceDial) ([]byte, error) { return nil, errors.New("тайна обмена") })
+	call("spaceEnter", host, spacePass, "123456", spacePhraseNew())
+	if op := opWait(t, call, "err"); op["err"] != "other" || !strings.Contains(logs.String(), "тайна обмена") {
+		t.Errorf("итог %v; журнал %q", op, logs.String())
+	}
+	n.mu.Lock()
+	n.Space = []byte("мусор")
+	n.save()
+	n.mu.Unlock()
+	call("spaceSync")
+	if op := opWait(t, call, "err"); op["err"] != "damaged" {
+		t.Errorf("сверка испорченного: %v", op)
+	}
+}
+
+// TestSpaceOpZombie — превью после конца операции (обмен оборвался, пока Sign шёл к превью) её не воскрешает:
+// состояние err, подтверждать нечего (регрессия приёмки Ч2, B1).
+func TestSpaceOpZombie(t *testing.T) {
+	opsReset(t)
+	sec := totp.NewSecret()
+	p := spaceCfg(t, spacePass, sec)
+	ph := spaceMake(t, p)
+	n := spaceCfg(t, "n-local-pass", totp.NewSecret())
+	call := apiHandler(n)
+	signed := make(chan struct{})
+	withSpaceNet(t, func(_ context.Context, d agent.SpaceDial) ([]byte, error) {
+		salt, _, _ := p.secret("")
+		m := p.spaceGet(salt)
+		go func() { d.Sign(m, cfgPub(p)); close(signed) }() // Sign — в своей горутине, как agent
+		return nil, fmt.Errorf("%w: разрыв", agent.ErrSpaceRefused)
+	})
+	if code, _, e := call("spaceEnter", p.id(), spacePass, spaceCode(p, sec), ph); code != 200 {
+		t.Fatal(e)
+	}
+	spaceOps.wg.Wait()
+	within(t, "Sign", signed)
+	_, r, _ := call("spaceOp")
+	if op := r.(map[string]any); op["state"] != "err" || op["preview"] != nil {
+		t.Errorf("после конца: %v", op)
+	}
+	if _, _, e := call("spaceConfirm", true); e != "space:noop" {
+		t.Errorf("подтверждение кончившейся операции: %q", e)
+	}
+	if op := spaceOps.snap(false); op["state"] != "err" {
+		t.Errorf("кончившаяся операция «идёт»: %v", op)
+	}
+}
+
+// TestSpaceLeaveHolds — выход занимает операцию, пока идёт: «Работаю тут» и создание в это время — busy (регрессия
+// приёмки Ч2, M1).
+func TestSpaceLeaveHolds(t *testing.T) {
+	opsReset(t)
+	sec := totp.NewSecret()
+	p := spaceCfg(t, spacePass, sec)
+	ph := spaceMake(t, p)
+	n := spaceCfg(t, "n-local-pass", totp.NewSecret())
+	withSpaceNet(t, spaceNet(p, nil))
+	if _, err := n.spaceEnter(context.Background(), p.id(), spacePass, spaceCode(p, sec), ph); err != nil {
+		t.Fatal(err)
+	}
+	in, release := make(chan struct{}), make(chan struct{})
+	oldOff, oldCfg := passOffFn, passes.cfg
+	passOffFn = func(context.Context, agent.PassDial) error { close(in); <-release; return nil } // выход снимает пропуск
+	passes.cfg = n
+	passes.mu.Lock()
+	passes.issued = map[string]passIssued{p.id(): {cfgPub(p), time.Now(), []byte("pid")}}
+	passes.mu.Unlock()
+	t.Cleanup(func() { passOffFn, passes.cfg = oldOff, oldCfg })
+	call := apiHandler(n)
+	leave := make(chan string, 1)
+	go func() { _, _, e := call("spaceLeave", spacePass, spaceCode(n, sec)); leave <- e }()
+	within(t, "«снять» при выходе", in)
+	for _, x := range [][]any{{"workHere", spacePass, "123456"}, {"spaceCreate", spacePass}, {"spaceCreateOK", ph}, {"spaceOpClear"}} {
+		if _, _, e := call(x[0].(string), x[1:]...); e != "space:busy" {
+			t.Errorf("%v во время выхода: %q", x[0], e)
+		}
+	}
+	close(release)
+	if e := within(t, "выход", leave); e != "" {
+		t.Fatal(e)
+	}
+	if _, r, _ := call("spaceOp"); r != nil {
+		t.Errorf("след выхода: %v", r)
 	}
 }
 
@@ -174,7 +283,7 @@ func TestSpaceAPIFlow(t *testing.T) {
 	ph := res.(map[string]any)["phrase"].(string)
 	phrases = append(phrases, ph)
 	noSecrets(p, "черновик")
-	if _, _, e := callP("spaceCreateOK", spacePhraseNew()); e != "space:foreign" { // фраза не этого пространства
+	if _, _, e := callP("spaceCreateOK", spacePhraseNew()); e != "space:phrase" { // опечатка во фразе черновика
 		t.Errorf("чужая фраза: %q", e)
 	}
 	if code, _, e := callP("spaceCreateOK", ph); code != 200 {
@@ -270,7 +379,7 @@ func TestSpaceAPIFlow(t *testing.T) {
 	}
 	qr, _ := r["qr"].(map[string]any)
 	if qr == nil || !strings.Contains(qr["uri"].(string), m.TOTP) || !strings.HasPrefix(qr["svg"].(string), "<svg") {
-		t.Errorf("QR нового кода: %v", r["qr"])
+		t.Error("QR нового кода не тот")
 	}
 	if rs, ok := r["results"].([]any); !ok || len(rs) != 0 { // исключённому не рассылается, других нет
 		t.Errorf("итог рассылки: %v", r["results"])
@@ -279,9 +388,23 @@ func TestSpaceAPIFlow(t *testing.T) {
 	if in := spaceInfo(p); in["gone"] != 1 {
 		t.Errorf("gone: %v", in["gone"])
 	}
-	callP("spaceLogin", ph, "", false) // код не меняется — QR нет
+	if code, _, e := callP("spaceOpClear"); code != 200 { // «Готово» после QR — итога нет
+		t.Fatal(e)
+	}
+	if _, r, _ := callP("spaceOp"); r != nil {
+		t.Error("после spaceOpClear итог остался") // итог с QR — не в журнал теста
+	}
+	callP("spaceLogin", ph, "", false)
 	if op := opWait(t, callP, "err"); op["err"] != "nochange" {
 		t.Errorf("правка без изменений: %v", op)
+	}
+	callP("spaceLogin", ph, "other-pass-12", false) // новый пароль, код прежний — QR нет
+	if op := opWait(t, callP, "done"); op["result"].(map[string]any)["qr"] != nil {
+		t.Error("QR без смены кода")
+	}
+	callP("spaceLogin", ph, "", true)
+	if op := opWait(t, callP, "done"); op["result"].(map[string]any)["qr"] == nil {
+		t.Errorf("новый код без QR: %v", op)
 	}
 
 	// N выходит (о своём исключении он не знает)
@@ -316,7 +439,7 @@ func TestSpaceOpBusy(t *testing.T) {
 		t.Fatal(e)
 	}
 	for _, x := range [][]any{{"spaceSync"}, {"spaceEnter", host, spacePass, "123456", spacePhraseNew()}, {"spaceLogin", "x", "", true},
-		{"spaceLeave", spacePass, "123456"}} {
+		{"spaceLeave", spacePass, "123456"}, {"spaceCreate", spacePass}, {"spaceCreateOK", "x"}, {"spaceOpClear"}} {
 		if _, _, e := call(x[0].(string), x[1:]...); e != "space:busy" {
 			t.Errorf("%v во время операции: %q", x[0], e)
 		}
