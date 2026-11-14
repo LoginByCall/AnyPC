@@ -101,8 +101,9 @@ type Agent struct {
 	// Э4, сверка состава между членами (spsync.go). nil — сверки нет: "a" без sync, connect {"sync"} — обычный.
 	SpaceSync SpaceSyncer
 	// LoginTag — метка входа записи user для клиента с ключом cpub (nil — ключ не доказан): берётся при "b" и
-	// сверяется в revoked — сменилась (вход пространства сменили: код или пароль; новое исключение; ПК клиента
-	// исключён) — сессия рвётся, как при смене соли. nil — не сверять.
+	// сверяется в revoked — сменилась (вход пространства сменили: код или пароль; ПК клиента исключён) — сессия
+	// рвётся, как при смене соли; переход nil ↔ метка (пространство создано или оставлено) не рвёт. Поле nil — не
+	// сверять.
 	LoginTag func(user string, cpub []byte) []byte
 
 	mu          sync.Mutex
@@ -509,8 +510,15 @@ func (a *Agent) revoked(s *session) (gone, view bool) {
 	if len(secret) == 0 || !bytes.Equal(salt, was) {
 		return true, view
 	}
-	if tagged && a.LoginTag != nil && !bytes.Equal(a.LoginTag(user, cpub), tag) {
-		return true, view
+	if tagged && a.LoginTag != nil {
+		switch now := a.LoginTag(user, cpub); {
+		case now == nil || tag == nil: // пространство создали или вышли из него при том же пароле — не рвать
+			s.mu.Lock()
+			s.tag = now
+			s.mu.Unlock()
+		case !bytes.Equal(now, tag):
+			return true, view
+		}
 	}
 	if pass != nil { // Э3: пропуск сняли, истёк или ключ исключили из M
 		return !a.passValid(pass, was), view

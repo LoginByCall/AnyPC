@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -729,72 +730,74 @@ func TestSpaceForward(t *testing.T) {
 // снимает это.
 func TestSpaceCompromisedUnionMember(t *testing.T) {
 	for _, more := range []bool{false, true} {
-		sec := totp.NewSecret()
-		ca, cb, cd, cx := spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec)
-		ph, keys := syncSpace(t, 1, ca, cb, cd) // члены A, B, D и Y
-		base := spaceOf(ca)
-		hT, err := spaceRemove(base, ph, keys[0]) // на A: исключён Y, вход L (lex 1, lgen 2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		spSet(t, ca, hT)
-		if more { // ещё одна смена кода на A: lgen 3 — L побеждает всегда
-			if hT, err = spaceSetLogin(hT, ph, "", totp.NewSecret()); err != nil {
-				t.Fatal(err)
-			}
-			spSet(t, ca, hT)
-		}
-		hX, err := spaceAdd(base, ph, cx.id(), cfgPub(cx)) // на B (не знает hT): добавлен X
-		if err != nil {
-			t.Fatal(err)
-		}
-		spSet(t, cb, hX)
-		hxb, _ := hX.marshal()
-		if err := cd.spaceSync(hxb, nil); err != nil { // D получил hX и ушёл из сети
-			t.Fatal(err)
-		}
-		spaceReset(t, cx, hX)
-		if !spSync(ca, cb) || !spSync(cb, cx) { // A↔B, затем B→X: X — член объединения
-			t.Fatal("не сошлись")
-		}
-		if spaceOf(cx).TOTP != hT.TOTP || spaceOf(ca).Compromised {
-			t.Fatal("X не получил секрет входа L или L уже скомпрометирован")
-		}
-		for { // на D (не видел hT; A и B недоступны): исключение украденного X, вход которого проигрывает L
-			hR, err := spaceRemove(spaceOf(cd), ph, cfgPub(cx))
+		t.Run(fmt.Sprintf("lgen+%v", more), func(t *testing.T) {
+			sec := totp.NewSecret()
+			ca, cb, cd, cx := spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec)
+			ph, keys := syncSpace(t, 1, ca, cb, cd) // члены A, B, D и Y
+			base := spaceOf(ca)
+			hT, err := spaceRemove(base, ph, keys[0]) // на A: исключён Y, вход L (lex 1, lgen 2)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if spaceLoginCmp(hT, hR) > 0 {
-				spSet(t, cd, hR)
-				break
+			spSet(t, ca, hT)
+			if more { // ещё одна смена кода на A: lgen 3 — L побеждает всегда
+				if hT, err = spaceSetLogin(hT, ph, "", totp.NewSecret()); err != nil {
+					t.Fatal(err)
+				}
+				spSet(t, ca, hT)
 			}
-		}
-		if !spSync(cd, ca) || !spSync(cb, ca) || !spSync(cd, cb) {
-			t.Fatal("не сошлись после исключения")
-		}
-		for name, c := range map[string]*config{"A": ca, "B": cb, "D": cd} {
-			v := spaceOf(c)
-			salt, _, _ := c.secret("")
-			if !v.gone(cfgPub(cx)) || !v.Compromised || !sameLogin(v, hT) || c.spaceMember(salt, cfgPub(cb)) || c.spaceMember(salt, cfgPub(ca)) {
-				t.Errorf("lgen+%v, %s: X исключён %v, скомпрометирован %v, вход L %v", more, name, v.gone(cfgPub(cx)), v.Compromised, sameLogin(v, hT))
+			hX, err := spaceAdd(base, ph, cx.id(), cfgPub(cx)) // на B (не знает hT): добавлен X
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
-		fakeNet(t, func(agent.SyncDial) ([]byte, error) { return nil, agent.ErrSpaceOffline })
-		spSyncer(t, cd)
-		if _, err := cd.syn.spaceChangeLogin(context.Background(), ph, "", false); err != nil { // новый код — сам
-			t.Fatal(err)
-		}
-		if !spSync(cd, ca) || !spSync(cb, ca) {
-			t.Fatal("не сошлись после нового кода")
-		}
-		for name, c := range map[string]*config{"A": ca, "B": cb, "D": cd} {
-			v := spaceOf(c)
-			salt, _, _ := c.secret("")
-			if v.Compromised || v.TOTP == hT.TOTP || !c.spaceMember(salt, cfgPub(cd)) && c != cd {
-				t.Errorf("lgen+%v, %s: новый код не снял состояние: %v", more, name, v)
+			spSet(t, cb, hX)
+			hxb, _ := hX.marshal()
+			if err := cd.spaceSync(hxb, nil); err != nil { // D получил hX и ушёл из сети
+				t.Fatal(err)
 			}
-		}
+			spaceReset(t, cx, hX)
+			if !spSync(ca, cb) || !spSync(cb, cx) { // A↔B, затем B→X: X — член объединения
+				t.Fatal("не сошлись")
+			}
+			if spaceOf(cx).TOTP != hT.TOTP || spaceOf(ca).Compromised {
+				t.Fatal("X не получил секрет входа L или L уже скомпрометирован")
+			}
+			for { // на D (не видел hT; A и B недоступны): исключение украденного X, вход которого проигрывает L
+				hR, err := spaceRemove(spaceOf(cd), ph, cfgPub(cx))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if spaceLoginCmp(hT, hR) > 0 {
+					spSet(t, cd, hR)
+					break
+				}
+			}
+			if !spSync(cd, ca) || !spSync(cb, ca) || !spSync(cd, cb) {
+				t.Fatal("не сошлись после исключения")
+			}
+			for name, c := range map[string]*config{"A": ca, "B": cb, "D": cd} {
+				v := spaceOf(c)
+				salt, _, _ := c.secret("")
+				if !v.gone(cfgPub(cx)) || !v.Compromised || !sameLogin(v, hT) || c.spaceMember(salt, cfgPub(cb)) || c.spaceMember(salt, cfgPub(ca)) {
+					t.Errorf("lgen+%v, %s: X исключён %v, скомпрометирован %v, вход L %v", more, name, v.gone(cfgPub(cx)), v.Compromised, sameLogin(v, hT))
+				}
+			}
+			fakeNet(t, func(agent.SyncDial) ([]byte, error) { return nil, agent.ErrSpaceOffline })
+			spSyncer(t, cd)
+			if _, err := cd.syn.spaceChangeLogin(context.Background(), ph, "", false); err != nil { // новый код — сам
+				t.Fatal(err)
+			}
+			if !spSync(cd, ca) || !spSync(cb, ca) {
+				t.Fatal("не сошлись после нового кода")
+			}
+			for name, c := range map[string]*config{"A": ca, "B": cb, "D": cd} {
+				v := spaceOf(c)
+				salt, _, _ := c.secret("")
+				if v.Compromised || v.TOTP == hT.TOTP || !c.spaceMember(salt, cfgPub(cd)) && c != cd {
+					t.Errorf("lgen+%v, %s: новый код не снял состояние: %v", more, name, v)
+				}
+			}
+		})
 	}
 }
 
@@ -885,6 +888,14 @@ func TestSpaceHeadCorrupt(t *testing.T) {
 	if v := spaceOf(ca); v != nil || ca.spaceMember(salt, cfgPub(cb)) || ca.SyncGate(cfgPub(cb), nil) != nil {
 		t.Errorf("испорченная верхушка пропущена: %v", v)
 	}
+	if tg := ca.loginTag("", nil); tg == nil || !bytes.Equal(tg, ca.loginTag("", nil)) { // не рвать сессии циклом
+		t.Error("метка испорченного состояния не постоянна")
+	}
+	fakeNet(t, func(agent.SyncDial) ([]byte, error) { return nil, agent.ErrSpaceOffline })
+	spSyncer(t, ca)
+	if _, err := ca.syn.spaceChangeLogin(context.Background(), ph, "", true); !errors.Is(err, errSpaceDamaged) {
+		t.Errorf("правка при испорченной записи: %v", err)
+	}
 	n, _ := spaceSetLogin(xa, ph, "", totp.NewSecret())
 	nb, _ := n.marshal()
 	if err := ca.spaceSync(nb, nil); err == nil {
@@ -905,8 +916,9 @@ func TestSpaceLoginTag(t *testing.T) {
 	if err := ca.setUser("bob", "guest-pass-1", "view"); err != nil {
 		t.Fatal(err)
 	}
-	t0 := ca.loginTag("", cfgPub(cb))
-	if t0 == nil || !bytes.Equal(t0, ca.loginTag("", nil)) || ca.loginTag("bob", nil) != nil {
+	t0 := ca.loginTag("", nil)
+	if k := ca.loginTag("", cfgPub(cb)); t0 == nil || k == nil || !bytes.Equal(t0, ca.loginTag("", nil)) ||
+		!bytes.Equal(k, ca.loginTag("", cfgPub(cb))) || ca.loginTag("bob", nil) != nil {
 		t.Fatal("метка записи по умолчанию или гостя")
 	}
 	var calls atomic.Int32
@@ -930,12 +942,68 @@ func TestSpaceLoginTag(t *testing.T) {
 		t.Fatal("сценарий: исключение B не проиграло")
 	}
 	calls.Store(0)
+	k1 := ca.loginTag("", cfgPub(cb))
 	xb, _ := x.marshal()
 	ca.SyncApply(xb, nil)
 	if v := spaceOf(ca); !v.gone(keys[0]) || !sameLogin(v, n) || bytes.Equal(t1, ca.loginTag("", nil)) || calls.Load() == 0 {
-		t.Fatalf("исключение без смены входа — метка та же или spaceChanged нет: %v", v)
+		t.Fatalf("исключение без смены входа — метка клиента без ключа та же или spaceChanged нет: %v", v)
+	}
+	if !bytes.Equal(k1, ca.loginTag("", cfgPub(cb))) { // 3а приёмки: чужое исключение сессию с ключом не рвёт
+		t.Error("исключение чужого ПК без смены входа сменило метку клиента с ключом")
 	}
 	if bytes.Equal(ca.loginTag("", keys[0]), ca.loginTag("", keys[0])) {
 		t.Error("исключённый ПК клиента — метка повторяется")
+	}
+	on := true
+	ca.mu.Lock()
+	ca.Confirm = &on // 3в: «Спрашивать» (правкой файла) — вход одноразовым кодом, не входом пространства
+	ca.save()
+	ca.mu.Unlock()
+	if !ca.codeMode() || ca.loginTag("", nil) != nil {
+		t.Error("«Спрашивать»: метка входа пространства")
+	}
+}
+
+// TestSpaceHeadsOverSync — неблокирующее 2 приёмки круга 2: SpaceOver снимает и правка, пришедшая сверкой, если она
+// свела верхушки (их снова меньше spaceMaxHeads).
+func TestSpaceHeadsOverSync(t *testing.T) {
+	sec := totp.NewSecret()
+	ca, cb := spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec)
+	ph, _ := syncSpace(t, 0, ca, cb)
+	base := spaceOf(ca)
+	var all []*space
+	for range spaceMaxHeads + 1 {
+		pub, _, _ := ed25519.GenerateKey(nil)
+		m, err := spaceAdd(base, ph, "9"+hub.RandDigits(8), pub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		all = append(all, m)
+	}
+	var bs [][]byte
+	for _, m := range all[:spaceMaxHeads] {
+		b, _ := m.marshal()
+		bs = append(bs, b)
+	}
+	ca.SyncApply(bs[0], bs[1:])
+	last, _ := all[spaceMaxHeads].marshal()
+	if err := ca.spaceSync(last, nil); !errors.Is(err, errSpaceHeads) {
+		t.Fatalf("сверх предела: %v", err)
+	}
+	v := spaceView(all) // правка на B от объединения всех семнадцати (там они — все верхушки)
+	n, err := spaceSetLogin(v, ph, "", totp.NewSecret())
+	if err != nil {
+		t.Fatal(err)
+	}
+	nb, _ := n.marshal()
+	if err := ca.spaceSync(nb, nil); err != nil {
+		t.Fatal(err)
+	}
+	ca.mu.Lock()
+	over := ca.SpaceOver
+	ca.mu.Unlock()
+	salt, _, _ := ca.secret("")
+	if h := spaceHeadsOf(ca); len(h) != 1 || over != "" || !ca.spaceMember(salt, cfgPub(cb)) {
+		t.Errorf("сводящая правка сверкой: верхушек %d, причина %q", len(h), over)
 	}
 }

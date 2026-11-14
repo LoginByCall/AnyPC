@@ -98,6 +98,9 @@ func (c *config) spaceAddLocked(in ...*space) (changed, drop bool, err error) {
 		}
 		bs = append(bs, b)
 	}
+	if len(heads) < spaceMaxHeads {
+		c.SpaceOver = "" // место есть: непринятую M, присланную снова, примем (правка фразой — одна верхушка)
+	}
 	before := c.spaceSnapLocked()
 	c.Space, c.SpaceHeads = bs[0], bs[1:]
 	if len(c.SpaceHeads) == 0 {
@@ -376,7 +379,6 @@ func (c *config) spaceEdit(snap []byte, n *space) (bool, error) {
 	}
 	_, drop, err := c.spaceAddLocked(n)
 	if err == nil {
-		c.SpaceOver = "" // правка от объединения перекрыла все верхушки
 		err = c.save()
 	}
 	c.mu.Unlock()
@@ -393,8 +395,11 @@ func (s *spaceSyncer) edit(ctx context.Context, f func(m *space) (*space, error)
 	s.spread(ctx, false)
 	c.mu.Lock()
 	c.reload()
-	m, snap := c.spaceLocked(), c.spaceSnapLocked()
+	m, snap, in := c.spaceLocked(), c.spaceSnapLocked(), len(c.Space) > 0
 	c.mu.Unlock()
+	if m == nil && in {
+		return nil, errSpaceDamaged
+	}
 	if m == nil {
 		return nil, errSpaceNotIn
 	}
@@ -466,9 +471,12 @@ func (s *spaceSyncer) random(ctx context.Context) {
 // spaceSigned — b — целая запись M с верной подписью (кем подписан — сверяет вызывающий сравнением со своим).
 func spaceSigned(b []byte) bool { _, err := spaceParse(b); return err == nil }
 
-// loginTag — agent.Agent.LoginTag: метка входа записи по умолчанию в пространстве — хэш входа объединения и числа
-// исключённых (смена кода или пароля, новое исключение — новая метка); ПК клиента cpub исключён или пространство не
-// читается — каждый раз новая (сессия рвётся). Вне пространства и для гостей — nil.
+// loginTag — agent.Agent.LoginTag: метка входа записи по умолчанию в пространстве — хэш входа объединения (смена кода
+// или пароля — новая метка). Клиент без доказанного ключа (cpub nil) может быть любым ПК — ему и число исключённых:
+// новое исключение рвёт такую сессию; клиенту с ключом — только смена входа и исключение его ключа (тогда метка каждый
+// раз новая). Записи не читаются — метка от их байт (одна на испорченное состояние: сессии рвутся один раз, не
+// циклом опроса). Вне пространства, для гостей и в режиме «Спрашивать» (вход — одноразовым кодом, не входом
+// пространства) — nil; переход nil ↔ метка сессию не рвёт (agent.revoked).
 func (c *config) loginTag(user string, cpub []byte) []byte {
 	if user != "" {
 		return nil
@@ -476,14 +484,20 @@ func (c *config) loginTag(user string, cpub []byte) []byte {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
-	if len(c.Space) == 0 {
+	if len(c.Space) == 0 || c.codeModeLocked() {
 		return nil
 	}
 	m := c.spaceLocked()
-	if m == nil || cpub != nil && m.gone(cpub) {
+	switch {
+	case m == nil:
+		h := sha256.Sum256(append([]byte("anypc-space-damaged\x00"), c.spaceSnapLocked()...))
+		return h[:]
+	case cpub != nil && m.gone(cpub):
 		b := make([]byte, sha256.Size)
 		crand.Read(b)
 		return b
+	case cpub != nil:
+		return m.loginHash()
 	}
 	h := sha256.Sum256(binary.BigEndian.AppendUint16(m.loginHash(), uint16(len(m.Gone))))
 	return h[:]

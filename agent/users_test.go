@@ -328,25 +328,25 @@ func TestDropRevoked(t *testing.T) {
 }
 
 // TestSpaceLoginTagDrop — неблокирующее 6 приёмки 2P-Set: метка входа (LoginTag) берётся при "b" и сверяется в
-// revoked — сменилась (смена кода без смены пароля, исключение) — сессия паролем рвётся; та же — нет; метка гостя
-// (nil) — тоже нет.
+// revoked — сменилась (смена кода без смены пароля, исключение) — сессия паролем рвётся; та же — нет; переход nil ↔
+// метка (пространство создали или вышли из него удалённо, тот же пароль) — нет; метка гостя (nil) — тоже нет.
 func TestSpaceLoginTagDrop(t *testing.T) {
-	var mode, change atomic.Int32 // change: 0 та же метка, 1 новая
+	var cur atomic.Int32 // метка сейчас: -1 — nil, иначе {cur}
 	var gone, asked atomic.Bool
+	var to atomic.Int32
 	hosts := usersHost(accounts)
 	e2eAgent = func(a *Agent) {
 		hosts(a)
 		a.LoginTag = func(user string, _ []byte) []byte {
 			asked.Store(true)
-			if user == "olga" {
-				return nil
+			if v := cur.Load(); user != "olga" && v >= 0 {
+				return []byte{byte(v)}
 			}
-			return []byte{byte(mode.Load())}
+			return nil
 		}
 	}
 	e2eInput = func(t *testing.T, a *Agent) {
-		mode.Store(change.Load())
-		defer mode.Store(0)
+		cur.Store(to.Load())
 		a.DropRevoked()
 		for range 20 {
 			a.mu.Lock()
@@ -364,14 +364,16 @@ func TestSpaceLoginTagDrop(t *testing.T) {
 	ff := FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000})
 	for _, c := range []struct {
 		user, pass string
-		change     int32
+		from, to   int32
 		gone       bool
-	}{{"ivan", "ivan-pass1", 0, false}, {"ivan", "ivan-pass1", 1, true}, {"olga", "olga-pass1", 1, false}} {
-		change.Store(c.change)
+	}{{"ivan", "ivan-pass1", 0, 0, false}, {"ivan", "ivan-pass1", 0, 1, true}, {"ivan", "ivan-pass1", 0, -1, false},
+		{"ivan", "ivan-pass1", -1, 0, false}, {"olga", "olga-pass1", 0, 1, false}} {
+		cur.Store(c.from)
+		to.Store(c.to)
 		e2eUser, e2eGood = c.user, c.pass
 		e2e(t, local(t), "123456789", false, ff, c.pass)
 		if gone.Load() != c.gone || !asked.Load() {
-			t.Fatalf("%s, метка %d: разорвана %v (метку спрашивали %v)", c.user, c.change, gone.Load(), asked.Load())
+			t.Fatalf("%s, метка %d → %d: разорвана %v (метку спрашивали %v)", c.user, c.from, c.to, gone.Load(), asked.Load())
 		}
 	}
 }

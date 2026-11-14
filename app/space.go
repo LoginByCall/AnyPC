@@ -108,6 +108,7 @@ var (
 	errSpaceNoChange    = errors.New("пространство: менять нечего")
 	errSpaceForeign     = errors.New("пространство: состав другого пространства или другого владельца")
 	errSpaceHeads       = errors.New("пространство: слишком много параллельных правок — сделайте правку фразой")
+	errSpaceDamaged     = errors.New("пространство: записи состава на этом ПК испорчены — выйдите из пространства (пароль и код) и вступите снова")
 	errSpaceCompromised = errors.New("пространство: секрет кода видел исключённый ПК — задайте новый код (фраза)")
 	errSpaceGoneMember  = errors.New("пространство: исключённый ПК числится членом")
 	errSpaceDup         = errors.New("пространство: такой ПК уже в составе")
@@ -624,7 +625,7 @@ func (m *space) next() (*space, error) {
 		return nil, fmt.Errorf("%w: эпоха", errSpaceLimit)
 	}
 	n := m.clone()
-	n.Epoch, n.Sig, n.Compromised = m.Epoch+1, nil, false
+	n.Epoch, n.Sig = m.Epoch+1, nil
 	return n, nil
 }
 
