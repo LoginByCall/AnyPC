@@ -1,11 +1,16 @@
 package main
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+
+	"anypc/ui"
 )
 
 // TestUIState: настройки окна (mine, users…) в config.json — только ключи из списка, только своей формы, пределы
@@ -111,5 +116,24 @@ func TestUIStateCorrupt(t *testing.T) {
 	os.WriteFile(p, []byte(strings.Replace(string(b), `"ui": {`, `"ui": 7, "x": {`, 1)), 0o600)
 	if err := c.uiSet("turbo", "0"); err != nil || c.uiGet()["turbo"] != "0" {
 		t.Errorf("запись после порчи ui на диске: %v", err)
+	}
+}
+
+// TestUIKeysMatchPage: таблица UID страницы (ui/index.html) и uiKeys совпадают — иначе ключ живёт только в кэше окна.
+func TestUIKeysMatchPage(t *testing.T) {
+	b, err := fs.ReadFile(ui.FS, "index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`const UID = \{(.*)\}, UIK`).FindSubmatch(b)
+	if m == nil {
+		t.Fatal("нет UID в ui/index.html")
+	}
+	var page []string
+	for _, k := range regexp.MustCompile(`(\w+): `).FindAllSubmatch(m[1], -1) {
+		page = append(page, string(k[1]))
+	}
+	if !slices.Equal(page, uiKeys) {
+		t.Errorf("UID страницы %v ≠ uiKeys %v", page, uiKeys)
 	}
 }
