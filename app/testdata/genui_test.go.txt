@@ -1,0 +1,14 @@
+package main
+
+// К gen_test.go.txt — настройки окна (uiSet, v0.2.0 и новее): все ключи uiKeys v0.2.0.
+
+import "testing"
+
+func uiFixture(t *testing.T, c *config) {
+	for k, v := range map[string]string{"mine": `[{"id":"987654321","name":"Дача"}]`, "users": `{"987654321":"ivan"}`,
+		"recent": `["987654321"]`, "stats": "true", "turbo": "1", "turn": `"auto"`, "tour_home": "1", "tour_sess": "1"} {
+		if err := c.uiSet(k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
