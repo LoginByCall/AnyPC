@@ -38,7 +38,7 @@ func passTarget(t *testing.T, url string, key ed25519.PrivateKey, mpub ed25519.P
 	a.SpaceMember = func(s, pub []byte) bool {
 		p.mmu.Lock()
 		defer p.mmu.Unlock()
-		return bytes.Equal(s, salt) && p.members[string(pub)]
+		return bytes.Equal(s, salt) && p.members[string(pub)] && !p.ask.Load() // как в app: «Спрашивать» — не запись владельца
 	}
 	for _, f := range opt {
 		f(p)
@@ -196,22 +196,32 @@ func TestPassEnd(t *testing.T) {
 			t.Errorf("%s: %v, ждали %v", why, err, want)
 		}
 	}
-	p.ask.Store(true)
-	login("«Спрашивать»", ErrPassNone)
-	p.ask.Store(false)
-	login("снова «пароль + код»", nil)
-
 	defer passSkew.Store(0)
 	passSkew.Store(int64(PassTTL - time.Minute))
 	login("за минуту до срока", nil)
 	passSkew.Store(int64(PassTTL + time.Second))
 	login("истёк", ErrPassNone)
 	passSkew.Store(0)
+	login("срок по-прежнему от выдачи", nil)
 
+	// «Спрашивать» и исключение из M удаляют пропуск сразу (опрос настроек — DropRevoked): обратное его не вернёт
+	p.ask.Store(true)
+	p.a.DropRevoked()
+	if hasPass(p.a, mpub) {
+		t.Error("«Спрашивать»: пропуск остался в памяти")
+	}
+	p.ask.Store(false)
+	login("«Спрашивать» выключили", ErrPassNone)
+	p.a.passGive(mpub, salt)
 	p.member(mpub, false)
-	login("исключён из M", ErrPassNone)
+	login("исключён из M", ErrPassNone) // и при входе — удалён
+	if hasPass(p.a, mpub) {
+		t.Error("исключён: пропуск остался в памяти")
+	}
 	p.member(mpub, true)
-	login("снова в M", nil)
+	login("снова в M", ErrPassNone)
+	p.a.passGive(mpub, salt)
+	login("выдан снова", nil)
 
 	idle(t, p.a)
 	if err := PassOff(context.Background(), d); err != nil {

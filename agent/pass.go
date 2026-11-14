@@ -115,12 +115,42 @@ func (a *Agent) passDrop(pub []byte) bool {
 }
 
 // passValid — у ключа pub живой пропуск, выданный при записи владельца с солью salt; pub — член состава этого ПК;
-// хост не в «Только показ экрана» (без a.mu).
+// хост не в «Только показ экрана» (без a.mu). Ключ больше не член (исключён, «Спрашивать», сменён пароль) — пропуск
+// удаляется сразу, а не ждёт срока.
 func (a *Agent) passValid(pub, salt []byte) bool {
 	a.mu.Lock()
 	e, ok := a.passes[string(pub)]
 	a.mu.Unlock()
-	return ok && e.live(passNow()) && bytes.Equal(e.salt, salt) && !a.viewOnlyHost() && a.SpaceMember != nil && a.SpaceMember(salt, pub)
+	if !ok || !e.live(passNow()) || !bytes.Equal(e.salt, salt) || a.viewOnlyHost() {
+		return false
+	}
+	if a.SpaceMember == nil || !a.SpaceMember(salt, pub) {
+		a.passForget(string(pub), e)
+		return false
+	}
+	return true
+}
+
+// passForget — удалить пропуск pub, если это всё ещё e (новый, выданный тем временем, не трогать).
+func (a *Agent) passForget(pub string, e passEntry) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if bytes.Equal(a.passes[pub].id, e.id) {
+		delete(a.passes, pub)
+	}
+}
+
+// passPrune — удалить пропуска ключей, которые больше не члены M при своей записи владельца (исключение из M,
+// включение «Спрашивать» — все сразу, смена пароля). Зовёт DropRevoked: правка настроек окном и опрос раз в 2 с.
+func (a *Agent) passPrune() {
+	a.mu.Lock()
+	list := maps.Clone(a.passes)
+	a.mu.Unlock()
+	for pub, e := range list {
+		if a.SpaceMember == nil || !a.SpaceMember(e.salt, []byte(pub)) {
+			a.passForget(pub, e)
+		}
+	}
 }
 
 func (a *Agent) viewOnlyHost() bool { return a.ViewOnly != nil && a.ViewOnly() }
@@ -211,7 +241,7 @@ func (a *Agent) offMsg(m hub.Msg) []byte {
 		a.DropRevoked()
 		log.Printf("пропуск ПК %s снят (сообщение через хаб)", pake.KeyFingerprint(pub)[:9])
 	}
-	return pake.OffAck(a.Key, a.ID, pid, hit)
+	return pake.OffAck(a.Key, a.ID, pub, pid, hit)
 }
 
 // offReject — отказ «снять» через хаб: в журнал не чаще раза в минуту (поток посторонних журнал не раздует).
@@ -387,7 +417,7 @@ func offVia(ctx context.Context, server string, d PassDial, data []byte) string 
 		case m.From == d.ID && m.Type == "offack":
 			var b []byte
 			if json.Unmarshal(m.Data, &b) == nil {
-				if _, ok := pake.OffAckVerify(d.HostPub, b, d.ID, d.PID); ok {
+				if _, ok := pake.OffAckVerify(d.HostPub, b, d.ID, d.Key.Public().(ed25519.PublicKey), d.PID); ok {
 					return "acked"
 				}
 			}

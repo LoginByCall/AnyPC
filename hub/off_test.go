@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,16 +18,17 @@ import (
 
 var offData = json.RawMessage(`"` + strings.Repeat("A", 150) + `"`)
 
-func offHub(t *testing.T, ctx context.Context) (url string, host, old *websocket.Conn) {
+func offHub(t *testing.T, ctx context.Context) (h *Hub, url string, host, old *websocket.Conn) {
 	t.Helper()
-	srv := httptest.NewServer(&Hub{})
+	h = &Hub{}
+	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	url = "ws" + strings.TrimPrefix(srv.URL, "http")
 	_, k1, _ := ed25519.GenerateKey(nil)
 	_, k2, _ := ed25519.GenerateKey(nil)
 	host, _ = dialHostQ(t, ctx, url, "123456789", k1, true, "&off=1")
 	old, _ = dialHost(t, ctx, url, "223456789", k2, true)
-	return url, host, old
+	return h, url, host, old
 }
 
 // silent — за d на c ничего не пришло.
@@ -46,7 +48,7 @@ func silent(t *testing.T, ctx context.Context, c *websocket.Conn, d time.Duratio
 func TestOffRelay(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	url, host, old := offHub(t, ctx)
+	_, url, host, old := offHub(t, ctx)
 	cli, cid := dial(t, ctx, url)
 	other, oid := dial(t, ctx, url)
 	third, tid := dial(t, ctx, url)
@@ -123,7 +125,7 @@ func TestOffRelay(t *testing.T) {
 func TestOffBuckets(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	url, host, _ := offHub(t, ctx)
+	h, url, host, _ := offHub(t, ctx)
 	var offs atomic.Int64
 	go func() {
 		for {
@@ -136,14 +138,8 @@ func TestOffBuckets(t *testing.T) {
 			}
 		}
 	}()
-	ice := json.RawMessage(`"` + strings.Repeat("A", 1900) + `"`)
-	for range 3 { // 3 × 60 × 2 КБ > ToHostBurst (256 КБ): общее ведро хоста пусто
-		c, _ := dial(t, ctx, url)
-		for range 60 {
-			wsjson.Write(ctx, c, Msg{Type: "ice", To: "123456789", Data: ice})
-		}
+	for h.toHost("123456789", netip.Addr{}, 1<<10) { // общее ведро хоста пусто
 	}
-	time.Sleep(300 * time.Millisecond)
 	try := func(from string) string {
 		t.Helper()
 		c, _, code := dialFrom(t, ctx, url, from)
@@ -198,5 +194,55 @@ func TestOffBuckets(t *testing.T) {
 	wg.Wait()
 	if n := offs.Load() - 3; busy.Load() == 0 || n > 2*OffDst+OffDst || n+busy.Load() != 20*OffBurst {
 		t.Fatalf("ведро цели: переслано %d, busy %d", n, busy.Load())
+	}
+}
+
+// TestOffWaits — ожидания offack: срок OffAckWait (часы сдвинуты — ответ не пропущен), предел OffPending на
+// клиента, потолок OffAckMax на ответ хоста.
+func TestOffWaits(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	h, url, host, _ := offHub(t, ctx)
+	for i := range OffPending {
+		if !h.offWait("c1", string(rune('a'+i))) {
+			t.Fatalf("ожидание %d не принято", i)
+		}
+	}
+	if h.offWait("c1", "z") || !h.offWait("c2", "z") {
+		t.Fatal("предел ожиданий — не на клиента")
+	}
+	cli, cid := dial(t, ctx, url)
+	ack := func(data string) string {
+		t.Helper()
+		wsjson.Write(ctx, host, Msg{Type: "offack", To: cid, Data: json.RawMessage(data)})
+		rctx, rc := context.WithTimeout(ctx, 300*time.Millisecond)
+		defer rc()
+		var m Msg
+		for wsjson.Read(rctx, host, &m) == nil {
+			if m.Type == "error" {
+				return string(m.Data)
+			}
+		}
+		return "передан"
+	}
+	wsjson.Write(ctx, cli, Msg{Type: "off", To: "123456789", Data: offData})
+	read(t, ctx, host)
+	defer offSkew.Store(0)
+	offSkew.Store(int64(OffAckWait + time.Second))
+	if r := ack(`"x"`); r != `"forbidden"` {
+		t.Fatalf("ответ после срока: %s", r)
+	}
+	offSkew.Store(0)
+	wsjson.Write(ctx, cli, Msg{Type: "off", To: "123456789", Data: offData})
+	read(t, ctx, host)
+	offSkew.Store(int64(OffAckWait - time.Second))
+	if r := ack(`"` + strings.Repeat("A", OffAckMax) + `"`); r != `"forbidden"` {
+		t.Fatalf("ответ больше потолка: %s", r)
+	}
+	if r := ack(`"x"`); r != "передан" {
+		t.Fatalf("ответ в срок: %s", r)
+	}
+	if m := read(t, ctx, cli); m.Type != "offack" || string(m.Data) != `"x"` {
+		t.Fatalf("клиент получил %+v", m)
 	}
 }

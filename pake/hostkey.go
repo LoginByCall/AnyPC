@@ -96,7 +96,8 @@ func ClientSignB64(seedB64, hostID, localSDP, remoteSDP string) (map[string]stri
 
 // «Снять» пропуск одним сообщением через хаб (Э3, решение владельца 8 A). Цель выдаёт пропуску случайный id (OffID
 // байт, в "ok" входа — внутри DTLS); мастер подписывает ключом хоста домен, ID цели и id пропуска: тело — pub ‖ id ‖
-// подпись. Цель отвечает подписью ключа хоста над доменом ответа, ID, id и статусом: тело — id ‖ статус ‖ подпись.
+// подпись. Цель отвечает подписью ключа хоста над доменом ответа, ID, ключом просившего, id и статусом: тело — id ‖
+// статус ‖ подпись (ответ одному члену M другому не годится: подпись — над его ключом).
 // Часов и кэша нет: повтор снимает уже снятый пропуск (id нового — другой). Требует ревью человеком (A13, A2 #10).
 const (
 	OffID      = 16
@@ -108,8 +109,8 @@ func offMsg(hostID string, pid []byte) []byte {
 	return append([]byte("anypc-pass-off-v1\n"+hostID+"\n"), pid...)
 }
 
-func offAckMsg(hostID string, pid []byte, st byte) []byte {
-	return append(append([]byte("anypc-pass-off-ack-v1\n"+hostID+"\n"), pid...), st)
+func offAckMsg(hostID string, req, pid []byte, st byte) []byte {
+	return append(append(append([]byte("anypc-pass-off-ack-v1\n"+hostID+"\n"), req...), pid...), st)
 }
 
 // OffSign — тело «снять» пропуска pid (OffID байт) на цели hostID ключом priv.
@@ -127,16 +128,19 @@ func OffVerify(body []byte, hostID string) (pub ed25519.PublicKey, pid []byte, o
 	return pub, pid, ed25519.Verify(pub, offMsg(hostID, pid), body[OffSize-ed25519.SignatureSize:])
 }
 
-// OffAck — ответ цели hostID на «снять» пропуска pid: dropped — снят сейчас, иначе такого пропуска нет.
-func OffAck(priv ed25519.PrivateKey, hostID string, pid []byte, dropped bool) []byte {
+// OffAck — ответ цели hostID на «снять» пропуска pid ключом req (ed25519.PublicKeySize байт): dropped — снят сейчас,
+// иначе такого пропуска у req нет.
+func OffAck(priv ed25519.PrivateKey, hostID string, req, pid []byte, dropped bool) []byte {
 	st := map[bool]byte{true: 1, false: 0}[dropped]
-	return append(append(bytes.Clone(pid[:OffID]), st), ed25519.Sign(priv, offAckMsg(hostID, pid[:OffID], st))...)
+	return append(append(bytes.Clone(pid[:OffID]), st), ed25519.Sign(priv, offAckMsg(hostID, req, pid[:OffID], st))...)
 }
 
-// OffAckVerify — ответ подписан ключом хоста hostPub цели hostID и относится к пропуску pid; dropped — статус.
-func OffAckVerify(hostPub, body []byte, hostID string, pid []byte) (dropped, ok bool) {
-	if len(hostPub) != ed25519.PublicKeySize || len(body) != OffAckSize || !bytes.Equal(body[:OffID], pid) || body[OffID] > 1 {
+// OffAckVerify — ответ подписан ключом хоста hostPub цели hostID, дан на «снять» ключа req и относится к пропуску
+// pid; dropped — статус.
+func OffAckVerify(hostPub, body []byte, hostID string, req, pid []byte) (dropped, ok bool) {
+	if len(hostPub) != ed25519.PublicKeySize || len(req) != ed25519.PublicKeySize || len(body) != OffAckSize ||
+		!bytes.Equal(body[:OffID], pid) || body[OffID] > 1 {
 		return false, false
 	}
-	return body[OffID] == 1, ed25519.Verify(hostPub, offAckMsg(hostID, pid, body[OffID]), body[OffID+1:])
+	return body[OffID] == 1, ed25519.Verify(hostPub, offAckMsg(hostID, req, pid, body[OffID]), body[OffID+1:])
 }
