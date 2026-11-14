@@ -55,3 +55,26 @@ shares that address's quota and can delay "off" from a single address. Targets o
 target ID can delay it with a flood of connections (the pass then lives up to 12 h or until the target restarts). The hub
 sees when "off" is sent, the target ID, the "I'm here" PC key (already known to it as that PC's host key), the pass id
 and the target's reply; it can drop "off" selectively — the master then repeats until the pass expires.
+
+«Моё пространство», сверка состава: ПК пространства сами сверяют состав (кто в пространстве, пароль входа, секрет
+кода) отдельным соединением без видео и входа — вне места сессии и вне блокировки перебора паролей. Соединение
+открывается, только если в запросе подключения есть подпись ключом ПК-члена над ID цели и временем (±10 мин от часов
+цели): постороннему цель не выделяет ничего, члену — одно место на его ключ. Состав уходит только члену, и только после
+того, как обе стороны доказали свои ключи в зашифрованном канале; ПК, исключённый из состава, его больше не получает.
+Хаб видит запрос открыто: ключ ПК-члена, ID цели, ключ, которого член ждёт от цели, и время — то есть какие ПК входят в
+одно пространство и когда сверяются (сам состав, пароль и секрет кода хабу не видны). Хаб может в течение 10 минут
+повторить перехваченный запрос и занять место этого члена до 20 с или не пропускать сверку — состав тогда не
+обновится, пока она не пройдёт. Остаточный риск: ПК, вступающий через ПК, у которого старый подлинный состав, где
+других членов нет, проверить свежесть не может — такой ПК сверять не с кем. Выйти из пространства на одном ПК (без
+фразы) можно паролем и кодом этого ПК: состав с него удаляется, пароль и код остаются.
+"My space", member list sync: member PCs reconcile the member list (members, login password, code secret) over a
+separate connection without video or login — outside the session slot and the password brute-force lockout. The
+target opens it only if the connect request carries a signature by a member PC key over the target ID and the time
+(±10 min of the target's clock): a stranger gets nothing, a member gets one slot per key. The list goes only to a member
+and only after both sides proved their keys inside the encrypted channel; a PC removed from the list no longer gets it.
+The hub sees the request in clear: the member key, the target ID, the key the member expects from the target and the
+time — i.e. which PCs share a space and when they sync (not the list, password or code secret). Within 10 minutes the
+hub can replay a captured request to hold that member's slot for up to 20 s, or drop syncs — the list then stays old
+until a sync passes. Residual risk: a PC joining through a PC that holds an old genuine list with no other members
+cannot check freshness — there is no one else to ask. A PC can leave the space locally (without the phrase) with its
+password and code: the list is removed from it, the password and code stay.

@@ -74,8 +74,15 @@ func syncProof(hostID string, t int64) []byte {
 	return []byte(syncDomain + hostID + "\x00" + strconv.FormatInt(t, 10))
 }
 
-// syncTamper — тест: испортить ID в подписи хоста ("host") или клиента ("client") — проверка на другой стороне.
+// syncTamper — тест: подделка на одной стороне, проверка — на другой: "host"/"client" — ID в подписи; "hostkey" —
+// хост подписывает чужим ключом; "cpub" — клиент в "b" доказывает не тот ключ, что в connect; "early" — клиент шлёт M
+// до "b".
 var syncTamper atomic.Value
+
+func syncFake(side string) bool { s, _ := syncTamper.Load().(string); return s == side }
+
+// syncOther — постоянный посторонний ключ для syncTamper.
+var syncOther = ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
 
 func syncID(side, id string) string {
 	if s, _ := syncTamper.Load().(string); s == side {
@@ -166,7 +173,11 @@ func (a *Agent) syncB(s *session, m authMsg, keyOK bool, fpc, fph string, send f
 		send(spMsg{T: "sp", Err: "notme"})
 	default:
 		st.phase = 2
-		send(spMsg{T: "sp", Sync: true, Pub: me, Sig: pake.HostSign(a.Key, syncID("host", a.ID), fpc, fph)})
+		key := a.Key
+		if syncFake("hostkey") {
+			key = syncOther
+		}
+		send(spMsg{T: "sp", Sync: true, Pub: key.Public().(ed25519.PublicKey), Sig: pake.HostSign(key, syncID("host", a.ID), fpc, fph)})
 		return
 	}
 	st.phase = 4
@@ -263,7 +274,14 @@ func syncVia(ctx context.Context, server string, d SyncDial) ([]byte, error) {
 						finish(ErrSpaceOld)
 						return
 					}
-					cpub, csig, err := signB(d.Key, syncID("client", d.ID), pc)
+					key := d.Key
+					if syncFake("cpub") {
+						key = syncOther
+					}
+					if syncFake("early") {
+						send(spMsg{T: "sp", Sync: true, M: d.S.SyncGate(d.HostPub, nil)})
+					}
+					cpub, csig, err := signB(key, syncID("client", d.ID), pc)
 					if err != nil {
 						finish(err)
 						return
