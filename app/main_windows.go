@@ -116,6 +116,7 @@ func main() {
 		SpaceGet: cfg.spaceGet, SpaceJoin: cfg.spaceJoin, // «Моё пространство», Э2: отдать состав и принять вступление
 		SpaceMember: cfg.spaceMember, // Э3: пропуск 12 ч на ключ мастера (agent/pass.go); детектора блокировки нет (startLock)
 		LoginTag:    cfg.loginTag,    // Э4: смена входа пространства и исключение рвут сессии (revoked)
+		KeyGone:     cfg.keyGone,     // решение A: ключ исключённого ПК рвёт сессию в любом режиме
 		SpaceSync:   cfg,             // Э4: сверка состава между членами (spsync.go)
 		Capture: func(ctx context.Context, c agent.Cap) (*exec.Cmd, error) { // выход DXGI c.Mon
 			ffMu.Lock()

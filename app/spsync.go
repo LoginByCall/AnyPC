@@ -15,7 +15,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	crand "crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/binary"
@@ -55,10 +54,23 @@ func (c *config) spaceStoredLocked() ([]*space, error) {
 	return out, nil
 }
 
-// spaceSnapLocked — байты состояния (главная и остальные верхушки): правка сверяет, что оно не сменилось.
+// spacePendLocked — непринятые M (под c.mu); не читается хоть одна — ошибка (закрыто, как spaceStoredLocked).
+func (c *config) spacePendLocked() ([]*space, error) {
+	var out []*space
+	for i, b := range c.SpacePend {
+		m, err := spaceParse(b)
+		if err != nil {
+			return nil, fmt.Errorf("непринятая правка %d: %w", i, err)
+		}
+		out = append(out, m)
+	}
+	return out, nil
+}
+
+// spaceSnapLocked — байты состояния (верхушки и непринятые M): правка сверяет, что оно не сменилось.
 func (c *config) spaceSnapLocked() []byte {
 	var b []byte
-	for _, x := range slices.Concat([][]byte{c.Space}, c.SpaceHeads) {
+	for _, x := range slices.Concat([][]byte{c.Space}, c.SpaceHeads, [][]byte{nil}, c.SpacePend) {
 		b = append(append(b, byte(len(x)>>8), byte(len(x))), x...)
 	}
 	return b
@@ -67,8 +79,9 @@ func (c *config) spaceSnapLocked() []byte {
 // spaceAddLocked — добавить подлинные M к верхушкам (под c.mu, без save): чужое пространство — errSpaceForeign
 // (ничего не принято). Вход объединения повторяется в записи по умолчанию (её Trusted/KeyLogin сбрасываются: пароль
 // сменился; гостей не трогаем). changed — верхушки сменились; drop — вход записи по умолчанию сменился. Верхушек
-// больше spaceMaxHeads и после поглощения перекрытых — errSpaceHeads, ничего не принято, а SpaceOver закрывает ПК
-// (spaceOwnerLocked) до правки фразой здесь: непринятую M её владелец пришлёт снова (повтор и периодическая сверка).
+// больше spaceMaxHeads и после поглощения перекрытых — errSpaceHeads: в верхушки ничего не принято, пришедшие M — в
+// SpacePend (в составе для решений: исключения действуют сразу), SpaceOver закрывает ПК (spaceOwnerLocked), пока
+// SpacePend не принят вместе с верхушками — правкой фразой здесь или сводящей правкой, пришедшей сверкой.
 func (c *config) spaceAddLocked(in ...*space) (changed, drop bool, err error) {
 	if len(c.Space) == 0 {
 		return false, false, errSpaceNotIn
@@ -82,10 +95,23 @@ func (c *config) spaceAddLocked(in ...*space) (changed, drop bool, err error) {
 			return false, false, errSpaceForeign
 		}
 	}
-	heads, err := spaceHeads(append(cur, in...))
-	if errors.Is(err, errSpaceHeads) && c.SpaceOver == "" {
-		c.SpaceOver = time.Now().UTC().Format(time.RFC3339) + " " + err.Error()
-		log.Printf("%v — непринятая правка не записана, пропусков нет до правки фразой на этом ПК", err)
+	pend, err := c.spacePendLocked()
+	if err != nil {
+		return false, false, err
+	}
+	heads, err := spaceHeads(slices.Concat(cur, in, pend))
+	if errors.Is(err, errSpaceHeads) {
+		for _, m := range in {
+			b, merr := m.marshal()
+			if merr == nil && len(c.SpacePend) < spaceMaxPend && !slices.ContainsFunc(c.SpacePend, func(x []byte) bool { return bytes.Equal(x, b) }) {
+				c.SpacePend = append(c.SpacePend, b)
+			}
+		}
+		if c.SpaceOver == "" {
+			c.SpaceOver = time.Now().UTC().Format(time.RFC3339) + " " + err.Error()
+			log.Printf("%v — правка не принята в верхушки, пропусков нет до правки фразой на этом ПК или сводящей правки", err)
+		}
+		return false, c.spaceFollowLocked(), err
 	}
 	if err != nil {
 		return false, false, err
@@ -98,26 +124,32 @@ func (c *config) spaceAddLocked(in ...*space) (changed, drop bool, err error) {
 		}
 		bs = append(bs, b)
 	}
-	if len(heads) < spaceMaxHeads {
-		c.SpaceOver = "" // место есть: непринятую M, присланную снова, примем (правка фразой — одна верхушка)
-	}
 	before := c.spaceSnapLocked()
-	c.Space, c.SpaceHeads = bs[0], bs[1:]
+	c.Space, c.SpaceHeads, c.SpacePend, c.SpaceOver = bs[0], bs[1:], nil, "" // непринятые приняты (или перекрыты)
 	if len(c.SpaceHeads) == 0 {
 		c.SpaceHeads = nil
 	}
 	if bytes.Equal(before, c.spaceSnapLocked()) {
 		return false, false, nil
 	}
+	return true, c.spaceFollowLocked(), nil
+}
+
+// spaceFollowLocked — вход состава (объединения) повторяется в записи по умолчанию (под c.mu): сменился — true.
+func (c *config) spaceFollowLocked() bool {
 	v := c.spaceLocked()
+	if v == nil {
+		return false
+	}
 	u := &c.Users[0]
-	if drop = !bytes.Equal(u.Salt, v.PSalt) || !bytes.Equal(u.Hash, v.PHash) || u.TOTP != v.TOTP; drop {
+	drop := !bytes.Equal(u.Salt, v.PSalt) || !bytes.Equal(u.Hash, v.PHash) || u.TOTP != v.TOTP
+	if drop {
 		if u.TOTP != v.TOTP {
 			u.TOTPStep = 0
 		}
 		u.Salt, u.Hash, u.TOTP, u.Trusted, u.KeyLogin = bytes.Clone(v.PSalt), bytes.Clone(v.PHash), v.TOTP, nil, nil
 	}
-	return true, drop, nil
+	return drop
 }
 
 // SyncGate — agent.SpaceSyncer: главная верхушка этого ПК ключу pub члена (объединения), если peer — подлинный M
@@ -184,9 +216,9 @@ func (c *config) spaceSync(pb []byte, rb [][]byte) error {
 	}
 	c.mu.Lock()
 	c.reload()
-	over := c.SpaceOver
+	snap := c.spaceSnapLocked()
 	changed, drop, err := c.spaceAddLocked(in...)
-	if changed || c.SpaceOver != over {
+	if changed || drop || !bytes.Equal(snap, c.spaceSnapLocked()) {
 		if serr := c.save(); serr != nil && err == nil {
 			err = serr
 		}
@@ -395,9 +427,9 @@ func (s *spaceSyncer) edit(ctx context.Context, f func(m *space) (*space, error)
 	s.spread(ctx, false)
 	c.mu.Lock()
 	c.reload()
-	m, snap, in := c.spaceLocked(), c.spaceSnapLocked(), len(c.Space) > 0
+	m, snap, bad := c.spaceLocked(), c.spaceSnapLocked(), c.spaceDamagedLocked()
 	c.mu.Unlock()
-	if m == nil && in {
+	if bad {
 		return nil, errSpaceDamaged
 	}
 	if m == nil {
@@ -471,12 +503,13 @@ func (s *spaceSyncer) random(ctx context.Context) {
 // spaceSigned — b — целая запись M с верной подписью (кем подписан — сверяет вызывающий сравнением со своим).
 func spaceSigned(b []byte) bool { _, err := spaceParse(b); return err == nil }
 
-// loginTag — agent.Agent.LoginTag: метка входа записи по умолчанию в пространстве — хэш входа объединения (смена кода
-// или пароля — новая метка). Клиент без доказанного ключа (cpub nil) может быть любым ПК — ему и число исключённых:
-// новое исключение рвёт такую сессию; клиенту с ключом — только смена входа и исключение его ключа (тогда метка каждый
-// раз новая). Записи не читаются — метка от их байт (одна на испорченное состояние: сессии рвутся один раз, не
-// циклом опроса). Вне пространства, для гостей и в режиме «Спрашивать» (вход — одноразовым кодом, не входом
-// пространства) — nil; переход nil ↔ метка сессию не рвёт (agent.revoked).
+// loginTag — agent.Agent.LoginTag: метка входа записи по умолчанию — хэш её соли, хэша пароля и секрета TOTP (в
+// пространстве это вход объединения, spaceFollowLocked): смена пароля или кода — новая метка, и при выходе из
+// пространства и повторном вступлении с другим кодом тоже. Клиенту — член объединения с доказанным ключом — только
+// она; клиенту без ключа или не члену (может быть любым ПК) — ещё число исключённых, если они есть: новое
+// исключение рвёт такую сессию. Записи состава не читаются — метка от их
+// байт (одна на испорченное состояние: сессии рвутся один раз, не циклом опроса). Гости и режим «Спрашивать» (вход
+// одноразовым кодом) — nil. Ключ исключённого ПК рвёт сессию отдельно (keyGone, любой режим и запись).
 func (c *config) loginTag(user string, cpub []byte) []byte {
 	if user != "" {
 		return nil
@@ -484,24 +517,48 @@ func (c *config) loginTag(user string, cpub []byte) []byte {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
-	if len(c.Space) == 0 || c.codeModeLocked() {
+	if c.codeModeLocked() {
 		return nil
+	}
+	u := c.Users[0]
+	b := []byte("anypc-login-tag\x00")
+	for _, x := range [][]byte{u.Salt, u.Hash, []byte(u.TOTP)} {
+		b = append(binary.BigEndian.AppendUint16(b, uint16(len(x))), x...)
+	}
+	base := sha256.Sum256(b)
+	if len(c.Space) == 0 {
+		return base[:]
 	}
 	m := c.spaceLocked()
 	switch {
 	case m == nil:
 		h := sha256.Sum256(append([]byte("anypc-space-damaged\x00"), c.spaceSnapLocked()...))
 		return h[:]
-	case cpub != nil && m.gone(cpub):
-		b := make([]byte, sha256.Size)
-		crand.Read(b)
-		return b
-	case cpub != nil:
-		return m.loginHash()
+	case cpub != nil && m.member(cpub), len(m.Gone) == 0:
+		return base[:]
 	}
-	h := sha256.Sum256(binary.BigEndian.AppendUint16(m.loginHash(), uint16(len(m.Gone))))
+	h := sha256.Sum256(binary.BigEndian.AppendUint16(base[:], uint16(len(m.Gone))))
 	return h[:]
 }
+
+// keyGone — agent.Agent.KeyGone: ключ pub исключён в объединении этого ПК (решение владельца A).
+func (c *config) keyGone(pub []byte) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reload()
+	m := c.spaceLocked()
+	return m != nil && m.gone(pub)
+}
+
+// spaceDamaged — записи состава есть, но не читаются (для окна: «выйти и вступить снова»).
+func (c *config) spaceDamaged() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reload()
+	return c.spaceDamagedLocked()
+}
+
+func (c *config) spaceDamagedLocked() bool { return len(c.Space) > 0 && c.spaceLocked() == nil }
 
 // SyncKey — agent.SpaceSyncer: pub — член объединения этого ПК (не исключён ни в одной известной M) и не свой.
 func (c *config) SyncKey(pub ed25519.PublicKey) bool {
@@ -538,7 +595,7 @@ func (c *config) spaceLeave(password, code string) error {
 		return errPassCode
 	}
 	u.TOTPStep = step
-	c.Space, c.SpaceHeads, c.SpaceWait, c.SpaceClock, c.SpaceOver = nil, nil, "", nil, ""
+	c.Space, c.SpaceHeads, c.SpaceWait, c.SpaceClock, c.SpaceOver, c.SpacePend = nil, nil, "", nil, "", nil
 	err := c.save()
 	c.mu.Unlock()
 	if err != nil {

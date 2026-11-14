@@ -302,3 +302,58 @@ func TestKeyLoginOtherDTLS(t *testing.T) {
 		t.Fatalf("подпись чужого соединения: nokey %v, неудач %d", nokey.Load(), f)
 	}
 }
+
+// TestSpaceKeyGoneDrop — решение владельца A, вживую: сессия именной записи с доказанным ключом (вход ключом и
+// паролем) рвётся, когда ключ клиента исключён (KeyGone); исключение другого ключа — нет.
+func TestSpaceKeyGoneDrop(t *testing.T) {
+	k, _ := pake.ClientSignB64(e2eSeed(), "", "", "")
+	pub, _ := base64.StdEncoding.DecodeString(k["pub"])
+	ivan := &otpHost{secret: totp.NewSecret()}
+	hosts := usersHost(map[string]testUser{"": {pass: "secret123"}, "ivan": {pass: "ivan-pass1", otp: ivan}})
+	ks := &keyStore{}
+	var gone atomic.Bool
+	var mineGone, now atomic.Bool // now — исключение уже случилось (после входа)
+	e2eAgent = func(a *Agent) {
+		hosts(a)
+		a.KeyLogin, a.KeyTrust = ks.login, ks.add
+		a.Unattended = func() bool { return true }
+		a.KeyGone = func(p []byte) bool {
+			if !now.Load() {
+				return false
+			}
+			if mineGone.Load() {
+				return bytes.Equal(p, pub)
+			}
+			return bytes.Equal(p, []byte("other-key-000000000000000000000000"))
+		}
+	}
+	e2eInput = func(t *testing.T, a *Agent) {
+		now.Store(true)
+		defer now.Store(false)
+		a.DropRevoked()
+		for range 20 {
+			a.mu.Lock()
+			s := a.sess
+			a.mu.Unlock()
+			if s == nil {
+				gone.Store(true)
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		gone.Store(false)
+	}
+	defer e2eReset()
+	ff := FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000})
+	e2eKey, e2eUser, e2eGood = "ok", "ivan", "ivan-pass1"
+	e2eOTP = func(int) string { ivan.mu.Lock(); ivan.last = 0; ivan.mu.Unlock(); return ivan.code() }
+	for _, c := range []struct{ byKey, mine, gone bool }{{true, false, false}, {true, true, true}, {false, true, true}, {false, false, false}} {
+		ks.set("ivan", pub)
+		e2eByKey = c.byKey
+		mineGone.Store(c.mine)
+		e2e(t, local(t), "123456789", false, ff, "ivan-pass1")
+		if gone.Load() != c.gone {
+			t.Fatalf("по ключу %v, исключён ключ клиента %v: разорвана %v", c.byKey, c.mine, gone.Load())
+		}
+	}
+}

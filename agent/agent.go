@@ -105,6 +105,9 @@ type Agent struct {
 	// рвётся, как при смене соли; переход nil ↔ метка (пространство создано или оставлено) не рвёт. Поле nil — не
 	// сверять.
 	LoginTag func(user string, cpub []byte) []byte
+	// KeyGone — ключ pub исключён из пространства этого ПК (решение владельца A, 2026-11-14): сессия с таким
+	// доказанным ключом рвётся в любом режиме и для любой записи (revoked). nil — не сверять.
+	KeyGone func(pub []byte) bool
 
 	mu          sync.Mutex
 	ice         []webrtc.ICEServer
@@ -518,6 +521,9 @@ func (a *Agent) revoked(s *session) (gone, view bool) {
 	s.mu.Unlock()
 	salt, secret, view := a.Secret(user)
 	if len(secret) == 0 || !bytes.Equal(salt, was) {
+		return true, view
+	}
+	if cpub != nil && a.KeyGone != nil && a.KeyGone(cpub) { // ключ исключённого ПК — в любом режиме, любой записи
 		return true, view
 	}
 	if tagged && a.LoginTag != nil {
