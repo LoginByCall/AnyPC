@@ -396,6 +396,9 @@ func FFArgs(src, enc string, c Cap) []string {
 // Run держит регистрацию на каждом хабе из Server, переподключаясь каждые 5 с до отмены ctx.
 // Хост в сети на всех хабах сразу: клиент идёт через тот, что ответил ему первым, — синхронизировать хабы не нужно.
 func (a *Agent) Run(ctx context.Context) {
+	a.mu.Lock()
+	a.taken = nil // отказы хабов прошлого Run (смена узла посреди паузы после id_taken) — не про новый список
+	a.mu.Unlock()
 	var wg sync.WaitGroup
 	for _, u := range strings.Split(a.Server, ",") {
 		if u = strings.TrimSpace(u); u == "" {

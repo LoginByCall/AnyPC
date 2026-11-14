@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -34,6 +35,21 @@ func lockInstance(dir string) (unlock func(), err error) {
 	return func() { f.Close() }, nil
 }
 
+// secondShow — что делает вторая копия с окном первой: с --no-browser (автозапуск) — ничего, иначе showRunning.
+func secondShow(noBrowser bool, urlFile string) func() error {
+	if noBrowser {
+		return nil
+	}
+	return func() error { return showRunning(urlFile) }
+}
+
+// alreadyNotice — окно первой не открылось: уведомление рабочего стола, если есть notify-send (Linux); иначе только журнал.
+var alreadyNotice = func() {
+	if p, err := exec.LookPath("notify-send"); err == nil {
+		exec.Command(p, "AnyPC", "AnyPC уже запущен — откройте окно значком AnyPC").Run()
+	}
+}
+
 // showRunning — окно запущенной копии: её адрес и токен — из её window.url (0600, тот же пользователь), запрос
 // showWindow — в её API; окно она открывает своим способом (Chrome, браузер, WKWebView) с одноразовым кодом —
 // токен в аргументы браузера не попадает.
@@ -48,7 +64,8 @@ func showRunning(urlFile string) error {
 	}
 	req, _ := http.NewRequest(http.MethodPost, "http://"+u.Host+"/api/showWindow", strings.NewReader("[]"))
 	req.Header.Set("X-Token", u.Query().Get("t"))
-	resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
+	cl := &http.Client{Timeout: 3 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }} // X-Token — только по адресу из файла
+	resp, err := cl.Do(req)
 	if err != nil {
 		return err
 	}

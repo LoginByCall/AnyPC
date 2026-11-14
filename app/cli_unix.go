@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"anypc/agent"
@@ -96,10 +97,14 @@ func runCLI(cfg *config) (done bool, err error) {
 		if err != nil {
 			return true, err
 		}
+		manual := lockBusy() && !serviceRunning() // до установки: служба, запущенная ею, сама возьмёт блокировку
 		if err := installService(exe); err != nil {
 			return true, fmt.Errorf("автозапуск: %w", err)
 		}
 		fmt.Printf("автозапуск включён: %s\nПереместите файл — повторите --install-service. %s\n", exe, serviceHint)
+		if manual { // одна копия (single.go): служба сейчас выйдет — копия уже запущена не ею
+			fmt.Printf("AnyPC уже запущен не службой: служба стартует при следующем входе; сейчас — закройте AnyPC и выполните %s\n", serviceStart())
+		}
 	case *cliUninstall:
 		if err := uninstallService(); err != nil {
 			return true, fmt.Errorf("автозапуск: %w", err)
@@ -130,6 +135,16 @@ func otpSetup(cfg *config, in io.Reader) error {
 		return err
 	}
 	return nil
+}
+
+// lockBusy — блокировку одной копии (single.go) держит запущенный AnyPC.
+func lockBusy() bool {
+	d, _ := os.UserConfigDir()
+	unlock, err := lockInstance(filepath.Join(d, "AnyPC"))
+	if unlock != nil {
+		unlock()
+	}
+	return errors.Is(err, errRunning)
 }
 
 const restartHint = "(если AnyPC запущен — перезапустите его)"

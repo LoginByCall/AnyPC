@@ -129,10 +129,12 @@ func main() {
 	var mu sync.Mutex
 	online, session, update := false, "", ""
 	info := func() map[string]any {
-		node, pub := cfg.node()
 		mu.Lock()
-		defer mu.Unlock()
-		return map[string]any{"id": cfg.id(), "fp": cfg.fingerprint(), "online": online, "idTaken": a.IDTaken(), "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "otp": cfg.otpSet(), "users": cfg.users(), "keys": cfg.keyList(), "code": cfg.code(), "viewOnly": cfg.viewOnly(), "version": version, "ffmpeg": ffSnap(&ffMu, &ffState), "update": update, "node": node, "nodePub": pub, "server": cfg.server(), "audio": audioInfo(a)}
+		on, s, u := online, session, update
+		mu.Unlock()
+		m := hostInfo(cfg, a, on, s, u)
+		m["ffmpeg"] = ffSnap(&ffMu, &ffState)
+		return m
 	}
 	go watchUpdates(func(v string) { mu.Lock(); update = v; mu.Unlock() }) // окно опрашивает hostInfo
 	a.OnState = func(on bool, s string) {

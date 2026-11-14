@@ -300,3 +300,10 @@
 - Живой случай владельца: работала старая копия (v0.1.27, файл уже удалён), новая v0.2.0 каждые 5 с получала от хаба id_taken, окно же писало «Нет связи с сервером». Старые версии блокировку anypc.lock не держат — проверка одной копии этот случай не ловит.
 - Путь: agent.run возвращает agent.ErrIDTaken → Run помечает хаб (a.taken, сброс при hello) → notify → app info() отдаёт `idTaken: a.IDTaken()` (Linux/Мак — hostInfo по API, Windows — onHostState) → ui/index.html: `online ? 'online' : idTaken ? 'id_taken' : 'offline'`.
 - Текст на 7 языках (ru: «Этот ID уже в сети: AnyPC запущен на этом ПК ещё раз (возможно, старая версия — закройте её) или этот ID работает на другом ПК»), CSP-хэш пересчитан. Тесты: agent TestIDTaken (id_taken → true, обрыв → false), TestBrowserHostIDTaken (окно: своё сообщение / прежнее «нет связи»).
+
+## Одна копия + id_taken: доработки по приёмке — 2026-11-14
+
+- agent.Run сбрасывает a.taken в начале: смена узла в 5-секундной паузе после id_taken оставляла «ID уже в сети» навсегда (регрессия в TestIDTaken). Вторая копия: X-Token не идёт по редиректам (CheckRedirect → ErrUseLastResponse) и уходит только на 127.0.0.1 из window.url (TestShowRunningNoLeak).
+- Окно первой не открылось — кроме журнала: Linux — notify-send, если есть; Мак — только журнал; Windows — MessageBoxW «AnyPC уже запущен». Состояние окна собирает общий hostInfo (app/node.go) для обеих ОС.
+- `--install-service` при копии, запущенной не службой: предупреждение «служба стартует при следующем входе; сейчас — закройте AnyPC и выполните systemctl --user start anypc» (Мак: `launchctl kickstart gui/<uid>/org.anypc.host`). На Windows --install-service нет. Подсказка «доступна версия …» в окне дополнена «сначала выйдите из AnyPC» (7 языков).
+- Мутанты (showWindow → raiseWindow, idTaken в hostInfo, --no-browser гасит показ, проверка 127.0.0.1, редирект, уведомление) закреплены тестами, все убиты.
