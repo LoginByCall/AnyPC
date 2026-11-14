@@ -116,8 +116,9 @@ func main() {
 	a := &agent.Agent{Audio: true, Pause: true, Version: version, Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, Key: cfg.key(), FPS: 30, Trusted: cfg.trusted, Trust: cfg.trust, KeyLogin: cfg.keyLogin, KeyTrust: cfg.keyTrust,
 		Bitrate: agent.Kbps(cfg.Bitrate),
 		Confirm: agent.AskAccept, ConfirmControl: agent.AskControl, Unattended: func() bool { return !cfg.confirm() }, OTP: cfg.otp, ViewOnly: cfg.viewOnly, // без подтверждения — с TOTP (PLAN.md)
-		CodeUsed: cfg.codeUsed, // «Спрашивать»: код сменить после сессии и блокировки (REQ-S-23)
-		Capture:  hostCapture(cfg.Enc), Locked: hostLocked, FileDir: downloads(), Stderr: logw}
+		CodeUsed: cfg.codeUsed,                           // «Спрашивать»: код сменить после сессии и блокировки (REQ-S-23)
+		SpaceGet: cfg.spaceGet, SpaceJoin: cfg.spaceJoin, // «Моё пространство», Э2: отдать состав и принять вступление
+		Capture: hostCapture(cfg.Enc), Locked: hostLocked, FileDir: downloads(), Stderr: logw}
 	var mu sync.Mutex
 	online, session, update := false, "", ""
 	a.OnState = func(on bool, s string) { mu.Lock(); online, session = on, s; mu.Unlock() }
