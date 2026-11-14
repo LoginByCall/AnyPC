@@ -1,10 +1,11 @@
 package main
 
-// Основа — PoC приёмки Ч5, круг 3 (acc2_offall_test.go): синхронный offAll (WM_ENDSESSION, выход) не возвращается,
+// Основа — PoC приёмки Ч5, круги 3–4 (acc2_offall_test.go, acc3_race_test.go): синхронный offAll (WM_ENDSESSION, выход) не возвращается,
 // пока «снять» фонового offAll (блокировка) ещё в пути. Без p.bg.Wait(): ждёт сам offAll.
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -104,4 +105,75 @@ func TestPassFlyBounded(t *testing.T) {
 	if d := time.Since(begin); d > 2*time.Second {
 		t.Errorf("синхронный offAll ждал %v при ctx 200 мс", d)
 	}
+}
+
+// flyIdle — после всех offAll в p.flying никого нет (иначе следующий синхронный offAll ждал бы до конца ctx).
+func flyIdle(t *testing.T, p *passMaster) {
+	t.Helper()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.flying) != 0 {
+		t.Errorf("p.flying после доставки: %d", len(p.flying))
+	}
+}
+
+// TestPassThreeParty — блокировка даёт два события (два фоновых offAll: A летит, C ждёт A), затем выход (B, синхронный,
+// тоже ждёт A). «Снять» A не дошло: кто бы из C и B ни взял retry первым, B возвращается не раньше доставки.
+func TestPassThreeParty(t *testing.T) {
+	for i := range 20 {
+		var calls, done atomic.Int32
+		p := flyMaster(t, func(context.Context, agent.PassDial) error {
+			n := calls.Add(1)
+			time.Sleep(60 * time.Millisecond)
+			if n == 1 {
+				return errors.New("нет ответа") // A: хаб не ответил
+			}
+			done.Add(1)
+			return nil
+		})
+		bg := context.WithoutCancel(context.Background())
+		fin := make(chan struct{}, 2)
+		go func() { p.offAll(bg); fin <- struct{}{} }() // A
+		waitStarted(&calls)
+		go func() { p.offAll(bg); fin <- struct{}{} }() // C
+		time.Sleep(10 * time.Millisecond)
+		quit, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		p.offAll(quit) // B
+		cancel()
+		if done.Load() == 0 {
+			t.Fatalf("круг %d: синхронный offAll вернулся, пока «снять» в пути (попыток %d, дошло 0)", i, calls.Load())
+		}
+		<-fin
+		<-fin
+		if n := calls.Load(); n != 2 {
+			t.Errorf("круг %d: «снять» послано %d раз, ждали 2 (неудача и одна доставка)", i, n)
+		}
+		flyIdle(t, p)
+	}
+}
+
+// TestPassRetryOnce — неудачное «снять» уходит в retry; следующий offAll берёт его и доставляет; третий не шлёт
+// ничего (retry обнулён, p.flying пуст).
+func TestPassRetryOnce(t *testing.T) {
+	var calls atomic.Int32
+	p := flyMaster(t, func(context.Context, agent.PassDial) error {
+		if calls.Add(1) == 1 {
+			return errors.New("нет ответа")
+		}
+		return nil
+	})
+	gone, stop := context.WithCancel(context.Background())
+	stop() // повтор в фоне сразу кончается: цель остаётся в retry
+	p.offAll(gone)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	p.offAll(ctx)
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("после второго offAll попыток %d, ждали 2", n)
+	}
+	p.offAll(ctx)
+	if n := calls.Load(); n != 2 {
+		t.Errorf("третий offAll послал «снять» ещё раз (попыток %d): retry не обнулён", n)
+	}
+	flyIdle(t, p)
 }

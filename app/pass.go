@@ -240,18 +240,22 @@ func passSummary(rs []passResult) string {
 // «Работаю тут» его не заменит; кончился ctx — цель остаётся в повторе, и следующий offAll (выход) её возьмёт.
 // Синхронный offAll (выход, WM_ENDSESSION) сначала ждёт в пределах своего ctx «снять», уже летящие от прежних
 // offAll (фоновый по блокировке забрал список раньше): дошло — готово, нет — цель уже в retry, и он её берёт.
+// Ждёт до пустого p.flying: пока ждал, другой ожидающий мог забрать retry и сам полететь. Список берётся под тем же
+// замком, под которым p.flying пуст: в p.flying попадает только offAll, никого не ждущий, — циклов ожидания нет.
 func (p *passMaster) offAll(ctx context.Context) {
 	p.mu.Lock()
 	p.locks++
-	prev := slices.Clone(p.flying)
-	p.mu.Unlock()
-	for _, f := range prev {
-		select {
-		case <-f:
-		case <-ctx.Done():
+	for len(p.flying) > 0 && ctx.Err() == nil {
+		prev := slices.Clone(p.flying)
+		p.mu.Unlock()
+		for _, f := range prev {
+			select {
+			case <-f:
+			case <-ctx.Done():
+			}
 		}
+		p.mu.Lock()
 	}
-	p.mu.Lock()
 	list := p.issued
 	p.issued = nil
 	for id, t := range p.retry { // повтор, который сейчас ждёт, увидит, что запись не его, и кончится
