@@ -171,6 +171,15 @@ func TestSpaceSyncSigs(t *testing.T) {
 	if _, err := SpaceSync(context.Background(), d); !errors.Is(err, ErrSpaceRefused) {
 		t.Errorf("подпись клиента не та: %v", err)
 	}
+	for _, x := range []struct {
+		tamper string
+		want   error
+	}{{"hostkey", ErrSpaceHostKey}, {"cpub", ErrSpaceRefused}, {"early", ErrSpaceRefused}} {
+		syncTamper.Store(x.tamper)
+		if _, err := SpaceSync(context.Background(), d); !errors.Is(err, x.want) {
+			t.Errorf("%s: %v", x.tamper, err)
+		}
+	}
 	host.mu.Lock()
 	g := host.gated
 	host.mu.Unlock()
@@ -190,43 +199,43 @@ func TestSpaceSyncConnect(t *testing.T) {
 	host.mu.Unlock()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	ws, err := dial(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ws.CloseNow()
-	var hello hub.Msg
-	wsjson.Read(ctx, ws, &hello)
-	answers := make(chan string, 64)
-	go func() {
-		for {
-			var m hub.Msg
-			if wsjson.Read(ctx, ws, &m) != nil {
-				return
-			}
-			var why string
-			json.Unmarshal(m.Data, &why)
-			answers <- m.Type + " " + why
+	connect := func(req connectReq) string { // каждый connect — своим WS (у хаба лимит connect на WS)
+		ws, err := dial(ctx, url)
+		if err != nil {
+			t.Fatal(err)
 		}
-	}()
-	connect := func(req connectReq) string {
+		t.Cleanup(func() { ws.CloseNow() })
+		var m hub.Msg
+		wsjson.Read(ctx, ws, &m) // hello
 		b, _ := json.Marshal(req)
 		wsjson.Write(ctx, ws, hub.Msg{V: 1, Type: "connect", To: "123456789", Data: b})
-		select {
-		case a := <-answers:
-			return a
-		case <-time.After(5 * time.Second):
+		rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		if wsjson.Read(rctx, ws, &m) != nil {
 			return "нет ответа"
 		}
+		var why string
+		json.Unmarshal(m.Data, &why)
+		return m.Type + " " + why
 	}
 	if a := connect(connectReq{View: true, Sync: true}); a != "error rights" {
 		t.Errorf("без подписи: %s", a)
 	}
+	hp := d.HostPub
+	_, other, _ := ed25519.GenerateKey(nil)
+	now0 := time.Now().Unix()
+	if a := connect(connectReq{View: true, Sync: true, SPub: d.Key.Public().(ed25519.PublicKey), ST: now0, SSig: ed25519.Sign(d.Key, syncProof("123456789", now0)), HPub: other.Public().(ed25519.PublicKey)}); a != "error notme" {
+		t.Errorf("ждёт другой ключ: %s", a) // С4: «не я», ключа хоста не выдаёт
+	}
 	_, stranger, _ := ed25519.GenerateKey(nil)
 	now := time.Now().Unix()
-	sreq := connectReq{View: true, Sync: true, SPub: stranger.Public().(ed25519.PublicKey), ST: now, SSig: ed25519.Sign(stranger, syncProof("123456789", now))}
+	sreq := connectReq{View: true, Sync: true, SPub: stranger.Public().(ed25519.PublicKey), ST: now, SSig: ed25519.Sign(stranger, syncProof("123456789", now)), HPub: hp}
 	if a := connect(sreq); a != "error rights" {
 		t.Errorf("не член: %s", a)
+	}
+	forged := connectReq{View: true, Sync: true, SPub: d.Key.Public().(ed25519.PublicKey), ST: now, SSig: ed25519.Sign(stranger, syncProof("123456789", now)), HPub: hp}
+	if a := connect(forged); a != "error rights" {
+		t.Errorf("ключ члена без его подписи: %s", a)
 	}
 	r.a.mu.Lock()
 	n := len(r.a.syncs)
@@ -235,11 +244,11 @@ func TestSpaceSyncConnect(t *testing.T) {
 		t.Errorf("постороннему выделено мест: %d", n)
 	}
 	old := now - int64(11*time.Minute/time.Second)
-	skew := connectReq{View: true, Sync: true, SPub: d.Key.Public().(ed25519.PublicKey), ST: old, SSig: ed25519.Sign(d.Key, syncProof("123456789", old))}
+	skew := connectReq{View: true, Sync: true, SPub: d.Key.Public().(ed25519.PublicKey), ST: old, SSig: ed25519.Sign(d.Key, syncProof("123456789", old)), HPub: hp}
 	if a := connect(skew); a != "error skew" {
 		t.Errorf("часы: %s", a)
 	}
-	hold := connectReq{View: true, Sync: true, SPub: d.Key.Public().(ed25519.PublicKey), ST: now, SSig: ed25519.Sign(d.Key, syncProof("123456789", now))}
+	hold := connectReq{View: true, Sync: true, SPub: d.Key.Public().(ed25519.PublicKey), ST: now, SSig: ed25519.Sign(d.Key, syncProof("123456789", now)), HPub: hp}
 	if a := connect(hold); a != "offer " { // место занято (offer без ответа), ключ — член
 		t.Fatalf("член: %s", a)
 	}
