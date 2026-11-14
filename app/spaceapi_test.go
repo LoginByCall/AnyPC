@@ -427,6 +427,24 @@ func TestSpaceAPIFlow(t *testing.T) {
 	if in := spaceInfo(n); in["in"] != false {
 		t.Errorf("после выхода: %v", in)
 	}
+
+	// P выходит: неудачный выход итог (QR от spaceLogin) не трогает, удачный — стирает (операция одна на процесс:
+	// выход N итог уже стёр — новый QR)
+	callP("spaceLogin", ph, "", true)
+	opWait(t, callP, "done")
+	newSec := spaceOf(p).TOTP
+	if _, _, e := callP("spaceLeave", "other-pass-12", "000000x"); e != "space:code" {
+		t.Errorf("выход P с неверным кодом: %q", e)
+	}
+	if _, r, _ := callP("spaceOp"); r == nil {
+		t.Error("неудачный выход стёр итог")
+	}
+	if code, _, e := callP("spaceLeave", "other-pass-12", spaceCode(p, newSec)); code != 200 {
+		t.Fatal(e)
+	}
+	if _, r, _ := callP("spaceOp"); r != nil {
+		t.Error("после выхода итог с QR читается")
+	}
 }
 
 // TestSpaceOpBusy — вторая операция при идущей — busy (и выход тоже); подтверждать нечего, пока операция не
@@ -571,3 +589,22 @@ func TestSpaceSign(t *testing.T) {
 	}
 }
 
+// Прямая регрессия B1: превью, пришедшее после конца операции (окно между ctx.Err() в spaceAsk и preview),
+// не воскрешает её. TestSpaceOpZombie до preview не доходит (Ч1: spaceAsk выходит по ctx раньше).
+func TestSpaceOpPreviewAfterEnd(t *testing.T) {
+	opsReset(t)
+	var late func(spacePreview)
+	spaceOps.start("enter", func(_ context.Context, preview func(spacePreview), _ <-chan bool) (any, error) {
+		late = preview
+		return nil, errors.New("обрыв")
+	})
+	spaceOps.wg.Wait()
+	late(spacePreview{})
+	op := spaceOps.snap(true)
+	if op["state"] != "err" || op["preview"] != nil {
+		t.Errorf("операция воскресла: %v", op)
+	}
+	if err := spaceOps.confirm(true); !errors.Is(err, errSpaceNoOp) {
+		t.Errorf("confirm после конца: %v", err)
+	}
+}

@@ -152,7 +152,11 @@ func spaceDo(c *config, name string, str func(int) string, flag func(int) bool) 
 			return spaceEditJSON(c, func(s *spaceSyncer) ([]spaceResult, error) { return s.spaceChangeLogin(ctx, ph, pw, code) })
 		})
 	case "spaceLeave":
-		return nil, spaceOps.hold("leave", func() error { return c.spaceLeave(str(0), str(1)) })
+		err := spaceOps.hold("leave", func() error { return c.spaceLeave(str(0), str(1)) })
+		if err == nil { // вне пространства итог прежней операции (QR нового кода) больше не читается
+			spaceOps.clear()
+		}
+		return nil, err
 	case "spaceSign":
 		return spaceSign(c, str(0), str(1), str(2))
 	case "spaceSync":

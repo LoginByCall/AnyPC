@@ -44,19 +44,22 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     const empty = () => ({ in: false, damaged: false, compromised: false, over: false, pend: 0, wait: '', clock: [], ask: false, lock: true, gone: 0, members: [], op: null });
     window.st = { id: '123456789', confirm: true, otp: true, hasPass: true, users: [{ name: 'anna', view: true, otp: true }], keys: [], space: empty() };
     window.empty = empty; window.calls = []; window.op = null; window.confirm = () => true;
-    const setOp = o => { window.op = o; st.space.op = o && { kind: o.kind, state: o.state }; };
+    const setOp = window.setOp = o => { window.op = o; st.space.op = o && { kind: o.kind, state: o.state }; };
     window.hostInfo = async () => JSON.parse(JSON.stringify(st));
-    window.spaceOp = async () => window.op && JSON.parse(JSON.stringify(window.op));
+    window.opSlow = 0; window.failConfirm = 0; // каждый ответ spaceOp медленнее опроса; сбой транспорта spaceConfirm
+    window.opDelay = 0; // мс: следующий ответ spaceOp придёт позже (снимок — на момент вызова)
+    window.spaceOp = async () => { const o = window.op && JSON.parse(JSON.stringify(window.op)), d = window.opDelay || window.opSlow; window.opDelay = 0; if (d) await new Promise(r => setTimeout(r, d)); return o; };
     window.spaceCreate = async pw => { calls.push('create:' + pw); if (pw !== 'owner-pass') throw 'space:password'; return { phrase: PH }; };
     window.spaceCreateOK = async ph => { calls.push('createok:' + ph); if (ph !== PH) throw 'space:phrase'; st.space.in = true; st.space.members = [me]; };
     window.spaceCreateNo = async () => { calls.push('createno'); };
     window.spaceEnter = async (id, pw, code, ph) => {
       calls.push('enter:' + [id, pw, code, ph].join(':'));
-      setOp({ kind: 'enter', state: 'confirm', result: null, preview: { members: [{ id: '444555666', fp: 'OFFICE-FP' }, { id: '123456789', fp: 'SELF-FP' }], password: true, code: true, trusted: 2, keyLogin: 1, ask: true, already: false, gone: 3 } });
+      setOp({ kind: 'enter', state: 'confirm', result: null, preview: { members: [{ id: '444555666', fp: 'OFFICE-FP' }, { id: '123456789', fp: 'SELF-FP' }], password: true, code: true, trusted: 2, keyLogin: 1, ask: true, already: false, gone: ['GONE-FP1', 'GONE-FP2'] } });
       return null;
     };
     window.spaceConfirm = async yes => {
       calls.push('confirm:' + yes);
+      if (window.failConfirm) { window.failConfirm--; throw new TypeError('Failed to fetch'); }
       if (!yes) return setOp({ kind: 'enter', state: 'err', err: 'no', result: null });
       setOp({ kind: 'enter', state: 'done', result: { password: true, code: true, trusted: 2, keyLogin: 1, ask: true, already: false, fresh: false } });
       st.space.in = true; st.space.wait = '444555666'; st.space.members = [me, office];
@@ -88,10 +91,15 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await ev("document.querySelector('#spc2 .spcno').click(); 1"); await sleep(250);
   console.log('cancel=' + await ev("[" + txt('spphr') + ", " + vis('spcreate') + "].join('|')") + '|' + await calls());
   await click('spnew'); await ev(val('spcpw', 'owner-pass')); await click('spcgo');
+  await click('spnew'); // повторное «Создать» на шаге фразы
+  console.log('renew=' + await ev("[" + txt('spphr') + ", " + vis('spc1') + ", " + vis('spc2') + "].join('|')") + '|' + await calls());
+  await ev(val('spcpw', 'owner-pass')); await click('spcgo'); await click('accback');
+  console.log('backphrase=' + await ev(txt('spphr') + " + '|' + " + vis('spcreate')) + '|' + await calls());
+  await click('accgo'); await click('spnew'); await ev(val('spcpw', 'owner-pass')); await click('spcgo');
   await ev(val('spcph', 'able baker')); await click('spcok');
   console.log('foreign=' + await ev(txt('spmsg')));
   await ev(val('spcph', ' able baker cable delta eagle fable gable habit ideal jewel ')); await click('spcok'); await sleep(300);
-  console.log('created=' + await ev("[" + txt('spphr') + ", " + vis('spcreate') + ", " + vis('spout') + ", " + vis('spin') + ", " + vis('pwrow') + ", " + txt('splist') + "].join('|')") + '|' + await calls());
+  console.log('created=' + await ev("[" + txt('spphr') + ", " + vis('spcreate') + ", " + vis('spout') + ", " + vis('spin') + ", " + vis('pwrow') + ", " + txt('splist') + "].join('|')") + '|' + await calls().then(c => c.replace(/^(create:owner-pass,createno,)+/, '')));
   // «Спрашивать» в пространстве: включить нельзя; выключить (вступил с «Спрашивать») — сразу, без настройки TOTP
   console.log('askin=' + await ev("document.getElementById('confirm').disabled"));
   await ev("st.confirm = true; 1"); await sleep(1200);
@@ -107,6 +115,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await bar(3); await sleep(300); console.log('sync=' + await calls() + '|' + await ev(txt('spop')));
   await ev("op = null; st.space.op = null; Object.assign(st.space, { damaged: false, compromised: false, pend: 0, wait: '', clock: [] }); 1"); await sleep(1200);
   console.log('nobars=' + await ev("document.querySelectorAll('#spbars .banner').length + '|' + " + txt('spop')));
+  await click('sppw'); await ev(val('spfph', 'able baker cable') + val('spfpw', 'NEW-password-1')); await click('spleave');
+  console.log('switch=' + await ev("JSON.stringify([document.getElementById('spfph').value, document.getElementById('spfpw').value])")); await click('spfx');
   // «Отозвать» = исключить: фраза + новый пароль → итог по ПК и новый QR
   await ev("[...document.querySelectorAll('#splist .row')].find(r => r.textContent.includes('Office')).querySelector('button').click(); 1"); await sleep(250);
   console.log('delform=' + await ev("[" + txt('spfh') + ", " + vis('spform') + ", " + vis('spfph') + ", " + vis('spfpw') + ", " + vis('spfcd') + "].join('|')"));
@@ -122,6 +132,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   // выход: пароль и код этого ПК
   await ev("st.otp = false; st.space.wait = '444555666'; 1"); await sleep(1200); // выход — с кодом и без TOTP (владелец 2026-11-14); до сверки
   await click('spleave'); await ev(val('spfpw', 'owner-pass') + val('spfcd', '000000')); await click('spfgo');
+  console.log('leavewarn=' + await ev(txt('spfh')));
   console.log('leavebad=' + await ev(txt('spmsg') + " + '|' + " + vis('spfcd')) + '|' + await calls());
   await ev(val('spfcd', '123456')); await click('spfgo'); await sleep(300);
   console.log('left=' + await calls() + '|' + await ev("[" + vis('spform') + ", " + vis('spout') + ", " + vis('spin') + ", " + vis('pwrow') + ", " + vis('spleft') + "].join('|')"));
@@ -133,13 +144,45 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await click('spjoin');
   await ev(val('speid', '444 555 666') + val('spepw', 'owner-pass') + val('specd', '654321') + val('speph', 'able baker cable delta eagle fable gable habit ideal jewel')); await click('spego'); await sleep(300);
   console.log('preview=' + await calls() + '|' + await ev("[...document.getElementById('spop').children].map(e => e.textContent).join(';')"));
-  await ev("[...document.querySelectorAll('#spop button')].find(b => b.textContent === 'Refuse').click(); 1"); await sleep(400);
+  await click('spex'); await sleep(200);
+  console.log('enterx=' + await calls() + '|' + await ev(vis('spenter') + " + '|' + document.getElementById('speph').value"));
+  await click('spjoin');
+  await ev(val('speid', '444555666') + val('spepw', 'owner-pass') + val('specd', '654321') + val('speph', 'able baker cable delta eagle fable gable habit ideal jewel')); await click('spego'); await sleep(300);
+  console.log('answer=' + await ev("[...document.querySelectorAll('#spop button')].find(b => b.textContent === 'Refuse').click(), document.querySelectorAll('#spop button').length"));
+  await sleep(400);
   console.log('refused=' + await calls() + '|' + await ev(txt('spop') + " + '|' + " + vis('spenter')));
   await click('spego'); await sleep(300);
   await ev("[...document.querySelectorAll('#spop button')].find(b => b.textContent === 'Confirm').click(); 1"); await sleep(1300);
   console.log('joined=' + await calls() + '|' + await ev("[" + txt('spop') + ", " + vis('spenter') + ", document.getElementById('speph').value, " + vis('spin') + ", [...document.querySelectorAll('#spbars .banner')].map(b => b.textContent).join(';')].join('|')"));
+  // M4: запоздавший ответ spaceOp с confirm не рисует кнопки, если операция уже кончилась
+  await ev("setOp({ kind: 'enter', state: 'confirm', result: null, preview: { members: [], gone: [] } }); 1"); await sleep(1300);
+  const nb = () => ev("document.querySelectorAll('#spop button').length");
+  // ответ, запрошенный до конца операции, приходит через 3 с — после того как hostInfo уже без op (≤ 1 с)
+  const shown = await nb(); await ev("opDelay = 3000; 1"); await sleep(1100); await ev("setOp(null); 1"); await sleep(1100);
+  let most = 0; for (let i = 0; i < 16; i++) { most = Math.max(most, await nb()); await sleep(200); }
+  console.log('stale=' + shown + '|' + most);
+  // spaceOp всегда медленнее опроса (1,5 с при опросе 1 с) — превью всё равно рисуется
+  await ev("opSlow = 1500; setOp({ kind: 'enter', state: 'confirm', result: null, preview: { members: [], gone: [] } }); 1"); await sleep(4500);
+  console.log('slow=' + await nb());
+  // spaceConfirm упал по транспорту, операция ещё ждёт — кнопки возвращаются
+  await ev("opSlow = 0; failConfirm = 1; [...document.querySelectorAll('#spop button')].find(b => b.textContent === 'Confirm').click(); 1"); await sleep(1500);
+  console.log('cfail=' + await nb() + '|' + await ev(txt('spmsg')));
+  await ev("setOp(null); 1"); await sleep(1300);
+  // M6: подсказка при «Спрашивать» в пространстве; плашка входящего сеанса на экране доступа
+  await ev("st.space.ask = true; 1"); await sleep(1300);
+  console.log('askbar=' + await ev("[...document.querySelectorAll('#spbars .banner')].map(b => b.textContent).filter(x => x.includes('Sign-in from the space')).length"));
+  await ev("st.session = '987654321'; 1"); await sleep(1300);
+  console.log('incoming=' + await ev("[" + vis('incoming') + ", document.getElementById('access').contains(document.getElementById('incoming'))].join('|')"));
+  // M5: ПК вышел из пространства (другое окно), пока открыта форма правки — форма закрыта, пароль стёрт
+  await click('sppw'); await ev(val('spfpw', 'typed-pass')); await ev("st.space = empty(); 1"); await sleep(1300);
+  console.log('outform=' + await ev(vis('spform') + " + '|' + document.getElementById('spfpw').value"));
+  // сессия показана и закрыта, пока открыт экран доступа: плашка входящей — снова на главной, черновик создания стёрт
+  await ev("st.confirm = false; st.otp = true; st.hasPass = true; 1"); await sleep(1300);
+  await click('spnew'); await ev(val('spcpw', 'owner-pass')); await click('spcgo'); await calls();
+  await ev("show(true); show(false); 1"); await sleep(300);
+  console.log('showback=' + await ev("[" + vis('home') + ", " + vis('access') + ", document.getElementById('home').contains(document.getElementById('incoming')), " + txt('spphr') + ", " + vis('spcreate') + "].join('|')") + '|' + await calls());
   await click('accback');
-  console.log('back=' + await ev(vis('access') + " + '|' + " + vis('home')));
+  console.log('back=' + await ev(vis('access') + " + '|' + " + vis('home') + " + '|' + document.getElementById('home').contains(document.getElementById('incoming'))"));
   process.exit(0);
 })();`
 
@@ -166,6 +209,8 @@ func TestBrowserSpace(t *testing.T) {
 		"badpw=Wrong password|false\n",
 		"phrase=" + ph + "|false|true|\n",
 		"cancel=|false|create:wrong-pass,create:owner-pass,createno\n",
+		"renew=|true|false|create:owner-pass,createno\n", // повторное «Создать»: фраза стёрта, черновик отменён
+		"backphrase=|false|create:owner-pass,createno\n", // «Назад»: то же
 		"foreign=Wrong space phrase\n",
 		"created=|false|false|true|false|this PC123 456 789 · SELF-FP|create:owner-pass,createok:able baker,createok:" + ph + "\n",
 		"askin=true\n",
@@ -176,7 +221,8 @@ func TestBrowserSpace(t *testing.T) {
 			"Password sign-in and “I'm here” are closed until a check with your PC other than Office · 444 555 666.Check now;" +
 			"The clock differs from 777 888 999 — check the time.\n",
 		"list=this PC123 456 789 · SELF-FP;Office · 444 555 666OFFICE-FPRevoke\n",
-		"leaveform=Leave the space on this PC: password and code of this PC. They stay the same after leaving.|false|true|true|Password of this PC\n",
+		"leaveform=Before the check with your other PC: leaving erases the password and code of this PC — only the one-time code from the screen will work.|false|true|true|Password of this PC\n",
+		"switch=[\"\",\"\"]\n", // смена режима формы стирает фразу и пароль
 		"codeform=New authenticator code on all your PCs: the space phrase.|true|false|false\n",
 		"sync=sync|In progress…\n",
 		"nobars=0|\n",
@@ -186,6 +232,7 @@ func TestBrowserSpace(t *testing.T) {
 		"cleared=clear||false\n",
 		"pwshort=Password must be at least 8 characters.|\n",
 		"login=login:able baker zzz::true|Word 3 of the phrase is not in the dictionary|true\n",
+		"leavewarn=Before the check with your other PC: leaving erases the password and code of this PC — only the one-time code from the screen will work.\n",
 		"leavebad=Wrong code|true|leave:owner-pass:000000\n",
 		"left=leave:owner-pass:123456|false|true|false|false|true\n", // до сверки: пароль и TOTP стёрты — подсказка
 		"setpw=true|false|newpw\n",
@@ -193,11 +240,20 @@ func TestBrowserSpace(t *testing.T) {
 		"preview=enter:444555666:owner-pass:654321:" + ph + "|Are these all your PCs?;444 555 666 · OFFICE-FP;123 456 789 · SELF-FP;" +
 			"The password of this PC will be replaced with the space password.;The authenticator code of this PC will be replaced with the space code.;" +
 			"Will be reset: trusted keys — 2, sign-in by key — 1.;" +
-			"“Ask before each connection” stays on: sign-in with password and code works once you turn it off.;Revoked: 3;ConfirmRefuse\n",
-		"refused=confirm:false|Joining cancelled|true\n",
+			"“Ask before each connection” stays on: sign-in with password and code works once you turn it off.;Revoked: 2;GONE-FP1;GONE-FP2;ConfirmRefuse\n",
+		"enterx=confirm:false|false|\n", // «Отмена» при ждущем превью — отказ
+		"answer=0\n",
+		"refused=enter:444555666:owner-pass:654321:" + ph + ",confirm:false|Joining cancelled|true\n",
 		"joined=enter:444555666:owner-pass:654321:" + ph + ",confirm:true|This PC has joined the space.|false||true|" +
 			"Password sign-in and “I'm here” are closed until a check with your PC other than Office · 444 555 666.Check now\n",
-		"back=false|true\n",
+		"stale=2|0\n",
+		"askbar=1\n",
+		"slow=2\n",
+		"cfail=2|Error: TypeError: Failed to fetch\n",
+		"incoming=true|true\n",
+		"outform=false|\n",
+		"showback=true|false|true||false|createno\n",
+		"back=false|true|true\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("нет %q", want)
