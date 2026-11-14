@@ -85,9 +85,11 @@ password and code: the list is removed from it, the password and code stay.
 на разных ПК без связи, не теряются, расколов нет. Пароль входа и код — один на пространство: из встречных смен
 побеждает та, где больше исключений, затем более поздняя, затем по хэшу — одинаково на всех ПК; проигравшая смена
 пароля пропадает (её нужно повторить). ПК, пропустивший смены пароля, сразу переходит на новый, как только получил
-любой свежий состав, — старый пароль на нём перестаёт действовать. Если секрет кода победившего входа видел ПК,
-исключённый в другой правке (встречные исключения), вход «скомпрометирован»: пропусков «Работаю тут» и вступлений
-нет, пока правка фразой не задаст новый код. Ответы «под этим ID другой ПК» и «часы расходятся» не подписаны (их может
+любой свежий состав, — старый пароль на нём перестаёт действовать. Если в объединении исключён ПК, которого не было
+среди исключённых, когда задавали победивший вход (встречные исключения: он мог получить секрет кода сверкой), вход
+«скомпрометирован»: пропусков «Работаю тут» и вступлений нет, пока правка фразой не задаст новый код. Смена входа и
+новое исключение рвут сессии, вошедшие паролем и кодом. Испорченная запись состава в настройках или больше 16
+параллельных правок — пропусков нет до правки фразой на этом ПК. Ответы «под этим ID другой ПК» и «часы расходятся» не подписаны (их может
 подставить хаб): они показываются в окне, но ни на что не влияют. Повтор сверки с недоступным ПК — не дольше часа,
 дальше сверка раз в 10 минут и при запуске.
 "My space", merging member lists: every list signed with the phrase is a genuine owner edit, so a PC does not pick a
@@ -96,8 +98,11 @@ PC never comes back, replaying old lists changes nothing, edits made on differen
 there are no forks. The login password and code are one per space: of concurrent changes the one with more removals
 wins, then the later one, then by hash — the same on every PC; the losing password change is dropped (repeat it). A PC
 that missed password changes switches to the new one as soon as it gets any fresh list — the old password stops
-working there. If the code secret of the winning login was seen by a PC removed in another edit (concurrent removals),
-the login is "compromised": no "Work here" passes and no joins until an edit with the phrase sets a new code. The
+working there. If the union has a removed PC that was not removed yet when the winning login was set (concurrent
+removals: it could have got the code secret by sync), the login is "compromised": no "Work here" passes and no joins
+until an edit with the phrase sets a new code. A login change and a new removal drop sessions opened with password
+and code. A damaged list in the settings or more than 16 concurrent edits — no passes until an edit with the phrase on
+this PC. The
 replies "another PC under this ID" and "clocks differ" are unsigned (the hub can fake them): they are shown in the
 window but change nothing. Retrying sync with an unreachable PC lasts at most an hour, then sync runs every 10 minutes
 and at start.

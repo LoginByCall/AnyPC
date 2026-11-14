@@ -142,7 +142,7 @@ func (p *passMaster) workHere(ctx context.Context, password, code string) ([]pas
 	c.mu.Lock()
 	c.reload()
 	m := c.spaceLocked() // разобранный состав не меняется: правка даёт новый
-	key, server := bytes.Clone(c.Key), c.Server
+	key, server, over := bytes.Clone(c.Key), c.Server, c.SpaceOver != ""
 	c.mu.Unlock()
 	self := ed25519.PrivateKey(key).Public().(ed25519.PublicKey)
 	if m == nil || !m.member(self) {
@@ -150,6 +150,9 @@ func (p *passMaster) workHere(ctx context.Context, password, code string) ([]pas
 	}
 	if m.Compromised { // цели пропуск не выдадут (spaceOwnerLocked) — не тратить пароль и код
 		return nil, errSpaceCompromised
+	}
+	if over {
+		return nil, errSpaceHeads
 	}
 	if err := spaceLoginCheck(m, password); err != nil {
 		return nil, err

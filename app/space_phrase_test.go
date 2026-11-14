@@ -216,6 +216,19 @@ func TestSpaceLoginFork(t *testing.T) {
 	if w := spaceJoinT(t, x, y, n); w.Compromised || !sameLogin(w, n) || n.LEx != 2 || n.LGen != 3 {
 		t.Fatalf("новый вход: %v", w)
 	}
+	// правило — от объединения, а не от числа верхушек: одна M с тем же входом, но больше исключённых, чем lex
+	// (добавление от скомпрометированного объединения в обход spaceEdit), — тоже скомпрометирована
+	z, err := spaceAdd(v, spaceTestPhrase, "100000009", spacePub(0x70))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := spaceJoinT(t, z); !w.Compromised || len(w.Gone) <= int(w.LEx) {
+		t.Fatalf("одна верхушка сверх lex: %v", w)
+	}
+	// z перекрывает обе ветви, и ветвь с тем же входом тоже: её член, исключённый в z, ничего не добавляет
+	if h, err := spaceHeads([]*space{x, y, z}); err != nil || len(h) != 1 {
+		t.Fatalf("верхушек %d (%v), ждали одну", len(h), err)
+	}
 }
 
 // История входа однозначна: lgen 1 — lprev нули, lex 0; lgen > 1 — lprev не нули; lex не больше исключённых.

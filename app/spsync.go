@@ -15,8 +15,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	crand "crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"log"
 	"math/rand/v2"
 	"slices"
@@ -37,21 +41,18 @@ var (
 // (agent.DropRevoked).
 var spaceChanged func()
 
-// spaceStoredLocked — сохранённые верхушки (под c.mu): главная, затем остальные; испорченные — мимо (в журнал).
-func (c *config) spaceStoredLocked() []*space {
+// spaceStoredLocked — сохранённые верхушки (под c.mu): главная, затем остальные. Хоть одна не читается — ошибка
+// (закрыто: пропустив испорченную верхушку, забыли бы её исключения — исключённый снова член).
+func (c *config) spaceStoredLocked() ([]*space, error) {
 	var out []*space
 	for i, b := range slices.Concat([][]byte{c.Space}, c.SpaceHeads) {
-		if len(b) == 0 {
-			continue
-		}
 		m, err := spaceParse(b)
 		if err != nil {
-			log.Printf("пространство: верхушка %d в настройках не читается: %v", i, err)
-			continue
+			return nil, fmt.Errorf("верхушка %d: %w", i, err)
 		}
 		out = append(out, m)
 	}
-	return out
+	return out, nil
 }
 
 // spaceSnapLocked — байты состояния (главная и остальные верхушки): правка сверяет, что оно не сменилось.
@@ -65,11 +66,16 @@ func (c *config) spaceSnapLocked() []byte {
 
 // spaceAddLocked — добавить подлинные M к верхушкам (под c.mu, без save): чужое пространство — errSpaceForeign
 // (ничего не принято). Вход объединения повторяется в записи по умолчанию (её Trusted/KeyLogin сбрасываются: пароль
-// сменился; гостей не трогаем). changed — верхушки сменились; drop — вход записи по умолчанию сменился.
+// сменился; гостей не трогаем). changed — верхушки сменились; drop — вход записи по умолчанию сменился. Верхушек
+// больше spaceMaxHeads и после поглощения перекрытых — errSpaceHeads, ничего не принято, а SpaceOver закрывает ПК
+// (spaceOwnerLocked) до правки фразой здесь: непринятую M её владелец пришлёт снова (повтор и периодическая сверка).
 func (c *config) spaceAddLocked(in ...*space) (changed, drop bool, err error) {
-	cur := c.spaceStoredLocked()
-	if len(cur) == 0 {
+	if len(c.Space) == 0 {
 		return false, false, errSpaceNotIn
+	}
+	cur, err := c.spaceStoredLocked()
+	if err != nil {
+		return false, false, err
 	}
 	for _, m := range in {
 		if m == nil || !cur[0].sameSpace(m) {
@@ -77,6 +83,10 @@ func (c *config) spaceAddLocked(in ...*space) (changed, drop bool, err error) {
 		}
 	}
 	heads, err := spaceHeads(append(cur, in...))
+	if errors.Is(err, errSpaceHeads) && c.SpaceOver == "" {
+		c.SpaceOver = time.Now().UTC().Format(time.RFC3339) + " " + err.Error()
+		log.Printf("%v — непринятая правка не записана, пропусков нет до правки фразой на этом ПК", err)
+	}
 	if err != nil {
 		return false, false, err
 	}
@@ -171,8 +181,9 @@ func (c *config) spaceSync(pb []byte, rb [][]byte) error {
 	}
 	c.mu.Lock()
 	c.reload()
+	over := c.SpaceOver
 	changed, drop, err := c.spaceAddLocked(in...)
-	if changed {
+	if changed || c.SpaceOver != over {
 		if serr := c.save(); serr != nil && err == nil {
 			err = serr
 		}
@@ -181,7 +192,7 @@ func (c *config) spaceSync(pb []byte, rb [][]byte) error {
 		}
 	}
 	c.mu.Unlock()
-	if drop && spaceChanged != nil {
+	if (drop || changed) && spaceChanged != nil { // и без смены входа: новое исключение меняет loginTag
 		spaceChanged()
 	}
 	if s := c.syn; s != nil && changed { // принятое — дальше остальным
@@ -365,6 +376,7 @@ func (c *config) spaceEdit(snap []byte, n *space) (bool, error) {
 	}
 	_, drop, err := c.spaceAddLocked(n)
 	if err == nil {
+		c.SpaceOver = "" // правка от объединения перекрыла все верхушки
 		err = c.save()
 	}
 	c.mu.Unlock()
@@ -454,6 +466,29 @@ func (s *spaceSyncer) random(ctx context.Context) {
 // spaceSigned — b — целая запись M с верной подписью (кем подписан — сверяет вызывающий сравнением со своим).
 func spaceSigned(b []byte) bool { _, err := spaceParse(b); return err == nil }
 
+// loginTag — agent.Agent.LoginTag: метка входа записи по умолчанию в пространстве — хэш входа объединения и числа
+// исключённых (смена кода или пароля, новое исключение — новая метка); ПК клиента cpub исключён или пространство не
+// читается — каждый раз новая (сессия рвётся). Вне пространства и для гостей — nil.
+func (c *config) loginTag(user string, cpub []byte) []byte {
+	if user != "" {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reload()
+	if len(c.Space) == 0 {
+		return nil
+	}
+	m := c.spaceLocked()
+	if m == nil || cpub != nil && m.gone(cpub) {
+		b := make([]byte, sha256.Size)
+		crand.Read(b)
+		return b
+	}
+	h := sha256.Sum256(binary.BigEndian.AppendUint16(m.loginHash(), uint16(len(m.Gone))))
+	return h[:]
+}
+
 // SyncKey — agent.SpaceSyncer: pub — член объединения этого ПК (не исключён ни в одной известной M) и не свой.
 func (c *config) SyncKey(pub ed25519.PublicKey) bool {
 	c.mu.Lock()
@@ -489,7 +524,7 @@ func (c *config) spaceLeave(password, code string) error {
 		return errPassCode
 	}
 	u.TOTPStep = step
-	c.Space, c.SpaceHeads, c.SpaceWait, c.SpaceClock = nil, nil, "", nil
+	c.Space, c.SpaceHeads, c.SpaceWait, c.SpaceClock, c.SpaceOver = nil, nil, "", nil, ""
 	err := c.save()
 	c.mu.Unlock()
 	if err != nil {

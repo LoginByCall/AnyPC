@@ -326,3 +326,52 @@ func TestDropRevoked(t *testing.T) {
 		}
 	}
 }
+
+// TestSpaceLoginTagDrop — неблокирующее 6 приёмки 2P-Set: метка входа (LoginTag) берётся при "b" и сверяется в
+// revoked — сменилась (смена кода без смены пароля, исключение) — сессия паролем рвётся; та же — нет; метка гостя
+// (nil) — тоже нет.
+func TestSpaceLoginTagDrop(t *testing.T) {
+	var mode, change atomic.Int32 // change: 0 та же метка, 1 новая
+	var gone, asked atomic.Bool
+	hosts := usersHost(accounts)
+	e2eAgent = func(a *Agent) {
+		hosts(a)
+		a.LoginTag = func(user string, _ []byte) []byte {
+			asked.Store(true)
+			if user == "olga" {
+				return nil
+			}
+			return []byte{byte(mode.Load())}
+		}
+	}
+	e2eInput = func(t *testing.T, a *Agent) {
+		mode.Store(change.Load())
+		defer mode.Store(0)
+		a.DropRevoked()
+		for range 20 {
+			a.mu.Lock()
+			s := a.sess
+			a.mu.Unlock()
+			if s == nil {
+				gone.Store(true)
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		gone.Store(false)
+	}
+	defer e2eReset()
+	ff := FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000})
+	for _, c := range []struct {
+		user, pass string
+		change     int32
+		gone       bool
+	}{{"ivan", "ivan-pass1", 0, false}, {"ivan", "ivan-pass1", 1, true}, {"olga", "olga-pass1", 1, false}} {
+		change.Store(c.change)
+		e2eUser, e2eGood = c.user, c.pass
+		e2e(t, local(t), "123456789", false, ff, c.pass)
+		if gone.Load() != c.gone || !asked.Load() {
+			t.Fatalf("%s, метка %d: разорвана %v (метку спрашивали %v)", c.user, c.change, gone.Load(), asked.Load())
+		}
+	}
+}

@@ -42,7 +42,9 @@ func (c *config) spaceLocked() *space {
 		return c.sp
 	}
 	var m *space
-	if heads, err := spaceHeads(c.spaceStoredLocked()); err != nil {
+	if stored, err := c.spaceStoredLocked(); err != nil {
+		log.Printf("пространство в настройках не читается: %v", err)
+	} else if heads, err := spaceHeads(stored); err != nil {
 		log.Printf("пространство в настройках не читается: %v", err)
 	} else {
 		m = spaceView(heads)
@@ -132,7 +134,7 @@ func (c *config) spaceMember(salt, pub []byte) bool {
 // кода фразой.
 func (c *config) spaceOwnerLocked(salt []byte) *space {
 	m := c.spaceLocked()
-	if m == nil || m.Compromised || c.codeModeLocked() {
+	if m == nil || m.Compromised || c.SpaceOver != "" || c.codeModeLocked() {
 		return nil
 	}
 	u := c.Users[0]
@@ -303,7 +305,7 @@ func (c *config) spaceEnter(ctx context.Context, hostID, password, code, phrase 
 	if len(c.Space) > 0 || c.ID != id || !bytes.Equal(c.Key, key) {
 		return ch, errSpaceChange
 	}
-	c.Space, c.SpaceHeads, c.SpaceClock = out, nil, nil
+	c.Space, c.SpaceHeads, c.SpaceClock, c.SpaceOver = out, nil, nil, ""
 	u := &c.Users[0]
 	ch.Password = !bytes.Equal(u.Salt, joined.PSalt) || !bytes.Equal(u.Hash, joined.PHash)
 	ch.TOTP = u.TOTP != joined.TOTP

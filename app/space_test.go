@@ -454,8 +454,7 @@ func TestSpaceParseLimits(t *testing.T) {
 		"мегабайт":            {append(bytes.Clone(b), pad(1<<20)...), errSpaceLimit},
 		"секрет TOTP длиннее": {with(func(c []byte) []byte { c[offTOTP] = spaceMaxTOTP + 1; return c }), errSpaceLimit},
 		"секрет TOTP 255":     {with(func(c []byte) []byte { c[offTOTP] = 255; return c }), errSpaceLimit},
-		"ПК сверх предела":    {with(func(c []byte) []byte { c[offN] = spaceMaxMembers + 1; return c }), errSpaceLimit},
-		"ПК 255":              {with(func(c []byte) []byte { c[offN] = 255; return c }), errSpaceLimit},
+		"ПК 255":              {with(func(c []byte) []byte { c[offN] = spaceMaxListed; return c }), errSpaceFormat},
 		"исключённых сверх предела": {with(func(c []byte) []byte {
 			binary.BigEndian.PutUint16(c[offK:], spaceMaxGone+1)
 			return c
@@ -471,9 +470,9 @@ func TestSpaceParseLimits(t *testing.T) {
 	// ровно на пределах — разбирается и проверяется
 	max := spaceEdit(t, m, func(s *space) {
 		s.Members, s.Gone = nil, nil
-		for i := range spaceMaxMembers {
+		for i := range spaceMaxListed {
 			id := []byte("500000000")
-			id[7], id[8] = byte('0'+i/10), byte('0'+i%10)
+			id[6], id[7], id[8] = byte('0'+i/100), byte('0'+i/10%10), byte('0'+i%10)
 			s.Members = append(s.Members, spaceMember{ID: string(id), Pub: append([]byte{0x05, byte(i)}, pad(30)...)})
 		}
 		for i := range spaceMaxGone {
@@ -869,11 +868,10 @@ func TestSpaceJoinProps(t *testing.T) {
 			if !sameLogin(v, best) {
 				t.Fatalf("seed %d: вход объединения — не сильнейший", seed)
 			}
-			comp := slices.ContainsFunc(ab, func(m *space) bool {
-				return bytes.Equal(m.loginHash(), best.loginHash()) && slices.ContainsFunc(m.Members, func(x spaceMember) bool { return v.gone(x.Pub) })
-			})
-			if v.Compromised != comp {
-				t.Fatalf("seed %d: скомпрометирован %v, ждали %v (по всем M, а не только верхушкам)", seed, v.Compromised, comp)
+			// секрет победившего входа мог видеть любой исключённый, кроме исключённых при его задании (lex): член
+			// любой ветви, даже не числившийся ни в одной M с этим входом (Б1 приёмки 2P-Set)
+			if comp := len(gone) > int(best.LEx); v.Compromised != comp {
+				t.Fatalf("seed %d: скомпрометирован %v, ждали %v (исключённых %d, lex %d)", seed, v.Compromised, comp, len(gone), best.LEx)
 			}
 		}
 	}
@@ -907,6 +905,46 @@ func TestSpaceHeadsMutual(t *testing.T) {
 		if len(h) != 1 || h[0].Epoch != a4.Epoch {
 			t.Fatalf("верхушек %d, ждали одну с эпохой %d", len(h), a4.Epoch)
 		}
+	}
+}
+
+// Параллельные добавления дают объединение больше spaceMaxMembers: добавить ещё нельзя, исключить — можно (состав
+// уменьшается), новый код — тоже; исключение из такого объединения перекрывает обе ветви. Неблокирующее 2 приёмки.
+func TestSpaceOverMembers(t *testing.T) {
+	m1 := spaceFixture(t)
+	grow := func(m *space, from, n int) *space {
+		for i := range n {
+			id := fmt.Sprintf("7%08d", from+i)
+			var err error
+			if m, err = spaceAdd(m, spaceTestPhrase, id, append([]byte{0x70, byte(from + i)}, bytes.Repeat([]byte{9}, 30)...)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return m
+	}
+	a, b := grow(m1, 0, spaceMaxMembers-2), grow(m1, 100, spaceMaxMembers-3)
+	v := spaceJoinT(t, a, b)
+	if len(v.Members) != 2*spaceMaxMembers-3 {
+		t.Fatalf("членов в объединении: %d", len(v.Members))
+	}
+	_, err := spaceAdd(v, spaceTestPhrase, "100000099", spacePub(0x7F))
+	spaceWant(t, err, errSpaceLimit)
+	x, err := spaceRemove(v, spaceTestPhrase, v.Members[0].Pub)
+	if err != nil {
+		t.Fatalf("исключение из объединения сверх предела: %v", err)
+	}
+	if h, err := spaceHeads([]*space{a, b, x}); err != nil || len(h) != 1 || len(x.Members) != len(v.Members)-1 {
+		t.Fatalf("исключение не перекрыло ветви: %v, %d", err, len(h))
+	}
+	xb, err := x.marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := spaceParse(xb); err != nil {
+		t.Fatalf("разбор M сверх spaceMaxMembers: %v", err)
+	}
+	if _, err := spaceSetLogin(v, spaceTestPhrase, "", totp.NewSecret()); err != nil {
+		t.Errorf("новый код объединения сверх предела: %v", err)
 	}
 }
 

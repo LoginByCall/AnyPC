@@ -28,10 +28,12 @@ package main
 // порядок доставки, повторы и старые M ничего не ломают, расколов по составу нет, подпись слияния не нужна;
 // исключённый не возвращается никогда. Вход (пароль входа и секрет TOTP) — регистр: lgen (номер), lex (сколько
 // исключённых было, когда вход задан), lprev (хэш прежнего входа). Из разных входов побеждает один по правилу
-// развилки Tailnet Lock (spaceLoginCmp): больше исключений → больший lgen → меньший хэш. Вход, чей секрет видел
-// исключённый ПК (член M с этим входом попал в gone объединения), — «скомпрометирован» (Compromised): пропусков
-// нет, вступлений нет, правки — только с новым секретом кода (новый вход фразой). Следующая правка фразой делается
-// от объединения и перекрывает все верхушки.
+// развилки Tailnet Lock (spaceLoginCmp): больше исключений → больший lgen → меньший хэш. Вход, чей секрет мог видеть
+// исключённый ПК, — «скомпрометирован» (Compromised): в объединении исключённых больше, чем lex победившего входа.
+// Исключённые при задании входа (lex штук) его секрета не видели; любой другой исключённый тогда исключён не был и
+// мог получить секрет сверкой (член любой ветви, даже не числившийся ни в одной M с этим входом). Пропусков нет,
+// вступлений нет, правки — только с новым секретом кода (новый вход фразой: lex = все исключённые объединения).
+// Следующая правка фразой делается от объединения и перекрывает все верхушки.
 //
 // Запись M (версия 2; составы не выпущены — формат менялся без совместимости), все числа — big-endian, длины полей
 // постоянные, кроме секрета TOTP и двух списков:
@@ -75,18 +77,20 @@ const (
 	spaceLoginDomain = "AnyPC space login v2\x00"     // доменный префикс хэша входа (lprev, развилка)
 	spacePhraseWords = 10                             // слов во фразе: 10 × 8 бит = 80 бит
 	spaceVer         = 2
-	spaceIDLen       = 9  // ID хоста (hub.IsHostID)
-	spaceSaltLen     = 16 // sid, osalt, psalt
-	spaceHashLen     = 32 // pake.KDF
-	spaceMaxMembers  = 32
-	spaceMaxGone     = 256 // исключённые не забываются никогда; после 256 исключений — новое пространство
-	spaceMaxTOTP     = 64
+	spaceIDLen       = 9   // ID хоста (hub.IsHostID)
+	spaceSaltLen     = 16  // sid, osalt, psalt
+	spaceHashLen     = 32  // pake.KDF
+	spaceMaxMembers  = 32  // добавить ПК можно, пока в объединении их меньше (spaceAdd)
+	spaceMaxListed   = 255 // предел формата (u8): объединение параллельных добавлений бывает больше spaceMaxMembers,
+	// и исключение (уменьшает состав) должно оставаться возможным
+	spaceMaxGone = 256 // исключённые не забываются никогда; после 256 исключений — новое пространство
+	spaceMaxTOTP = 64
 	// spaceMaxHeads — сколько неперекрытых M держит ПК: столько параллельных правок фразой на разных ПК, не
 	// узнавших друг о друге; любая следующая правка фразой сводит верхушки к одной.
 	spaceMaxHeads = 16
 	// spaceMaxBytes — потолок записи с подписью: больше не разбираем вовсе.
 	spaceMaxBytes = len(spaceDomain) + 1 + spaceSaltLen + 8 + spaceSaltLen + ed25519.PublicKeySize + spaceSaltLen + spaceHashLen +
-		1 + spaceMaxTOTP + 4 + 2 + sha256.Size + 1 + spaceMaxMembers*(spaceIDLen+ed25519.PublicKeySize) + 2 + spaceMaxGone*ed25519.PublicKeySize +
+		1 + spaceMaxTOTP + 4 + 2 + sha256.Size + 1 + spaceMaxListed*(spaceIDLen+ed25519.PublicKeySize) + 2 + spaceMaxGone*ed25519.PublicKeySize +
 		ed25519.SignatureSize
 )
 
@@ -408,8 +412,8 @@ func spaceRemoveLogin(m *space, phrase string, pub ed25519.PublicKey, password s
 }
 
 // spaceUnder — a ничего не добавляет к b (её можно забыть, объединение не изменится): исключённые a — в b; вход a
-// слабее, и каждый член a — член b или исключён в b; тот же вход — каждый член a — член b (кто видел секрет входа,
-// должно остаться видно для Compromised). Только для составов одного пространства.
+// не сильнее; каждый член a — член b или исключён в b. Compromised от этого не зависит: он — от всех исключённых
+// объединения и lex победившего входа, а они при забывании a не меняются. Только для составов одного пространства.
 func spaceUnder(a, b *space) bool {
 	c := spaceLoginCmp(a, b)
 	if c > 0 {
@@ -421,7 +425,7 @@ func spaceUnder(a, b *space) bool {
 		}
 	}
 	for _, x := range a.Members {
-		if !b.has(x) && (c == 0 || !b.gone(x.Pub)) {
+		if !b.has(x) && !b.gone(x.Pub) {
 			return false
 		}
 	}
@@ -481,12 +485,13 @@ func spaceHeads(ms []*space) ([]*space, error) {
 // spaceView — объединение верхушек (по spaceHeads, первая — главная) как 2P-Set, без подписи: gone — объединение;
 // members — объединение пар (ID, ключ) без исключённых, при споре ID или ключа — пара из верхушки раньше по порядку
 // (такое даёт лишь ПК, назвавшийся чужим ID, С4); вход — главной верхушки (сильнейший); эпоха — наибольшая.
-// Compromised — член верхушки с этим же входом исключён в объединении: секрет кода видел исключённый ПК. Одна
-// верхушка — объединение и есть она (копия с подписью: её можно записать).
+// Compromised — исключённых в объединении больше, чем lex победившего входа (см. начало файла): секрет кода мог
+// видеть исключённый ПК. Одна верхушка — объединение и есть она (копия с подписью: её можно записать).
 func spaceView(heads []*space) *space {
 	top := heads[0]
 	v := top.clone()
 	if len(heads) == 1 {
+		v.Compromised = len(v.Gone) > int(top.LEx)
 		return v
 	}
 	v.Sig = nil
@@ -509,12 +514,7 @@ func spaceView(heads []*space) *space {
 		}
 	}
 	slices.SortFunc(v.Members, func(x, y spaceMember) int { return bytes.Compare(x.Pub, y.Pub) })
-	w := top.loginHash()
-	for _, h := range heads {
-		if bytes.Equal(h.loginHash(), w) && slices.ContainsFunc(h.Members, func(x spaceMember) bool { return v.gone(x.Pub) }) {
-			v.Compromised = true
-		}
-	}
+	v.Compromised = len(v.Gone) > int(top.LEx)
 	return v
 }
 
@@ -660,7 +660,7 @@ func spaceTOTPOK(s string) bool {
 func (m *space) check() error {
 	bad := func(what string) error { return fmt.Errorf("%w: %s", errSpaceFormat, what) }
 	switch {
-	case len(m.Members) > spaceMaxMembers || len(m.Gone) > spaceMaxGone || len(m.TOTP) > spaceMaxTOTP:
+	case len(m.Members) > spaceMaxListed || len(m.Gone) > spaceMaxGone || len(m.TOTP) > spaceMaxTOTP:
 		return errSpaceLimit
 	case len(m.SID) != spaceSaltLen || len(m.OSalt) != spaceSaltLen || len(m.PSalt) != spaceSaltLen:
 		return bad("длина sid или соли")
@@ -776,9 +776,7 @@ func spaceParse(b []byte) (*space, error) {
 	m.LGen = binary.BigEndian.Uint32(take(4))
 	m.LEx = binary.BigEndian.Uint16(take(2))
 	m.LPrev = take(sha256.Size)
-	if n = int(take(1)[0]); n > spaceMaxMembers {
-		return nil, errSpaceLimit
-	}
+	n = int(take(1)[0]) // ≤ spaceMaxListed: u8
 	for range n {
 		m.Members = append(m.Members, spaceMember{ID: string(take(spaceIDLen)), Pub: take(ed25519.PublicKeySize)})
 	}
