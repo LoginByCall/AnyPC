@@ -451,8 +451,8 @@ func TestSpaceJoinHeads(t *testing.T) {
 // TestSpaceJoinDupM — второй состав от P, пока Sign ждёт человека, — нарушение протокола: второго Sign нет, P
 // ничего не получил.
 func TestSpaceJoinDupM(t *testing.T) {
-	spaceDupM = func() bool { return true }
-	t.Cleanup(func() { spaceDupM = func() bool { return false } })
+	spaceDupM.Store(true)
+	t.Cleanup(func() { spaceDupM.Store(false) })
 	url := local(t)
 	r := spaceHost(t, url, "123456789")
 	_, nkey, _ := ed25519.GenerateKey(nil)

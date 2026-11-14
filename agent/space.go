@@ -18,6 +18,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"anypc/hub"
@@ -62,7 +63,7 @@ func (a *Agent) spaceCtl(s *session, data []byte, reply func(spMsg)) {
 	if len(m.M) == 0 { // запрос состава
 		if b := a.SpaceGet(salt); len(b) > 0 {
 			reply(spMsg{T: "sp", M: b[0], H: b[1:]})
-			if spaceDupM() {
+			if spaceDupM.Load() {
 				reply(spMsg{T: "sp", M: b[0], H: b[1:]})
 			}
 		} else {
@@ -122,7 +123,7 @@ var (
 )
 
 // spaceDupM — испытательная подмена: хост шлёт состав дважды (agent/space_test.go); в рабочем пути — нет.
-var spaceDupM = func() bool { return false }
+var spaceDupM atomic.Bool
 
 // spaceWait — весь обмен вступления (вход с Argon2 на обеих сторонах, ICE через TURN).
 var spaceWait = 60 * time.Second
