@@ -36,6 +36,13 @@ func lockInstance(dir string) (unlock func(), err error) {
 	return func() { f.Close() }, nil
 }
 
+// alreadyNotice — окно первой не найдено: журнал не видно, сказать окном сообщения.
+var alreadyNotice = func() {
+	t, _ := syscall.UTF16PtrFromString("AnyPC")
+	m, _ := syscall.UTF16PtrFromString("AnyPC уже запущен — откройте окно значком AnyPC у часов.")
+	pMsgBox.Call(0, uintptr(unsafe.Pointer(m)), uintptr(unsafe.Pointer(t)), 0x40) // MB_ICONINFORMATION
+}
+
 // showRunning — окно запущенной копии наверх. WebView2 — окно внутри её процесса, API у него нет: ищется по заголовку
 // («AnyPC — ID …», main_windows.go), дальше — как левый щелчок по значку у часов (showMain).
 func showRunning(title string) error {

@@ -170,6 +170,10 @@ func uninstallService() error {
 // serviceHint — что сказать после --install-service.
 const serviceHint = "Журнал: journalctl --user -u anypc"
 
+func serviceRunning() bool { return serviceState() == "включён, служба active" }
+
+func serviceStart() string { return "systemctl --user start anypc" }
+
 func serviceState() string {
 	if _, err := os.Stat(unitPath()); err != nil {
 		return "нет"

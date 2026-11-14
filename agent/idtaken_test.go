@@ -17,39 +17,61 @@ import (
 	"github.com/coder/websocket/wsjson"
 )
 
+// fakeTakenHub — хаб: после challenge отвечает id_taken (taken) или рвёт связь без ответа.
+func fakeTakenHub(taken bool) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		nonce, _ := json.Marshal("n")
+		wsjson.Write(r.Context(), c, hub.Msg{V: 1, Type: "challenge", Data: nonce})
+		var reg hub.Msg
+		wsjson.Read(r.Context(), c, &reg)
+		if taken {
+			wsjson.Write(r.Context(), c, hub.Msg{V: 1, Type: "error", Data: json.RawMessage(`"id_taken"`)})
+			<-r.Context().Done()
+		}
+	}))
+}
+
+// firstTaken — Run до первого состояния: IDTaken() в нём; Run остановлен и завершён.
+func firstTaken(t *testing.T, a *Agent, srv *httptest.Server) bool {
+	t.Helper()
+	a.Server = "ws" + strings.TrimPrefix(srv.URL, "http")
+	states := make(chan bool, 16)
+	a.OnState = func(bool, string) { states <- a.IDTaken() }
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	done := make(chan struct{})
+	go func() { a.Run(ctx); close(done) }()
+	var got bool
+	select {
+	case got = <-states:
+	case <-ctx.Done():
+		t.Error("состояние не пришло")
+	}
+	cancel() // в паузе 5 с после отказа — как смена узла в окне (runner.start)
+	<-done
+	return got
+}
+
 // IDTaken: хаб ответил id_taken (живой случай владельца 2026-11-14: работала старая копия) — true; просто обрыв — false.
 func TestIDTaken(t *testing.T) {
-	for _, taken := range []bool{true, false} {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			c, err := websocket.Accept(w, r, nil)
-			if err != nil {
-				return
-			}
-			defer c.CloseNow()
-			nonce, _ := json.Marshal("n")
-			wsjson.Write(r.Context(), c, hub.Msg{V: 1, Type: "challenge", Data: nonce})
-			var reg hub.Msg
-			wsjson.Read(r.Context(), c, &reg)
-			if taken {
-				wsjson.Write(r.Context(), c, hub.Msg{V: 1, Type: "error", Data: json.RawMessage(`"id_taken"`)})
-				<-r.Context().Done()
-			} // иначе — обрыв без ответа
-		}))
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		a := newAgent("ws"+strings.TrimPrefix(srv.URL, "http"), "123456789", nil)
-		states := make(chan bool, 16)
-		a.OnState = func(on bool, _ string) { states <- a.IDTaken() }
-		go a.Run(ctx)
-		select {
-		case got := <-states:
-			if got != taken {
-				t.Errorf("хаб id_taken=%v: IDTaken() = %v", taken, got)
-			}
-		case <-ctx.Done():
-			t.Errorf("хаб id_taken=%v: состояние не пришло", taken)
-		}
-		cancel()
-		srv.Close()
+	taken, drop := fakeTakenHub(true), fakeTakenHub(false)
+	defer taken.Close()
+	defer drop.Close()
+	if !firstTaken(t, newAgent("", "123456789", nil), taken) {
+		t.Error("id_taken: IDTaken() = false")
+	}
+	if firstTaken(t, newAgent("", "123456789", nil), drop) {
+		t.Error("обрыв: IDTaken() = true")
+	}
+	// регрессия (приёмка 2026-11-14): смена узла в паузе после id_taken — отказ старого хаба не остаётся навсегда
+	a := newAgent("", "123456789", nil)
+	firstTaken(t, a, taken)
+	if firstTaken(t, a, drop) {
+		t.Error("после смены узла окно всё ещё «ID уже в сети»: отказ прошлого хаба не сброшен")
 	}
 }
 

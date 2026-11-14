@@ -108,11 +108,7 @@ func hostMain() {
 	// «Спрашивать», агента, трея и окна. Вторая — окно первой (с --no-browser, как из автозапуска, — без окна) и выход 0
 	// (launchd и systemd с Restart=on-failure её не перезапускают)
 	urlFile := filepath.Join(cacheDir, "AnyPC", "window.url")
-	show := func() error { return showRunning(urlFile) }
-	if *noBrowser {
-		show = nil
-	}
-	unlock, running := singleInstance(filepath.Join(cfgDir, "AnyPC"), show)
+	unlock, running := singleInstance(filepath.Join(cfgDir, "AnyPC"), secondShow(*noBrowser, urlFile))
 	if running {
 		return
 	}
@@ -141,10 +137,10 @@ func hostMain() {
 	online, session, update := false, "", ""
 	a.OnState = func(on bool, s string) { mu.Lock(); online, session = on, s; mu.Unlock() }
 	info := func() map[string]any {
-		node, pub := cfg.node()
 		mu.Lock()
-		defer mu.Unlock()
-		return map[string]any{"id": cfg.id(), "fp": cfg.fingerprint(), "online": online, "idTaken": a.IDTaken(), "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "otp": cfg.otpSet(), "users": cfg.users(), "keys": cfg.keyList(), "code": cfg.code(), "viewOnly": cfg.viewOnly(), "version": version, "update": update, "node": node, "nodePub": pub, "server": cfg.server(), "audio": audioInfo(a)}
+		on, s, u := online, session, update
+		mu.Unlock()
+		return hostInfo(cfg, a, on, s, u)
 	}
 	go watchUpdates(func(v string) { mu.Lock(); update = v; mu.Unlock() })
 

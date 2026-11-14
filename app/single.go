@@ -24,6 +24,7 @@ func singleInstance(dir string, show func() error) (unlock func(), running bool)
 		if show != nil {
 			if err := show(); err != nil {
 				log.Printf("окно запущенной копии не открыто: %v", err)
+				alreadyNotice() // журнал не видно: сказать пользователю, иначе двойной щелчок «ничего не делает»
 			}
 		}
 		return nil, true
