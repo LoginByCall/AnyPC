@@ -326,7 +326,8 @@ func TestPassOffLocked(t *testing.T) {
 	_, mkey, _ := ed25519.GenerateKey(nil)
 	p := passTarget(t, url, nil, mkey.Public().(ed25519.PublicKey))
 	d := passDial(url, p, mkey)
-	if err := PassOpen(context.Background(), d); err != nil {
+	var err error
+	if d.PID, err = PassOpenID(context.Background(), d); err != nil {
 		t.Fatal(err)
 	}
 	idle(t, p.a)
@@ -339,6 +340,10 @@ func TestPassOffLocked(t *testing.T) {
 	if err := passDo(context.Background(), bad, passOff); !errors.Is(err, ErrSpaceHostKey) { // запасной путь (старые цели)
 		t.Errorf("«off» с ключом не того хоста: %v", err)
 	}
+	if err := passOffHub(context.Background(), bad); !errors.Is(err, ErrSpaceHostKey) { // через хаб: ответ не тем ключом
+		t.Errorf("offack с ключом не того хоста: %v", err)
+	}
+	d.PID = p.a.passGive(d.Key.Public().(ed25519.PublicKey), salt)
 	if err := PassOff(context.Background(), d); err != nil {
 		t.Errorf("«снять» при запертом хосте: %v", err)
 	}

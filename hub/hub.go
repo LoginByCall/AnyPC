@@ -56,9 +56,10 @@ type Hub struct {
 
 	mu    sync.Mutex
 	peers map[string]*websocket.Conn
-	offc  map[*websocket.Conn]bool // хосты, объявившие при регистрации ?off=1: принимают «снять» сообщением
-	keys  map[string]string        // ID → публичный ключ (base64url)
-	news  map[string]int           // новых привязок с IP за текущий час
+	offc  map[*websocket.Conn]bool        // хосты, объявившие при регистрации ?off=1: принимают «снять» сообщением
+	waits map[string]map[string]time.Time // клиент → хост → до каких пор ждём ответ offack на пересланное «снять»
+	keys  map[string]string               // ID → публичный ключ (base64url)
+	news  map[string]int                  // новых привязок с IP за текущий час
 	newAt time.Time
 
 	lim     sync.Mutex         // лимиты F4 (limit.go)
@@ -292,6 +293,40 @@ func (h *Hub) offOK(c *websocket.Conn) bool {
 	return h.offc[c]
 }
 
+// offWait — клиент cid ждёт ответ хоста host на пересланное «снять» (не больше OffPending сразу); false — предел.
+func (h *Hub) offWait(cid, host string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	now := time.Now()
+	w := h.waits[cid]
+	for k, until := range w {
+		if now.After(until) {
+			delete(w, k)
+		}
+	}
+	if len(w) >= OffPending {
+		return false
+	}
+	if w == nil {
+		if h.waits == nil {
+			h.waits = map[string]map[string]time.Time{}
+		}
+		w = map[string]time.Time{}
+		h.waits[cid] = w
+	}
+	w[host] = now.Add(OffAckWait)
+	return true
+}
+
+// offAcked — забрать ожидание (cid, host): хост может ответить клиенту cid один раз и только в срок.
+func (h *Hub) offAcked(cid, host string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	until, ok := h.waits[cid][host]
+	delete(h.waits[cid], host)
+	return ok && time.Now().Before(until)
+}
+
 func (h *Hub) get(id string) *websocket.Conn {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -356,6 +391,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.online(isHost, id, osVer(q.Get("os"), q.Get("v")), 1)
 	defer h.online(isHost, id, "", -1)
 	if !isHost { // ?c= — окно программы, браузер или anypc-probe; старые клиенты без него
+		defer func() { h.mu.Lock(); delete(h.waits, id); h.mu.Unlock() }()
 		h.Count("client_"+cmp.Or(map[string]string{"app": "app", "web": "web", "probe": "probe"}[q.Get("c")], "?"), 1)
 	}
 	if isHost {
@@ -411,6 +447,10 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			send(ctx, c, errMsg("forbidden"))
 			continue
 		}
+		if m.Type == "offack" && !h.offAcked(m.To, id) { // хост → только тому клиенту, чьё «снять» ему переслано, один раз
+			send(ctx, c, errMsg("forbidden"))
+			continue
+		}
 		if m.Type == "connect" && !connects.take(1) { // спам connect рождал offer и ice хоста на каждый
 			send(ctx, c, errMsg("busy"))
 			continue
@@ -446,32 +486,40 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.V, m.From = 1, id
 		out := encode(m) // ведро считает то, что уйдёт хосту, а не то, что пришло (N1)
 		// D2: медленный хост не выбивается суммой клиентов
-		ok := isHost || h.toHost(m.To, addr, len(out)+len(fresh))
-		if ok {
-			sendRaw(ctx, dst, fresh)
-			ok = sendRaw(ctx, dst, out) == nil
+		if m.Type == "off" { // своё ведро (offIn), не общее toHost: поток других типов «снять» не вытесняет
+			if !h.offIn(m.To, addr) || !h.offWait(id, m.To) {
+				offReply("busy")
+			} else if sendRaw(ctx, dst, out) != nil {
+				h.offAcked(id, m.To)
+				offReply("busy")
+			}
+			continue
 		}
-		if m.Type == "off" { // ответ отправителю: хаб отдал хосту («ok») или нет («busy» — повторить)
-			offReply(map[bool]string{true: "ok", false: "busy"}[ok])
+		if !isHost && !h.toHost(m.To, addr, len(out)+len(fresh)) {
+			continue
 		}
+		sendRaw(ctx, dst, fresh)
+		sendRaw(ctx, dst, out)
 	}
 }
 
-// relayed — что хаб пересылает: клиент → хост — connect/answer/ice/bye/off, хост → клиент — offer/ice/error/bye.
+// relayed — что хаб пересылает: клиент → хост — connect/answer/ice/bye/off, хост → клиент — offer/ice/error/bye/offack.
 // Остальное (hello, challenge, error клиента) получатель принял бы за слова самого хаба.
 //
 // "off" (Э3, решение владельца 8 A) — «снять» пропуск одним сообщением: клиент → {"type":"off","to":ID,"data":
 // "<base64 тела pake.OffSign>"}; хаб тело не разбирает (ключей членов не знает), не хранит и пересылает только хосту,
-// объявившему ?off=1, без места сессии и WebRTC. Отправителю — {"type":"off","data":"ok"|"old"|"busy"} ("old" —
-// хост «снять» сообщением не знает; нет хоста — обычный error "not_found"). Лимиты — OffBurst/OffEvery на соединение
-// и toHost (байты к одному хосту, доля адреса) на цель.
+// объявившему ?off=1, без места сессии и WebRTC. Хост отвечает {"type":"offack","to":<from>,"data":"<base64
+// pake.OffAck>"} — хаб пропускает его только клиенту, чьё «снять» переслал этому хосту, один раз и в OffAckWait
+// (offWait/offAcked): канала «хост → любой клиент» нет. Сам хаб отвечает отправителю только отказом:
+// {"type":"off","data":"old"|"busy"} ("old" — хост «снять» сообщением не знает; нет хоста — error "not_found").
+// Лимиты — OffBurst/OffEvery на соединение, offIn на цель и на адрес отправителя (limit.go).
 func relayed(fromHost bool, typ string) bool {
 	switch typ {
 	case "ice", "bye":
 		return true
 	case "connect", "answer", "off":
 		return !fromHost
-	case "offer", "error":
+	case "offer", "error", "offack":
 		return fromHost
 	}
 	return false
