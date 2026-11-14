@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"anypc/hub"
+	"anypc/pake"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -78,6 +79,46 @@ func TestSpaceSeal(t *testing.T) {
 	}
 	if _, ok := sxStatus(h2c, rnd, "fpc", "fph"); ok {
 		t.Error("случайный sx в \"a\" открылся")
+	}
+}
+
+// TestSpaceSealReplayNonce — регрессия Б1 (приёмка Э4в): хаб подаёт перехваченный sx своими connect много раз (свежий —
+// sxOK, затем sxBusy; со сбитыми часами соль в кэш не попадает — sxSkew сколько угодно раз). Ответы на один sx не
+// делят nonce и гамму: шифртексты одного статуса различны, XOR двух ответов не выдаёт OK⊕busy. Каждый открывается
+// только своими отпечатками.
+func TestSpaceSealReplayNonce(t *testing.T) {
+	_, member, _ := ed25519.GenerateKey(nil)
+	hpub, host, _ := ed25519.GenerateKey(nil)
+	a := &Agent{ID: "123456789", Key: host, SpaceSync: &fakeSync{members: []ed25519.PublicKey{member.Public().(ed25519.PublicKey)}}}
+	for _, at := range []time.Time{time.Now(), time.Now().Add(-syncSkew - time.Minute)} {
+		sx, h2c, _ := sxMake(member, hpub, a.ID, at.Unix())
+		nonces, cts := map[string]bool{}, map[string]bool{}
+		var first []byte
+		var firstSt byte
+		for i := 0; i < 8; i++ {
+			_, seal := a.sxCheck(sx)
+			if seal == nil {
+				t.Fatal("sx не открылся")
+			}
+			fc, fh := "fpc"+string(rune('0'+i)), "fph"
+			ans := seal.answer(fc, fh)
+			if st, ok := sxStatus(h2c, ans, fc, fh); !ok || st != seal.status {
+				t.Fatalf("ответ %d не открылся: %d %v", i, st, ok)
+			}
+			if _, ok := sxStatus(h2c, ans, "fpc-mitm", fh); ok {
+				t.Fatalf("ответ %d открылся чужими отпечатками", i)
+			}
+			n, ct := string(ans[:12]), string(ans[12:])
+			if nonces[n] || cts[ct] {
+				t.Fatalf("повтор nonce или шифртекста на одном sx (ответ %d, статус %d)", i, seal.status)
+			}
+			nonces[n], cts[ct] = true, true
+			if i == 0 {
+				first, firstSt = ans, seal.status
+			} else if seal.status != firstSt && bytes.Equal(ans[:12], first[:12]) && ans[12]^first[12] == firstSt^seal.status {
+				t.Fatal("C0⊕C1 = статус0⊕статус1: гамма повторена")
+			}
+		}
 	}
 }
 
@@ -332,4 +373,50 @@ func TestSpaceSyncConnect(t *testing.T) {
 		t.Errorf("сверка при занятых местах входа: %v", err)
 	}
 	drop()
+}
+
+// TestSpaceWhoOnce — Э4в: "who" (ключ хоста до входа) хост отвечает один раз за сессию, подписью над отпечатками
+// этого соединения; второй "who" остаётся без ответа.
+func TestSpaceWhoOnce(t *testing.T) {
+	url, r, _, d := syncRig(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var mu sync.Mutex
+	var who []authMsg
+	var fc, fh string
+	err := hostDial(ctx, url, d.ID, connectReq{View: true}, func(pc *webrtc.PeerConnection, finish func(error)) {
+		pc.OnDataChannel(func(dc *webrtc.DataChannel) {
+			if dc.Label() != "auth" {
+				return
+			}
+			first := true
+			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+				var am authMsg
+				json.Unmarshal(msg.Data, &am)
+				mu.Lock()
+				defer mu.Unlock()
+				switch {
+				case am.T == "a" && first:
+					first = false
+					fc, fh = pake.Fingerprint(pc.LocalDescription().SDP), pake.Fingerprint(pc.RemoteDescription().SDP)
+					dc.SendText(`{"t":"who"}`)
+					dc.SendText(`{"t":"who"}`)
+					time.AfterFunc(1500*time.Millisecond, func() { finish(nil) })
+				case am.T == "who":
+					who = append(who, am)
+				}
+			})
+		})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(who) != 1 {
+		t.Fatalf("ответов на \"who\": %d, нужно 1", len(who))
+	}
+	if !bytes.Equal(who[0].Pub, r.a.Key.Public().(ed25519.PublicKey)) || pake.HostVerify(who[0].Pub, who[0].Sig, d.ID, fc, fh) != nil {
+		t.Error("\"who\": не ключ хоста или подпись не над отпечатками соединения")
+	}
 }
