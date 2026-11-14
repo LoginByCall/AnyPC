@@ -75,6 +75,12 @@ func hostCapture(enc string) func(ctx context.Context, c agent.Cap) (*exec.Cmd, 
 // cdpWindows — окна ПК в своём Chrome по CDP (cdp_unix.go): на Linux — да (UI-REDESIGN, решение 6, L3).
 const cdpWindows = true
 
+// mainLoop — на Linux главному потоку дела нет (на Маке он отдан AppKit, window_darwin.go).
+func mainLoop(f func()) { f() }
+
+// nativeWins — своих окон ПК на Linux нет: Chrome по CDP (pcWin).
+func nativeWins(string, func() string) pcOpener { return nil }
+
 // hostLocked — на Linux не проверяется: экран блокировки X11 — обычное окно, захват идёт; отказ портала Wayland
 // ловит общий признак «захват без кадров» (F7).
 var hostLocked func() bool

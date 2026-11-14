@@ -220,6 +220,23 @@ var cdpStartWait = 10 * time.Second // сколько ждать ответа Ch
 // pcWin — окна ПК (только Linux: main_unix.go); nil — нет.
 var pcWin *chromeWin
 
+// pcOpener — окна ПК: chromeWin (Linux) или свои NSWindow (Мак, window_darwin.go).
+type pcOpener interface {
+	open(ctx context.Context, id string, monitor int, seed map[string]string) error
+	screens(ctx context.Context) ([]screenInfo, error)
+}
+
+// pcNative — свои окна ПК, когда pcWin нет (Мак); nil — нет.
+var pcNative pcOpener
+
+// pcOpen — кто открывает окна ПК; nil — никто.
+func pcOpen() pcOpener {
+	if pcWin != nil {
+		return pcWin
+	}
+	return pcNative
+}
+
 // pcFallback — прежнее поведение (окно AnyPC в браузере), когда Chrome по pipe не открылся или pcWin нет (Мак).
 var pcFallback func()
 
@@ -493,10 +510,10 @@ func openPCWindow(id string, monitor int, seed map[string]string) (string, error
 	if !pcIDre.MatchString(id) || monitor < 0 {
 		return "", errors.New("нужны ID из 9 цифр и номер монитора")
 	}
-	if pcWin != nil {
+	if w := pcOpen(); w != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		err := pcWin.open(ctx, id, monitor, seed)
+		err := w.open(ctx, id, monitor, seed)
 		if err == nil || !errors.Is(err, errNoWindow) {
 			if err != nil {
 				log.Printf("окно ПК %s: %s", id, scrub(err.Error()))
@@ -513,10 +530,11 @@ func openPCWindow(id string, monitor int, seed map[string]string) (string, error
 }
 
 func pcScreens() ([]screenInfo, error) {
-	if pcWin == nil {
+	w := pcOpen()
+	if w == nil {
 		return nil, errors.New("окна ПК здесь не поддерживаются")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	return pcWin.screens(ctx)
+	return w.screens(ctx)
 }

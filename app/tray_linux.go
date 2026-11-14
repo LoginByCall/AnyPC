@@ -41,22 +41,6 @@ func runTray(ctx context.Context, id string, open, quit func()) {
 	}
 }
 
-// trayTitle — первая строка меню: имя этого ПК и его ID группами по 3 цифры, как в окне.
-func trayTitle(id string) string {
-	h, _ := os.Hostname()
-	var b strings.Builder
-	for i, r := range id {
-		if i > 0 && i%3 == 0 {
-			b.WriteByte(' ')
-		}
-		b.WriteRune(r)
-	}
-	if h == "" {
-		return b.String()
-	}
-	return h + " · " + b.String()
-}
-
 func trayMenu(title string, open, quit func()) *trayItem {
 	return &trayItem{children: []*trayItem{
 		{id: 1, label: title, act: open},
@@ -67,8 +51,6 @@ func trayMenu(title string, open, quit func()) *trayItem {
 		{id: trayQuit, label: "Выйти", act: quit},
 	}}
 }
-
-const trayQuit = 4 // id пункта «Выйти»: единственный, кто не открывает окно
 
 // trayOpenGap — окно открывается не чаще; лишние щелчки (или поток вызовов от любого клиента шины) — мимо.
 var trayOpenGap = time.Second
