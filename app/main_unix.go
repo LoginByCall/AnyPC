@@ -144,7 +144,7 @@ func hostMain() {
 		node, pub := cfg.node()
 		mu.Lock()
 		defer mu.Unlock()
-		return map[string]any{"id": cfg.id(), "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "otp": cfg.otpSet(), "users": cfg.users(), "keys": cfg.keyList(), "code": cfg.code(), "viewOnly": cfg.viewOnly(), "version": version, "update": update, "node": node, "nodePub": pub, "server": cfg.server(), "audio": audioInfo(a)}
+		return map[string]any{"id": cfg.id(), "fp": cfg.fingerprint(), "online": online, "idTaken": a.IDTaken(), "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "otp": cfg.otpSet(), "users": cfg.users(), "keys": cfg.keyList(), "code": cfg.code(), "viewOnly": cfg.viewOnly(), "version": version, "update": update, "node": node, "nodePub": pub, "server": cfg.server(), "audio": audioInfo(a)}
 	}
 	go watchUpdates(func(v string) { mu.Lock(); update = v; mu.Unlock() })
 
