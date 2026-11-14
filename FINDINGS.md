@@ -330,3 +330,29 @@
   - **хост v0.2.0 → клиент sec-fixes**: все TestBrowser* v0.2.0 зелёные. **Хост v0.1.27**: падают TestBrowserKeyLogin (только новый текст "nokey" против ожидаемого старого) и TestBrowserMyPC: старый тест ждёт «Мои ПК» списком ID (новое окно пишет [{id,name}], разбор обоих — mineNorm), а в afternokey/afteruntrust — что ПК после "nokey" и снятия «Доверять» уходит из «Моих ПК"; новое окно его намеренно оставляет (вход паролем). Протокольных расхождений нет: `space`, `sync`, `sx` в "a" старый клиент пропускает (JSON.parse), `sx` в connect — старый хост (encoding/json без DisallowUnknownFields).
   - Свои старые пары, уже покрытые имитацией: TestBrowserOldHost, TestSpaceOldHost, TestSpaceOldClient, TestOffMsgOldHost (в т.ч. "forbidden" старого хаба), TestSpaceSyncConnect (connect без sx), spsync_test/pass_test (ErrSpaceOld у хоста без sync/pass). Не проверено: ПК v0.2.0 с M v1 как поручитель вступления — у пользователей таких нет (вступающий получит errSpaceVersion после входа кодом).
 - **Что теряет вступающий ПК** (spaceEnter; то же — у каждого члена при смене входа пространства, spaceFollowLocked, а исключение = новый TOTP): пароль записи по умолчанию (→ пароль владельца: «Запомненный пароль» к этому ПК на других ПК перестаёт подходить), секрет TOTP (старая запись в приложении-аутентификаторе бесполезна), её У3 (Trusted: приоритет места и вход при блокировке перебора) и ключи входа без пароля (KeyLogin, REQ-S-24: клиент получит "nokey", забудет ключ и попросит «отозвать на хосте» — отзывать уже нечего). Не теряются: гостевые записи (пароль, TOTP, У3, ключи), «Спрашивать», «Известные», сохранённые пароли и ckeys этого ПК как клиента, окно, ключ и ID хоста. Создание пространства не теряет ничего (TestSpaceCreateKeeps). Выбор — ASK владельцу (PASSPORT).
+
+## Детекторы блокировки экрана на Windows и Маке (Э3, «Работаю тут») — 2026-11-14 (app/lock_windows.go, app/lock_darwin.{go,m})
+
+- **На Маке владельца экран при заставке и сне не запирается:** `sysadminctl -screenLock status` (без пароля и прав) →
+  `screenLock is off`; заставка через 1200 с (`defaults -currentHost read com.apple.screensaver idleTime`).
+  `[измерено, Мак 192.168.88.250, macOS 14.8.1, 2026-11-14, только чтение]`. Следствие: `com.apple.screenIsLocked`
+  там придёт только при явной блокировке (⌃⌘Q, меню Apple), пропуска 12 ч заставка не снимет; сон снимает
+  (NSWorkspaceWillSleepNotification). Настройку системы не трогали.
+- **«Требовать пароль сразу» надёжно не определить:** ключей `askForPassword`/`askForPasswordDelay` в
+  `com.apple.screensaver` на Маке владельца нет (с macOS 10.13 настройка ушла из defaults); `sysadminctl -screenLock
+  status` читается, но это текст без контракта, а настройка меняется на ходу. Поэтому `com.apple.screensaver.didstart`
+  не слушаем — только `com.apple.screenIsLocked` (loginwindow шлёт его, когда блокировка включилась, в т.ч. при
+  заставке с паролем сразу) `[ПРЕДПОЛОЖЕНИЕ про заставку — проверка владельцем, карточка ИЗМЕРЕНИЕ Ч5]`.
+- **Уведомление доходит без своего окна (режим «окно в браузере»)** `[измерено, тот же Мак, по ssh, 2026-11-14]`:
+  `ANYPC_LOCK_LIVE=1 go test ./app -run MacLockLive` — наблюдатель на главном потоке, run loop — `[NSApp run]`
+  (uiStart, приложение accessory, ни одного окна); `com.apple.screenIsLocked` из другого процесса (osascript JXA,
+  `postNotificationName…deliverImmediately`) дошло за 64 мс, чужое имя — нет. Нужен именно работающий run loop
+  главного потока — его даёт uiStart (значок или сам детектор) при любом ANYPC_MACWIN; без графического сеанса
+  uiStart = false → alive(false), «Работаю тут» отказывает. Временная проба (не в репозитории): процессу, ни разу
+  не бывшему активным, доходит и наблюдателю с Coalesce при отправке без deliverImmediately — приостановка AppKit
+  включается только после ухода из активных; поэтому в коде DeliverImmediately `[документация, не измерено]`.
+- **Windows: у AnyPC.exe нет режима службы** (`--install-service` есть только в cli_unix.go) — программа всегда в
+  сеансе пользователя, где и окно WebView2. Проверка сеанса 0 (ProcessIdToSessionId) в lock_windows.go — на будущее:
+  из службы NOTIFY_FOR_THIS_SESSION видит только сеанс 0, детектор честно alive(false). До этой части на Windows
+  `startLock` вообще не вызывался и выход не снимал пропуска мастера — теперь, как на unix, offAll при выходе.
+  Проверено только V0/V1 (разбор сообщений, сборка); живые события сеанса — V2 владельца.
