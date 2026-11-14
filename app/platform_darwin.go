@@ -134,6 +134,10 @@ func uninstallService() error {
 	return nil
 }
 
+func serviceRunning() bool { return strings.HasSuffix(serviceState(), "state = running") }
+
+func serviceStart() string { return "launchctl kickstart " + guiDomain() + "/" + launchLabel }
+
 func serviceState() string {
 	if _, err := os.Stat(launchPath()); err != nil {
 		return "нет"

@@ -197,6 +197,13 @@ func applyNode(cfg *config, node string, public bool) (string, error) {
 	return s, nil
 }
 
+// hostInfo — состояние для окна хоста (hostInfo на всех ОС; Windows добавляет ffmpeg). idTaken — хаб отказал id_taken:
+// окно пишет «ID уже в сети», а не «нет связи с сервером».
+func hostInfo(cfg *config, a *agent.Agent, online bool, session, update string) map[string]any {
+	node, pub := cfg.node()
+	return map[string]any{"id": cfg.id(), "fp": cfg.fingerprint(), "online": online, "idTaken": a.IDTaken(), "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "otp": cfg.otpSet(), "users": cfg.users(), "keys": cfg.keyList(), "code": cfg.code(), "viewOnly": cfg.viewOnly(), "version": version, "update": update, "node": node, "nodePub": pub, "server": cfg.server(), "audio": audioInfo(a)}
+}
+
 // audioInfo — предложение звука для окна хоста (PLAN.md): nil — ждать нечего.
 func audioInfo(a *agent.Agent) map[string]any {
 	if cid, sdp := a.AudioPending(); sdp != "" {
