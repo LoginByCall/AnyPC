@@ -101,10 +101,13 @@ func (c *config) spaceAddLocked(in ...*space) (changed, drop bool, err error) {
 	}
 	heads, err := spaceHeads(slices.Concat(cur, in, pend))
 	if errors.Is(err, errSpaceHeads) {
-		for _, m := range in {
-			b, merr := m.marshal()
-			if merr == nil && len(c.SpacePend) < spaceMaxPend && !slices.ContainsFunc(c.SpacePend, func(x []byte) bool { return bytes.Equal(x, b) }) {
-				c.SpacePend = append(c.SpacePend, b)
+		for _, m := range in { // только новое: M, равные своим верхушкам и непринятым или перекрытые ими, — мимо
+			known := func(h *space) bool { return spaceUnder(m, h) }
+			if slices.ContainsFunc(cur, known) || slices.ContainsFunc(pend, known) || len(c.SpacePend) >= spaceMaxPend {
+				continue
+			}
+			if b, merr := m.marshal(); merr == nil {
+				c.SpacePend, pend = append(c.SpacePend, b), append(pend, m)
 			}
 		}
 		if c.SpaceOver == "" {

@@ -1203,3 +1203,69 @@ func TestSpaceKeyGone(t *testing.T) {
 		t.Error("keyGone: исключённый, член, посторонний, вне пространства")
 	}
 }
+
+// TestSpacePendJunk — приёмка круга 4 (zz_acc8): при переполнении в space_pend идёт только новое — повторы своих
+// верхушек (пустые сверки) и уже непринятого не копятся; следующее исключение запоминается и действует.
+func TestSpacePendJunk(t *testing.T) {
+	sec := totp.NewSecret()
+	ca, cb := spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec)
+	ph, keys := syncSpace(t, 2, ca, cb)
+	base := spaceOf(ca)
+	var adds [][]byte
+	for range spaceMaxHeads {
+		pub, _, _ := ed25519.GenerateKey(nil)
+		m, err := spaceAdd(base, ph, "9"+hub.RandDigits(8), pub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := m.marshal()
+		adds = append(adds, b)
+	}
+	ca.SyncApply(adds[0], adds[1:])
+	pend := func() int { ca.mu.Lock(); defer ca.mu.Unlock(); ca.reload(); return len(ca.SpacePend) }
+	x1, _ := spaceRemove(base, ph, keys[0])
+	x1b, _ := x1.marshal()
+	if err := ca.spaceSync(x1b, nil); !errors.Is(err, errSpaceHeads) || pend() != 1 {
+		t.Fatalf("17-я: %v, непринятых %d", err, pend())
+	}
+	for range 3 { // пустые сверки: те же 16 и то же исключение
+		ca.spaceSync(adds[0], append(adds[1:], x1b))
+	}
+	if pend() != 1 {
+		t.Fatalf("после пустых сверок непринятых %d, ждали 1", pend())
+	}
+	x2, _ := spaceRemove(base, ph, keys[1])
+	x2b, _ := x2.marshal()
+	ca.spaceSync(x2b, nil)
+	if v := spaceOf(ca); pend() != 2 || !v.gone(keys[1]) || !ca.keyGone(keys[1]) {
+		t.Errorf("второе исключение: непринятых %d, исключён %v", pend(), v.gone(keys[1]))
+	}
+}
+
+// TestSpacePendLimit — space_pend не больше spaceMaxPend: сверх предела новое не запоминается (ПК и так закрыт).
+func TestSpacePendLimit(t *testing.T) {
+	sec := totp.NewSecret()
+	ca, cb := spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec)
+	ph, _ := syncSpace(t, 0, ca, cb)
+	base := spaceOf(ca)
+	var adds [][]byte
+	for range spaceMaxHeads + spaceMaxPend + 1 {
+		pub, _, _ := ed25519.GenerateKey(nil)
+		m, err := spaceAdd(base, ph, "9"+hub.RandDigits(8), pub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := m.marshal()
+		adds = append(adds, b)
+	}
+	ca.SyncApply(adds[0], adds[1:spaceMaxHeads])
+	if err := ca.spaceSync(adds[spaceMaxHeads], adds[spaceMaxHeads+1:]); !errors.Is(err, errSpaceHeads) {
+		t.Fatalf("сверх предела: %v", err)
+	}
+	ca.mu.Lock()
+	n := len(ca.SpacePend)
+	ca.mu.Unlock()
+	if n != spaceMaxPend {
+		t.Errorf("непринятых %d, предел %d", n, spaceMaxPend)
+	}
+}
