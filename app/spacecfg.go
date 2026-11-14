@@ -33,6 +33,7 @@ var (
 	errSpaceDraft  = errors.New("пространство: создание не начато или отменено — начните заново")
 	errSpaceNo     = errors.New("пространство: вступление отменено")
 	errSpaceSlow   = errors.New("пространство: состав не подтверждён вовремя — вступите заново")
+	errSpaceHostID = errors.New("пространство: неверный ID ПК")
 )
 
 // spaceLocked — объединение сохранённых верхушек (под c.mu, spaceView); nil — пространства нет или записи
@@ -391,7 +392,7 @@ func (c *config) spaceEnterAsk(ctx context.Context, hostID, password, code, phra
 	case in:
 		return ch, errSpaceIn // переход в другое пространство и слияние — не Э2
 	case !hub.IsHostID(hostID) || hostID == id:
-		return ch, errors.New("пространство: неверный ID ПК")
+		return ch, errSpaceHostID
 	}
 	if err := spacePhraseOK(phrase); err != nil { // опечатка во фразе — до сети: код не тратится
 		return ch, err

@@ -421,17 +421,18 @@ func shimmed(server, token string) ([]byte, error) {
 	}
 	ws, _ := json.Marshal(server)
 	t, _ := json.Marshal(token)
+	names, _ := json.Marshal(spaceNames)
 	js := fmt.Sprintf(`
 window.ANYPC = {ws: %s, clipPoll: %t};
 (() => {
   const T = %s;
   const api = (n, ...a) => fetch('/api/' + n, {method: 'POST', headers: {'X-Token': T, 'Content-Type': 'application/json'}, body: JSON.stringify(a)})
     .then(async r => { const j = await r.json(); if (!r.ok) throw j.error; return j.result; });
-  for (const n of ['hostInfo', 'setPassword', 'setConfirm', 'setNode', 'quit', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'hostVerify', 'knownGet', 'knownSet', 'savedGet', 'savedSet', 'otpNew', 'otpEnable', 'otpOff', 'newCode', 'userSet', 'userDel', 'keyDel', 'clientSign', 'ckeyGet', 'ckeySet', 'setViewOnly', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort', 'audioAnswer', 'audioMic', 'pcWindow', 'pcScreens', 'uiGet', 'uiSet']) window[n] = (...a) => api(n, ...a);
+  for (const n of ['hostInfo', 'setPassword', 'setConfirm', 'setNode', 'quit', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'hostVerify', 'knownGet', 'knownSet', 'savedGet', 'savedSet', 'otpNew', 'otpEnable', 'otpOff', 'newCode', 'userSet', 'userDel', 'keyDel', 'clientSign', 'ckeyGet', 'ckeySet', 'setViewOnly', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort', 'audioAnswer', 'audioMic', 'pcWindow', 'pcScreens', 'uiGet', 'uiSet'].concat(%s)) window[n] = (...a) => api(n, ...a);
   window.fullscreen = on => on ? document.documentElement.requestFullscreen(window.anypcScreen ? {screen: window.anypcScreen} : undefined).then(() => navigator.keyboard?.lock()).catch(() => {})
                                : document.fullscreenElement && document.exitFullscreen();
 })();
-`, ws, agent.ClipCheap(), t)
+`, ws, agent.ClipCheap(), t, names)
 	// CSP страницы пускает встроенные скрипты только по хэшу: добавить хэш этого (токен в нём свой на каждый запуск)
 	sum := sha256.Sum256([]byte(js))
 	page := strings.Replace(string(b), "script-src 'self'", "script-src 'self' 'sha256-"+base64.StdEncoding.EncodeToString(sum[:])+"'", 1)
@@ -571,8 +572,11 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 	case "pakeRespond":
 		res, err = pake.ClientRespondB64(str(0), str(1), str(2), str(3), str(4), str(5))
 	default:
-		http.NotFound(w, r)
-		return
+		if !slices.Contains(spaceNames, name) {
+			http.NotFound(w, r)
+			return
+		}
+		res, err = spaceCall(cfg, name, args) // пространство (spaceapi.go): ошибки — space:<код>
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
