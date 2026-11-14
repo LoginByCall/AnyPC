@@ -64,6 +64,9 @@ const extra = async () => ` + "`" + `
   st.space.members.push({ id: '444555666', fp: 'OF', pub: 'b2Y=', self: false, passUntil: Date.now() + 3 * 3600e3 },
     { id: '777888999', fp: 'HO', pub: 'aG8=', self: false, passUntil: 0 });
   localStorage.setItem('mine', JSON.stringify([{ id: '444555666', name: 'Office' }]));
+  st.space.members[0].passUntil = Date.now() + 3600e3; // свой ПК в M — вход по пропуску к себе не пробуется
+  window.savedGet = async id => id === '777888999' ? 'frame-pass' : ''; window.savedSet = async () => {};
+  window.spaceSign = async () => { calls.push('sign'); throw 'space:nopass'; }; window.hostVerify = async () => 'OF';
   window.here = pw => { window.op = pw === 'owner-pass' ? { kind: 'workHere', state: 'done', result: [{ id: '444555666', state: 'ok' }, { id: '777888999', state: 'refused', err: 'auth' }] }
     : { kind: 'workHere', state: 'err', err: 'password', result: null }; st.space.op = { kind: op.kind, state: op.state }; };` + "`" + `;` + cdpHead + `
   const tabs = () => ev("[...document.querySelectorAll('#hometabs .tab')].map(b => b.textContent).join(';')");
@@ -84,18 +87,52 @@ const extra = async () => ` + "`" + `
   await tile('444555666', 'button'); await sleep(300);
   console.log('open=' + await ev("[...document.querySelectorAll('#frames iframe')].map(f => new URL(f.src).searchParams.get('embed')).join(',') + '|' + " + vis('home')));
   await ev("document.getElementById('tabhome').click(); 1"); await sleep(200);
-  await ev("document.querySelector('#sptiles .sptile[data-id=\"777888999\"] input').value = '135790'; 1"); await tile('777888999', 'button');
-  const f1 = "document.querySelectorAll('#frames iframe')[1].contentWindow";
-  for (let k = 0; k < 50 && await ev("typeof " + f1 + ".embedCode") !== 'function'; k++) await sleep(100);
-  await sleep(500);
+  const ho = "document.querySelector('#sptiles .sptile[data-id=\"777888999\"] input')";
+  const nfr = () => ev("document.querySelectorAll('#frames iframe').length");
+  await ev(ho + ".value = '123'; 1"); await tile('777888999', 'button'); // не 6 цифр — вкладка не открывается
+  console.log('short=' + await nfr() + '|' + await ev("document.activeElement === " + ho));
+  const f1 = "[...document.querySelectorAll('#frames iframe')].find(f => f.src.includes('embed=777888999')).contentWindow";
+  const frame = async () => { for (let k = 0; k < 50 && await ev("typeof " + f1 + "?.embedCode") !== 'function'; k++) await sleep(100); await sleep(500); };
+  const homeTab = async () => { await ev("document.getElementById('tabhome').click(); 1"); await sleep(200); };
+  const closeHo = async () => { await ev("[...document.querySelectorAll('#tabs .tab')].find(b => b.querySelector('.nm')?.dataset.id === '777888999').querySelector('.tabx').click(); 1"); await sleep(300); };
+  await ev(ho + ".value = '135790'; 1"); await tile('777888999', 'button'); await frame(); // фрейм с запомненным паролем ждёт хост
   await ev("myPcState('777888999', 'code'); 1"); await sleep(300);
   const got = await ev(f1 + ".document.getElementById('otp').value") + '|' + await ev("myPcCodeWanted()");
   await ev("myPcState('777888999', 'code'); 1"); await sleep(100);
   console.log('code=' + got + '|' + await ev("myPcCodeWanted()"));
-  await ev("document.getElementById('tabhome').click(); 1"); await sleep(200);
+  // код устарел: вход попросил пароль — код плитки стёрт; вкладку закрыли до запроса — тоже
+  await closeHo(); await homeTab();
+  await ev(ho + ".value = '246802'; 1"); await tile('777888999', 'button'); await frame();
+  await ev("myPcState('777888999', 'pw'); myPcState('777888999', 'code'); 1"); await sleep(300);
+  const st1 = await ev(f1 + ".document.getElementById('otp').value") + '|' + await ev("myPcCodeWanted()");
+  await closeHo(); await homeTab();
+  await ev(ho + ".value = '112233'; 1"); await tile('777888999', 'button'); await closeHo();
+  await ev("myPcAdd('777888999'); 1"); await frame();
+  await ev("myPcState('777888999', 'code'); 1"); await sleep(300);
+  console.log('stale=' + st1 + '|' + await ev(f1 + ".document.getElementById('otp').value") + '|' + await ev("myPcCodeWanted()"));
+  await closeHo();
+  await ev("document.getElementById('tabhome')?.click(); 1"); await sleep(200);
   const offv = await ev(vis('shoff'));
   await ev("document.getElementById('shoff').click(); 1"); await sleep(1300);
   console.log('off=' + offv + '|' + await ev("calls.join(',')") + '|' + await ev(txt('shres')) + '|' + await ev(vis('shoff')) + '|' + await tabs());
+  // разметка в имени из mine и в итоге — только текстом
+  await ev("localStorage.setItem('mine', JSON.stringify([{ id: '777888999', name: '<i id=xss1>X</i>' }])); window.op = { kind: 'workHere', state: 'done', result: [{ id: '777888999', state: 'refused', err: '<i id=xss2>' }] }; st.space.op = { kind: 'workHere', state: 'done' }; 1");
+  await sleep(1300);
+  console.log('xss=' + await ev("[!!document.getElementById('xss1'), !!document.getElementById('xss2'), document.querySelector('#sptiles .sptile[data-id=\"777888999\"] b').textContent, " + txt('shres') + "].join('|')"));
+  // вход по пропуску (passOf): цель — не свой ПК, пропуск жив, запись без имени, не после отказа
+  await ev("st.space.members[0].passUntil = st.space.members[1].passUntil = Date.now() + 3600e3; 1");
+  const pof = () => ev("(async () => [!!await passOf('444555666'), !!await passOf('777888999'), !!await passOf('987654321')].join(','))()");
+  const p1 = await pof();
+  await ev("document.getElementById('user').value = 'anna'; 1"); const p2 = await pof(); await ev("document.getElementById('user').value = ''; 1");
+  console.log('passof=' + p1 + '|' + p2);
+  // ответы хоста при входе по пропуску: «a» без pass — подписи не просить; «otp» — код не показывать; отказ запоминается
+  await ev("window.fch = { sent: [], send(x) { this.sent.push(x); } }; host = '444555666'; pc = { sp: { fp: 'OF' }, close() {} }; onAuth(fch, { data: JSON.stringify({ t: 'a', salt: '', msg: '' }) }, pc).then(() => 1)");
+  console.log('nopassa=' + await ev("[fch.sent.length, calls.includes('sign'), " + txt('msg') + "].join('|')") + '|' + await pof());
+  await ev("host = '777888999'; pc = { bypass: 'HO', close() {} }; onAuth(fch, { data: JSON.stringify({ t: 'otp' }) }, pc).then(() => 1)");
+  console.log('otpbypass=' + await ev("[fch.sent.length, " + vis('otpbox') + ", " + txt('msg') + "].join('|')") + '|' + await pof());
+  // «ok» без pass при входе по пропуску (ключ тот, что в M) — не вход
+  await ev("host = '444555666'; pc = { bypass: 'OF', localDescription: { sdp: '' }, remoteDescription: { sdp: '' }, close() {} }; onAuth(fch, { data: JSON.stringify({ t: 'ok', pub: 'x', sig: 'y' }) }, pc).then(() => 1)");
+  console.log('okpass=' + await ev("[authed, " + txt('msg') + "].join('|')"));
   process.exit(0);
 })();`
 
@@ -115,9 +152,14 @@ func browserNeed(t *testing.T, tools ...string) string {
 // TestBrowserMain — главный экран (Ч4) с подменёнными привязками.
 func TestBrowserMain(t *testing.T) {
 	chrome := browserNeed(t, "node")
-	srv := httptest.NewServer(http.FileServer(http.FS(ui.FS)))
+	hang := make(chan struct{}) // хаб, который не отвечает: вкладки ждут хост, не падая в «разорвано» и «нужен пароль»
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", func(http.ResponseWriter, *http.Request) { <-hang })
+	mux.Handle("/", http.FileServer(http.FS(ui.FS)))
+	srv := httptest.NewServer(mux)
 	defer srv.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer close(hang)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	out := string(runCDP(t, ctx, chrome, cdpMain, srv.URL+"/"))
 	for _, want := range []string{
@@ -129,7 +171,14 @@ func TestBrowserMain(t *testing.T) {
 		"here=Office · 444 555 666 — open777 888 999 — refused: Wrong password or code|\n", // итог по ПК; пароль и код из полей стёрты
 		"other=Office · 444 555 666 — open777 888 999 — refused: Wrong password or code\n",
 		"open=444555666|false\n",
+		"short=1|true\n",           // код не из 6 цифр: вкладки нет, фокус в поле
 		"code=135790||777888999\n", // код из плитки — во фрейм на первый запрос; второй запрос — в общую строку кода
+		"stale=|777888999||777888999\n",
+		"xss=false|false|<i id=xss1>X</i>|<i id=xss1>X</i> · 777 888 999 — refused: Error: space:<i id=xss2>\n",
+		"passof=true,false,false|false,false,false\n",
+		"nopassa=0|false|Error: no pass on that PC — sign in with password|false,false,false\n",
+		"otpbypass=0|false|Error: no pass on that PC — sign in with password|false,false,false\n",
+		"okpass=false|Error: the remote PC could not be verified — connection may be intercepted\n",
 		"off=true|here:wrong:123456,here:owner-pass:654321,off|Passes are taken off.|false|This PC;Officecode needed;777 888 999code needed;+\n",
 	} {
 		if !strings.Contains(out, want) {
@@ -149,7 +198,8 @@ const extra = async () => {
   return "st.space.members.push({ id: '123456789', fp: '" + i.fp + "', pub: '" + i.pub + "', self: false, passUntil: Date.now() + 3600e3 });" +
     "window.hostVerify = async (pub, sig, id, l, r) => { const x = await fetch('/hv', { method: 'POST', body: JSON.stringify({ pub, sig, id, l, r }) }); if (!x.ok) throw 'bad'; return x.text(); };" +
     "window.spaceSign = async (id, l, r) => { calls.push('sign:' + id); if (window.replay) return window.lastSig; const x = await fetch('/sign', { method: 'POST', body: JSON.stringify({ id, l, r }) }); if (!x.ok) throw 'space:nopass'; return window.lastSig = await x.json(); };" +
-    "window.onOff = () => fetch('/off', { method: 'POST' });";
+    "window.onOff = () => fetch('/off', { method: 'POST' });" +
+    "window.savedGet = async id => JSON.parse(localStorage.getItem('sv') || '{}')[id] || ''; window.savedSet = async (id, pw) => { const k = JSON.parse(localStorage.getItem('sv') || '{}'); if (pw) k[id] = pw; else delete k[id]; localStorage.setItem('sv', JSON.stringify(k)); };";
 };` + cdpHead + `
   const st0 = async () => JSON.parse(await ev("JSON.stringify(myPcStates())"))[0];
   const waitSt = async (...want) => { for (let k = 0; k < 100 && !want.includes(await st0()); k++) await sleep(150); return st0(); };
@@ -159,6 +209,12 @@ const extra = async () => {
   await open();
   console.log('opened=' + await waitSt('ok') + '|' + await ev("document.querySelector('#frames iframe').contentWindow.sessState()"));
   await close();
+  // с главной по ID с набранным (неверным) паролем и «Запомнить»: вход по пропуску пароль не проверял — не запоминать
+  await ev("document.getElementById('id').value = '123456789'; document.getElementById('pw').value = 'WRONG-password'; document.getElementById('remember').checked = true; document.getElementById('go').click(); 1");
+  for (let k = 0; k < 100 && await ev("sessState()") !== 'connected'; k++) await sleep(150);
+  await sleep(500);
+  console.log('mainpw=' + await ev("sessState()") + '|' + await ev("savedGet('123456789')") + '|' + await ev("again?.pw"));
+  await ev("end(''); 1"); await sleep(1500);
   const mem = "st.space.members.find(m => m.id === '123456789')";
   await ev("window.fp0 = " + mem + ".fp; " + mem + ".fp = 'WRONG'; 1"); await open(); // ключ хоста не тот, что в M
   console.log('wrongkey=' + await waitSt('broken') + '|' + await msg());
@@ -241,7 +297,8 @@ func TestBrowserPassOpen(t *testing.T) {
 		"reopen=ok\n",
 		"afteroff=broken\n",
 		"offopen=pw|Error: no pass on that PC — sign in with password\n",
-		"calls=sign:123456789,sign:123456789,sign:123456789,sign:123456789,off,sign:123456789\n",
+		"mainpw=connected||\n",
+		"calls=sign:123456789,sign:123456789,sign:123456789,sign:123456789,sign:123456789,off,sign:123456789\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("нет %q", want)

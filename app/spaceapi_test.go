@@ -7,6 +7,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -502,7 +503,8 @@ func TestSpaceSign(t *testing.T) {
 		{"999999999", local, remote, "space:nomember"}, // не член M
 		{c.id(), local, remote, "space:nomember"},      // себе
 		{"200000002", local, remote, "space:nopass"},   // член без пропуска
-		{"200000001", "v=0", remote, "space:sdp"},      // нет отпечатка
+		{"200000001", "v=0", remote, "space:sdp"},      // нет отпечатка окна
+		{"200000001", local, "v=0", "space:sdp"},       // нет отпечатка цели
 	} {
 		if code, res, e := call("spaceSign", x.id, x.l, x.r); e != x.err || res != nil || code == 200 {
 			t.Errorf("spaceSign(%s): %d %v %q, ждали %s", x.id, code, res, e, x.err)
@@ -531,6 +533,33 @@ func TestSpaceSign(t *testing.T) {
 		if pake.ClientVerify(pub, sig, x.id, fp(x.l), fp(x.r)) {
 			t.Errorf("подпись подошла к другой сессии или цели: %+v", x)
 		}
+	}
+	// пропуск выдан другому ключу под тем же ID (не ключу цели из M) — не годится
+	other, _, _ := ed25519.GenerateKey(nil)
+	passes.mu.Lock()
+	passes.issued["200000002"] = passIssued{other, time.Now(), nil}
+	passes.mu.Unlock()
+	if _, _, e := call("spaceSign", "200000002", local, remote); e != "space:nopass" {
+		t.Errorf("пропуск чужого ключа: %q", e)
+	}
+	// этот ПК не член M (состав чужой) и испорченные записи пространства
+	n := spaceCfg(t, spacePass, totp.NewSecret())
+	c.mu.Lock()
+	m := c.spaceLocked()
+	c.mu.Unlock()
+	setSpace(t, n, m)
+	if _, _, e := apiHandler(n)("spaceSign", "200000001", local, remote); e != "space:notin" {
+		t.Errorf("не член M: %q", e)
+	}
+	n.mu.Lock()
+	n.Space = []byte("испорчено")
+	err := n.save()
+	n.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, e := apiHandler(n)("spaceSign", "200000001", local, remote); e != "space:damaged" {
+		t.Errorf("испорчено: %q", e)
 	}
 	h := handler(apiAddr, apiTok, nil, c, &agent.Agent{}, nil, func() map[string]any { return nil }, newFiles(t.TempDir()), nil)
 	req := httptest.NewRequest("POST", "/api/spaceSign", strings.NewReader(`["200000001",`+strconv.Quote(local)+`,`+strconv.Quote(remote)+`]`))

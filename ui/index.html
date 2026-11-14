@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="ru">
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-2In46PB87UNxcoVhzg0Knf6zFYKN7ShCZOPTQlyELk4=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-1J33j+RxhGPuANAani2eATWp3uhe2Z2S1bdmzpwnnU4=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AnyPC</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26'><style>.a{stroke:%2317181c}.b{fill:%23d2452d}@media(prefers-color-scheme:dark){.a{stroke:%23eceae4}.b{fill:%23ef6a52}}</style><rect class='a' x='1.5' y='3' width='15' height='11' rx='2' fill='none' stroke-width='2.6'/><rect class='b' x='10' y='12' width='15' height='11' rx='2'/></svg>">
@@ -717,7 +717,7 @@ $('spfgo').onclick = () => {
 let mShown = '', shShown = 'null';
 const tileCode = {}; // ID → код из плитки до запроса кода фреймом
 const passLive = m => m.passUntil > Date.now();
-const mOpen = (id, code) => { if (code) tileCode[id] = code; window.myPcAdd?.(id); };
+const mOpen = (id, code) => { if (code) tileCode[id] = code; else delete tileCode[id]; window.myPcAdd?.(id); };
 function mRender(s) {
   spVis('spmain', SP && !EMBED && !!s); if (!SP || EMBED || !s) return;
   const pcs = (s.members || []).filter(m => !m.self), live = pcs.some(passLive);
@@ -737,7 +737,8 @@ function mRender(s) {
     if (passLive(m)) r.append(spBtn('m_open', () => mOpen(m.id)));
     else {
       const i = spEl('input'); Object.assign(i, { inputMode: 'numeric', maxLength: 6, autocomplete: 'one-time-code', placeholder: t('m_code_p') });
-      const b = spBtn('m_in', () => mOpen(m.id, i.value.replace(/\D/g, ''))); i.onkeydown = e => e.key === 'Enter' && b.click(); r.append(i, b);
+      const b = spBtn('m_in', () => { const c = i.value.replace(/\D/g, ''); if (c.length !== 6) return i.focus(); mOpen(m.id, c); }); // код — 6 цифр
+      i.onkeydown = e => e.key === 'Enter' && b.click(); r.append(i, b);
     }
     d.append(h, spEl('div', grp(m.id), 'mut mono'), r); return d;
   }));
@@ -1222,7 +1223,8 @@ async function onAuth(ch, e, mine) {
       myPcs.add(host); // «Мои ПК»: вошли с «Доверять» — этот ПК мой
     }
     needPw(false); starShow();
-    again = { host: target, pw: $('pw').value || again?.pw, user: pc.user, n: 0 };
+    // Ч4: вход по пропуску пароль не проверял — не запоминать его ни для повтора, ни в «Запомнить»
+    again = { host: target, pw: mine.bypass ? '' : $('pw').value || again?.pw, user: pc.user, n: 0 };
     if ($('remember').checked && again.pw) { saved.set(host, again.pw).catch(() => {}); savedUser.set(host, pc.user); }
     show(true); v.focus(); $('pw').value = ''; pwAuto(false);
     emit('ok'); // фрейм «Мои ПК»: соединение установлено — убрать метку «нужен код»/«разорвано»
@@ -1856,7 +1858,7 @@ if (!EMBED) {
     if (i < 0 || i >= pcs.length) return;
     try { pcs[i].frame.contentWindow.embedBye(); } catch {} // отпустить сессию: хост получит bye и снимет плашку сразу, не по тайм-ауту ICE
     try { pcs[i].frame.remove(); } catch {}
-    codeQ = codeQ.filter(x => x !== pcs[i].id); pcs.splice(i, 1);
+    codeQ = codeQ.filter(x => x !== pcs[i].id); delete tileCode[pcs[i].id]; pcs.splice(i, 1);
     if (i < active) active--;                 // закрыли левее активной — показ не должен съехать на чужой ПК
     else if (active >= pcs.length) active = pcs.length - 1;
     $('mccode').classList.toggle('hidden', !codeQ.length);
@@ -1902,7 +1904,7 @@ if (!EMBED) {
     p.state = s; codeQ = codeQ.filter(x => x !== id);
     if (s === 'code' && tileCode[id]) { const c = tileCode[id]; delete tileCode[id]; setTimeout(() => { try { p.frame.contentWindow.embedCode(c); } catch {} }); } // код из плитки (Ч4)
     else if (s === 'code') codeQ.push(id);
-    if (s === 'ok') delete tileCode[id];
+    if (s === 'ok' || s === 'pw' || s === 'broken') delete tileCode[id]; // код из плитки — только на запрос этого входа
     $('mccode').classList.toggle('hidden', !codeQ.length);
     $('mcfor').textContent = codeQ.length ? myPcs.label(codeQ[0]) : ''; // человеку видно, для какого ПК код
     // фокус в поле кода — только когда код просит сама активная вкладка: иначе набираемое (пароль во фрейме или на
