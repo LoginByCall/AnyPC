@@ -94,6 +94,11 @@ func (c *config) spaceCreate(password string) (string, error) {
 // spaceGet — agent.Agent.SpaceGet (на ПК P): запись M для сессии, вошедшей записью по умолчанию с солью salt. Только
 // если запись по умолчанию — запись владельца из M (те же соль, хэш и секрет TOTP) и режим не «Спрашивать».
 func (c *config) spaceGet(salt []byte) []byte {
+	if s := c.syn; s != nil { // Э4: до выдачи M новому ПК — сверка с остальными (иначе он вступит в старую ветвь)
+		ctx, cancel := context.WithTimeout(s.bgCtx(), spaceGetSync)
+		s.spread(ctx, false)
+		cancel()
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
@@ -111,7 +116,7 @@ func (c *config) spaceMember(salt, pub []byte) bool {
 	defer c.mu.Unlock()
 	c.reload()
 	m := c.spaceOwnerLocked(salt)
-	if m == nil || len(c.SpaceFork) > 0 || c.SpaceWait != "" {
+	if m == nil || len(c.SpaceFork) > 0 || c.SpaceWait != "" || c.SpaceBehind > 0 {
 		return false
 	}
 	i := slices.IndexFunc(m.Members, func(x spaceMember) bool { return bytes.Equal(x.Pub, pub) })
@@ -141,6 +146,18 @@ func (c *config) spaceOwnerLocked(salt []byte) *space {
 // под тем же c.mu, что и запись.
 // ID нового ПК (С4) проверяет рассылка после приёма: ПК под этим ID должен ответить ключом pub (spaceSyncer.one).
 func (c *config) spaceJoin(salt, b []byte, pub ed25519.PublicKey) error {
+	if err := c.spaceJoinSave(salt, b, pub); err != nil {
+		return err
+	}
+	if s := c.syn; s != nil { // остальным — до ответа новому ПК (его сверка с ними сразу пройдёт); ему — проверка ID
+		ctx, cancel := context.WithTimeout(s.bgCtx(), spaceGetSync)
+		s.spread(ctx, true)
+		cancel()
+	}
+	return nil
+}
+
+func (c *config) spaceJoinSave(salt, b []byte, pub ed25519.PublicKey) error {
 	in, err := spaceParse(b)
 	if err != nil {
 		return err
@@ -169,13 +186,7 @@ func (c *config) spaceJoin(salt, b []byte, pub ed25519.PublicKey) error {
 		return errors.New("пространство: состав — не «текущий и новый ПК»")
 	}
 	c.Space = bytes.Clone(b)
-	if err := c.save(); err != nil {
-		return err
-	}
-	if s := c.syn; s != nil {
-		s.bg.Go(func() { s.spread(s.bgCtx(), true) }) // остальным — новый состав; новому ПК — проверка его ID
-	}
-	return nil
+	return c.save()
 }
 
 // spaceOwnerCheck — Н1 приёмки Э1: первому составу из сети верят, только если ключ владельца из введённой фразы и
@@ -200,6 +211,9 @@ func spaceLoginCheck(m *space, password string) error {
 	return nil
 }
 
+// spaceGetSync — сколько spaceGet сверяется с остальными (вступающий ждёт весь обмен spaceWait = 60 с).
+var spaceGetSync = 20 * time.Second
+
 // spaceDial — вход на ПК пространства (agent.SpaceJoin); переменная — для теста.
 var spaceDial = agent.SpaceJoin
 
@@ -212,12 +226,11 @@ type spaceChanges struct {
 	Ask      bool // остался режим «Спрашивать»: вход паролем и кодом — после его выключения
 	Already  bool // этот ПК уже был в составе P (прошлое вступление P сохранил, а ответ не дошёл)
 	Fresh    bool // Э4: состав сверен с другим членом (или других нет) — пропуска выдаются
-	Merged   bool // Э4: состав P оказался старым — слит с текущим этой же фразой
 }
 
 func (s spaceChanges) String() string {
-	return fmt.Sprintf("пароль заменён: %v, код заменён: %v, сброшено ключей: %d+%d, «Спрашивать» остался: %v, уже в составе: %v, сверен: %v, слит: %v",
-		s.Password, s.TOTP, s.Trusted, s.KeyLogin, s.Ask, s.Already, s.Fresh, s.Merged)
+	return fmt.Sprintf("пароль заменён: %v, код заменён: %v, сброшено ключей: %d+%d, «Спрашивать» остался: %v, уже в составе: %v, сверен: %v",
+		s.Password, s.TOTP, s.Trusted, s.KeyLogin, s.Ask, s.Already, s.Fresh)
 }
 
 // spaceEnter — вступить этим ПК в пространство через его ПК hostID (Э2, п. 3–4; решение 8 B): владелец ввёл здесь
@@ -302,7 +315,7 @@ func (c *config) spaceEnter(ctx context.Context, hostID, password, code, phrase 
 		return ch, err
 	}
 	c.mu.Unlock()
-	ch.Fresh, ch.Merged = c.spaceFresh(ctx, phrase)
+	ch.Fresh = c.spaceFresh(ctx)
 	c.mu.Lock()
 	log.Printf("пространство: этот ПК вступил через %s (%s)", hostID, ch)
 	return ch, nil

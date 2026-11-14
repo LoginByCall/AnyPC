@@ -134,6 +134,11 @@ func (p *passMaster) workHere(ctx context.Context, password, code string) ([]pas
 		return nil, errNoLockDetector
 	}
 	c := p.cfg
+	if s := c.syn; s != nil { // Э4: до открытия целей — свежий состав (исключённые, новый код)
+		sctx, cancel := context.WithTimeout(ctx, spaceGetSync)
+		s.spread(sctx, false)
+		cancel()
+	}
 	c.mu.Lock()
 	c.reload()
 	m := c.spaceLocked() // разобранный состав не меняется: правка даёт новый

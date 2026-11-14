@@ -90,6 +90,8 @@ type settings struct {
 	SpaceFork  []byte   `json:"space_fork,omitempty"`
 	SpaceBadID []string `json:"space_bad_id,omitempty"`
 	SpaceWait  string   `json:"space_wait,omitempty"`
+	// SpaceBehind — эпоха подписанного состава, до которого этот ПК не дошёл (нет записей цепочки): пропусков нет.
+	SpaceBehind uint64 `json:"space_behind,omitempty"`
 	// Одноразовый код (REQ-S-23): в режиме «Спрашивать» — пароль записи по умолчанию; меняется после каждой сессии,
 	// блокировки и по ↻. В файле (0600, как запомненные пароли): окно, ключи CLI и запущенная программа видят один код.
 	Code     string `json:"code,omitempty"`

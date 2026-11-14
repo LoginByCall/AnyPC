@@ -301,8 +301,8 @@ func TestSpaceLocalLogin(t *testing.T) {
 	}
 }
 
-// TestSpaceJoinStale — N вступает через отставший P (у A уже смена пароля): после сверки N сливает ветви своей фразой,
-// у всех трёх — один текущий состав, раскола нет, пропуска на N выдаются (сверен с A).
+// TestSpaceJoinStale — N вступает через отставший P (у A уже новый код): P сверяется с A до выдачи M — N вступает в
+// текущий состав, у всех трёх он один, раскола нет, пропуска на N выдаются (сверен с A).
 func TestSpaceJoinStale(t *testing.T) {
 	url := syncHub(t)
 	sec := totp.NewSecret()
@@ -324,7 +324,7 @@ func TestSpaceJoinStale(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ch.Merged || !ch.Fresh {
+	if !ch.Fresh {
 		t.Errorf("вступление через старый P: %v", ch)
 	}
 	mn := spaceOf(cn)

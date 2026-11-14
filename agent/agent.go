@@ -123,8 +123,7 @@ type Agent struct {
 	offRejAt    time.Time
 	noOffMsg    bool // тест: хост старой версии — «снять» сообщением не объявляет
 
-	syncs        map[*session]bool // Э4: соединения сверки (syncConnect); вне pend и maxPending
-	syncStarting int               // занятые места syncs, пока newSession шлёт offer
+	syncs map[string]*session // Э4: ключ члена → его соединение сверки (одно; nil — пока шлётся offer), spsync.go
 }
 
 type session struct {
@@ -586,7 +585,7 @@ func (a *Agent) release(s *session) {
 	}
 	delete(a.pend, s)
 	delete(a.offs, s)
-	delete(a.syncs, s)
+	a.syncDrop(s)
 	a.mu.Unlock()
 	if used && a.CodeUsed != nil {
 		go a.codeUsed()
@@ -645,8 +644,8 @@ func (a *Agent) byCID(cid string) *session {
 			return s
 		}
 	}
-	for s := range a.syncs {
-		if s.cid == cid {
+	for _, s := range a.syncs {
+		if s != nil && s.cid == cid {
 			return s
 		}
 	}

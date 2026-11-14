@@ -312,8 +312,13 @@ func hostDial(ctx context.Context, server, id string, req connectReq, setup func
 	if m.Type != "offer" {
 		var why string
 		json.Unmarshal(m.Data, &why)
-		if m.Type == "error" && why == "not_found" {
+		switch {
+		case m.Type == "error" && why == "not_found":
 			return ErrSpaceOffline
+		case m.Type == "error" && why == "skew" && req.Sync:
+			return ErrSpaceSkew
+		case m.Type == "error" && why == "notme" && req.Sync:
+			return ErrSpaceIDKey
 		}
 		return fmt.Errorf("%w: %s %s", ErrSpaceRefused, m.Type, why)
 	}
