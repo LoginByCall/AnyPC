@@ -21,7 +21,7 @@ import (
 func passSpace(t *testing.T, sec string, ids ...string) (*config, map[string]ed25519.PublicKey) {
 	t.Helper()
 	c := spaceCfg(t, spacePass, sec)
-	if err := c.spaceCreate(spacePass); err != nil {
+	if err := c.spaceCreate(spacePass, spacePhrase); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
@@ -30,7 +30,7 @@ func passSpace(t *testing.T, sec string, ids ...string) (*config, map[string]ed2
 	keys := map[string]ed25519.PublicKey{}
 	for _, id := range ids {
 		pub, _, _ := ed25519.GenerateKey(nil)
-		n, err := spaceAdd(m, spacePass, id, pub)
+		n, err := spaceAdd(m, spacePhrase, id, pub)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -109,7 +109,7 @@ func TestPassWorkHere(t *testing.T) {
 	for _, x := range []struct {
 		pw, code string
 		want     error
-	}{{"wrong-pass-1", code, errSpacePassword}, {spacePass, bad, errPassCode}} {
+	}{{"wrong-pass-1", code, errSpacePassword}, {spacePhrase, code, errSpacePassword}, {spacePass, bad, errPassCode}} {
 		if _, err := p.workHere(context.Background(), x.pw, x.code); !errors.Is(err, x.want) {
 			t.Errorf("%s/%s: %v, ждали %v", x.pw, x.code, err, x.want)
 		}
@@ -245,7 +245,7 @@ func TestPassMember(t *testing.T) {
 	c.mu.Lock()
 	m := c.spaceLocked()
 	c.mu.Unlock()
-	n, err := spaceRemove(m, spacePass, keys["200000002"])
+	n, err := spaceRemove(m, spacePhrase, keys["200000002"])
 	if err != nil {
 		t.Fatal(err)
 	}
