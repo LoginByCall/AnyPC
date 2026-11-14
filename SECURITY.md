@@ -57,24 +57,52 @@ sees when "off" is sent, the target ID, the "I'm here" PC key (already known to 
 and the target's reply; it can drop "off" selectively — the master then repeats until the pass expires.
 
 «Моё пространство», сверка состава: ПК пространства сами сверяют состав (кто в пространстве, пароль входа, секрет
-кода) отдельным соединением без видео и входа — вне места сессии и вне блокировки перебора паролей. Соединение
-открывается, только если в запросе подключения есть подпись ключом ПК-члена над ID цели и временем (±10 мин от часов
-цели): постороннему цель не выделяет ничего, члену — одно место на его ключ. Состав уходит только члену, и только после
-того, как обе стороны доказали свои ключи в зашифрованном канале; ПК, исключённый из состава, его больше не получает.
-Хаб видит запрос открыто: ключ ПК-члена, ID цели, ключ, которого член ждёт от цели, и время — то есть какие ПК входят в
-одно пространство и когда сверяются (сам состав, пароль и секрет кода хабу не видны). Хаб может в течение 10 минут
-повторить перехваченный запрос и занять место этого члена до 20 с или не пропускать сверку — состав тогда не
-обновится, пока она не пройдёт. Остаточный риск: ПК, вступающий через ПК, у которого старый подлинный состав, где
-других членов нет, проверить свежесть не может — такой ПК сверять не с кем. Выйти из пространства на одном ПК (без
-фразы) можно паролем и кодом этого ПК: состав с него удаляется, пароль и код остаются.
+кода) отдельным соединением без видео и входа — вне места сессии и вне блокировки перебора паролей. Запрос
+подключения сверки для хаба выглядит как обычный: каждый новый клиент (браузер, вступление, пропуск) шлёт поле той же
+длины со случайными байтами, а у сверки в нём — доказательство члена (время), зашифрованное общим ключом пары «член —
+цель» (X25519 из ключей ПК, HKDF, AES-GCM; ключ X25519 выводится из ключа ПК Ed25519 — требует ревью). Открыть его
+может только цель и только ключом члена своего состава: постороннему цель не выделяет ничего (его запрос — обычное
+подключение), члену — одно место на ключ. Ответ цели («сверка принята», «часы расходятся», «занято») идёт внутри
+зашифрованного канала и привязан к нему; для обычных подключений там те же по длине случайные байты. Состав уходит
+только члену, и только после того, как обе стороны доказали свои ключи; ПК, исключённый из состава, его больше не
+получает. Хаб больше не видит ключ ПК-члена и ключ, которого член ждёт от цели, и не отличает сверку от вступления и
+входа по пропуску ни по полям, ни по длине, ни по кодам ошибок. Что хаб видит по-прежнему (остаточные утечки): адрес
+IP клиента и ID цели — а ПК-член подключается к хабу как хост с того же адреса, так что пару «ПК с этого адреса ходит
+служебным соединением к цели» хаб связать может (сверка это, вступление или пропуск — не знает); соединение программы
+отличается от браузерного заголовками и значениями полей (замеры TURN); время: при запуске программа сверяется со
+всеми членами сразу, потом раз в 5–15 мин (случайно) — с одним случайным, повторы — со случайной паузой. Пока на цели
+идёт сессия, сверке отвечают тем же «занято», что и обычному подключению (сверка ждёт); а когда цель заперта
+блокировкой перебора или все места входа заняты, сверка всё же получает соединение — в эти минуты хаб, сравнив с
+отказами обычным подключениям, может её узнать. Хаб, подменивший шифрование канала собой (он пересылает его описание),
+ключа члена не получит: клиент проверяет ответ цели, привязанный к каналу, до того как назвать себя, — и кончает;
+по такому обрыву хаб может догадаться о служебном соединении. Повтор хабом перехваченного запроса цель узнаёт и ведёт
+как обычное подключение; после перезапуска цели в пределах 10 минут повтор может занять место этого члена до 20 с.
+Хаб может не пропускать сверку — состав тогда не обновится, пока она не пройдёт. Остаточный риск: ПК, вступающий через
+ПК, у которого старый подлинный состав, где других членов нет, проверить свежесть не может — такой ПК сверять не с кем.
+Выйти из пространства на одном ПК (без фразы) можно паролем и кодом этого ПК: состав с него удаляется, пароль и код
+остаются.
 "My space", member list sync: member PCs reconcile the member list (members, login password, code secret) over a
-separate connection without video or login — outside the session slot and the password brute-force lockout. The
-target opens it only if the connect request carries a signature by a member PC key over the target ID and the time
-(±10 min of the target's clock): a stranger gets nothing, a member gets one slot per key. The list goes only to a member
-and only after both sides proved their keys inside the encrypted channel; a PC removed from the list no longer gets it.
-The hub sees the request in clear: the member key, the target ID, the key the member expects from the target and the
-time — i.e. which PCs share a space and when they sync (not the list, password or code secret). Within 10 minutes the
-hub can replay a captured request to hold that member's slot for up to 20 s, or drop syncs — the list then stays old
-until a sync passes. Residual risk: a PC joining through a PC that holds an old genuine list with no other members
-cannot check freshness — there is no one else to ask. A PC can leave the space locally (without the phrase) with its
-password and code: the list is removed from it, the password and code stay.
+separate connection without video or login — outside the session slot and the password brute-force lockout. To the hub
+the sync connect request looks ordinary: every new client (browser, join, pass) sends a field of the same length with
+random bytes, and for a sync it carries the member's proof (the time) encrypted with the pair key "member — target"
+(X25519 from the PC keys, HKDF, AES-GCM; the X25519 key is derived from the PC's Ed25519 key — needs review). Only the
+target can open it, and only with the key of a member in its list: a stranger gets nothing (its request is an ordinary
+connect), a member gets one slot per key. The target's answer ("sync accepted", "clocks differ", "busy") goes inside
+the encrypted channel and is bound to it; ordinary connections get random bytes of the same length there. The list goes
+only to a member and only after both sides proved their keys; a PC removed from the list no longer gets it. The hub no
+longer sees the member key or the key the member expects from the target, and cannot tell a sync from a join or a pass
+login by fields, length or error codes. What the hub still sees (residual leaks): the client IP and the target ID — and a
+member PC is also connected to the hub as a host from the same address, so the hub can link "the PC at this address
+makes a service connection to the target" (not whether it is a sync, a join or a pass); a connection from the program
+differs from a browser one by headers and field values (TURN measurements); timing: at start the program syncs with all
+members at once, then every 5–15 min (random) with one random member, retries with random pauses. While the target is
+in a session, a sync gets the same "busy" as an ordinary connect (the sync waits); while the target is locked by the
+brute-force lockout or all login slots are taken, a sync still gets a connection — during those minutes the hub can
+spot it by comparing with refusals to ordinary connects. A hub that puts itself into the channel encryption (it relays
+the channel description) does not get the member key: the client checks the target's answer bound to the channel before
+identifying itself, and stops — from that abort the hub may guess a service connection. A replay of a captured request
+is recognised by the target and handled as an ordinary connect; within 10 minutes after the target restarts a replay
+can hold that member's slot for up to 20 s. The hub can drop syncs — the list then stays old until a sync passes.
+Residual risk: a PC joining through a PC that holds an old genuine list with no other members cannot check freshness —
+there is no one else to ask. A PC can leave the space locally (without the phrase) with its password and code: the list
+is removed from it, the password and code stay.

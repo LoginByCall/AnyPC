@@ -4,15 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
 	"time"
-
-	"anypc/hub"
-
-	"github.com/coder/websocket/wsjson"
 )
 
 // fakeSync — SpaceSyncer без формата: M — непрозрачные байты; gate — пускать ли; members — ключи членов (nil — любой);
@@ -36,6 +31,12 @@ func (f *fakeSync) SyncKey(pub ed25519.PublicKey) bool {
 		}
 	}
 	return f.members == nil
+}
+
+func (f *fakeSync) SyncKeys() []ed25519.PublicKey {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]ed25519.PublicKey(nil), f.members...)
 }
 
 func (f *fakeSync) SyncGate(ed25519.PublicKey, []byte) []byte {
@@ -142,6 +143,22 @@ func TestSpaceSyncWire(t *testing.T) {
 	cli.recs = nil
 	cli.mu.Unlock()
 
+	host.mu.Lock() // Э4в: цель не считает этот ПК членом — sx не открылся, "who" — ключ тот: отказ, не С4
+	members := host.members
+	g = host.gated
+	host.members = []ed25519.PublicKey{}
+	host.mu.Unlock()
+	if _, err := SpaceSync(context.Background(), d); !errors.Is(err, ErrSpaceRefused) || errors.Is(err, ErrSpaceIDKey) {
+		t.Errorf("не член у цели: %v", err)
+	}
+	host.mu.Lock()
+	host.members = members
+	g2 = host.gated
+	host.mu.Unlock()
+	if g2 != g {
+		t.Error("не члену — обмен")
+	}
+
 	other, _, _ := ed25519.GenerateKey(nil)
 	d2 := d
 	d2.HostPub = other
@@ -174,7 +191,7 @@ func TestSpaceSyncSigs(t *testing.T) {
 	for _, x := range []struct {
 		tamper string
 		want   error
-	}{{"hostkey", ErrSpaceHostKey}, {"cpub", ErrSpaceRefused}, {"early", ErrSpaceRefused}} {
+	}{{"hostkey", ErrSpaceHostKey}, {"cpub", ErrSpaceRefused}, {"early", ErrSpaceRefused}, {"sx", ErrSpaceRefused}, {"old", ErrSpaceSkew}} {
 		syncTamper.Store(x.tamper)
 		if _, err := SpaceSync(context.Background(), d); !errors.Is(err, x.want) {
 			t.Errorf("%s: %v", x.tamper, err)
@@ -185,79 +202,5 @@ func TestSpaceSyncSigs(t *testing.T) {
 	host.mu.Unlock()
 	if g != 0 || len(host.apply()) != 0 {
 		t.Error("обмен без доказанных ключей")
-	}
-}
-
-// TestSpaceSyncConnect — доказательство в connect: посторонний (без подписи члена) места не получает вовсе — поток
-// его connect не мешает члену; подпись не члена — rights; часы ±10 мин — skew; место — одно на ключ (второе — busy),
-// другой член проходит.
-func TestSpaceSyncConnect(t *testing.T) {
-	url, r, host, d := syncRig(t)
-	_, k2, _ := ed25519.GenerateKey(nil)
-	host.mu.Lock()
-	host.members = append(host.members, k2.Public().(ed25519.PublicKey))
-	host.mu.Unlock()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	connect := func(req connectReq) string { // каждый connect — своим WS (у хаба лимит connect на WS)
-		ws, err := dial(ctx, url)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { ws.CloseNow() })
-		var m hub.Msg
-		wsjson.Read(ctx, ws, &m) // hello
-		b, _ := json.Marshal(req)
-		wsjson.Write(ctx, ws, hub.Msg{V: 1, Type: "connect", To: "123456789", Data: b})
-		rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-		if wsjson.Read(rctx, ws, &m) != nil {
-			return "нет ответа"
-		}
-		var why string
-		json.Unmarshal(m.Data, &why)
-		return m.Type + " " + why
-	}
-	if a := connect(connectReq{View: true, Sync: true}); a != "error rights" {
-		t.Errorf("без подписи: %s", a)
-	}
-	hp := d.HostPub
-	_, other, _ := ed25519.GenerateKey(nil)
-	now0 := time.Now().Unix()
-	if a := connect(connectReq{View: true, Sync: true, SPub: d.Key.Public().(ed25519.PublicKey), ST: now0, SSig: ed25519.Sign(d.Key, syncProof("123456789", now0)), HPub: other.Public().(ed25519.PublicKey)}); a != "error notme" {
-		t.Errorf("ждёт другой ключ: %s", a) // С4: «не я», ключа хоста не выдаёт
-	}
-	_, stranger, _ := ed25519.GenerateKey(nil)
-	now := time.Now().Unix()
-	sreq := connectReq{View: true, Sync: true, SPub: stranger.Public().(ed25519.PublicKey), ST: now, SSig: ed25519.Sign(stranger, syncProof("123456789", now)), HPub: hp}
-	if a := connect(sreq); a != "error rights" {
-		t.Errorf("не член: %s", a)
-	}
-	forged := connectReq{View: true, Sync: true, SPub: d.Key.Public().(ed25519.PublicKey), ST: now, SSig: ed25519.Sign(stranger, syncProof("123456789", now)), HPub: hp}
-	if a := connect(forged); a != "error rights" {
-		t.Errorf("ключ члена без его подписи: %s", a)
-	}
-	r.a.mu.Lock()
-	n := len(r.a.syncs)
-	r.a.mu.Unlock()
-	if n != 0 {
-		t.Errorf("постороннему выделено мест: %d", n)
-	}
-	old := now - int64(11*time.Minute/time.Second)
-	skew := connectReq{View: true, Sync: true, SPub: d.Key.Public().(ed25519.PublicKey), ST: old, SSig: ed25519.Sign(d.Key, syncProof("123456789", old)), HPub: hp}
-	if a := connect(skew); a != "error skew" {
-		t.Errorf("часы: %s", a)
-	}
-	hold := connectReq{View: true, Sync: true, SPub: d.Key.Public().(ed25519.PublicKey), ST: now, SSig: ed25519.Sign(d.Key, syncProof("123456789", now)), HPub: hp}
-	if a := connect(hold); a != "offer " { // место занято (offer без ответа), ключ — член
-		t.Fatalf("член: %s", a)
-	}
-	if _, err := SpaceSync(ctx, d); !errors.Is(err, ErrSpaceRefused) {
-		t.Errorf("второе место на тот же ключ: %v", err)
-	}
-	d2 := d
-	d2.Key = k2
-	if _, err := SpaceSync(ctx, d2); err != nil {
-		t.Errorf("другой член при занятом месте первого: %v", err)
 	}
 }
