@@ -610,7 +610,9 @@ func (c *config) spaceLeave(password, code string) error {
 	}
 	u.TOTPStep = step
 	if c.SpaceWait != "" { // решение 12 A: пароль и код — из M поручителя, сверкой не подтверждённого: не оставлять
-		u.Salt, u.Hash, u.TOTP, u.TOTPStep = nil, nil, "", 0 // вход — одноразовым кодом с экрана, окно попросит пароль
+		on := true // вход — «Спрашивать» с новым одноразовым кодом с экрана (как setConfirm), окно попросит пароль
+		u.Salt, u.Hash, u.TOTP, u.TOTPStep, c.Confirm = nil, nil, "", 0, &on
+		c.setCode(randCode())
 	}
 	c.Space, c.SpaceHeads, c.SpaceWait, c.SpaceClock, c.SpaceOver, c.SpacePend = nil, nil, "", nil, "", nil
 	err := c.save()
