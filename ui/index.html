@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="ru">
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-4TkukJNzzZHHRqMHF0iLeuc7SSPvZHGtktG3Jt3r6AY=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-kF2Ty8ltdgJ3coy46/8RhNqqlWlGsQU0QkxijYd9/fE=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AnyPC</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26'><style>.a{stroke:%2317181c}.b{fill:%23d2452d}@media(prefers-color-scheme:dark){.a{stroke:%23eceae4}.b{fill:%23ef6a52}}</style><rect class='a' x='1.5' y='3' width='15' height='11' rx='2' fill='none' stroke-width='2.6'/><rect class='b' x='10' y='12' width='15' height='11' rx='2'/></svg>">
@@ -638,7 +638,7 @@ function pinShow() {
   document.body.classList.toggle('pinbar', on); b.setAttribute('aria-pressed', on); b.title = t(on ? 'unpin_t' : 'pin_t'); b.setAttribute('aria-label', b.title);
 }
 $('pinbtn').onclick = () => { store.set('pinbar', store.get('pinbar', 0) === 1 ? 0 : 1); pinShow(); v.focus(); };
-addEventListener('storage', e => e.key === 'pinbar' && pinShow()); // другая вкладка «Моих ПК» (общий localStorage) переключила булавку
+addEventListener('storage', e => (e.key === 'pinbar' || e.key === null) && pinShow()); // другая вкладка «Моих ПК» (общий localStorage) переключила булавку
 pinShow();
 $('starnm').onclick = () => host?.length === 9 && myPcs.has(host) && starName();
 const sig = (type, data) => ws?.readyState === 1 && ws.send(JSON.stringify({ v: 1, type, to: host, data }));
