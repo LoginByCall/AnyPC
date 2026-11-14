@@ -13,6 +13,7 @@ import (
 
 	"anypc/agent"
 	"anypc/hub"
+	"anypc/pake"
 	"anypc/totp"
 )
 
@@ -314,7 +315,7 @@ func TestSpaceCompromised(t *testing.T) {
 func TestSpaceWaitRules(t *testing.T) {
 	sec := totp.NewSecret()
 	ca, cp, cn := spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec)
-	syncSpace(t, 0, cn, cp, ca)
+	ph, _ := syncSpace(t, 0, cn, cp, ca)
 	cn.mu.Lock()
 	cn.SpaceWait = cp.id()
 	cn.save()
@@ -343,6 +344,15 @@ func TestSpaceWaitRules(t *testing.T) {
 	st := states(s.spread(context.Background(), false))
 	if st[cp.id()] != "ok" || st[ca.id()] != "differs" || cn.spaceFreshNow() {
 		t.Errorf("снял не тот: %v, сверен %v", st, cn.spaceFreshNow())
+	}
+	other, err := spaceSetLogin(spaceOf(cn), ph, "", totp.NewSecret()) // подлинный, но не свой M — тоже не «ok»
+	if err != nil {
+		t.Fatal(err)
+	}
+	ob, _ := other.marshal()
+	set(ca.id(), func() ([]byte, error) { return bytes.Clone(ob), nil })
+	if st := states(s.spread(context.Background(), false)); st[ca.id()] != "differs" || cn.spaceFreshNow() {
+		t.Errorf("чужой подлинный M: %v, сверен %v", st, cn.spaceFreshNow())
 	}
 	set(ca.id(), func() ([]byte, error) { return nil, agent.ErrSpaceIDKey })
 	before := spConf(cn)
@@ -553,5 +563,112 @@ func TestSpaceWorkHereSync(t *testing.T) {
 	defer mu.Unlock()
 	if len(opened) != 1 || opened[0] != cb.id() {
 		t.Errorf("открыты %v, ждали только B", opened)
+	}
+}
+
+// TestSpaceLoginForkLost — замечание приёмки (раскол/отставание): B сменил пароль и код, не зная об исключении на A
+// (больше исключений — вход сильнее, хоть lgen у B больше). После сверки вход B — вход A: свой пароль B не действует
+// ни для записи по умолчанию, ни для «Работаю тут»; пропусков по старой соли нет; верхушка одна — исключение.
+func TestSpaceLoginForkLost(t *testing.T) {
+	sec := totp.NewSecret()
+	ca, cb := spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec)
+	ph, keys := syncSpace(t, 1, ca, cb)
+	m := spaceOf(ca)
+	x, err := spaceRemoveLogin(m, ph, keys[0], "a-wins-pass-1") // A: lex 1, lgen 2
+	if err != nil {
+		t.Fatal(err)
+	}
+	spSet(t, ca, x)
+	b1, err := spaceSetLogin(m, ph, "b-loses-pass", "") // B: lex 0, lgen 2
+	if err != nil {
+		t.Fatal(err)
+	}
+	b2, err := spaceSetLogin(b1, ph, "", totp.NewSecret()) // B: lex 0, lgen 3
+	if err != nil {
+		t.Fatal(err)
+	}
+	spSet(t, cb, b1, b2)
+	oldSalt, oldHash, _ := cb.secret("")
+	if !bytes.Equal(oldHash, pake.KDF("b-loses-pass", oldSalt)) {
+		t.Fatal("до сверки на B не свой пароль")
+	}
+	if !spSync(cb, ca) {
+		t.Fatal("не сошлись")
+	}
+	salt, hash, _ := cb.secret("")
+	if !bytes.Equal(salt, x.PSalt) || !bytes.Equal(hash, x.PHash) || bytes.Equal(hash, pake.KDF("b-loses-pass", salt)) {
+		t.Fatal("вход B после проигрыша развилки — не вход A")
+	}
+	if h := spaceHeadsOf(cb); len(h) != 1 || !sameLogin(h[0], x) || spaceOf(cb).Compromised {
+		t.Fatalf("верхушки B: %d", len(h))
+	}
+	if cb.spaceMember(oldSalt, cfgPub(ca)) || !cb.spaceMember(salt, cfgPub(ca)) {
+		t.Error("пропуск: по старой соли да или по новой нет")
+	}
+	fakeNet(t, func(agent.SyncDial) ([]byte, error) { return nil, agent.ErrSpaceOffline })
+	spSyncer(t, cb)
+	oldOpen := passOpenFn
+	t.Cleanup(func() { passOpenFn = oldOpen })
+	passOpenFn = func(context.Context, agent.PassDial) ([]byte, error) { return nil, nil }
+	p := testMaster(cb)
+	code, _ := totp.Code(x.TOTP, time.Now())
+	if _, err := p.workHere(context.Background(), "b-loses-pass", code); !errors.Is(err, errSpacePassword) {
+		t.Errorf("«Работаю тут» паролем проигравшей ветви: %v", err)
+	}
+	if _, err := p.workHere(context.Background(), "a-wins-pass-1", code); err != nil {
+		t.Errorf("«Работаю тут» паролем победившего входа: %v", err)
+	}
+}
+
+// TestSpaceEditStale — правка от устаревшего снимка (состояние сменилось за время Argon2 фразы) — errSpaceChange,
+// ничего не записано. Мутант e3 приёмки 2P-Set.
+func TestSpaceEditStale(t *testing.T) {
+	sec := totp.NewSecret()
+	ca, cb := spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec)
+	ph, _ := syncSpace(t, 0, ca, cb)
+	snap := spSnap(ca)
+	n, err := spaceSetLogin(spaceOf(ca), ph, "", totp.NewSecret())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wpub, _, _ := ed25519.GenerateKey(nil)
+	w, _ := spaceAdd(spaceOf(ca), ph, "9"+hub.RandDigits(8), wpub)
+	wb, _ := w.marshal()
+	ca.SyncApply(wb, nil) // пришло во время правки
+	before := spConf(ca)
+	if _, err := ca.spaceEdit(snap, n); !errors.Is(err, errSpaceChange) {
+		t.Errorf("правка от старого снимка: %v", err)
+	}
+	if spConf(ca) != before {
+		t.Error("правка от старого снимка записана")
+	}
+}
+
+// TestSpaceForward — принятое новое уходит дальше остальным членам (кроме себя), повтор того же — нет. Мутант a3.
+func TestSpaceForward(t *testing.T) {
+	sec := totp.NewSecret()
+	ca, cb, cc := spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec)
+	ph, _ := syncSpace(t, 0, ca, cb, cc)
+	var toC atomic.Int32
+	fakeNet(t, func(d agent.SyncDial) ([]byte, error) {
+		if d.ID == cc.id() {
+			toC.Add(1)
+		}
+		return spRaw(ca), nil // подтверждение: повтор кончается
+	})
+	spSyncer(t, ca)
+	n, err := spaceSetLogin(spaceOf(cb), ph, "", totp.NewSecret()) // правка на B
+	if err != nil {
+		t.Fatal(err)
+	}
+	nb, _ := n.marshal()
+	ca.SyncApply(nb, nil)
+	eventually(t, "принятое не ушло C", func() bool { return toC.Load() >= 1 })
+	time.Sleep(100 * time.Millisecond)
+	k := toC.Load()
+	ca.SyncApply(nb, nil)
+	time.Sleep(150 * time.Millisecond)
+	if toC.Load() != k {
+		t.Error("повтор того же M разослан снова")
 	}
 }

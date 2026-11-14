@@ -445,7 +445,7 @@ func TestSpaceParseLimits(t *testing.T) {
 		"пусто":               {nil, errSpaceFormat},
 		"только префикс":      {[]byte(spaceDomain), errSpaceFormat},
 		"чужой префикс":       {with(func(c []byte) []byte { c[0] = 'a'; return c }), errSpaceFormat},
-		"версия 3": {with(func(c []byte) []byte { c[offVer] = 3; return c }), errSpaceVersion},
+		"версия 3":            {with(func(c []byte) []byte { c[offVer] = 3; return c }), errSpaceVersion},
 		"версия 0":            {with(func(c []byte) []byte { c[offVer] = 0; return c }), errSpaceVersion},
 		"обрезана на байт":    {b[:len(b)-1], errSpaceFormat},
 		"обрезана в списке":   {b[:offN+5], errSpaceFormat},
@@ -830,7 +830,15 @@ func TestSpaceJoinProps(t *testing.T) {
 			if headsBytes(t, sh) != headsBytes(t, ab) {
 				t.Fatalf("seed %d: зависит от порядка", seed)
 			}
-			v := spaceView(heads(ab))
+			hs := heads(ab)
+			for i, x := range hs { // верхушки — антицепь: ни одна не перекрыта другой
+				for j, y := range hs {
+					if i != j && spaceUnder(x, y) {
+						t.Fatalf("seed %d: верхушка %d перекрыта верхушкой %d", seed, i, j)
+					}
+				}
+			}
+			v := spaceView(hs)
 			var gone [][]byte
 			best := ab[0]
 			for _, m := range ab {
@@ -867,6 +875,37 @@ func TestSpaceJoinProps(t *testing.T) {
 			if v.Compromised != comp {
 				t.Fatalf("seed %d: скомпрометирован %v, ждали %v (по всем M, а не только верхушкам)", seed, v.Compromised, comp)
 			}
+		}
+	}
+}
+
+// Взаимно перекрытые M (тот же вход и те же члены, разные эпохи: правка от объединения и правка по одной ветви) —
+// одна верхушка, с большей эпохой; объединение то же. Мутант h2 приёмки 2P-Set.
+func TestSpaceHeadsMutual(t *testing.T) {
+	m1 := spaceFixture(t)
+	w, n, x := spacePub(0x30), spacePub(0x40), spacePub(0x50)
+	a2, _ := spaceAdd(m1, spaceTestPhrase, "100000003", w)
+	a3, _ := spaceAdd(a2, spaceTestPhrase, "100000004", n)
+	a4, err := spaceAdd(a3, spaceTestPhrase, "100000005", x) // эпоха 4: +W, +N, +X по одной ветви
+	if err != nil {
+		t.Fatal(err)
+	}
+	bw, _ := spaceAdd(m1, spaceTestPhrase, "100000003", w)
+	bn, _ := spaceAdd(m1, spaceTestPhrase, "100000004", n)
+	d, err := spaceAdd(spaceJoinT(t, bw, bn), spaceTestPhrase, "100000005", x) // эпоха 3: +X от объединения
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Epoch == a4.Epoch || !spaceUnder(d, a4) || !spaceUnder(a4, d) {
+		t.Fatalf("сценарий: эпохи %d/%d, взаимное перекрытие %v/%v", d.Epoch, a4.Epoch, spaceUnder(d, a4), spaceUnder(a4, d))
+	}
+	for _, l := range [][]*space{{a4, d}, {d, a4}, {d, bw, a4, bn, m1}} {
+		h, err := spaceHeads(l)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(h) != 1 || h[0].Epoch != a4.Epoch {
+			t.Fatalf("верхушек %d, ждали одну с эпохой %d", len(h), a4.Epoch)
 		}
 	}
 }
