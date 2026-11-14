@@ -349,7 +349,7 @@ func (s *spaceSyncer) later(x spaceMember) {
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(wait):
+			case <-time.After(syncJitter(wait)):
 			}
 			s.mu.Lock()
 			mine := s.retry[x.ID] == tok
@@ -455,7 +455,7 @@ func startSpaceSync(ctx context.Context, cfg *config, a *agent.Agent) {
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(spaceEvery):
+			case <-time.After(syncJitter(spaceEvery)):
 			}
 			cfg.syn.random(ctx)
 		}

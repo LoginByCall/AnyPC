@@ -285,7 +285,11 @@ func signB(key ed25519.PrivateKey, id string, pc *webrtc.PeerConnection) (cpub, 
 // просмотр» без ключа (хаб видит connect открытым и узнал бы по ключу, какой ПК к какому ходит; ключ идёт только в
 // "b" внутри DTLS), offer/answer, ICE. setup вешает обработчики каналов на pc до ответа; обмен кончает первый
 // finish (nil — успех), разрыв или ctx. Хост не в сети — ErrSpaceOffline (вызывающий пробует следующий хаб).
+// Э4в: sx — у сверки запечатанный (spsync.go), у остальных случайный той же длины: connect у всех одного вида.
 func hostDial(ctx context.Context, server, id string, req connectReq, setup func(pc *webrtc.PeerConnection, finish func(error))) error {
+	if req.SX == nil {
+		req.SX = sxRand(sxLen)
+	}
 	ws, err := dial(ctx, server)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrSpaceOffline, err)
@@ -315,10 +319,6 @@ func hostDial(ctx context.Context, server, id string, req connectReq, setup func
 		switch {
 		case m.Type == "error" && why == "not_found":
 			return ErrSpaceOffline
-		case m.Type == "error" && why == "skew" && req.Sync:
-			return ErrSpaceSkew
-		case m.Type == "error" && why == "notme" && req.Sync:
-			return ErrSpaceIDKey
 		}
 		return fmt.Errorf("%w: %s %s", ErrSpaceRefused, m.Type, why)
 	}

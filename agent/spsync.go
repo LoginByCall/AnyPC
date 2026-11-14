@@ -4,18 +4,22 @@ package agent
 // «Сверка»). Формат и правила приёма — app (SpaceSyncer); здесь только доставка. ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ (CLAUDE.md
 // A13: протокол, ключевой материал).
 //
-// Соединение — connect {"sync":true,"view":true,"spub","st","ssig","hpub"}: ssig — подпись ключом члена spub над
-// (syncDomain, ID хоста, st — время unix), hpub — ключ хоста из M клиента (не его — "notme" без ключа: под ID члена
-// другой ПК, С4). Хост проверяет подпись по ключам членов своего M до того, как что-то выделить:
-// недоказанному — ничего ("rights"), часы расходятся больше syncSkew — "skew"; место — одно на ключ члена, не
-// вытесняется ("busy"), вне места сессии, maxPending и блокировки перебора; входа не даёт. Канал "auth", только
-// добавления:
+// Соединение — connect того же вида, что вступление и пропуск ({"view":true,"sx":…}, Э4в): sx — доказательство
+// ключа члена, запечатанное к ключу хоста из M клиента (spseal.go; хаб не отличит его от случайных байт обычного
+// connect). Хост открывает sx ключами членов своего M до того, как что-то выделить: не открылось, часы расходятся
+// больше syncSkew, повтор, место ключа занято — обычный connect (место сессии, maxPending, блокировка), статус — в "a";
+// иначе место — одно на ключ члена, не вытесняется, вне места сессии, maxPending и блокировки перебора; входа не
+// даёт. Канал "auth", только добавления:
 //
-//	хост → {"t":"a",…,"sync":true}                     хост понимает сверку (иначе клиент кончает: ErrSpaceOld)
-//	клиент → {"t":"b",cpub,csig,"key":true,"sync":true,"pub":P}  cpub = spub, подпись над DTLS-отпечатками; P —
+//	хост → {"t":"a",…,"sync":true,"sx":X}              хост понимает сверку (иначе клиент кончает: ErrSpaceOld); X —
+//	                                                    статус под ключом из sx, привязан к DTLS: ok — дальше;
+//	                                                    skew — ErrSpaceSkew; busy — отказ; не открылся — "who"
+//	клиент → {"t":"who"}  хост → {"t":"who",pub,sig}    ключ хоста: тот, что в M, — цель не считает этот ПК членом
+//	                                                    (отказ); другой — под ID члена другой ПК (ErrSpaceIDKey, С4)
+//	клиент → {"t":"b",cpub,csig,"key":true,"sync":true,"pub":P}  cpub — ключ из sx, подпись над DTLS-отпечатками; P —
 //	                                                    ключ хоста из M клиента
 //	хост → {"t":"sp","sync":true,pub,sig}               это он (pub = P): подпись хоста, как в "ok"
-//	       | {"t":"sp","err":"notme"}                   P — не его ключ (под ID члена другой ПК, С4); ключа не выдаёт
+//	       | {"t":"sp","err":"notme"}                   P — не его ключ (не бывает: sx открылся его ключом)
 //	клиент → {"t":"sp","sync":true,"m":Mc}              свой M (только хосту с ключом P)
 //	хост → {"t":"sp","r":R}… {"t":"sp","sync":true,"m":Mh}  записи цепочки, которых нет у клиента, и свой M
 //	                                                    | {"t":"sp","err":"rights"}
@@ -31,7 +35,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
+	"maps"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -47,6 +51,8 @@ import (
 type SpaceSyncer interface {
 	// SyncKey — pub — ключ члена этого ПК (или ветви раскола, известной здесь), не исключённый и не свой.
 	SyncKey(pub ed25519.PublicKey) bool
+	// SyncKeys — все ключи, для которых SyncKey — true: ими хост открывает sx connect (spseal.go).
+	SyncKeys() []ed25519.PublicKey
 	// SyncGate — текущий M этого ПК, если ключ pub — член (или член в составе peer того же пространства и не
 	// исключён здесь); peer nil — только по своему M. nil — отказ.
 	SyncGate(pub ed25519.PublicKey, peer []byte) []byte
@@ -64,15 +70,9 @@ var (
 )
 
 const (
-	syncDomain  = "anypc-space-sync-v1\x00"
 	syncSkew    = 10 * time.Minute
 	maxSyncRecs = 32 // записей за один обмен
 )
-
-// syncProof — подписываемое доказательство ключа члена в connect.
-func syncProof(hostID string, t int64) []byte {
-	return []byte(syncDomain + hostID + "\x00" + strconv.FormatInt(t, 10))
-}
 
 // syncTamper — тест: подделка на одной стороне, проверка — на другой: "host"/"client" — ID в подписи; "hostkey" —
 // хост подписывает чужим ключом; "cpub" — клиент в "b" доказывает не тот ключ, что в connect; "early" — клиент шлёт M
@@ -99,38 +99,38 @@ type spSync struct {
 	recs  [][]byte
 }
 
-// syncConnect — connect {"sync":true}: доказательство ключа члена до того, как выделить место.
-func (a *Agent) syncConnect(ctx context.Context, c *websocket.Conn, cid string, req connectReq) {
-	pub := ed25519.PublicKey(req.SPub)
-	sigOK := len(pub) == ed25519.PublicKeySize && ed25519.Verify(pub, syncProof(a.ID, req.ST), req.SSig)
-	switch {
-	case sigOK && !bytes.Equal(req.HPub, a.Key.Public().(ed25519.PublicKey)): // клиент ждёт под этим ID другой ПК (С4)
-		a.send(ctx, c, "error", cid, "notme")
-		return
-	case !sigOK || !a.SpaceSync.SyncKey(pub):
-		a.send(ctx, c, "error", cid, "rights")
-		return
-	case time.Since(time.Unix(req.ST, 0)).Abs() > syncSkew:
-		a.send(ctx, c, "error", cid, "skew")
-		return
-	}
+// syncConnect — connect, чей sx открылся ключом члена pub (spseal.go, sxCheck): доказательство до того, как выделить
+// место. false — место ключа занято: seal.status = sxBusy, вызывающий ведёт connect как обычный. Идёт сессия —
+// ответ тот же, что обычному connect без ключа ("locked" или "busy"): хаб, сам получив "busy", узнал бы сверку по offer.
+func (a *Agent) syncConnect(ctx context.Context, c *websocket.Conn, cid string, req connectReq, pub ed25519.PublicKey, seal *sxSeal) bool {
 	k := string(pub)
 	a.mu.Lock()
+	refuse := ""
+	switch {
+	case a.sess != nil && time.Now().Before(a.lockUntil):
+		refuse = "locked"
+	case a.sess != nil:
+		refuse = "busy"
+	}
 	_, busy := a.syncs[k]
-	if !busy {
+	if !busy && refuse == "" {
 		if a.syncs == nil {
 			a.syncs = map[string]*session{}
 		}
 		a.syncs[k] = nil // место занято, пока newSession шлёт offer
 	}
 	turn := pickTURN(req, a.rtt, turnHosts(a.ice))
-	ice := onlyTURN(a.ice, turn)
+	ice, rtt := onlyTURN(a.ice, turn), maps.Clone(a.rtt)
 	a.mu.Unlock()
-	if busy {
-		a.send(ctx, c, "error", cid, "busy")
-		return
+	switch {
+	case refuse != "":
+		a.send(ctx, c, "error", cid, refuse)
+		return true
+	case busy:
+		seal.status = sxBusy
+		return false
 	}
-	s, err := a.newSession(ctx, c, cid, ice, offerMsg{TURN: turn}, false, true, true) // offOnly: входа не даёт
+	s, err := a.newSession(ctx, c, cid, ice, offerMsg{TURN: turn, RTT: rtt}, false, true, true, seal) // offOnly: входа не даёт
 	a.mu.Lock()
 	if err == nil && !s.gone.Load() {
 		s.sy.Store(&spSync{phase: 1, pub: bytes.Clone(pub)})
@@ -142,6 +142,7 @@ func (a *Agent) syncConnect(ctx context.Context, c *websocket.Conn, cid string, 
 	if err != nil {
 		a.send(ctx, c, "error", cid, "internal")
 	}
+	return true
 }
 
 // syncDrop — место сверки сессии s свободно (release).
@@ -249,14 +250,24 @@ func syncVia(ctx context.Context, server string, d SyncDial) ([]byte, error) {
 		mine  []byte // свой M после приёма (отправлен хосту)
 		hostM []byte
 	)
-	now := time.Now().Unix()
-	req := connectReq{View: true, Sync: true, SPub: d.Key.Public().(ed25519.PublicKey), ST: now, SSig: ed25519.Sign(d.Key, syncProof(d.ID, now)), HPub: d.HostPub}
-	err := hostDial(ctx, server, d.ID, req, func(pc *webrtc.PeerConnection, finish func(error)) {
+	now := time.Now()
+	if syncFake("old") {
+		now = now.Add(-syncSkew - time.Minute)
+	}
+	sx, h2c, err := sxMake(d.Key, d.HostPub, d.ID, now.Unix())
+	if err != nil {
+		return nil, err
+	}
+	if syncFake("sx") {
+		sx[len(sx)-1] ^= 1
+	}
+	req := connectReq{View: true, SX: sx} // как у вступления и пропуска (hostDial): хаб сверку не отличит
+	err = hostDial(ctx, server, d.ID, req, func(pc *webrtc.PeerConnection, finish func(error)) {
 		pc.OnDataChannel(func(dc *webrtc.DataChannel) {
 			if dc.Label() != "auth" {
 				return
 			}
-			first, proved := true, false
+			first, proved, who := true, false, false
 			var recs [][]byte
 			send := func(v any) { b, _ := json.Marshal(v); dc.SendText(string(b)) }
 			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
@@ -267,11 +278,28 @@ func syncVia(ctx context.Context, server string, d SyncDial) ([]byte, error) {
 				}
 				mu.Lock()
 				defer mu.Unlock()
+				fps := func() (string, string) {
+					return pake.Fingerprint(pc.LocalDescription().SDP), pake.Fingerprint(pc.RemoteDescription().SDP)
+				}
 				switch t := am.T; {
 				case t == "a" && first:
 					first = false
-					if !am.Sync { // старый хост: сверки нет
+					if !am.Sync || am.SX == nil { // старый хост: сверки нет
 						finish(ErrSpaceOld)
+						return
+					}
+					fc, fh := fps()
+					st, ok := sxStatus(h2c, am.SX, fc, fh)
+					switch {
+					case !ok: // не тот ПК, не член там или посредник в DTLS — спросить ключ
+						who = true
+						send(authMsg{T: "who"})
+						return
+					case st == sxSkew:
+						finish(ErrSpaceSkew)
+						return
+					case st != sxOK:
+						finish(fmt.Errorf("%w: busy", ErrSpaceRefused))
 						return
 					}
 					key := d.Key
@@ -287,6 +315,17 @@ func syncVia(ctx context.Context, server string, d SyncDial) ([]byte, error) {
 						return
 					}
 					send(authMsg{T: "b", CPub: cpub, CSig: csig, Key: true, Sync: true, Pub: d.HostPub})
+				case t == "who" && who:
+					who = false
+					fc, fh := fps()
+					switch {
+					case pake.HostVerify(am.Pub, am.Sig, d.ID, fc, fh) != nil:
+						finish(ErrSpaceHostKey)
+					case bytes.Equal(am.Pub, d.HostPub):
+						finish(fmt.Errorf("%w: rights", ErrSpaceRefused)) // тот ПК, но этот ПК там не член
+					default:
+						finish(ErrSpaceIDKey)
+					}
 				case t == "sp" && sm.Err == "notme":
 					finish(ErrSpaceIDKey)
 				case t == "sp" && sm.Err != "":

@@ -736,7 +736,7 @@ $('go').onclick = async () => {
       const m = JSON.parse(e.data);
       if (m.type === 'hello' && !m.from) { // Д-4: hello — только от самого хаба
         ice = m.data.ice || [];
-        w.send(JSON.stringify({ v: 1, type: 'connect', to: host, data: { turn: turnSel, rtt: Object.fromEntries(Object.entries(rttMe).filter(([, v]) => v != null)), cpub: kh?.pub, vp9: $('turbo').checked, view: $('view').checked } }));
+        w.send(JSON.stringify({ v: 1, type: 'connect', to: host, data: { turn: turnSel, rtt: Object.fromEntries(Object.entries(rttMe).filter(([, v]) => v != null)), cpub: kh?.pub, vp9: $('turbo').checked, view: $('view').checked, sx: b64(crypto.getRandomValues(new Uint8Array(40))) } })); // sx: Э4в — как у сверки, случайное (agent/spseal.go)
         $('msg').textContent = t('waiting');
       }
       else if (m.type === 'error') { const msg = t('err') + (L[lang]['e_' + m.data] || m.data); ws === w ? end(msg) : fail(msg); }
