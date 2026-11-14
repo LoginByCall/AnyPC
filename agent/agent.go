@@ -121,6 +121,7 @@ type Agent struct {
 	otpLock     time.Time              // у каждой записи ещё своя лестница кодов (nameLock.otpFails, как одна лестница v0.1.19)
 	otpAt       time.Time              // последний неверный код по хосту (hostStep)
 	online      map[string]bool        // хабы, на которых хост зарегистрирован
+	taken       map[string]bool        // хабы, последний ответ которых — id_taken (IDTaken)
 	passes      map[string]passEntry   // Э3: ключ мастера → пропуск; только в памяти (pass.go)
 	offs        map[*session]time.Time // Э3: соединения «снять» (offConnect) → когда пришли; вне pend и maxPending
 	offStarting int                    // занятые места offs, пока newSession шлёт offer
@@ -402,6 +403,9 @@ func FFArgs(src, enc string, c Cap) []string {
 // Run держит регистрацию на каждом хабе из Server, переподключаясь каждые 5 с до отмены ctx.
 // Хост в сети на всех хабах сразу: клиент идёт через тот, что ответил ему первым, — синхронизировать хабы не нужно.
 func (a *Agent) Run(ctx context.Context) {
+	a.mu.Lock()
+	a.taken = nil // отказы хабов прошлого Run (смена узла посреди паузы после id_taken) — не про новый список
+	a.mu.Unlock()
 	var wg sync.WaitGroup
 	for _, u := range strings.Split(a.Server, ",") {
 		if u = strings.TrimSpace(u); u == "" {
@@ -410,7 +414,13 @@ func (a *Agent) Run(ctx context.Context) {
 		wg.Go(func() {
 			for ctx.Err() == nil {
 				err := a.run(ctx, u)
-				a.setOnline(u, false)
+				a.mu.Lock()
+				if a.taken == nil {
+					a.taken = map[string]bool{}
+				}
+				a.taken[u] = errors.Is(err, ErrIDTaken)
+				a.mu.Unlock()
+				a.setOnline(u, false) // и notify: окно узнает про id_taken
 				log.Printf("сигнализация %s: %v — повтор через 5 с", u, err)
 				select {
 				case <-ctx.Done():
@@ -530,12 +540,29 @@ func (a *Agent) revoked(s *session) (gone, view bool) {
 	return false, view
 }
 
+// ErrIDTaken — хаб отказал в регистрации: этот ID уже в сети (вторая копия на этом ПК, например старой версии, которая
+// не держит блокировку single.go, или этот ID на другом ПК) или закреплён за другим ключом.
+var ErrIDTaken = errors.New("ID занят: в сети другой экземпляр или ID закреплён за другим ключом")
+
+// IDTaken — хоть один хаб последним ответом отказал с id_taken: окно показывает это вместо «нет связи с сервером».
+func (a *Agent) IDTaken() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, t := range a.taken {
+		if t {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *Agent) setOnline(hub string, on bool) {
 	a.mu.Lock()
 	if a.online == nil {
 		a.online = map[string]bool{}
 	}
 	if on {
+		delete(a.taken, hub) // зарегистрировались — отказ этого хаба в прошлом
 		a.online[hub] = true
 	} else {
 		delete(a.online, hub)
@@ -745,7 +772,7 @@ func (a *Agent) run(ctx context.Context, server string) error {
 			log.Printf("сервер: %s", m.Data)
 			switch string(m.Data) {
 			case `"id_taken"`:
-				return errors.New("ID занят: в сети другой экземпляр или ID закреплён за другим ключом")
+				return ErrIDTaken
 			case `"limit"`:
 				return errors.New("хаб: с этого адреса за час зарегистрировано слишком много новых ID — повтор позже")
 			case `"bad_sig"`:
