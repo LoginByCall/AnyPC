@@ -27,16 +27,17 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-// spMsg — канал "ctl", состав пространства (Э2). Клиент → {"t":"sp"} — запрос состава; хост → {"t":"sp","m":…}
-// (запись M, base64) | {"t":"sp","err":"rights"|"none"}. Клиент → {"t":"sp","m":…} — M следующей эпохи с ним самим;
+// spMsg — канал "ctl", состав пространства (Э2). Клиент → {"t":"sp"} — запрос состава; хост → {"t":"sp","m":…,"h":[…]}
+// (главная верхушка M и остальные, base64; h — только добавление, решение 12 A) | {"t":"sp","err":"rights"|"none"}. Клиент → {"t":"sp","m":…} — M следующей эпохи с ним самим;
 // хост → {"t":"sp","ok":true} | {"t":"sp","err":"rights"|"key"|"again"|"bad"}.
 // err: rights — сессия вошла не паролем и кодом записи по умолчанию; none — пространства нет (или пароль записи
 // не его); key — клиент не доказал свой ключ в "b"; again — второе вступление в сессии; bad — состав не принят.
 type spMsg struct {
-	T   string `json:"t"`
-	M   []byte `json:"m,omitempty"`
-	OK  bool   `json:"ok,omitempty"`
-	Err string `json:"err,omitempty"`
+	T   string   `json:"t"`
+	M   []byte   `json:"m,omitempty"`
+	OK  bool     `json:"ok,omitempty"`
+	Err string   `json:"err,omitempty"`
+	H   [][]byte `json:"h,omitempty"` // в ответе на запрос состава: остальные верхушки
 	// Э4, сверка (spsync.go): sync — шаг обмена M; r — ещё одна верхушка M; pub, sig — ключ хоста и подпись (как в "ok")
 	Sync bool   `json:"sync,omitempty"`
 	R    []byte `json:"r,omitempty"`
@@ -59,8 +60,11 @@ func (a *Agent) spaceCtl(s *session, data []byte, reply func(spMsg)) {
 	salt, cpub := s.salt, s.cpub
 	s.mu.Unlock()
 	if len(m.M) == 0 { // запрос состава
-		if b := a.SpaceGet(salt); b != nil {
-			reply(spMsg{T: "sp", M: b})
+		if b := a.SpaceGet(salt); len(b) > 0 {
+			reply(spMsg{T: "sp", M: b[0], H: b[1:]})
+			if spaceDupM() {
+				reply(spMsg{T: "sp", M: b[0], H: b[1:]})
+			}
 		} else {
 			reply(spMsg{T: "sp", Err: "none"})
 		}
@@ -97,11 +101,11 @@ type SpaceDial struct {
 	// Known — отпечаток ключа P (pake.KeyFingerprint), если этот ПК уже входил на P (config.Known): другой ключ —
 	// отказ до отправки кода. "" — первое знакомство (TOFU). TODO(Э4): сверка ключей P по составам других членов.
 	Known string
-	// Sign — по M от P (проверенный подписью хоста P и CPace) вернуть новый M, подписанный фразой пространства на этом
-	// ПК (сначала сверка opub из фразы); ошибка — отказ, P ничего не получит.
+	// Sign — по M от P (главная верхушка; heads — остальные; проверены подписью хоста P и CPace) вернуть новый M,
+	// подписанный фразой пространства на этом ПК (сначала сверка opub из фразы); ошибка — отказ, P ничего не получит.
 	// Вернул тот же M — этот ПК в нём уже есть (P сохранил прошлое вступление, а ответ не дошёл): P ничего не шлём.
 	// Sign зовётся в своей горутине и может ждать человека (окно «Это все ваши ПК?»): ctx SpaceJoin — до конца обмена.
-	Sign func(m []byte, hostPub ed25519.PublicKey) ([]byte, error)
+	Sign func(m []byte, hostPub ed25519.PublicKey, heads ...[]byte) ([]byte, error)
 	// Confirm — сколько Sign может ждать подтверждения состава человеком: прибавляется к spaceWait (решение 12 A).
 	Confirm time.Duration
 }
@@ -116,6 +120,9 @@ var (
 	ErrSpaceHostKey  = errors.New("пространство: ключ того ПК не совпал с запомненным")
 	errSpaceProtocol = errors.New("пространство: нарушение протокола")
 )
+
+// spaceDupM — испытательная подмена: хост шлёт состав дважды (agent/space_test.go); в рабочем пути — нет.
+var spaceDupM = func() bool { return false }
 
 // spaceWait — весь обмен вступления (вход с Argon2 на обеих сторонах, ICE через TURN).
 var spaceWait = 60 * time.Second
@@ -250,7 +257,7 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 						// в своей горутине, не в потоке SCTP (решение 12 A)
 						signing = true
 						go func() {
-							m, err := d.Sign(sm.M, hp)
+							m, err := d.Sign(sm.M, hp, sm.H...)
 							if err != nil {
 								finish(err)
 								return
@@ -388,7 +395,7 @@ func hostDial(ctx context.Context, server, id string, req connectReq, setup func
 		return err
 	case <-ctx.Done():
 		if ctx.Err() == context.DeadlineExceeded {
-			return errors.New("пространство: нет ответа вовремя")
+			return fmt.Errorf("пространство: нет ответа вовремя (%w)", ctx.Err()) // окно: errors.Is(context.DeadlineExceeded)
 		}
 		return ctx.Err()
 	}

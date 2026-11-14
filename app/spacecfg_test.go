@@ -77,14 +77,15 @@ func spaceNet(p *config, give func([]byte) []byte) func(context.Context, agent.S
 		if set, ok := p.otp("", d.Code); !set || !ok {
 			return nil, agent.ErrSpaceAuth
 		}
-		m := p.spaceGet(salt)
-		if m == nil {
+		ms := p.spaceGet(salt)
+		if ms == nil {
 			return nil, fmt.Errorf("%w: none", agent.ErrSpaceRefused)
 		}
+		m := ms[0]
 		if give != nil {
 			m = give(m)
 		}
-		out, err := d.Sign(m, cfgPub(p))
+		out, err := d.Sign(m, cfgPub(p), ms[1:]...)
 		if err != nil {
 			return nil, err
 		}
@@ -96,6 +97,13 @@ func spaceNet(p *config, give func([]byte) []byte) func(context.Context, agent.S
 		}
 		return out, nil
 	}
+}
+
+// spaceEnter — вступить без окна (тесты): состав подтверждается сам.
+func (c *config) spaceEnter(ctx context.Context, hostID, password, code, phrase string) (spaceChanges, error) {
+	yes := make(chan bool, 1)
+	yes <- true
+	return c.spaceEnterAsk(ctx, hostID, password, code, phrase, nil, yes)
 }
 
 func withSpaceNet(t *testing.T, f func(context.Context, agent.SpaceDial) ([]byte, error)) {
