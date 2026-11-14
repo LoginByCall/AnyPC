@@ -15,17 +15,26 @@ import (
 // Лимиты хаба (F4, числа — fixes-review.md). Через хаб идут только connect/offer/answer/ice/bye/error/hello:
 // законная попытка клиента — ≈45 сообщений и ≈20 КБ. Хост за объём не закрывается никогда: его сообщения
 // вызывают клиенты (1 connect → offer + 5–30 ice), иначе аноним выбивал бы хост из сети самим лимитом —
-// ограничивается причина, connect клиента. Новых типов сообщений и кодов ошибок нет: старые клиенты
-// на неизвестный код посреди сессии её обрывают.
+// ограничивается причина, connect клиента. Новых кодов ошибок нет: старые клиенты на неизвестный код посреди
+// сессии её обрывают. Новый тип off (relayed) и его ответ видят только новые клиенты, которые его шлют, и хосты с ?off=1.
 const (
 	ClientMsgBurst, ClientMsgRate   = 100, 10             // сообщений клиента: всплеск, в секунду; сверх — закрыть WS (1008)
 	ClientByteBurst, ClientByteRate = 128 << 10, 16 << 10 // байт клиента: всплеск, в секунду; сверх — закрыть
 	ConnectBurst                    = 5                   // connect клиента: всплеск…
 	ConnectEvery                    = 3 * time.Second     // …и пополнение; сверх — существующий ответ busy, не пересылать
-	HostMsgBurst, HostMsgRate       = 600, 100            // сообщений хоста; сверх — молча отбросить (+ журнал)
-	HostByteBurst, HostByteRate     = 2 << 20, 256 << 10  // байт хоста; сверх — так же
-	ToHostBurst, ToHostRate         = 256 << 10, 64 << 10 // байт всех клиентов вместе одному хосту (попытка ≈20 КБ); сверх — молча отбросить
-	ToHostShare                     = 4                   // одному адресу (IPv4, IPv6 /48) — не больше 1/4 всплеска и пополнения ведра хоста; сверх — так же
+	OffBurst, OffEvery              = 4, time.Second      // «снять» (off) с соединения: мастер шлёт одно на цель на соединение; сверх — ответ busy
+	OffPending, OffAckWait          = 8, 30 * time.Second // ожиданий ответа хоста (offack) на клиента и срок одного
+	OffAckMax                       = 256                 // потолок offack хоста (законный ≈190 Б): канал хост → клиент не шире ответа
+	// «снять» к одному хосту — своё ведро, не общее toHost (другие типы его не тратят): всего OffDst в секунду
+	// (всплеск ×2), с одного адреса (srcKey) — OffSrcBurst, затем одно в OffSrcEvery. Чтобы держать ведро цели
+	// пустым, нужно ≥ OffDst·OffSrcEvery = 100 адресов (IPv4 или IPv6 /48) сразу; цена на хосте — проверка членства
+	// и не больше одной проверки подписи на сообщение.
+	OffDst                      = 20
+	OffSrcBurst, OffSrcEvery    = 2, 5 * time.Second
+	HostMsgBurst, HostMsgRate   = 600, 100            // сообщений хоста; сверх — молча отбросить (+ журнал)
+	HostByteBurst, HostByteRate = 2 << 20, 256 << 10  // байт хоста; сверх — так же
+	ToHostBurst, ToHostRate     = 256 << 10, 64 << 10 // байт всех клиентов вместе одному хосту (попытка ≈20 КБ); сверх — молча отбросить
+	ToHostShare                 = 4                   // одному адресу (IPv4, IPv6 /48) — не больше 1/4 всплеска и пополнения ведра хоста; сверх — так же
 	// (1/4 = 64 КБ / 16 КБ/с — с запасом на 4 одновременные попытки входа с одного адреса к одному хосту, как maxPending=3 у хоста; приёмка-3, З2)
 	NotFoundPerConn               = 5     // not_found клиенту на соединение; следующий — закрыть
 	NotFoundPerMin                = 30    // not_found на IPv4 и /64 (/48 — ×10) в минуту; сверх — закрыть и 429 новым клиентским WS
@@ -84,6 +93,8 @@ func maxSize(typ string) int {
 		return 4 << 10
 	case "answer":
 		return 32 << 10
+	case "off": // законное ≈210 Б; старый хаб режет всё сверх 256, новое — так же, с запасом на будущие поля
+		return 512
 	}
 	return 256 // bye и всё, что хаб не пересылает
 }
@@ -263,6 +274,9 @@ type hostIn struct {
 	c         *websocket.Conn // чья запись: после переподключения хоста старое соединение чужую не снимает
 	b         bucket
 	src       map[string]*bucket // доля ведра на адрес-источник (srcKey)
+	off       bucket             // «снять» к этому хосту (offIn)
+	offSrc    map[string]*bucket // «снять» к нему с адреса
+	offSweep  time.Time
 	sweepAt   time.Time
 	dropped   int
 	droppedAt time.Time
@@ -288,7 +302,7 @@ func (h *Hub) hostOpen(id string, c *websocket.Conn) {
 	if h.in == nil {
 		h.in = map[string]*hostIn{}
 	}
-	h.in[id] = &hostIn{c: c, b: newBucket(ToHostBurst, ToHostRate)}
+	h.in[id] = &hostIn{c: c, b: newBucket(ToHostBurst, ToHostRate), off: newBucket(2*OffDst, OffDst)}
 }
 
 func (h *Hub) hostClose(id string, c *websocket.Conn) {
@@ -297,6 +311,45 @@ func (h *Hub) hostClose(id string, c *websocket.Conn) {
 	if in := h.in[id]; in != nil && in.c == c {
 		delete(h.in, id)
 	}
+}
+
+// offIn — можно ли переслать хосту id ещё одно «снять» с адреса from (ведро цели и доля адреса, всё или ничего).
+func (h *Hub) offIn(id string, from netip.Addr) bool {
+	h.lim.Lock()
+	defer h.lim.Unlock()
+	in := h.in[id]
+	if in == nil {
+		return false
+	}
+	var src *bucket
+	if k := srcKey(from); k != "" {
+		if time.Since(in.offSweep) > time.Minute { // память — только под недавних отправителей
+			for sk, b := range in.offSrc {
+				if b.fill(); b.tokens >= b.burst {
+					delete(in.offSrc, sk)
+				}
+			}
+			in.offSweep = time.Now()
+		}
+		if src = in.offSrc[k]; src == nil {
+			if in.offSrc == nil {
+				in.offSrc = map[string]*bucket{}
+			}
+			nb := newBucket(OffSrcBurst, 1/OffSrcEvery.Seconds())
+			src = &nb
+			in.offSrc[k] = src
+		}
+		if src.fill(); src.tokens < 1 {
+			return false
+		}
+	}
+	if !in.off.take(1) {
+		return false
+	}
+	if src != nil {
+		src.tokens--
+	}
+	return true
 }
 
 // toHost — можно ли переслать хосту id ещё n байт от клиента с адреса from. Нет — сообщение отбрасывается молча:
