@@ -21,15 +21,18 @@ package agent
 //	клиент → {"t":"b",cpub,csig,"key":true,"off":true}   снять свой пропуск (блокировка экрана мастера, выход)
 //	хост → {"t":"off",pub,sig}                            снят (или его не было), подпись хоста как в "ok"; вход не выполняется
 //
-// «Снять» приходит отдельным connect {"off":true,"view":true}: такое соединение не занимает место сессии и
-// незавершённых входов, не упирается в блокировку перебора и само ничего не открывает — в "b" годится только "off"
-// с доказанным ключом. Таких соединений не больше maxOffs; лишнее вытесняет самое старое (молчуны не задержат
-// «снять» дольше, чем шлют connect).
+// «Снять» (решение владельца 8 A) — одно подписанное сообщение через хаб {"type":"off","to":ID,"data":тело}
+// (pake.OffSign: pub мастера, время, nonce, подпись над доменом и ID цели), без WebRTC и места сессии: поток
+// посторонних его не вытесняет. Хост объявляет поддержку хабу (?off=1); старому хосту хаб не пересылает и отвечает
+// "old" — тогда мастер шлёт по-старому: отдельный connect {"off":true,"view":true}. Такое соединение не занимает
+// место сессии и незавершённых входов, не упирается в блокировку перебора и само ничего не открывает — в "b"
+// годится только "off" с доказанным ключом. Таких соединений не больше maxOffs; лишнее вытесняет самое старое.
 
 import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,9 +42,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"anypc/hub"
 	"anypc/pake"
 
 	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -167,10 +172,58 @@ func (a *Agent) passOff(s *session, m authMsg, keyOK bool, fpc, fph string, send
 	time.AfterFunc(500*time.Millisecond, func() { s.pc.Close() })
 }
 
+// offSkew — допуск времени «снять» сообщением (часы мастера и цели); offKeep — сколько помнить nonce (≥ 2·offSkew);
+// maxOffSeen — предел кэша nonce (его наполняют только верные подписи членов с живым пропуском).
+const (
+	offSkew    = 5 * time.Minute
+	offKeep    = 10 * time.Minute
+	maxOffSeen = 256
+)
+
+// offMsg — «снять» сообщением через хаб: тело data (base64 в JSON) подписано ключом члена M с живым пропуском на этом
+// ПК, время в ±offSkew, nonce не встречался — снять пропуск этого ключа. Ответа нет, повтор безвреден. Ключа без
+// пропуска хост не проверяет вовсе: поток посторонних не стоит ему ни одной проверки подписи. Повтор хабом
+// подписанного «снять» в пределах offSkew снимет новый пропуск, только если первое пришло, когда пропуска не было
+// (nonce тогда не запомнен) — хаб и так может не пропускать вход, новой возможности у него нет.
+func (a *Agent) offMsg(data json.RawMessage) {
+	var b []byte
+	if json.Unmarshal(data, &b) != nil || len(b) != pake.OffSize {
+		return
+	}
+	a.mu.Lock()
+	e, had := a.passes[string(b[:ed25519.PublicKeySize])]
+	a.mu.Unlock()
+	if !had {
+		return
+	}
+	pub, t, nonce, ok := pake.OffVerify(b, a.ID)
+	now := time.Now()
+	if d := now.Sub(time.Unix(t, 0)); !ok || d > offSkew || d < -offSkew || !a.SpaceMember(e.salt, pub) {
+		log.Printf("«снять» через хаб для ПК %s отклонено (подпись, время или не член)", pake.KeyFingerprint(pub)[:9])
+		return
+	}
+	a.mu.Lock()
+	maps.DeleteFunc(a.offSeen, func(_ string, until time.Time) bool { return now.After(until) })
+	_, seen := a.offSeen[string(nonce)]
+	if !seen && len(a.offSeen) < maxOffSeen { // переполнен — снять без записи: худшее — повтор того же «снять»
+		if a.offSeen == nil {
+			a.offSeen = map[string]time.Time{}
+		}
+		a.offSeen[string(nonce)] = now.Add(offKeep)
+	}
+	a.mu.Unlock()
+	if seen {
+		return
+	}
+	if a.passDrop(pub) {
+		log.Printf("пропуск ПК %s снят (сообщение через хаб)", pake.KeyFingerprint(pub)[:9])
+	}
+}
+
 // offConnect — connect {"off":true}: соединение только для «снять», вне места сессии, maxPending и блокировки.
-// ОГРАНИЧЕНИЕ (приёмка Э3, круг 2; вопрос владельцу): посторонний, знающий ID, потоком connect {"off":true}
-// вытесняет соединение «снять» мастера раньше, чем тот докажет ключ, — «снять» задерживается (мастер повторяет),
-// пропуск живёт до 12 ч или перезапуска цели. SECURITY.md.
+// Запасной путь для хостов без «снять» сообщением (старые версии). ОГРАНИЧЕНИЕ (приёмка Э3, круг 2): посторонний,
+// знающий ID, потоком connect {"off":true} вытесняет соединение «снять» мастера раньше, чем тот докажет ключ, —
+// «снять» задерживается (мастер повторяет), пропуск живёт до 12 ч или перезапуска цели. SECURITY.md.
 func (a *Agent) offConnect(ctx context.Context, c *websocket.Conn, cid string, req connectReq) {
 	a.mu.Lock()
 	var drop []*session
@@ -251,8 +304,60 @@ func PassOpen(ctx context.Context, d PassDial) error { return passDo(ctx, d, pas
 // PassLogin — войти на цель по пропуску (без пароля и кода) и закрыть сессию: пропуск жив.
 func PassLogin(ctx context.Context, d PassDial) error { return passDo(ctx, d, passLogin) }
 
-// PassOff — снять свой пропуск на цели: только доказательство ключа, вход не выполняется (ни плашки, ни видео).
-func PassOff(ctx context.Context, d PassDial) error { return passDo(ctx, d, passOff) }
+// PassOff — снять свой пропуск на цели: одним сообщением через хаб (nil — хаб доставил его цели; проверка подписи
+// — на цели, ответа от неё нет), а цели старой версии — отдельным соединением с доказательством ключа (вход не
+// выполняется: ни плашки, ни видео).
+func PassOff(ctx context.Context, d PassDial) error {
+	if err := passOffHub(ctx, d); !errors.Is(err, errOffOld) {
+		return err
+	}
+	return passDo(ctx, d, passOff)
+}
+
+var errOffOld = errors.New("пространство: цель не знает «снять» сообщением")
+
+// passOffHub — «снять» через хабы по очереди, пока один не доставит (хост в сети на всех хабах сразу, Run): тело одно
+// на все хабы — цель, получившая его дважды, узнает nonce. errOffOld — хост или хаб этого не знают.
+func passOffHub(ctx context.Context, d PassDial) error {
+	nonce := make([]byte, pake.OffNonce)
+	rand.Read(nonce)
+	data, _ := json.Marshal(pake.OffSign(d.Key, d.ID, time.Now().Unix(), nonce))
+	err, old := ErrSpaceOffline, false
+	for _, u := range strings.Split(d.Server, ",") {
+		switch r := offVia(ctx, strings.TrimSpace(u), d.ID, data); r {
+		case "ok":
+			return nil
+		case "old", "forbidden": // хост старый или старый хаб не пересылает off
+			old = true
+		case "not_found", "": // хоста на этом хабе нет или нет связи с хабом
+		default:
+			err = fmt.Errorf("%w: хаб: %s", ErrSpaceRefused, r)
+		}
+	}
+	if old {
+		return errOffOld
+	}
+	return err
+}
+
+// offVia — одно «снять» через хаб server: его ответ ("ok", "old", "busy", "not_found", "forbidden"); "" — нет связи.
+func offVia(ctx context.Context, server, id string, data []byte) string {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	ws, err := dial(ctx, server)
+	if err != nil {
+		return ""
+	}
+	defer ws.CloseNow()
+	var m hub.Msg
+	if wsjson.Read(ctx, ws, &m) != nil || m.Type != "hello" || wsjson.Write(ctx, ws, hub.Msg{V: 1, Type: "off", To: id, Data: data}) != nil ||
+		wsjson.Read(ctx, ws, &m) != nil || m.From != "" || m.Type != "off" && m.Type != "error" {
+		return ""
+	}
+	var r string
+	json.Unmarshal(m.Data, &r)
+	return r
+}
 
 func passDo(ctx context.Context, d PassDial, mode passMode) error {
 	ctx, cancel := context.WithTimeout(ctx, passWait)

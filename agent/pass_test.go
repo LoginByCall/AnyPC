@@ -336,7 +336,7 @@ func TestPassOffLocked(t *testing.T) {
 	bad := d
 	_, other, _ := ed25519.GenerateKey(nil)
 	bad.HostPub = other.Public().(ed25519.PublicKey)
-	if err := PassOff(context.Background(), bad); !errors.Is(err, ErrSpaceHostKey) {
+	if err := passDo(context.Background(), bad, passOff); !errors.Is(err, ErrSpaceHostKey) { // запасной путь (старые цели)
 		t.Errorf("«off» с ключом не того хоста: %v", err)
 	}
 	if err := PassOff(context.Background(), d); err != nil {
