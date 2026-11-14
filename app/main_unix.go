@@ -35,7 +35,10 @@ import (
 	"anypc/ui"
 )
 
-func main() {
+func main() { mainLoop(hostMain) }
+
+// hostMain — программа целиком; на Маке — не в главном потоке (его держит AppKit, window_darwin.go).
+func hostMain() {
 	noBrowser := flag.Bool("no-browser", false, "не открывать браузер; адрес окна — в терминале и в файле window.url рядом с журналом")
 	showVersion := flag.Bool("version", false, "напечатать версию и выйти")
 	showID := flag.Bool("id", false, "напечатать ID этого компьютера и выйти")
@@ -150,6 +153,7 @@ func main() {
 	if cdpWindows {
 		pcWin = &chromeWin{base: "http://" + addr, issue: once.issue, dir: filepath.Join(cfgDir, "AnyPC", "chrome"), look: exec.LookPath}
 	}
+	pcNative = nativeWins("http://"+addr, once.issue) // Мак: свои NSWindow
 	h := handler(addr, token, page, cfg, a, run, info, newFiles(downloads()), once)
 	go http.Serve(l, h)
 	// токен — ключ к окну (смена пароля): не в журнал (journald читают администраторы, anypc.log прикладывают к тикетам),
@@ -167,7 +171,7 @@ func main() {
 	if startLock != nil { // Э3: блокировка экрана этого ПК снимает пропуска, выданные ему как мастеру
 		go startLock(ctx, func() { go passes.offAll(ctx) }, passes.lockAlive)
 	}
-	if startTray != nil { // значок в трее (Linux): окно — повторно, каждый раз новым одноразовым кодом
+	if startTray != nil { // значок в трее (Linux) или строке меню (Мак): окно — повторно, каждый раз новым одноразовым кодом
 		go startTray(ctx, cfg.ID, func() { openWindow("http://" + addr + "/?n=" + once.issue()) }, func() { quitNow(a) })
 	}
 	srv := cfg.Server
@@ -184,8 +188,27 @@ func main() {
 	cancel()
 }
 
-// startTray — значок в трее до конца ctx (tray_linux.go; на Маке nil): id — ID этого ПК, open — окно, quit — выход.
+// startTray — значок в трее до конца ctx (tray_linux.go, на Маке — в строке меню, window_darwin.go): id — ID этого ПК,
+// open — окно, quit — выход.
 var startTray func(ctx context.Context, id string, open, quit func())
+
+const trayQuit = 4 // id пункта «Выйти»: единственный, кто не открывает окно
+
+// trayTitle — первая строка меню: имя этого ПК и его ID группами по 3 цифры, как в окне.
+func trayTitle(id string) string {
+	h, _ := os.Hostname()
+	var b strings.Builder
+	for i, r := range id {
+		if i > 0 && i%3 == 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteRune(r)
+	}
+	if h == "" {
+		return b.String()
+	}
+	return h + " · " + b.String()
+}
 
 // quitNow — выход по кнопке окна или пункту трея: сессию закрыть, ответу на запрос дать уйти.
 func quitNow(a *agent.Agent) {
