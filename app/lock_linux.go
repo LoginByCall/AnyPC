@@ -61,9 +61,6 @@ func logindLocks(path dbus.ObjectPath) []lockSrc {
 	}
 }
 
-// lockRetry, lockRetryMax — пауза переподключения к шине (растёт вдвое).
-var lockRetry, lockRetryMax = 2 * time.Second, 5 * time.Minute
-
 // runLock — startLock на Linux: alive(источник, жив) — детектор подписан на шину или потерял её.
 func runLock(ctx context.Context, on func(), alive func(string, bool)) {
 	if addr := os.Getenv("DBUS_SESSION_BUS_ADDRESS"); addr != "" { // без переменной godbus запустил бы dbus-launch
