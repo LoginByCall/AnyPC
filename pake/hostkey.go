@@ -2,12 +2,16 @@ package pake
 
 import (
 	"bytes"
+	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"math/big"
+	"slices"
 	"strings"
 )
 
@@ -143,4 +147,42 @@ func OffAckVerify(hostPub, body []byte, hostID string, req, pid []byte) (dropped
 		return false, false
 	}
 	return body[OffID] == 1, ed25519.Verify(hostPub, offAckMsg(hostID, req, pid, body[OffID]), body[OffID+1:])
+}
+
+// Ключ X25519 из ключа хоста Ed25519 (Э4в, сверка без следа для хаба, agent/spseal.go): то же преобразование, что
+// crypto_sign_ed25519_{sk,pk}_to_curve25519 в libsodium — закрытый скаляр = SHA-512(seed)[:32] (X25519 зажимает биты
+// сам), открытый u = (1+y)/(1−y) mod p. Отдельного ключа в составе M не нужно: ключи членов там уже есть. [вывод]
+// Одна пара для Ed25519 и X25519 — так в libsodium и age; совместная стойкость — Thormarker, 2021 («On using the
+// same key pair for Ed25519 and an X25519 based KEM»). Требует ревью человеком (A13, A2 #10).
+
+var p25519, _ = new(big.Int).SetString("7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffed", 16)
+
+// XPriv — закрытый ключ X25519 ключа хоста priv.
+func XPriv(priv ed25519.PrivateKey) (*ecdh.PrivateKey, error) {
+	h := sha512.Sum512(priv.Seed())
+	return ecdh.X25519().NewPrivateKey(h[:32])
+}
+
+// XPub — открытый ключ X25519 ключа Ed25519 pub (тот же, что XPriv(priv).PublicKey()). Открытые ключи не секретны —
+// big.Int без постоянного времени годится.
+func XPub(pub ed25519.PublicKey) (*ecdh.PublicKey, error) {
+	if len(pub) != ed25519.PublicKeySize {
+		return nil, errors.New("pake: ключ не Ed25519")
+	}
+	le := bytes.Clone(pub)
+	le[31] &= 0x7f // старший бит — знак x
+	slices.Reverse(le)
+	y := new(big.Int).SetBytes(le)
+	one := big.NewInt(1)
+	d := new(big.Int).Sub(one, y)
+	d.Mod(d, p25519)
+	if y.Cmp(p25519) >= 0 || d.Sign() == 0 { // y = 1 — нейтральная точка
+		return nil, errors.New("pake: ключ Ed25519 негодный")
+	}
+	u := new(big.Int).Add(one, y)
+	u.Mul(u, d.ModInverse(d, p25519))
+	u.Mod(u, p25519)
+	b := u.FillBytes(make([]byte, 32))
+	slices.Reverse(b)
+	return ecdh.X25519().NewPublicKey(b)
 }
