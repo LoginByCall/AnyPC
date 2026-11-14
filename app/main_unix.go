@@ -104,6 +104,15 @@ func hostMain() {
 		fmt.Printf("учётная запись %s (%s) задана; запущенный AnyPC подхватит её за 2 с\n", agent.UserKey(*cliUser), map[bool]string{true: "view", false: "full"}[view])
 		return
 	}
+	// одна копия на пользователя (single.go): после CLI (--id, --password-stdin… работают при запущенной), до кода
+	// «Спрашивать», агента, трея и окна. Вторая — окно первой (с --no-browser, как из автозапуска, — без окна) и выход 0
+	// (launchd и systemd с Restart=on-failure её не перезапускают)
+	urlFile := filepath.Join(cacheDir, "AnyPC", "window.url")
+	unlock, running := singleInstance(filepath.Join(cfgDir, "AnyPC"), secondShow(*noBrowser, urlFile))
+	if running {
+		return
+	}
+	defer unlock()
 	cfg.codeUsed()                       // режим «Спрашивать»: новый код при запуске — программа могла кончиться посреди сессии (REQ-S-23)
 	if !cfg.confirm() && !cfg.otpSet() { // хост обновлён с выключенным подтверждением: без TOTP — снова окно «Разрешить»
 		log.Printf("ВНИМАНИЕ: вход без подтверждения выключен, пока не настроен второй фактор (TOTP): каждый вход спросит «Разрешить». Настройте: %s --confirm off", filepath.Base(os.Args[0]))
@@ -128,10 +137,10 @@ func hostMain() {
 	online, session, update := false, "", ""
 	a.OnState = func(on bool, s string) { mu.Lock(); online, session = on, s; mu.Unlock() }
 	info := func() map[string]any {
-		node, pub := cfg.node()
 		mu.Lock()
-		defer mu.Unlock()
-		return map[string]any{"id": cfg.id(), "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "otp": cfg.otpSet(), "users": cfg.users(), "keys": cfg.keyList(), "code": cfg.code(), "viewOnly": cfg.viewOnly(), "version": version, "update": update, "node": node, "nodePub": pub, "server": cfg.server(), "audio": audioInfo(a)}
+		on, s, u := online, session, update
+		mu.Unlock()
+		return hostInfo(cfg, a, on, s, u)
 	}
 	go watchUpdates(func(v string) { mu.Lock(); update = v; mu.Unlock() })
 
@@ -150,25 +159,20 @@ func hostMain() {
 	once := &onceCode{}
 	run := &runner{a: a, ctx: ctx}
 	// «ПК как монитор»: окна ПК — в своём Chrome по pipe (cdp_unix.go); без него (и на Маке) — окно AnyPC прежним способом
-	pcFallback = func() { openWindow("http://" + addr + "/?n=" + once.issue()) }
-	if cdpWindows { // Linux: и главное окно — в нём же (закрыть окно = выйти, «Выйти» закрывает окно — как в Windows)
-		pcWin = &chromeWin{base: "http://" + addr, issue: once.issue, dir: filepath.Join(cfgDir, "AnyPC", "chrome"), look: exec.LookPath,
-			onClose: func() { mainClosed(a) }}
-	}
-	openMain := func() { mainWindow(pcFallback) }
+	trayOpen, trayQuit := setupWindows("http://"+addr, once.issue, filepath.Join(cfgDir, "AnyPC", "chrome"), exec.LookPath, openWindow, a)
 	pcNative = nativeWins("http://"+addr, once.issue) // Мак: свои NSWindow
 	h := handler(addr, token, page, cfg, a, run, info, newFiles(downloads()), once)
 	go http.Serve(l, h)
 	// токен — ключ к окну (смена пароля): не в журнал (journald читают администраторы, anypc.log прикладывают к тикетам),
 	// а в файл 0600 и, если запущено из терминала, в терминал
-	url, urlFile := "http://"+addr+"/?t="+token, filepath.Join(cacheDir, "AnyPC", "window.url")
+	url := "http://" + addr + "/?t=" + token
 	os.WriteFile(urlFile, []byte(url+"\n"), 0o600)
 	log.Printf("AnyPC запущен (%s), ID %s. Окно: http://%s/ — ссылка с ключом в %s", platformKind(), cfg.ID, addr, urlFile)
 	if st, err := os.Stderr.Stat(); err == nil && st.Mode()&os.ModeCharDevice != 0 {
 		fmt.Fprintln(os.Stderr, "Окно:", url)
 	}
 	if !*noBrowser { // аргументы браузера видны всем пользователям ПК (/proc/*/cmdline): Chrome AnyPC — без адреса (код по pipe), прежний способ — одноразовый код, не токен
-		go openMain()
+		trayOpen()
 	}
 	passes.cfg = cfg
 	startSpaceSync(ctx, cfg, a)
@@ -176,7 +180,7 @@ func hostMain() {
 		go startLock(ctx, func() { go passes.offAll(ctx) }, passes.lockAlive)
 	}
 	if startTray != nil { // значок в трее (Linux) или строке меню (Мак): окно — повторно, каждый раз новым одноразовым кодом
-		go startTray(ctx, cfg.ID, func() { go openMain() }, func() { quitNow(a) })
+		go startTray(ctx, cfg.ID, trayOpen, trayQuit)
 	}
 	srv := cfg.Server
 	code := cfg.code()
@@ -195,6 +199,23 @@ func hostMain() {
 // startTray — значок в трее до конца ctx (tray_linux.go, на Маке — в строке меню, window_darwin.go): id — ID этого ПК,
 // open — окно, quit — выход.
 var startTray func(ctx context.Context, id string, open, quit func())
+
+// raiseWindow — показать окно AnyPC (открыто — поднять, иначе открыть новым одноразовым кодом); задаёт setupWindows,
+// зовёт API showWindow (вторая копия).
+var raiseWindow func()
+
+// setupWindows — окна этого запуска. pcFallback — прежний способ (open: браузер пользователя, новым кодом; без
+// рекурсии — mainWindow зовёт его, а не себя); pcWin — Chrome AnyPC (Linux): и главное окно, и окна ПК, закрытие
+// главного окна → mainClosed. Возвращает «Открыть» и «Выйти» для трея; «Открыть» не ждёт Chrome (до 20 с).
+func setupWindows(base string, issue func() string, chromeDir string, look func(string) (string, error), open func(string), a *agent.Agent) (func(), func()) {
+	pcFallback = func() { open(base + "/?n=" + issue()) }
+	pcWin = nil
+	if cdpWindows { // Linux: и главное окно — в нём же (закрыть окно = выйти, «Выйти» закрывает окно — как в Windows)
+		pcWin = &chromeWin{base: base, issue: issue, dir: chromeDir, look: look, onClose: func() { mainClosed(a) }}
+	}
+	raiseWindow = func() { mainWindow(pcFallback) }
+	return func() { go raiseWindow() }, func() { quitNow(a) }
+}
 
 // quitNow — выход по кнопке окна, пункту трея или закрытию главного окна: сессию закрыть, ответу на запрос дать уйти,
 // окна AnyPC закрыть (Chrome AnyPC; окно прежним способом — в браузере пользователя, его не закрыть).
@@ -219,6 +240,24 @@ var (
 	exit     = os.Exit // тесты
 )
 
+// inService — AnyPC запущен службой anypc.service (serviceUnit): его cgroup — /…/anypc.service. Не INVOCATION_ID:
+// его (и JOURNAL_STREAM, MANAGERPID) наследуют от gnome-shell все app-gnome-*.scope — двойной щелчок в Nemo тоже
+// (измерено на ПК владельца). На Маке /proc нет — false.
+func inService() bool {
+	b, err := os.ReadFile(cgroupFile)
+	if err != nil {
+		return false
+	}
+	for _, l := range strings.Split(string(b), "\n") {
+		if strings.HasSuffix(strings.TrimSpace(l), "/anypc.service") {
+			return true
+		}
+	}
+	return false
+}
+
+var cgroupFile = "/proc/self/cgroup" // тесты
+
 // mainWindow — открыть главное окно (при запуске и из трея): в Chrome AnyPC (pcWin, Linux), иначе — fallback (прежний
 // способ: браузер пользователя, закрытие окна программа не видит).
 func mainWindow(fallback func()) {
@@ -238,11 +277,11 @@ func mainWindow(fallback func()) {
 	fallback()
 }
 
-// mainClosed — пользователь закрыл главное окно (или Chrome AnyPC вышел). Обычный запуск — выход, как «Выйти».
-// Служба systemd (INVOCATION_ID) — нет: она для доступа к ПК без окна (--no-browser), закрыть окно ≠ остановить
+// mainClosed — пользователь закрыл главное окно. Обычный запуск — выход, как «Выйти».
+// Служба systemd (inService) — нет: она для доступа к ПК без окна (--no-browser), закрыть окно ≠ остановить
 // доступ; значок трея остаётся, окна ПК закрываются вместе с Chrome — следующее «Открыть» запустит его с окном приложения.
 func mainClosed(a *agent.Agent) {
-	if os.Getenv("INVOCATION_ID") != "" {
+	if inService() {
 		log.Printf("окно AnyPC закрыто; служба продолжает работать (значок в трее, «Выйти» — остановить)")
 		if pcWin != nil {
 			pcWin.shut()
@@ -480,6 +519,10 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 		res, err = setNode(cfg, run, str(0), pub)
 	case "quit": // вкладка браузера — не процесс: без кнопки программа живёт до Ctrl+C
 		quitNow(a)
+	case "showWindow": // вторая копия просит показать окно (single_unix.go, showRunning)
+		if raiseWindow != nil {
+			go raiseWindow()
+		}
 	case "hostDisconnect":
 		a.Disconnect()
 	case "getClip":

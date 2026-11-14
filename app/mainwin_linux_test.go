@@ -34,6 +34,8 @@ func mainFake(t *testing.T, f *fakeChrome, extra func(m string, p map[string]any
 			return map[string]any{"sessionId": "S-main"}
 		case "Runtime.evaluate":
 			return map[string]any{"result": map[string]any{"value": true}}
+		case "Target.getTargets": // открыто окно ПК
+			return map[string]any{"targetInfos": []any{map[string]any{"targetId": "T-pc", "type": "page"}, map[string]any{"targetId": "W1", "type": "service_worker"}}}
 		}
 		return map[string]any{}
 	}, w.event)
@@ -106,7 +108,8 @@ func TestMainWindowClose(t *testing.T) {
 	noClose(t, closed, "повтор")
 }
 
-// TestMainWindowChromeGone: Chrome AnyPC упал при открытом главном окне — выход; без главного окна (только окна ПК) — нет.
+// TestMainWindowChromeGone: Chrome AnyPC упал или убит (pipe закрыт без detach) — не выход (значок остаётся, окно —
+// по «Открыть»); Chrome закрыл окно и вышел сам (меню Chrome «Выход»: detach, затем pipe) — выход.
 func TestMainWindowChromeGone(t *testing.T) {
 	var f fakeChrome
 	w, closed := mainFake(t, &f, nil)
@@ -114,16 +117,57 @@ func TestMainWindowChromeGone(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.wmu.Lock()
-	f.outW.Close() // Chrome вышел: канал закрыт
+	f.outW.Close() // Chrome убит: канал закрыт, событий нет
 	f.wmu.Unlock()
-	gotClose(t, closed, "Chrome упал")
+	noClose(t, closed, "Chrome упал")
+	w.mu.Lock()
+	m := w.main
+	w.mu.Unlock()
+	if m != "" {
+		t.Errorf("цель упавшего Chrome осталась главной: %q", m)
+	}
 
 	var g fakeChrome
-	_, closed2 := mainFake(t, &g, nil) // главное окно не в нём (прежний способ), только окна ПК
+	w2, closed2 := mainFake(t, &g, nil)
+	if err := w2.openMain(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	g.emit("Target.detachedFromTarget", map[string]any{"targetId": "T-main"})
 	g.wmu.Lock()
 	g.outW.Close()
 	g.wmu.Unlock()
-	noClose(t, closed2, "Chrome без главного окна")
+	gotClose(t, closed2, "окно закрыто, Chrome вышел")
+	noClose(t, closed2, "повтор после выхода Chrome")
+}
+
+// TestMainWindowRestart: Chrome AnyPC жив без окон, главного нет — перезапуск с --app (Browser.close и новый запуск),
+// а не окно с вкладками; есть окно ПК — обычное окно (TestMainWindowClose).
+func TestMainWindowRestart(t *testing.T) {
+	var f fakeChrome
+	w, _ := mainFake(t, &f, func(m string, p map[string]any) any {
+		switch m {
+		case "Target.getTargets":
+			return map[string]any{"targetInfos": []any{map[string]any{"targetId": "W1", "type": "service_worker"}}}
+		case "Browser.close":
+			return fakeExit
+		}
+		return nil
+	})
+	starts := 0
+	w.dir, w.look = t.TempDir(), func(string) (string, error) { starts++; return "", errors.New("нет") }
+	if err := w.openMain(context.Background()); !errors.Is(err, errNoWindow) {
+		t.Fatalf("ошибка: %v", err)
+	}
+	var seen []string
+	for _, k := range f.log() {
+		seen = append(seen, k.Method)
+	}
+	if strings.Join(seen, " ") != "Target.getTargets Browser.close" || starts == 0 {
+		t.Errorf("вызовы %v, запусков %d", seen, starts)
+	}
+	if a := strings.Join(chromeArgs("/p", true), " "); !strings.Contains(a, "--app=data:") || !strings.Contains(a, "--hide-crash-restore-bubble") || strings.Contains(a, "--no-startup-window") {
+		t.Errorf("аргументы окна приложения: %s", a)
+	}
 }
 
 // TestMainWindowShut: «Выйти» закрывает Chrome (Browser.close) — это не «пользователь закрыл окно»;
@@ -210,12 +254,47 @@ func TestMainWindowFallback(t *testing.T) {
 	}
 }
 
-// TestMainClosedService: закрытие главного окна — выход (exit 0: служба с Restart=on-failure не перезапускается);
-// под службой (INVOCATION_ID) — не выход: Chrome AnyPC закрыт, программа и значок остаются.
-func TestMainClosedService(t *testing.T) {
-	defer func(e func(int), w *chromeWin) { exit, pcWin = e, w; quitOnce = sync.Once{} }(exit, pcWin)
-	codes := make(chan int, 2)
+// setCgroup — /proc/self/cgroup этого процесса для теста.
+func setCgroup(t *testing.T, text string) {
+	t.Helper()
+	old := cgroupFile
+	cgroupFile = filepath.Join(t.TempDir(), "cgroup")
+	os.WriteFile(cgroupFile, []byte(text), 0o600)
+	t.Cleanup(func() { cgroupFile = old })
+}
+
+func stubExit(t *testing.T) chan int {
+	codes := make(chan int, 4)
+	old := exit
 	exit = func(c int) { codes <- c }
+	quitOnce = sync.Once{}
+	t.Cleanup(func() { exit = old; quitOnce = sync.Once{} })
+	return codes
+}
+
+func wantExit(t *testing.T, codes chan int, what string) {
+	t.Helper()
+	select {
+	case c := <-codes:
+		if c != 0 {
+			t.Errorf("%s: выход %d — служба с Restart=on-failure перезапустилась бы", what, c)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("%s: нет выхода", what)
+	}
+	select {
+	case <-codes:
+		t.Errorf("%s: выход дважды", what)
+	case <-time.After(400 * time.Millisecond):
+	}
+}
+
+// TestMainClosedService: закрытие главного окна — выход (exit 0); под службой (cgroup anypc.service) — не выход:
+// Chrome AnyPC закрыт, программа и значок остаются. INVOCATION_ID без cgroup службы (запуск из Nemo: app-gnome-*.scope
+// наследует его от gnome-shell, измерено у владельца) — обычный запуск, выход.
+func TestMainClosedService(t *testing.T) {
+	defer func(w *chromeWin) { pcWin = w }(pcWin)
+	codes := stubExit(t)
 	var f fakeChrome
 	w, _ := mainFake(t, &f, func(m string, p map[string]any) any {
 		if m == "Browser.close" {
@@ -224,8 +303,10 @@ func TestMainClosedService(t *testing.T) {
 		return nil
 	})
 	pcWin = w
-	t.Setenv("INVOCATION_ID", "abc")
-	quitOnce = sync.Once{}
+	setCgroup(t, "0::/user.slice/user-1000.slice/user@1000.service/app.slice/anypc.service\n")
+	if !inService() {
+		t.Fatal("cgroup службы не узнан")
+	}
 	mainClosed(&agent.Agent{})
 	if w.c.alive() {
 		t.Error("служба: Chrome AnyPC не закрыт")
@@ -235,25 +316,109 @@ func TestMainClosedService(t *testing.T) {
 		t.Errorf("служба: выход %d", c)
 	case <-time.After(500 * time.Millisecond):
 	}
-	t.Setenv("INVOCATION_ID", "")
+	t.Setenv("INVOCATION_ID", "abc")
+	t.Setenv("JOURNAL_STREAM", "8:123")
+	setCgroup(t, "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-gnome-nemo-tabs-4242.scope\n")
+	if inService() {
+		t.Fatal("запуск из Nemo принят за службу")
+	}
 	mainClosed(&agent.Agent{})
 	quitNow(&agent.Agent{}) // и «Выйти» следом — второго выхода нет
-	select {
-	case c := <-codes:
-		if c != 0 {
-			t.Errorf("выход %d: служба с Restart=on-failure перезапустилась бы", c)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("нет выхода")
-	}
-	select {
-	case <-codes:
-		t.Error("выход дважды")
-	case <-time.After(500 * time.Millisecond):
-	}
+	wantExit(t, codes, "закрытие окна")
 	if !strings.Contains(serviceUnit("/x"), "Restart=on-failure") {
 		t.Error("служба перезапускается не только при сбое")
 	}
+	cgroupFile = filepath.Join(t.TempDir(), "нет") // Мак, нет /proc
+	if inService() {
+		t.Error("без /proc — служба")
+	}
+}
+
+// TestQuitClosesChrome: «Выйти» закрывает Chrome AnyPC (Browser.close) и выходит 0.
+func TestQuitClosesChrome(t *testing.T) {
+	defer func(w *chromeWin) { pcWin = w }(pcWin)
+	codes := stubExit(t)
+	var f fakeChrome
+	w, closed := mainFake(t, &f, func(m string, p map[string]any) any {
+		if m == "Browser.close" {
+			return fakeExit
+		}
+		return nil
+	})
+	if err := w.openMain(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pcWin = w
+	quitNow(&agent.Agent{})
+	wantExit(t, codes, "Выйти")
+	if w.c.alive() {
+		t.Error("Chrome не закрыт")
+	}
+	if l := f.log(); l[len(l)-1].Method != "Browser.close" {
+		t.Errorf("последний вызов: %+v", l[len(l)-1])
+	}
+	noClose(t, closed, "Выйти")
+}
+
+// TestSetupWindows: связка hostMain. Без Chrome: showWindow второй копии (raiseWindow) и «Открыть» трея — окно
+// прежним способом один раз, без рекурсии; закрытие главного окна (onClose) — выход; «Выйти» трея — выход.
+func TestSetupWindows(t *testing.T) {
+	defer func(w *chromeWin, f, r func()) { pcWin, pcFallback, raiseWindow = w, f, r }(pcWin, pcFallback, raiseWindow)
+	setCgroup(t, "0::/user.slice/app.slice/app-gnome-x.scope\n")
+	codes := stubExit(t)
+	opened := make(chan string, 4)
+	n := 0
+	issue := func() string { n++; return "code" + string(rune('0'+n)) }
+	open, quit := setupWindows("http://127.0.0.1:5000", issue, t.TempDir(), func(string) (string, error) { return "", errors.New("нет") },
+		func(u string) { opened <- u }, &agent.Agent{})
+	if pcWin == nil || pcWin.onClose == nil || pcWin.base != "http://127.0.0.1:5000" {
+		t.Fatalf("pcWin: %+v", pcWin)
+	}
+	done := make(chan struct{})
+	go func() { raiseWindow(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("showWindow без Chrome завис (рекурсия?)")
+	}
+	if u := <-opened; u != "http://127.0.0.1:5000/?n=code1" {
+		t.Errorf("прежний способ: %q", u)
+	}
+	open()
+	select {
+	case u := <-opened:
+		if u != "http://127.0.0.1:5000/?n=code2" {
+			t.Errorf("«Открыть»: %q", u)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("«Открыть» трея не открыло окно")
+	}
+	select {
+	case u := <-opened:
+		t.Errorf("лишнее окно: %q", u)
+	case <-time.After(200 * time.Millisecond):
+	}
+	onClose := pcWin.onClose
+	var f fakeChrome // окно в Chrome AnyPC открыто: showWindow второй копии поднимает его, нового не открывает
+	w, _ := mainFake(t, &f, nil)
+	if err := w.openMain(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pcWin = w
+	raiseWindow()
+	if l := f.log(); l[len(l)-1].Method != "Target.activateTarget" {
+		t.Errorf("showWindow при открытом окне: %+v", l[len(l)-1])
+	}
+	select {
+	case u := <-opened:
+		t.Errorf("showWindow открыл окно прежним способом: %q", u)
+	case <-time.After(200 * time.Millisecond):
+	}
+	onClose()
+	wantExit(t, codes, "закрытие окна")
+	quitOnce = sync.Once{}
+	quit()
+	wantExit(t, codes, "«Выйти» трея")
 }
 
 // TestCDPMainLive — настоящий Chrome (V1): ANYPC_CDP_LIVE=<каталог профиля, будет удалён>; ANYPC_CDP_HEADLESS=1 — без окон

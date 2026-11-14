@@ -288,7 +288,8 @@ func chromeArgs(dir string, app bool) []string {
 	if app {
 		first = "--app=" + appStub
 	}
-	return append([]string{"--remote-debugging-pipe", "--user-data-dir=" + dir, "--no-first-run", "--no-default-browser-check", first}, chromeTestArgs...)
+	// --hide-crash-restore-bubble: Chrome убит (OOM, выход AnyPC при зависшем Chrome) — без «Восстановить страницы?»
+	return append([]string{"--remote-debugging-pipe", "--user-data-dir=" + dir, "--no-first-run", "--no-default-browser-check", "--hide-crash-restore-bubble", first}, chromeTestArgs...)
 }
 
 const appStub = "data:text/html,<title>AnyPC</title>"
@@ -370,35 +371,45 @@ func (w *chromeWin) start(ctx context.Context, app bool) (*cdpConn, bool, error)
 	return c, true, nil
 }
 
-// event — события Chrome AnyPC: закрылась цель главного окна (крестик, Alt+F4) или Chrome вышел при открытом
-// главном окне → onClose. Перезагрузка и переходы внутри окна цель не меняют (измерено, Chrome 157); окна ПК — другие цели.
+// event — события Chrome AnyPC. Пользователь закрыл главное окно (крестик, Alt+F4: detachedFromTarget его цели при
+// живом Chrome) → onClose. Chrome упал или убит (OOM): канал закрыт без detach → не выход, окно — заново по «Открыть».
+// Перезагрузка и переходы внутри окна цель не меняют (измерено, Chrome 157); окна ПК — другие цели. Сессию CDP к главной
+// цели не отсоединять: авто-выгрузка вкладки дала бы detachedFromTarget → ложный выход.
 func (w *chromeWin) event(c *cdpConn, method string, params json.RawMessage) {
 	var p struct {
 		TargetID string `json:"targetId"`
 	}
 	switch method {
-	case "Target.detachedFromTarget", "Target.targetDestroyed":
+	case "Target.detachedFromTarget":
 		if json.Unmarshal(params, &p) != nil || p.TargetID == "" {
 			return
 		}
 	case cdpGone:
+		w.mu.Lock()
+		if w.c == c && w.main != "" {
+			w.main = ""
+			log.Printf("окно AnyPC: Chrome вышел — программа работает, окно — по «Открыть» в трее")
+		}
+		w.mu.Unlock()
+		return
 	default:
 		return
 	}
 	w.mu.Lock()
-	fire := w.c == c && w.main != "" && (method == cdpGone || p.TargetID == w.main)
+	fire := w.c == c && w.main != "" && p.TargetID == w.main
 	if fire {
 		w.main = ""
 	}
 	w.mu.Unlock()
 	if fire && w.onClose != nil {
-		log.Printf("окно AnyPC закрыто (%s)", map[bool]string{true: "Chrome вышел", false: "окно"}[method == cdpGone])
+		log.Printf("окно AnyPC закрыто")
 		go w.onClose()
 	}
 }
 
 // openMain — главное окно AnyPC в Chrome AnyPC: открыто — поднять; Chrome не запущен — запустить с окном приложения
-// (--app); запущен ради окон ПК, а главного нет — обычное окно Chrome (окно приложения по pipe не открыть).
+// (--app); запущен без окон — перезапустить так же; есть окна ПК — обычное окно Chrome (окно приложения по pipe не
+// открыть, а перезапуск закрыл бы окна ПК).
 // Ошибка с errNoWindow — окна нет, можно открыть прежним способом.
 func (w *chromeWin) openMain(ctx context.Context) error {
 	w.mainMu.Lock()
@@ -410,6 +421,13 @@ func (w *chromeWin) openMain(ctx context.Context) error {
 		return c.call(ctx, "", "Target.activateTarget", map[string]any{"targetId": tid}, nil)
 	}
 	c, started, err := w.start(ctx, true)
+	if err == nil && !started {
+		var l []string
+		if l, err = pageIDs(ctx, c); err == nil && len(l) == 0 {
+			w.shut()
+			c, started, err = w.start(ctx, true)
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("%w: %v", errNoWindow, err)
 	}
@@ -452,19 +470,32 @@ func (w *chromeWin) openMain(ctx context.Context) error {
 	return nil
 }
 
+// pageIDs — окна (цели page) Chrome AnyPC.
+func pageIDs(ctx context.Context, c *cdpConn) ([]string, error) {
+	var tg struct {
+		TargetInfos []struct{ TargetID, Type string }
+	}
+	if err := c.call(ctx, "", "Target.getTargets", nil, &tg); err != nil {
+		return nil, err
+	}
+	var l []string
+	for _, x := range tg.TargetInfos {
+		if x.Type == "page" {
+			l = append(l, x.TargetID)
+		}
+	}
+	return l, nil
+}
+
 // firstPage — цель окна, с которым Chrome запустился (--app); появляется не сразу.
 func firstPage(ctx context.Context, c *cdpConn) (string, error) {
 	for {
-		var tg struct {
-			TargetInfos []struct{ TargetID, Type string }
-		}
-		if err := c.call(ctx, "", "Target.getTargets", nil, &tg); err != nil {
+		l, err := pageIDs(ctx, c)
+		if err != nil {
 			return "", err
 		}
-		for _, x := range tg.TargetInfos {
-			if x.Type == "page" {
-				return x.TargetID, nil
-			}
+		if len(l) > 0 {
+			return l[0], nil
 		}
 		select {
 		case <-ctx.Done():
