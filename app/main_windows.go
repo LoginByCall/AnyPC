@@ -185,6 +185,9 @@ func main() {
 	w.Bind("fileAbort", fl.Abort)
 	w.Bind("getClip", agent.ClipText)
 	w.Bind("setClip", agent.SetClipText)
+	for _, n := range spaceNames { // пространство (spaceapi.go): долгие операции — в фоне (spaceops.go), поток окна не ждёт
+		w.Bind(n, func(a ...json.RawMessage) (any, error) { return spaceCall(cfg, n, a) })
+	}
 	srv, _ := json.Marshal(cfg.Server)
 	w.Init("window.ANYPC = {ws: " + string(srv) + "};")
 	w.Navigate("http://" + l.Addr().String() + "/")

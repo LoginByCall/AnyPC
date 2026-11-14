@@ -34,6 +34,7 @@ import (
 var (
 	errSpaceVia  = errors.New("пространство: пароль, код и «Спрашивать» этого ПК меняются через пространство (фраза)")
 	errSpaceSelf = errors.New("пространство: этот ПК исключается с другого ПК пространства")
+	errPassShort = errors.New("пароль короче 8 символов")
 )
 
 // spaceChanged — вход записи по умолчанию сменился (правка или приём M): сессии со старым паролем рвать
@@ -465,7 +466,7 @@ func (s *spaceSyncer) spaceExclude(ctx context.Context, phrase string, pub ed255
 		return nil, errSpaceSelf
 	}
 	if newPassword != "" && len([]rune(newPassword)) < 8 {
-		return nil, errors.New("пароль короче 8 символов")
+		return nil, errPassShort
 	}
 	return s.edit(ctx, func(m *space) (*space, error) { return spaceRemoveLogin(m, phrase, pub, newPassword) })
 }
@@ -474,7 +475,7 @@ func (s *spaceSyncer) spaceExclude(ctx context.Context, phrase string, pub ed255
 // — прежний) и, если newCode или вход скомпрометирован, новый секрет кода (окно покажет новый QR).
 func (s *spaceSyncer) spaceChangeLogin(ctx context.Context, phrase, newPassword string, newCode bool) ([]spaceResult, error) {
 	if newPassword != "" && len([]rune(newPassword)) < 8 {
-		return nil, errors.New("пароль короче 8 символов")
+		return nil, errPassShort
 	}
 	return s.edit(ctx, func(m *space) (*space, error) {
 		sec := ""

@@ -396,7 +396,7 @@ func hostDial(ctx context.Context, server, id string, req connectReq, setup func
 		return err
 	case <-ctx.Done():
 		if ctx.Err() == context.DeadlineExceeded {
-			return errors.New("пространство: нет ответа вовремя")
+			return fmt.Errorf("пространство: нет ответа вовремя (%w)", ctx.Err()) // окно: errors.Is(context.DeadlineExceeded)
 		}
 		return ctx.Err()
 	}
