@@ -21,6 +21,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"anypc/pake"
@@ -297,7 +298,7 @@ func (h *Hub) offOK(c *websocket.Conn) bool {
 func (h *Hub) offWait(cid, host string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	now := time.Now()
+	now := offNow()
 	w := h.waits[cid]
 	for k, until := range w {
 		if now.After(until) {
@@ -324,8 +325,13 @@ func (h *Hub) offAcked(cid, host string) bool {
 	defer h.mu.Unlock()
 	until, ok := h.waits[cid][host]
 	delete(h.waits[cid], host)
-	return ok && time.Now().Before(until)
+	return ok && offNow().Before(until)
 }
+
+// offNow — часы ожиданий offack; offSkew — сдвиг для теста (нс).
+func offNow() time.Time { return time.Now().Add(time.Duration(offSkew.Load())) }
+
+var offSkew atomic.Int64
 
 func (h *Hub) get(id string) *websocket.Conn {
 	h.mu.Lock()
@@ -447,7 +453,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			send(ctx, c, errMsg("forbidden"))
 			continue
 		}
-		if m.Type == "offack" && !h.offAcked(m.To, id) { // хост → только тому клиенту, чьё «снять» ему переслано, один раз
+		if m.Type == "offack" && (len(b) > OffAckMax || !h.offAcked(m.To, id)) { // хост → только тому клиенту, чьё «снять» ему переслано, один раз
 			send(ctx, c, errMsg("forbidden"))
 			continue
 		}

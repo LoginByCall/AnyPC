@@ -49,7 +49,9 @@ func ackOf(t *testing.T, a *Agent, data json.RawMessage, pid []byte) (answered, 
 	if ack == nil {
 		return false, false
 	}
-	dropped, ok := pake.OffAckVerify(a.Key.Public().(ed25519.PublicKey), ack, a.ID, pid)
+	var raw []byte
+	json.Unmarshal(data, &raw) // ответ — тому ключу, что просил
+	dropped, ok := pake.OffAckVerify(a.Key.Public().(ed25519.PublicKey), ack, a.ID, raw[:ed25519.PublicKeySize], pid)
 	if !ok {
 		t.Fatal("ответ цели не проверяется её ключом")
 	}
@@ -134,11 +136,23 @@ func TestOffMsgRejected(t *testing.T) {
 	if ans, drop := ackOf(t, p.a, offBody(mkey, id, wrong, nil), wrong); !ans || drop || !hasPass(p.a, mpub) {
 		t.Fatalf("другой id: ответ %v, снят %v, пропуск жив %v", ans, drop, hasPass(p.a, mpub))
 	}
+	_, m2, _ := ed25519.GenerateKey(nil) // другой член M с id пропуска мастера: «нет пропуска» мастеру не годится
+	p.member(m2.Public().(ed25519.PublicKey), true)
+	if ans, drop := ackOf(t, p.a, offBody(m2, id, pid, nil), pid); !ans || drop || !hasPass(p.a, mpub) {
+		t.Fatal("другой член M снял пропуск мастера")
+	}
+	cross := p.a.offMsg(hub.Msg{From: offFrom, Data: offBody(m2, id, pid, nil)})
+	if _, ok := pake.OffAckVerify(d.HostPub, cross, id, mpub, pid); ok {
+		t.Fatal("ответ члену M2 проверяется ключом мастера")
+	}
 	p.member(mpub, false)
-	if ans, _ := ackOf(t, p.a, offBody(mkey, id, pid, nil), pid); ans || !hasPass(p.a, mpub) {
-		t.Fatal("исключённый член: ответ или снятие")
+	if ans, _ := ackOf(t, p.a, offBody(mkey, id, pid, nil), pid); ans {
+		t.Fatal("исключённый член: ответ")
 	}
 	p.member(mpub, true)
+	if !hasPass(p.a, mpub) {
+		t.Fatal("исключённый член снял пропуск")
+	}
 	good := offBody(mkey, id, pid, nil)
 	if ans, drop := ackOf(t, p.a, good, pid); !ans || !drop || hasPass(p.a, mpub) {
 		t.Fatal("верное «снять» не сняло")
@@ -188,7 +202,15 @@ func TestOffMsgFlood(t *testing.T) {
 			}
 		})
 	}
-	if err := PassOff(ctx, d); err != nil {
+	// через хаб посторонние с loopback (все «за одним адресом») могут опустошить ведро цели — мастер повторяет, как app
+	var err error
+	for range 20 {
+		if err = PassOff(ctx, d); err == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if err != nil {
 		t.Fatalf("«снять» посреди потока: %v", err)
 	}
 	wg.Wait()
@@ -237,33 +259,63 @@ func TestOffMsgNoAck(t *testing.T) {
 	if err := passOffHub(ctx, d); err == nil || errors.Is(err, errOffOld) {
 		t.Fatalf("цель молчит: %v", err)
 	}
-	type forge struct {
-		key ed25519.PrivateKey
-		pid []byte
+	mpub := mkey.Public().(ed25519.PublicKey)
+	sign := func(key ed25519.PrivateKey, id string, req, pid []byte) []byte {
+		return pake.OffAck(key, id, req, pid, true)
 	}
-	var cur atomic.Pointer[forge]
-	cur.Store(&forge{other, d.PID})
+	var cur atomic.Pointer[func() []byte]
+	set := func(f func() []byte) { cur.Store(&f) }
+	set(func() []byte { return sign(other, d.ID, mpub, d.PID) })
 	go func() { // отвечает на каждое off, в том числе на пришедшее, пока не читал (его клиент ушёл — хаб не пропустит)
 		var m hub.Msg
 		for wsjson.Read(ctx, h, &m) == nil {
 			if m.Type == "off" {
-				f := cur.Load()
-				ack, _ := json.Marshal(pake.OffAck(f.key, d.ID, f.pid, true))
+				ack, _ := json.Marshal((*cur.Load())())
 				wsjson.Write(ctx, h, hub.Msg{V: 1, Type: "offack", To: m.From, Data: ack})
 			}
 		}
 	}()
-	if err := passOffHub(ctx, d); !errors.Is(err, ErrSpaceHostKey) {
-		t.Errorf("ответ не тем ключом: %v", err)
+	for why, f := range map[string]func() []byte{
+		"не тем ключом":   func() []byte { return sign(other, d.ID, mpub, d.PID) },
+		"на другой id":    func() []byte { return sign(hkey, d.ID, mpub, []byte("другой-id-16байт")[:pake.OffID]) },
+		"другой цели":     func() []byte { return sign(hkey, "999999999", mpub, d.PID) },
+		"другому ключу":   func() []byte { return sign(hkey, d.ID, other.Public().(ed25519.PublicKey), d.PID) },
+		"статус подменён": func() []byte { b := sign(hkey, d.ID, mpub, d.PID); b[pake.OffID] = 0; return b },
+	} {
+		set(f)
+		if err := passOffHub(ctx, d); !errors.Is(err, ErrSpaceHostKey) {
+			t.Errorf("ответ %s: %v", why, err)
+		}
 	}
-	cur.Store(&forge{hkey, []byte("другой-id-16байт")[:pake.OffID]})
-	if err := passOffHub(ctx, d); !errors.Is(err, ErrSpaceHostKey) {
-		t.Errorf("ответ на другой id: %v", err)
-	}
-	cur.Store(&forge{hkey, d.PID})
+	set(func() []byte { return sign(hkey, d.ID, mpub, d.PID) })
 	if err := passOffHub(ctx, d); err != nil {
 		t.Errorf("верный ответ: %v", err)
 	}
+	// верный ответ, но не от цели (From другой): хаб так не перешлёт, мастер не верит
+	ack, _ := json.Marshal(sign(hkey, d.ID, mpub, d.PID))
+	fake := scriptHub(t, func(m hub.Msg) hub.Msg { return hub.Msg{V: 1, Type: "offack", From: "999999999", Data: ack} })
+	d.Server = fake
+	if err := passOffHub(ctx, d); err == nil {
+		t.Error("ответ с чужим from принят")
+	}
+}
+
+// scriptHub — поддельный хаб: hello, затем на каждое сообщение — reply(m).
+func scriptHub(t *testing.T, reply func(hub.Msg) hub.Msg) string {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		wsjson.Write(r.Context(), c, hub.Msg{V: 1, Type: "hello", Data: json.RawMessage(`{"id":"c000000000002"}`)})
+		var m hub.Msg
+		for wsjson.Read(r.Context(), c, &m) == nil {
+			wsjson.Write(r.Context(), c, reply(m))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return "ws" + strings.TrimPrefix(srv.URL, "http")
 }
 
 // TestOffMsgOldHost — цель старой версии (?off=1 не объявляет): хаб отвечает "old", мастер снимает по-старому;
@@ -289,20 +341,10 @@ func TestOffMsgOldHost(t *testing.T) {
 	if err := PassOff(context.Background(), nd); err != nil || hasPass(n.a, mpub) {
 		t.Fatalf("без id: %v, пропуск жив %v", err, hasPass(n.a, mpub))
 	}
-	oldHub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { // хаб v0.2.0: off не знает
-		c, err := websocket.Accept(w, r, nil)
-		if err != nil {
-			return
-		}
-		defer c.CloseNow()
-		wsjson.Write(r.Context(), c, hub.Msg{V: 1, Type: "hello", Data: json.RawMessage(`{"id":"c000000000002"}`)})
-		var m hub.Msg
-		for wsjson.Read(r.Context(), c, &m) == nil {
-			wsjson.Write(r.Context(), c, hub.Msg{V: 1, Type: "error", Data: json.RawMessage(`"forbidden"`)})
-		}
-	}))
-	defer oldHub.Close()
-	nd.Server, nd.PID = "ws"+strings.TrimPrefix(oldHub.URL, "http"), make([]byte, pake.OffID)
+	oldHub := scriptHub(t, func(hub.Msg) hub.Msg { // хаб v0.2.0: off не знает
+		return hub.Msg{V: 1, Type: "error", Data: json.RawMessage(`"forbidden"`)}
+	})
+	nd.Server, nd.PID = oldHub, make([]byte, pake.OffID)
 	if err := passOffHub(context.Background(), nd); !errors.Is(err, errOffOld) {
 		t.Fatalf("старый хаб: %v", err)
 	}
