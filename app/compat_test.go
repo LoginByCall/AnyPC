@@ -19,13 +19,17 @@ import (
 	"testing"
 	"time"
 
+	"anypc/agent"
 	"anypc/pake"
 	"anypc/totp"
 )
 
 const relSec, relGuestSec = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP", "KRSXG5CTMVRXEZLUKRSXG5CTMVRXEZLU" // секреты фикстур
 
-// relConfig — фикстура версии v с добавками extra (ключ JSON → значение) в новом файле.
+// relServer — хаб вместо боевого из фикстуры: порт 1 закрыт, тест в сеть не выходит (замечание M1 приёмки Э5).
+const relServer = "ws://127.0.0.1:1/ws"
+
+// relConfig — фикстура версии v с добавками extra (ключ JSON → значение) в новом файле; server — relServer.
 func relConfig(t *testing.T, v string, extra map[string]json.RawMessage) (path string, orig map[string]any) {
 	t.Helper()
 	b, err := os.ReadFile("testdata/config-" + v + ".json")
@@ -35,6 +39,7 @@ func relConfig(t *testing.T, v string, extra map[string]json.RawMessage) (path s
 	var raw map[string]json.RawMessage
 	json.Unmarshal(b, &raw)
 	json.Unmarshal(b, &orig)
+	raw["server"], orig["server"] = json.RawMessage(`"`+relServer+`"`), relServer
 	maps.Copy(raw, extra)
 	b, _ = json.Marshal(raw)
 	path = filepath.Join(t.TempDir(), "config.json")
@@ -76,8 +81,12 @@ func relCheck(t *testing.T, c *config, ui, otp bool) {
 		!strings.Contains(c.ckeyGet("987654321"), `"lu":"ivan"`) {
 		t.Error("режим, «Известные», сохранённый пароль или ключ клиента")
 	}
-	if ui && c.uiGet()["mine"] != `[{"id":"987654321","name":"Дача"}]` {
-		t.Errorf("окно: %v", c.uiGet())
+	if c.UIPort == 0 || c.server() != relServer {
+		t.Errorf("порт окна %d, хаб %q", c.UIPort, c.server())
+	}
+	if g := c.uiGet(); ui && (g["mine"] != `[{"id":"987654321","name":"Дача"}]` || g["recent"] != `["987654321"]` || g["turn"] != `"auto"` ||
+		g["tour_home"] != "1" || g["tour_sess"] != "1" || g["turbo"] != "1" || g["stats"] != "true" || g["users"] != `{"987654321":"ivan"}`) {
+		t.Errorf("окно: %v", g)
 	}
 }
 
@@ -95,6 +104,9 @@ func TestConfigReleases(t *testing.T) {
 				t.Fatal(err)
 			}
 			relCheck(t, c, v == "v0.2.0", true)
+			if port, _ := orig["ui_port"].(float64); port == 0 || c.UIPort != int(port) { // M2: тег ui_port
+				t.Errorf("порт окна %d, в файле %v", c.UIPort, orig["ui_port"])
+			}
 			if len(c.Space) != 0 || c.spaceDamaged() || c.loginTag("", nil) == nil {
 				t.Error("пространство из ниоткуда")
 			}
@@ -170,6 +182,10 @@ func TestConfigSpaceV1(t *testing.T) {
 	}
 	sp, _ := json.Marshal(mb)
 	p, _ := relConfig(t, "v0.2.0", map[string]json.RawMessage{"space": sp})
+	withSpaceNet(t, func(_ context.Context, d agent.SpaceDial) ([]byte, error) { // M1: сломанная защита — не в сеть
+		t.Errorf("вступление при испорченной записи дошло до сети (%s)", d.Server)
+		return nil, agent.ErrSpaceOffline
+	})
 	c, err := loadConfig(p)
 	if err != nil {
 		t.Fatal(err)

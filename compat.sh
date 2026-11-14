@@ -17,6 +17,7 @@ for d in new old; do
   (cd "$t/$d" && GOOS=js GOARCH=wasm go build -ldflags='-s -w' -o ui/pake.wasm ./wasm && cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" ui/)
 done
 export DBUS_SESSION_BUS_ADDRESS=
+unset ANYPC_LIVE # TestLive идёт на боевые хабы — здесь только локальные
 case $mode in
 hub) rm -r "$t/new/hub" && cp -r "$t/old/hub" "$t/new/hub" && cd "$t/new" && timeout 1800 go test -count=1 -timeout 25m "$@" ./agent ./app ;;
 client) cp "$t/old/ui/index.html" "$t/old/ui/embed.js" "$t/new/ui/" && cd "$t/new" && timeout 900 go test -count=1 -timeout 14m -run "${RUN:-TestBrowser}" "$@" ./agent ;;

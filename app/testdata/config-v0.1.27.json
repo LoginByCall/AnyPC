@@ -1,38 +1,38 @@
 {
-  "id": "408805428",
+  "id": "992945682",
   "server": "wss://hk.anypc.org/ws,wss://ru.anypc.org/ws",
   "enc": "libx264",
   "bitrate": "4M",
   "users": [
     {
-      "salt": "3X819O0iuwkESdh4xWc0cA==",
-      "hash": "mtSu6Y0dTShhl2pC8Vr/KsJZ/KpPagwk4oaOUu49LpY=",
+      "salt": "gKFtSu1e4nzfB4ws9iP1Sg==",
+      "hash": "0O1s9IJKwIumN7qI1jLabQ1c4A6ymmksuV9xhDjwV54=",
       "totp": "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP",
-      "totp_step": 59822731,
+      "totp_step": 59822824,
       "trusted": [
         "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
       ],
       "key_login": [
         {
           "pub": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
-          "added": "2026-11-14T13:45:43.219706381-05:00",
-          "last": "2026-11-14T13:45:43.219706381-05:00"
+          "added": "2026-11-14T14:32:25.909117583-05:00",
+          "last": "2026-11-14T14:32:25.909117583-05:00"
         }
       ]
     },
     {
       "name": "ivan",
-      "salt": "8gTu+69wctzXdegQEdaVpQ==",
-      "hash": "zOnCtR+by8N87rswvsrwH2gGA0LYv3CJfsrArPmD4BM=",
+      "salt": "9URYw1SFpN8MYbiW1Yx+pA==",
+      "hash": "tL2EHLBQ2tKY+4FpJbZLp+89e6c6lT1zTDxOTcCX9zQ=",
       "view": true,
       "totp": "KRSXG5CTMVRXEZLUKRSXG5CTMVRXEZLU",
-      "totp_step": 59822731,
+      "totp_step": 59822824,
       "trusted": [
         "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM="
       ]
     }
   ],
-  "key": "bRReKt6p/acBhqKmg+y229Byh4GIgqecElfiPeqr3D/Kljgp42RqJZQn9tzHOKhMjtCMf+o+7xmHkAgdL1jIGg==",
+  "key": "1EL6j0vYqLommMhE/qOty3lI3mv9uKCFrHaMWpGxnPUnVCfSvjopZGjHMMdi1/tP1u1Nu/WrE9nFdXALHoeSGA==",
   "known": {
     "987654321": "AA:BB"
   },
@@ -44,6 +44,7 @@
     "987654321": "{\"seed\":\"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=\",\"pub\":\"6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iw=\",\"login\":true,\"lu\":\"ivan\"}"
   },
   "view_only": true,
-  "code": "082656",
-  "code_salt": "o0muHvceXP/E1DJREMAGhA=="
+  "ui_port": 36945,
+  "code": "145651",
+  "code_salt": "u9YfYGauTLDjlkbi6zVxlQ=="
 }
