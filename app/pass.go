@@ -30,13 +30,19 @@ var passHoldFor = 90 * time.Second
 // Сеть (agent/pass.go); переменные — для теста.
 var passOpenFn, passOffFn = agent.PassOpen, agent.PassOff
 
-// startLock — до конца ctx звать on() при блокировке экрана этого ПК (lock_linux.go). На Маке и Windows nil:
+// startLock — до конца ctx звать on() при блокировке экрана этого ПК, alive(источник, жив) — о подписке на шину
+// (lock_linux.go). На Маке и Windows nil — «Работаю тут» там отказывает (errNoLockDetector, решение приёмки Э3):
 // TODO(Э3, macOS): com.apple.screenIsLocked из NSDistributedNotificationCenter (нужен cgo или отдельный помощник).
 // TODO(Э3, Windows): WTSRegisterSessionNotification + WM_WTSSESSION_CHANGE / WTS_SESSION_LOCK окна программы.
-// Без детектора пропуска на целях живут до 12 ч, выхода мастера или перезапуска цели.
-var startLock func(ctx context.Context, on func())
+var startLock func(ctx context.Context, on func(), alive func(src string, ok bool))
 
-var errPassCode = errors.New("пространство: неверный код")
+// passOffRetry, passOffRetryMax — пауза повтора «снять», не дошедшего до цели (растёт вдвое до предела).
+var passOffRetry, passOffRetryMax = time.Second, 5 * time.Minute
+
+var (
+	errPassCode       = errors.New("пространство: неверный код")
+	errNoLockDetector = errors.New("пространство: блокировка экрана этого ПК не отслеживается — пропуск не выдаётся (вход паролем и кодом — как обычно)")
+)
 
 // passHold — пароль и код на время «Работаю тут». wipe — по сроку (таймер) или по окончании, что раньше.
 type passHold struct {
@@ -77,11 +83,41 @@ type passMaster struct {
 	mu     sync.Mutex
 	hold   *passHold             // последний «Работаю тут» (тест: затирание)
 	issued map[string]passIssued // ID цели → где пропуск выдан или мог быть выдан (ответ не дошёл)
+	locks  int                   // сколько раз снимали всё (offAll): блокировка во время workHere видна по нему
+	alive  map[string]bool       // источники детектора блокировки, подписанные сейчас
+	bg     sync.WaitGroup        // повторы «снять»
+}
+
+// lockAlive — alive для startLock.
+func (p *passMaster) lockAlive(src string, ok bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.alive == nil {
+		p.alive = map[string]bool{}
+	}
+	p.alive[src] = ok
+}
+
+// detector — хоть один источник блокировки жив.
+func (p *passMaster) detector() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, ok := range p.alive {
+		if ok {
+			return true
+		}
+	}
+	return false
 }
 
 type passIssued struct {
 	pub ed25519.PublicKey // ключ хоста цели из M
-	at  time.Time
+	at  time.Time         // когда выдан (с монотонным показанием)
+}
+
+// live — пропуск на цели ещё может жить: меньше PassTTL и по монотонным, и по настенным часам.
+func (t passIssued) live() bool {
+	return time.Since(t.at) < agent.PassTTL && time.Now().Round(0).Sub(t.at.Round(0)) < agent.PassTTL
 }
 
 // passes — мастер этого процесса (main).
@@ -89,8 +125,12 @@ var passes passMaster
 
 // workHere — «Работаю тут» (Э3): человек ввёл пароль владельца и код TOTP пространства. Пароль и код сверяются
 // здесь (неверные не уходят в сеть и не тратят попытки целей), затем все остальные члены M открываются параллельно.
-// Ошибка — до сети (не в пространстве, неверный пароль или код).
+// Ошибка — до сети (детектор блокировки не жив, не в пространстве, неверный пароль или код). Блокировка экрана,
+// пришедшая во время входов, снимает в конце всё, что успели выдать.
 func (p *passMaster) workHere(ctx context.Context, password, code string) ([]passResult, error) {
+	if !p.detector() { // без детектора пропуск не снять блокировкой — не выдавать (решение приёмки Э3)
+		return nil, errNoLockDetector
+	}
 	c := p.cfg
 	c.mu.Lock()
 	c.reload()
@@ -111,6 +151,7 @@ func (p *passMaster) workHere(ctx context.Context, password, code string) ([]pas
 	defer h.wipe()
 	p.mu.Lock()
 	p.hold = h
+	locks := p.locks
 	p.mu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, passHoldFor)
 	defer cancel()
@@ -151,7 +192,15 @@ func (p *passMaster) workHere(ctx context.Context, password, code string) ([]pas
 		})
 	}
 	wg.Wait()
-	log.Printf("Работаю тут: %s", passSummary(out))
+	h.wipe()
+	p.mu.Lock()
+	locked := p.locks != locks
+	p.mu.Unlock()
+	log.Printf("Работаю тут: %s; детектор блокировки жив: %v", passSummary(out), p.detector())
+	if locked { // экран заблокировали, пока открывали: выданное после — снять сразу
+		log.Print("Работаю тут: экран заблокирован во время входа — пропуска снимаются")
+		p.offAll(context.WithoutCancel(ctx)) // повторы переживут конец workHere
+	}
 	return out, nil
 }
 
@@ -166,10 +215,12 @@ func passSummary(rs []passResult) string {
 	return b.String()
 }
 
-// offAll — снять пропуска на всех целях, где они выданы (блокировка экрана, выход). Не снятые (цель не в сети) —
-// остаются в списке до следующего раза; на цели пропуск истечёт сам.
+// offAll — снять пропуска на всех целях, где они выданы (блокировка экрана, выход, сон). Не дошедшее «снять»
+// повторяется в фоне с нарастающей паузой, пока не дойдёт, пропуск на цели не истечёт, новый «Работаю тут» его не
+// заменит или не кончится ctx.
 func (p *passMaster) offAll(ctx context.Context) {
 	p.mu.Lock()
+	p.locks++
 	list := p.issued
 	p.issued = nil
 	p.mu.Unlock()
@@ -177,27 +228,41 @@ func (p *passMaster) offAll(ctx context.Context) {
 		return
 	}
 	key, server := p.cfg.key(), p.cfg.server()
+	off := func(id string, t passIssued) bool {
+		err := passOffFn(ctx, agent.PassDial{Server: server, ID: id, HostPub: t.pub, Key: key})
+		if err != nil {
+			log.Printf("пропуск на %s не снят: %v — повтор", id, err)
+			return false
+		}
+		log.Printf("пропуск на %s снят", id)
+		return true
+	}
 	var wg sync.WaitGroup
 	for id, t := range list {
-		if time.Since(t.at) >= agent.PassTTL {
+		if !t.live() {
 			continue
 		}
 		wg.Go(func() {
-			err := passOffFn(ctx, agent.PassDial{Server: server, ID: id, HostPub: t.pub, Key: key})
-			if err == nil {
-				log.Printf("пропуск на %s снят", id)
-				return
+			if !off(id, t) {
+				p.bg.Go(func() { p.offRetry(ctx, id, t, off) })
 			}
-			log.Printf("пропуск на %s не снят: %v — снимется следующей блокировкой, выходом или сам за ≤%v", id, err, agent.PassTTL)
-			p.mu.Lock()
-			if p.issued == nil {
-				p.issued = map[string]passIssued{}
-			}
-			if _, again := p.issued[id]; !again { // новый «Работаю тут» уже записал свежий
-				p.issued[id] = t
-			}
-			p.mu.Unlock()
 		})
 	}
 	wg.Wait()
+}
+
+func (p *passMaster) offRetry(ctx context.Context, id string, t passIssued, off func(string, passIssued) bool) {
+	for wait := passOffRetry; ; wait = min(2*wait, passOffRetryMax) {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		p.mu.Lock()
+		_, again := p.issued[id] // новый «Работаю тут» выдал свежий пропуск тому же ключу — старого на цели нет
+		p.mu.Unlock()
+		if again || !t.live() || off(id, t) {
+			return
+		}
+	}
 }

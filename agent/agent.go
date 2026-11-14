@@ -99,22 +99,24 @@ type Agent struct {
 	// владельца из M (как SpaceGet). Зовётся при выдаче и при каждом входе по пропуску. nil — пропусков нет.
 	SpaceMember func(salt, pub []byte) bool
 
-	mu        sync.Mutex
-	ice       []webrtc.ICEServer
-	rtt       map[string]int       // мс от хоста до каждого TURN (замер по hello, не чаще measureEvery)
-	rttAt     map[string]time.Time // когда мерили этот набор TURN
-	sess      *session             // сессия с верным паролем (одна); до него — в pend
-	pend      map[*session]bool    // незавершённые входы: не больше maxPending, «занят» — только при sess
-	starting  int                  // занятые места pend, пока newSession шлёт offer (без a.mu)
-	fails     int                  // неудачи паролей и кодов по хосту (все имена, REQ-S-22): с hostLockAt — блокировка входа всем, кроме закреплённых ключей
-	lockUntil time.Time
-	failAt    time.Time            // последняя неудача по хосту (hostStep)
-	names     map[string]*nameLock // неудачи по имени записи (REQ-S-22): и для несуществующих имён — иначе блокировка выдала бы, есть ли имя
-	otpFails  int                  // неверные коды TOTP по хосту (все записи): с hostLockAt шаг кода заперт всем, кроме закреплённых ключей;
-	otpLock   time.Time            // у каждой записи ещё своя лестница кодов (nameLock.otpFails, как одна лестница v0.1.19)
-	otpAt     time.Time            // последний неверный код по хосту (hostStep)
-	online    map[string]bool      // хабы, на которых хост зарегистрирован
-	passes    map[string]time.Time // Э3: ключ мастера → срок пропуска (монотонные часы); только в памяти
+	mu          sync.Mutex
+	ice         []webrtc.ICEServer
+	rtt         map[string]int       // мс от хоста до каждого TURN (замер по hello, не чаще measureEvery)
+	rttAt       map[string]time.Time // когда мерили этот набор TURN
+	sess        *session             // сессия с верным паролем (одна); до него — в pend
+	pend        map[*session]bool    // незавершённые входы: не больше maxPending, «занят» — только при sess
+	starting    int                  // занятые места pend, пока newSession шлёт offer (без a.mu)
+	fails       int                  // неудачи паролей и кодов по хосту (все имена, REQ-S-22): с hostLockAt — блокировка входа всем, кроме закреплённых ключей
+	lockUntil   time.Time
+	failAt      time.Time              // последняя неудача по хосту (hostStep)
+	names       map[string]*nameLock   // неудачи по имени записи (REQ-S-22): и для несуществующих имён — иначе блокировка выдала бы, есть ли имя
+	otpFails    int                    // неверные коды TOTP по хосту (все записи): с hostLockAt шаг кода заперт всем, кроме закреплённых ключей;
+	otpLock     time.Time              // у каждой записи ещё своя лестница кодов (nameLock.otpFails, как одна лестница v0.1.19)
+	otpAt       time.Time              // последний неверный код по хосту (hostStep)
+	online      map[string]bool        // хабы, на которых хост зарегистрирован
+	passes      map[string]passEntry   // Э3: ключ мастера → пропуск; только в памяти (pass.go)
+	offs        map[*session]time.Time // Э3: соединения «снять» (offConnect) → когда пришли; вне pend и maxPending
+	offStarting int                    // занятые места offs, пока newSession шлёт offer
 }
 
 type session struct {
@@ -145,6 +147,7 @@ type session struct {
 	byPass  []byte       // Э3, под mu: вход по пропуску этого ключа — пропуск сняли, истёк или ключ не член M — сессия рвётся (revoked)
 	passAsk atomic.Bool  // Э3: "b" просил пропуск — выдать в accept, если вход паролем и кодом владельца
 	pass    atomic.Bool  // Э3: пропуск выдан или вход по нему — pass:true в "ok"
+	offOnly bool         // Э3: соединение «снять» (offConnect): в "b" годится только off, не вход
 	ctl     *webrtc.DataChannel
 	peer    string // адрес клиента по выбранной паре ICE — для окна подтверждения
 	ice     iceCap // потолок удалённых ICE-кандидатов (F5, icecap.go)
@@ -568,6 +571,7 @@ func (a *Agent) release(s *session) {
 		a.sess = nil
 	}
 	delete(a.pend, s)
+	delete(a.offs, s)
 	a.mu.Unlock()
 	if used && a.CodeUsed != nil {
 		go a.codeUsed()
@@ -601,7 +605,7 @@ func (a *Agent) DropPending() {
 func (a *Agent) promote(s *session) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.sess != nil && a.sess != s || s.gone.Load() {
+	if a.sess != nil && a.sess != s || s.gone.Load() || s.offOnly {
 		return false
 	}
 	a.sess = s
@@ -617,6 +621,11 @@ func (a *Agent) byCID(cid string) *session {
 		return a.sess
 	}
 	for s := range a.pend {
+		if s.cid == cid {
+			return s
+		}
+	}
+	for s := range a.offs {
 		if s.cid == cid {
 			return s
 		}
@@ -747,7 +756,11 @@ func (a *Agent) onConnect(ctx context.Context, c *websocket.Conn, m hub.Msg) {
 		return
 	}
 	var req connectReq
-	json.Unmarshal(m.Data, &req)                                                                          // старый клиент шлёт {} — выбора нет, ICE получает все серверы
+	json.Unmarshal(m.Data, &req)         // старый клиент шлёт {} — выбора нет, ICE получает все серверы
+	if req.Off && a.SpaceMember != nil { // Э3: «снять» пропуск — вне места сессии и блокировки (pass.go)
+		a.offConnect(ctx, c, m.From, req)
+		return
+	}
 	trusted := a.Trusted != nil && len(req.CPub) == ed25519.PublicKeySize && a.Trusted(req.CPub, AnyUser) // имя ещё не известно
 	if !trusted && a.KeyLogin != nil && len(req.CPub) == ed25519.PublicKeySize {
 		_, trusted = a.KeyLogin(req.CPub, AnyUser) // и ключ входа без пароля (REQ-S-24)
@@ -788,7 +801,7 @@ func (a *Agent) onConnect(ctx context.Context, c *websocket.Conn, m hub.Msg) {
 	if turn != "" {
 		log.Printf("сессия %s: TURN %s (выбор клиента %q; клиент %v, хост %v мс)", m.From, turn, req.TURN, req.RTT, rtt)
 	}
-	s, err := a.newSession(ctx, c, m.From, ice, offerMsg{TURN: turn, RTT: rtt}, req.VP9 && VP9Built, req.View)
+	s, err := a.newSession(ctx, c, m.From, ice, offerMsg{TURN: turn, RTT: rtt}, req.VP9 && VP9Built, req.View, false)
 	a.mu.Lock()
 	a.starting--
 	var dup *session                  // два connect одного клиента, пока первый ещё слал offer: оставить последний
@@ -982,7 +995,7 @@ func newAPI(se webrtc.SettingEngine, kbps int) (*webrtc.API, chan cc.BandwidthEs
 }
 
 // vp9 — кодер VP9 в процессе (по запросу клиента и если собран), иначе H.264 через ffmpeg.
-func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, ice []webrtc.ICEServer, om offerMsg, vp9, view bool) (*session, error) {
+func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, ice []webrtc.ICEServer, om offerMsg, vp9, view, off bool) (*session, error) {
 	kbps := 0
 	if a.Capture != nil {
 		kbps = a.Bitrate
@@ -1016,7 +1029,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 	if err != nil {
 		return fail(err)
 	}
-	s := &session{cid: cid, conn: c, pc: pc, mons: listMonitors(), vp9: vp9, pace: pace}
+	s := &session{cid: cid, conn: c, pc: pc, mons: listMonitors(), vp9: vp9, pace: pace, offOnly: off}
 	s.view.Store(view)
 	if kbps > 0 {
 		s.rate = rate{max: kbps, cur: kbps, fpsMax: a.FPS}
@@ -1268,13 +1281,8 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 			return
 		}
 		keyOK := pake.ClientVerify(m.CPub, m.CSig, a.ID, fpc, fph) // клиент владеет ключом cpub
-		// Э3: мастер снимает свой пропуск — только доказательство ключа (неподписанный "off" — как вход ключом: неудача)
-		if m.Key && m.Off && keyOK && a.SpaceMember != nil {
-			a.passDrop(m.CPub)
-			log.Printf("сессия %s: пропуск ПК %s снят", s.cid, pake.KeyFingerprint(m.CPub)[:9])
-			send(authMsg{T: "off"})
-			a.release(s)
-			time.AfterFunc(500*time.Millisecond, func() { s.pc.Close() })
+		if m.Off || s.offOnly {                                    // Э3: «снять» — не вход: ни счёта неудач, ни блокировки; соединение «снять» входа не даёт
+			a.passOff(s, m, keyOK, fpc, fph, send)
 			return
 		}
 		unattended := a.Confirm == nil || a.Unattended != nil && a.Unattended()
@@ -1288,9 +1296,9 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		}
 		// Э3: вход по пропуску — ключ члена M на записи владельца, без пароля и кода; только в режиме «пароль + код»
 		// (otpSet — только без подтверждения): «Спрашивать» пропуск не обходит
-		passIn := m.Key && m.Pass && keyOK && user == "" && otpSet && a.passValid(m.CPub, salt)
-		keyLogin := keyOn && otpSet && !passIn                                                // otpSet — только без подтверждения
-		trusted := keyOK && a.Trusted != nil && a.Trusted(m.CPub, user) || keyLogin || passIn // ключ закреплён за этой записью: права другой записи он не перебирает
+		passIn := m.Key && m.Pass && keyOK && user == "" && otpSet && a.passValid(m.CPub, salt) // и не «Только показ экрана»
+		keyLogin := keyOn && otpSet && !passIn                                                  // otpSet — только без подтверждения
+		trusted := keyOK && a.Trusted != nil && a.Trusted(m.CPub, user) || keyLogin || passIn   // ключ закреплён за этой записью: права другой записи он не перебирает
 		reject := func(t string) {
 			send(authMsg{T: t})
 			a.release(s) // освободить сразу: повтор не должен получить «занят»
@@ -1361,6 +1369,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		if passIn { // Э3: пропуск вместо пароля и кода
 			s.pass.Store(true)
 			log.Printf("сессия %s: вход по пропуску ПК %s", s.cid, pake.KeyFingerprint(m.CPub)[:9])
+			go a.watchPass(ctx, s, m.CPub, salt)
 			a.accept(ctx, s, track, send, conf, fpc, fph, nil)
 			return
 		}
