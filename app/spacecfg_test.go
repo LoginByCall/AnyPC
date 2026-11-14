@@ -176,9 +176,13 @@ func TestSpaceGetGate(t *testing.T) {
 	if p.spaceGet(bytes.Repeat([]byte{1}, 16)) != nil {
 		t.Error("M отдан по чужой соли")
 	}
-	if err := p.setPassword("new-pass-123"); err != nil { // пароль сменили (не пароль пространства)
-		t.Fatal(err)
+	if err := p.setPassword("new-pass-123"); !errors.Is(err, errSpaceVia) { // Э4, С6: на члене — только правкой M
+		t.Fatalf("смена пароля на члене: %v", err)
 	}
+	p.mu.Lock() // пароль сменила старая версия (правка файла мимо запрета)
+	p.Users[0].Salt, p.Users[0].Hash = []byte("0123456789abcdeY"), pake.KDF("new-pass-123", []byte("0123456789abcdeY"))
+	p.save()
+	p.mu.Unlock()
 	salt, _, _ = p.secret("")
 	if p.spaceGet(salt) != nil {
 		t.Error("M отдан записи с другим паролем")
