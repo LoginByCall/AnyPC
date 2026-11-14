@@ -17,11 +17,12 @@ import (
 // Прямое соединение (P2P) выбор не отключает: TURN нужен, только когда напрямую не вышло.
 
 type connectReq struct {
-	TURN string         `json:"turn"` // "", "auto" или хост TURN
-	RTT  map[string]int `json:"rtt"`  // мс от клиента до каждого TURN
-	CPub []byte         `json:"cpub"` // ключ клиента (У3) — заявка, не доказательство: проверка подписью в auth
-	VP9  bool           `json:"vp9"`  // клиент просит VP9 («Турбо»); хост даёт его, если собран с кодером (VP9Built), иначе H.264
-	View bool           `json:"view"` // клиент просит «только просмотр» (REQ-F-20)
+	TURN string         `json:"turn"`          // "", "auto" или хост TURN
+	RTT  map[string]int `json:"rtt"`           // мс от клиента до каждого TURN
+	CPub []byte         `json:"cpub"`          // ключ клиента (У3) — заявка, не доказательство: проверка подписью в auth
+	VP9  bool           `json:"vp9"`           // клиент просит VP9 («Турбо»); хост даёт его, если собран с кодером (VP9Built), иначе H.264
+	View bool           `json:"view"`          // клиент просит «только просмотр» (REQ-F-20)
+	Off  bool           `json:"off,omitempty"` // Э3: соединение только для «снять» пропуск (pass.go, offConnect)
 }
 
 type offerMsg struct {
