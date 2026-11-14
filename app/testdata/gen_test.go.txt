@@ -1,0 +1,65 @@
+package main
+
+// Генератор фикстур config-TAG.json (Э5, app/compat_test.go): файл пишет код самого тега (его config.go).
+// Пересоздать для выпуска TAG (из корня репозитория; T — пустой каталог вне его):
+//
+//	git archive TAG | tar -x -C $T
+//	cp app/testdata/gen_test.go.txt $T/app/gen_test.go
+//	# у TAG есть uiSet (v0.2.0 и новее):
+//	cp app/testdata/genui_test.go.txt $T/app/genui_test.go
+//	# у TAG нет uiSet (v0.1.27): printf 'package main\nimport "testing"\nfunc uiFixture(*testing.T, *config) {}\n' > $T/app/genui_test.go
+//	(cd $T && GOOS=js GOARCH=wasm go build -o ui/pake.wasm ./wasm && cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" ui/ &&
+//	  DBUS_SESSION_BUS_ADDRESS= FIXOUT=$PWD/app/testdata/config-TAG.json go test -count=1 -run TestGenFixture ./app)
+//
+// Новые поля выпуска — сюда и в relCheck (compat_test.go).
+
+import (
+	"bytes"
+	"crypto/ed25519"
+	"encoding/base64"
+	"os"
+	"testing"
+	"time"
+
+	"anypc/totp"
+)
+
+// Фикстура: пароль, TOTP, У3, вход ключом, гость с TOTP и У3, «Известные», сохранённый пароль, ckeys, «Только
+// показ», порт окна; настройки окна — uiFixture (genui_test.go).
+func TestGenFixture(t *testing.T) {
+	p := os.Getenv("FIXOUT")
+	os.Remove(p)
+	c, err := loadConfig(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const sec, gsec = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP", "KRSXG5CTMVRXEZLUKRSXG5CTMVRXEZLU"
+	now := time.Now()
+	code, _ := totp.Code(sec, now)
+	gcode, _ := totp.Code(gsec, now)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(c.setPassword("пароль-владельца"))
+	must(c.otpEnable(sec, code, ""))
+	must(c.setUser("ivan", "пароль-ивана", "view"))
+	must(c.otpEnable(gsec, gcode, "ivan"))
+	must(c.setConfirm(false))
+	k1, k2, k3 := bytes.Repeat([]byte{1}, 32), bytes.Repeat([]byte{2}, 32), bytes.Repeat([]byte{3}, 32)
+	c.trust(k1, "", c.user("").Salt)
+	c.keyTrust(k2, "", c.user("").Salt)
+	c.trust(k3, "ivan", c.user("ivan").Salt)
+	must(c.knownSet("987654321", "AA:BB"))
+	must(c.savedSet("987654321", "сохранённый"))
+	seed := bytes.Repeat([]byte{7}, 32)
+	pub := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
+	must(c.ckeySet("987654321", `{"seed":"`+base64.StdEncoding.EncodeToString(seed)+`","pub":"`+base64.StdEncoding.EncodeToString(pub)+`","login":true,"lu":"ivan"}`))
+	must(c.setViewOnly(true))
+	l, err := c.listenUI() // ui_port
+	must(err)
+	l.Close()
+	uiFixture(t, c)
+}
