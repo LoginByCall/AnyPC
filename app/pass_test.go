@@ -79,11 +79,11 @@ func TestPassWorkHere(t *testing.T) {
 	var opens, offs []passCall
 	oldOpen, oldOff := passOpenFn, passOffFn
 	defer func() { passOpenFn, passOffFn = oldOpen, oldOff }()
-	passOpenFn = func(_ context.Context, d agent.PassDial) error {
+	passOpenFn = func(_ context.Context, d agent.PassDial) ([]byte, error) {
 		mu.Lock()
 		opens = append(opens, passCall{d.ID, d.Password, d.Code, d.HostPub, d.Key.Public().(ed25519.PublicKey)})
 		mu.Unlock()
-		return map[string]error{"200000002": agent.ErrSpaceOffline, "200000003": agent.ErrSpaceAuth,
+		return []byte("pid-" + d.ID), map[string]error{"200000002": agent.ErrSpaceOffline, "200000003": agent.ErrSpaceAuth,
 			"200000004": errors.New("пространство: нет ответа")}[d.ID]
 	}
 	var offFail atomic.Bool
@@ -95,6 +95,9 @@ func TestPassWorkHere(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		offs = append(offs, passCall{id: d.ID, pw: d.Password, code: d.Code, host: d.HostPub, key: d.Key.Public().(ed25519.PublicKey)})
+		if string(d.PID) != "pid-"+d.ID { // «снять» через хаб — по id пропуска, выданному при входе
+			t.Errorf("«снять» на %s без id пропуска: %q", d.ID, d.PID)
+		}
 		if offFail.Load() && d.ID == "200000004" {
 			return agent.ErrSpaceOffline
 		}
@@ -195,12 +198,12 @@ func TestPassHoldWipe(t *testing.T) {
 	passHoldFor = 300 * time.Millisecond
 	p := testMaster(c)
 	held := make(chan bool, 1)
-	passOpenFn = func(ctx context.Context, d agent.PassDial) error {
+	passOpenFn = func(ctx context.Context, d agent.PassDial) ([]byte, error) {
 		_, _, ok := p.hold.get()
 		held <- ok
 		<-ctx.Done() // цель молчит
 		time.Sleep(200 * time.Millisecond)
-		return ctx.Err()
+		return nil, ctx.Err()
 	}
 	code, _ := totp.Code(sec, time.Now())
 	start := time.Now()
@@ -268,7 +271,10 @@ func TestPassNoDetector(t *testing.T) {
 	c, _ := passSpace(t, sec, "200000001")
 	old := passOpenFn
 	defer func() { passOpenFn = old }()
-	passOpenFn = func(context.Context, agent.PassDial) error { t.Error("вход без детектора"); return nil }
+	passOpenFn = func(context.Context, agent.PassDial) ([]byte, error) {
+		t.Error("вход без детектора")
+		return nil, nil
+	}
 	code, _ := totp.Code(sec, time.Now())
 	if _, err := (&passMaster{}).workHere(context.Background(), spacePass, code); !errors.Is(err, errNoLockDetector) {
 		t.Errorf("без детектора (и без настроек, как Windows): %v", err)
@@ -288,7 +294,7 @@ func TestPassLockDuringWorkHere(t *testing.T) {
 	oldOpen, oldOff := passOpenFn, passOffFn
 	defer func() { passOpenFn, passOffFn = oldOpen, oldOff }()
 	in, release := make(chan struct{}), make(chan struct{})
-	passOpenFn = func(context.Context, agent.PassDial) error { close(in); <-release; return nil } // цель выдаст пропуск
+	passOpenFn = func(context.Context, agent.PassDial) ([]byte, error) { close(in); <-release; return nil, nil } // цель выдаст пропуск
 	var offs atomic.Int32
 	passOffFn = func(context.Context, agent.PassDial) error { offs.Add(1); return nil }
 	p := testMaster(c)
@@ -315,7 +321,7 @@ func TestPassOffRetry(t *testing.T) {
 	oldOpen, oldOff, oldRetry := passOpenFn, passOffFn, passOffRetry
 	defer func() { passOpenFn, passOffFn, passOffRetry = oldOpen, oldOff, oldRetry }()
 	passOffRetry = 20 * time.Millisecond
-	passOpenFn = func(context.Context, agent.PassDial) error { return nil }
+	passOpenFn = func(context.Context, agent.PassDial) ([]byte, error) { return nil, nil }
 	var offs atomic.Int32
 	passOffFn = func(context.Context, agent.PassDial) error {
 		if offs.Add(1) < 4 {
@@ -362,7 +368,7 @@ func TestPassQuitTakesRetry(t *testing.T) {
 	oldOpen, oldOff, oldRetry := passOpenFn, passOffFn, passOffRetry
 	defer func() { passOpenFn, passOffFn, passOffRetry = oldOpen, oldOff, oldRetry }()
 	passOffRetry = time.Hour // повтор спит (в бою — до 5 мин)
-	passOpenFn = func(_ context.Context, d agent.PassDial) error { return nil }
+	passOpenFn = func(_ context.Context, d agent.PassDial) ([]byte, error) { return nil, nil }
 	var offs atomic.Int32
 	var reachable atomic.Bool
 	passOffFn = func(_ context.Context, d agent.PassDial) error {
