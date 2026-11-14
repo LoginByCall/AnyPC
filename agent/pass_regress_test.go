@@ -269,3 +269,83 @@ func TestRTPassRace(t *testing.T) {
 	wg.Wait()
 	passSkew.Store(0)
 }
+
+// rt2Client — как rtClient, но свой connect и полный ответ хоста.
+func rt2Client(ctx context.Context, url, id string, req connectReq, key ed25519.PrivateKey, b func(am authMsg, cpub, csig []byte, pc *webrtc.PeerConnection) authMsg, got chan<- authMsg) error {
+	return hostDial(ctx, url, id, req, func(pc *webrtc.PeerConnection, finish func(error)) {
+		pc.OnDataChannel(func(dc *webrtc.DataChannel) {
+			if dc.Label() != "auth" {
+				return
+			}
+			first := true
+			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+				var am authMsg
+				json.Unmarshal(msg.Data, &am)
+				if am.T == "a" && first {
+					first = false
+					cpub, csig, _ := signB(key, id, pc)
+					bb, _ := json.Marshal(b(am, cpub, csig, pc))
+					dc.SendText(string(bb))
+					return
+				}
+				select {
+				case got <- am:
+				default:
+				}
+			})
+		})
+	})
+}
+
+// Приёмка Э3, круг 2, проба 2.2: соединение «снять» входа не даёт (пароль, пропуск), неудач не считает; что получает посторонний.
+func TestRT2OffOnlyNoLogin(t *testing.T) {
+	url := local(t)
+	_, mkey, _ := ed25519.GenerateKey(nil)
+	_, xkey, _ := ed25519.GenerateKey(nil)
+	mpub := mkey.Public().(ed25519.PublicKey)
+	p := passTarget(t, url, nil, mpub)
+	d := passDial(url, p, mkey)
+	if err := PassOpen(context.Background(), d); err != nil {
+		t.Fatal(err)
+	}
+	idle(t, p.a)
+	p.a.mu.Lock()
+	p.a.lockUntil = time.Now().Add(time.Hour) // хост заперт перебором
+	p.a.mu.Unlock()
+	off := connectReq{View: true, Off: true}
+	run := func(name string, key ed25519.PrivateKey, b func(am authMsg, cpub, csig []byte, pc *webrtc.PeerConnection) authMsg) authMsg {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		got := make(chan authMsg, 4)
+		go rt2Client(ctx, url, d.ID, off, key, b, got)
+		var r authMsg
+		select {
+		case r = <-got:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s: нет ответа", name)
+		}
+		time.Sleep(200 * time.Millisecond)
+		f, _ := lock(p.a)
+		t.Logf("%s → %q (pub %d байт, sig %d байт, conf %d); вошёл=%v; неудач=%d; пропуск мастера жив=%v", name, r.T, len(r.Pub), len(r.Sig), len(r.Conf), rtAuthed(p.a), f, p.a.passValid(mpub, salt))
+		if r.T == "ok" || r.T == "otp" || rtAuthed(p.a) {
+			t.Errorf("регрессия: %s — соединение «снять» дало вход (%s)", name, r.T)
+		}
+		return r
+	}
+	run("off-соединение, заперт: верный пароль в b (посторонний ключ)", xkey, func(am authMsg, cpub, csig []byte, pc *webrtc.PeerConnection) authMsg {
+		return authMsg{T: "b", Msg: []byte("x"), Conf: []byte("y"), CPub: cpub, CSig: csig}
+	})
+	run("off-соединение: b без ключа", xkey, func(am authMsg, _, _ []byte, pc *webrtc.PeerConnection) authMsg {
+		return authMsg{T: "b", Key: true, Off: true, CPub: mpub}
+	})
+	if r := run("off-соединение: посторонний ключ, off", xkey, func(am authMsg, cpub, csig []byte, pc *webrtc.PeerConnection) authMsg {
+		return authMsg{T: "b", Key: true, Off: true, CPub: cpub, CSig: csig}
+	}); r.T != "off" || len(r.Pub) > 0 || len(r.Sig) > 0 {
+		t.Errorf("регрессия: посторонний ключ получил %q с ключом хоста (%d) и подписью (%d) — только члену M", r.T, len(r.Pub), len(r.Sig))
+	}
+	run("off-соединение: ключ мастера, вход по пропуску (key+pass, без off)", mkey, func(am authMsg, cpub, csig []byte, pc *webrtc.PeerConnection) authMsg {
+		return authMsg{T: "b", Key: true, Pass: true, CPub: cpub, CSig: csig}
+	})
+}
+
+var _ = sync.Mutex{}
