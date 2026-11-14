@@ -142,14 +142,24 @@ func (a *Agent) watchPass(ctx context.Context, s *session, pub, salt []byte) {
 	}
 }
 
-// passOff — "b" с off: снять пропуск ключа, доказанного в этом соединении; ответ подписан ключом хоста. Не вход:
-// неудачей не считается и блокировку не трогает. Без доказанного ключа — "denied".
+// passOff — "b" с off: снять пропуск ключа, доказанного в этом соединении. Не вход: неудачей не считается и
+// блокировку не трогает. Ответ "off" подписан ключом хоста только члену M; не члену — тот же "off" без ключа и
+// подписи (ключ хоста и подпись до пароля не раздаются; мастер-член такого не получает — для него это отказ).
+// Оракула сверх прежнего нет: отличить «член / не член» можно только для ключа, которым владеешь сам. Без
+// доказанного ключа — "denied".
 func (a *Agent) passOff(s *session, m authMsg, keyOK bool, fpc, fph string, send func(authMsg)) {
 	if m.Key && keyOK && a.SpaceMember != nil {
 		if a.passDrop(m.CPub) {
 			log.Printf("сессия %s: пропуск ПК %s снят", s.cid, pake.KeyFingerprint(m.CPub)[:9])
 		}
-		send(authMsg{T: "off", Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph)})
+		s.mu.Lock()
+		salt := s.salt
+		s.mu.Unlock()
+		r := authMsg{T: "off"}
+		if a.SpaceMember(salt, m.CPub) {
+			r.Pub, r.Sig = a.Key.Public().(ed25519.PublicKey), pake.HostSign(a.Key, a.ID, fpc, fph)
+		}
+		send(r)
 	} else {
 		send(authMsg{T: "denied"})
 	}
@@ -158,6 +168,9 @@ func (a *Agent) passOff(s *session, m authMsg, keyOK bool, fpc, fph string, send
 }
 
 // offConnect — connect {"off":true}: соединение только для «снять», вне места сессии, maxPending и блокировки.
+// ОГРАНИЧЕНИЕ (приёмка Э3, круг 2; вопрос владельцу): посторонний, знающий ID, потоком connect {"off":true}
+// вытесняет соединение «снять» мастера раньше, чем тот докажет ключ, — «снять» задерживается (мастер повторяет),
+// пропуск живёт до 12 ч или перезапуска цели. SECURITY.md.
 func (a *Agent) offConnect(ctx context.Context, c *websocket.Conn, cid string, req connectReq) {
 	a.mu.Lock()
 	var drop []*session

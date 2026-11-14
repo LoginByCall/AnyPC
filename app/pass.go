@@ -81,11 +81,12 @@ type passResult struct {
 type passMaster struct {
 	cfg    *config
 	mu     sync.Mutex
-	hold   *passHold             // последний «Работаю тут» (тест: затирание)
-	issued map[string]passIssued // ID цели → где пропуск выдан или мог быть выдан (ответ не дошёл)
-	locks  int                   // сколько раз снимали всё (offAll): блокировка во время workHere видна по нему
-	alive  map[string]bool       // источники детектора блокировки, подписанные сейчас
-	bg     sync.WaitGroup        // повторы «снять»
+	hold   *passHold              // последний «Работаю тут» (тест: затирание)
+	issued map[string]passIssued  // ID цели → где пропуск выдан или мог быть выдан (ответ не дошёл)
+	locks  int                    // сколько раз снимали всё (offAll): блокировка во время workHere видна по нему
+	alive  map[string]bool        // источники детектора блокировки, подписанные сейчас
+	bg     sync.WaitGroup         // повторы «снять»
+	retry  map[string]*passIssued // ID цели → «снять» в повторе (запись — метка своего повтора); offAll забирает и их
 }
 
 // lockAlive — alive для startLock.
@@ -215,14 +216,23 @@ func passSummary(rs []passResult) string {
 	return b.String()
 }
 
-// offAll — снять пропуска на всех целях, где они выданы (блокировка экрана, выход, сон). Не дошедшее «снять»
-// повторяется в фоне с нарастающей паузой, пока не дойдёт, пропуск на цели не истечёт, новый «Работаю тут» его не
-// заменит или не кончится ctx.
+// offAll — снять пропуска на всех целях, где они выданы или «снять» ещё в повторе (блокировка экрана, выход, сон).
+// Не дошедшее «снять» повторяется в фоне с нарастающей паузой, пока не дойдёт, пропуск на цели не истечёт или новый
+// «Работаю тут» его не заменит; кончился ctx — цель остаётся в повторе, и следующий offAll (выход) её возьмёт.
 func (p *passMaster) offAll(ctx context.Context) {
 	p.mu.Lock()
 	p.locks++
 	list := p.issued
 	p.issued = nil
+	for id, t := range p.retry { // повтор, который сейчас ждёт, увидит, что запись не его, и кончится
+		if list == nil {
+			list = map[string]passIssued{}
+		}
+		if _, fresh := list[id]; !fresh {
+			list[id] = *t
+		}
+	}
+	p.retry = nil
 	p.mu.Unlock()
 	if len(list) == 0 {
 		return
@@ -243,15 +253,31 @@ func (p *passMaster) offAll(ctx context.Context) {
 			continue
 		}
 		wg.Go(func() {
-			if !off(id, t) {
-				p.bg.Go(func() { p.offRetry(ctx, id, t, off) })
+			if off(id, t) {
+				return
 			}
+			r := &t
+			p.mu.Lock()
+			if p.retry == nil {
+				p.retry = map[string]*passIssued{}
+			}
+			p.retry[id] = r
+			p.mu.Unlock()
+			p.bg.Go(func() { p.offRetry(ctx, id, r, off) })
 		})
 	}
 	wg.Wait()
 }
 
-func (p *passMaster) offRetry(ctx context.Context, id string, t passIssued, off func(string, passIssued) bool) {
+// offRetry — повтор «снять» на цель id; r — метка в p.retry. Кончился ctx — метка остаётся (её возьмёт offAll выхода).
+func (p *passMaster) offRetry(ctx context.Context, id string, r *passIssued, off func(string, passIssued) bool) {
+	done := func() { // повтор больше не нужен
+		p.mu.Lock()
+		if p.retry[id] == r {
+			delete(p.retry, id)
+		}
+		p.mu.Unlock()
+	}
 	for wait := passOffRetry; ; wait = min(2*wait, passOffRetryMax) {
 		select {
 		case <-ctx.Done():
@@ -260,8 +286,13 @@ func (p *passMaster) offRetry(ctx context.Context, id string, t passIssued, off 
 		}
 		p.mu.Lock()
 		_, again := p.issued[id] // новый «Работаю тут» выдал свежий пропуск тому же ключу — старого на цели нет
+		mine := p.retry[id] == r // иначе цель забрал offAll
 		p.mu.Unlock()
-		if again || !t.live() || off(id, t) {
+		if !mine {
+			return
+		}
+		if again || !r.live() || off(id, *r) {
+			done()
 			return
 		}
 	}

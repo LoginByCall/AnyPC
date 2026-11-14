@@ -17,3 +17,7 @@ hash and TOTP secret), so TOTP protects against a leaked password, not against t
 входа на все ПК пространства. Пропуск снимается блокировкой экрана и выходом на том ПК, через 12 ч и перезапуском цели.
 "My space": after "Work here" (password and code), the host key of the "I'm here" PC is, for the pass lifetime, the only
 login factor for every PC of the space. The pass ends on screen lock or quit on that PC, after 12 h, or on target restart.
+Ограничения: посторонний, знающий ID цели, может потоком подключений задерживать «снять» — пропуск тогда живёт до 12 ч
+или перезапуска цели; хаб видит момент «снять» (блокировку или выход на ПК «я тут») и может выборочно его не пропускать.
+Limits: a stranger who knows the target ID can delay "off" with a flood of connections — the pass then lives up to 12 h
+or until the target restarts; the hub sees when "off" is sent (lock or quit on the "I'm here" PC) and can drop it selectively.

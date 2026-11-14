@@ -353,3 +353,40 @@ func TestPassOffRetry(t *testing.T) {
 		t.Error("свежий пропуск потерян")
 	}
 }
+
+// TestPassQuitTakesRetry — приёмка Э3, круг 2, проба 2.3: «снять» в повторах (цель была недоступна), пришёл
+// SIGTERM: ctx программы отменён, затем offAll выхода — цель из повторов в него попадает.
+func TestPassQuitTakesRetry(t *testing.T) {
+	sec := totp.NewSecret()
+	c, _ := passSpace(t, sec, "200000001")
+	oldOpen, oldOff, oldRetry := passOpenFn, passOffFn, passOffRetry
+	defer func() { passOpenFn, passOffFn, passOffRetry = oldOpen, oldOff, oldRetry }()
+	passOffRetry = time.Hour // повтор спит (в бою — до 5 мин)
+	passOpenFn = func(_ context.Context, d agent.PassDial) error { return nil }
+	var offs atomic.Int32
+	var reachable atomic.Bool
+	passOffFn = func(_ context.Context, d agent.PassDial) error {
+		offs.Add(1)
+		if reachable.Load() {
+			return nil
+		}
+		return agent.ErrSpaceOffline
+	}
+	p := testMaster(c)
+	code, _ := totp.Code(sec, time.Now())
+	if _, err := p.workHere(context.Background(), spacePass, code); err != nil {
+		t.Fatal(err)
+	}
+	app, stop := context.WithCancel(context.Background())
+	p.offAll(app) // блокировка экрана: цель не в сети — повтор в фоне
+	reachable.Store(true)
+	stop() // SIGTERM
+	p.bg.Wait()
+	quit, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	p.offAll(quit) // как в конце main
+	cancel()
+	t.Logf("попыток «снять»: %d (1 — при блокировке; при выходе — %d)", offs.Load(), offs.Load()-1)
+	if offs.Load() == 1 {
+		t.Errorf("регрессия: при выходе цель из повторов не получает «снять», хотя уже в сети")
+	}
+}
