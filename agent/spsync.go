@@ -46,8 +46,8 @@ import (
 type SpaceSyncer interface {
 	// SyncKey — pub — ключ члена объединения верхушек этого ПК, не исключённый ни в одной из них и не свой.
 	SyncKey(pub ed25519.PublicKey) bool
-	// SyncGate — текущий M этого ПК, если ключ pub — член (или член в составе peer того же пространства и не
-	// исключён здесь); peer nil — только по своему M. nil — отказ.
+	// SyncGate — главная M этого ПК, если ключ pub — член его объединения (не исключён, не свой), а peer — подлинный
+	// M того же пространства (nil — без проверки peer). nil — отказ.
 	SyncGate(pub ed25519.PublicKey, peer []byte) []byte
 	// SyncRecs — остальные верхушки этого ПК (кроме главной, она идёт в "m", и кроме peer).
 	SyncRecs(peer []byte) [][]byte

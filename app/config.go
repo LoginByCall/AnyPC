@@ -89,6 +89,8 @@ type settings struct {
 	SpaceHeads [][]byte `json:"space_heads,omitempty"`
 	SpaceWait  string   `json:"space_wait,omitempty"`
 	SpaceClock []string `json:"space_clock,omitempty"`
+	// SpaceOver — когда и почему не принята правка сверх spaceMaxHeads верхушек: пропусков нет до правки фразой здесь.
+	SpaceOver string `json:"space_over,omitempty"`
 	// Одноразовый код (REQ-S-23): в режиме «Спрашивать» — пароль записи по умолчанию; меняется после каждой сессии,
 	// блокировки и по ↻. В файле (0600, как запомненные пароли): окно, ключи CLI и запущенная программа видят один код.
 	Code     string `json:"code,omitempty"`

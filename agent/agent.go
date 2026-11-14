@@ -100,6 +100,10 @@ type Agent struct {
 	SpaceMember func(salt, pub []byte) bool
 	// Э4, сверка состава между членами (spsync.go). nil — сверки нет: "a" без sync, connect {"sync"} — обычный.
 	SpaceSync SpaceSyncer
+	// LoginTag — метка входа записи user для клиента с ключом cpub (nil — ключ не доказан): берётся при "b" и
+	// сверяется в revoked — сменилась (вход пространства сменили: код или пароль; новое исключение; ПК клиента
+	// исключён) — сессия рвётся, как при смене соли. nil — не сверять.
+	LoginTag func(user string, cpub []byte) []byte
 
 	mu          sync.Mutex
 	ice         []webrtc.ICEServer
@@ -151,6 +155,8 @@ type session struct {
 	spaceOK atomic.Bool  // Э2: вход записью по умолчанию паролем и кодом TOTP (не ключом, не одноразовым кодом) — ctl "sp" можно
 	spJoin  atomic.Bool  // Э2: SpaceJoin уже был в этой сессии (одно вступление на сессию)
 	cpub    []byte       // под mu: ключ клиента, доказанный подписью в "b" (pake.ClientVerify); nil — не доказан
+	tag     []byte       // под mu: LoginTag при "b" (revoked сверяет, если tagged)
+	tagged  bool         // под mu: tag взят
 	byPass  []byte       // Э3, под mu: вход по пропуску этого ключа — пропуск сняли, истёк или ключ не член M — сессия рвётся (revoked)
 	passAsk atomic.Bool  // Э3: "b" просил пропуск — выдать в accept, если вход паролем и кодом владельца
 	pass    atomic.Bool  // Э3: пропуск выдан или вход по нему — pass:true в "ok"
@@ -482,14 +488,18 @@ func (a *Agent) DropRevoked() {
 	s.pc.Close()
 }
 
-// revoked — запись сессии s удалили или сменили ей пароль (соль не та, что при входе), а сессии ключом без пароля —
-// и отозвали ключ (REQ-S-24); view — права записи сейчас «просмотр».
+// revoked — запись сессии s удалили или сменили ей пароль (соль не та, что при входе) или сменилась метка входа
+// (LoginTag: вход пространства, исключение), а сессии ключом без пароля — и отозвали ключ (REQ-S-24); view — права
+// записи сейчас «просмотр».
 func (a *Agent) revoked(s *session) (gone, view bool) {
 	s.mu.Lock()
-	user, was, key, pass := s.user, s.salt, s.byKey, s.byPass
+	user, was, key, pass, cpub, tag, tagged := s.user, s.salt, s.byKey, s.byPass, s.cpub, s.tag, s.tagged
 	s.mu.Unlock()
 	salt, secret, view := a.Secret(user)
 	if len(secret) == 0 || !bytes.Equal(salt, was) {
+		return true, view
+	}
+	if tagged && a.LoginTag != nil && !bytes.Equal(a.LoginTag(user, cpub), tag) {
 		return true, view
 	}
 	if pass != nil { // Э3: пропуск сняли, истёк или ключ исключили из M
@@ -1390,10 +1400,16 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		if keyOK && !trusted {
 			pin = m.CPub
 		}
-		s.mu.Lock()
+		var tag, cp []byte
 		if keyOK {
-			s.cpub = m.CPub
+			cp = m.CPub
 		}
+		if a.LoginTag != nil {
+			tag = a.LoginTag(user, cp)
+		}
+		s.mu.Lock()
+		s.cpub = cp
+		s.tag, s.tagged = tag, a.LoginTag != nil
 		if passIn {
 			s.byPass = m.CPub
 		} else if keyLogin {
