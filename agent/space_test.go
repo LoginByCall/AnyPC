@@ -30,6 +30,7 @@ type spaceRig struct {
 	ask          atomic.Bool // режим «Спрашивать»: вход через «Разрешить», без кода
 	mu           sync.Mutex
 	m            []byte
+	heads        [][]byte // остальные верхушки (в "sp" — поле h)
 	joined       []byte
 	joinPub      ed25519.PublicKey
 }
@@ -60,13 +61,13 @@ func newSpaceRig(a *Agent) *spaceRig {
 	a.Capture = func(context.Context, Cap) (*exec.Cmd, error) {
 		return nil, errors.New("тест: без захвата")
 	}
-	a.SpaceGet = func(s []byte) []byte {
+	a.SpaceGet = func(s []byte) [][]byte {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		if !bytes.Equal(s, salt) {
 			return nil
 		}
-		return bytes.Clone(r.m)
+		return append([][]byte{bytes.Clone(r.m)}, r.heads...)
 	}
 	a.SpaceJoin = func(s, m []byte, pub ed25519.PublicKey) error {
 		r.mu.Lock()
@@ -138,7 +139,7 @@ func TestSpaceJoin(t *testing.T) {
 	_, nkey, _ := ed25519.GenerateKey(nil)
 	var gotHost ed25519.PublicKey
 	out, err := SpaceJoin(context.Background(), SpaceDial{Server: url, ID: "123456789", Key: nkey, Password: "secret123", Code: r.owner.code(),
-		Sign: func(m []byte, hp ed25519.PublicKey) ([]byte, error) {
+		Sign: func(m []byte, hp ed25519.PublicKey, _ ...[]byte) ([]byte, error) {
 			if !bytes.Equal(m, r.m) {
 				t.Errorf("пришёл не тот M: %q", m)
 			}
@@ -181,7 +182,7 @@ func TestSpaceJoinRefused(t *testing.T) {
 	_, nkey, _ := ed25519.GenerateKey(nil)
 	signed := false
 	d := SpaceDial{Server: url, ID: "123456789", Key: nkey, Password: "secret123", Code: "000000",
-		Sign: func(m []byte, _ ed25519.PublicKey) ([]byte, error) {
+		Sign: func(m []byte, _ ed25519.PublicKey, _ ...[]byte) ([]byte, error) {
 			signed = true
 			return append(bytes.Clone(m), '+'), nil
 		}}
@@ -219,7 +220,7 @@ func TestSpaceOldHost(t *testing.T) {
 	r := spaceHost(t, url, "123456789", func(r *spaceRig) { r.a.SpaceGet, r.a.SpaceJoin = nil, nil })
 	_, nkey, _ := ed25519.GenerateKey(nil)
 	_, err := SpaceJoin(context.Background(), SpaceDial{Server: url, ID: "123456789", Key: nkey, Password: "secret123", Code: r.owner.code(),
-		Sign: func(m []byte, _ ed25519.PublicKey) ([]byte, error) { return m, nil }})
+		Sign: func(m []byte, _ ed25519.PublicKey, _ ...[]byte) ([]byte, error) { return m, nil }})
 	if !errors.Is(err, ErrSpaceOld) {
 		t.Errorf("старый хост: %v", err)
 	}
@@ -313,7 +314,7 @@ func TestSpaceCtlRights(t *testing.T) {
 func TestSpaceOldClient(t *testing.T) {
 	o := &otpHost{secret: totp.NewSecret()}
 	e2eAgent = func(a *Agent) {
-		a.OTP, a.SpaceGet = o.check, func([]byte) []byte { return []byte("M") }
+		a.OTP, a.SpaceGet = o.check, func([]byte) [][]byte { return [][]byte{[]byte("M")} }
 		a.SpaceJoin = func([]byte, []byte, ed25519.PublicKey) error {
 			t.Error("вступление без запроса")
 			return nil
@@ -332,7 +333,9 @@ func TestSpaceKnownHost(t *testing.T) {
 	_, nkey, _ := ed25519.GenerateKey(nil)
 	d := SpaceDial{Server: url, ID: "123456789", Key: nkey, Password: "secret123", Code: r.owner.code(),
 		Known: pake.KeyFingerprint(bytes.Repeat([]byte{9}, 32)),
-		Sign:  func(m []byte, _ ed25519.PublicKey) ([]byte, error) { return append(bytes.Clone(m), '+'), nil }}
+		Sign: func(m []byte, _ ed25519.PublicKey, _ ...[]byte) ([]byte, error) {
+			return append(bytes.Clone(m), '+'), nil
+		}}
 	if _, err := SpaceJoin(context.Background(), d); !errors.Is(err, ErrSpaceHostKey) {
 		t.Fatalf("чужой ключ P: %v", err)
 	}
@@ -354,7 +357,7 @@ func TestSpaceAlready(t *testing.T) {
 	r := spaceHost(t, url, "123456789")
 	_, nkey, _ := ed25519.GenerateKey(nil)
 	out, err := SpaceJoin(context.Background(), SpaceDial{Server: url, ID: "123456789", Key: nkey, Password: "secret123", Code: r.owner.code(),
-		Sign: func(m []byte, _ ed25519.PublicKey) ([]byte, error) { return m, nil }})
+		Sign: func(m []byte, _ ed25519.PublicKey, _ ...[]byte) ([]byte, error) { return m, nil }})
 	r.mu.Lock()
 	joined := r.joined
 	r.mu.Unlock()
@@ -373,7 +376,7 @@ func TestSpaceLoginShut(t *testing.T) {
 	_, nkey, _ := ed25519.GenerateKey(nil)
 	var signed atomic.Bool
 	d := SpaceDial{Server: url, ID: "123456789", Key: nkey, Password: "secret123", Code: r.owner.code(),
-		Sign: func(m []byte, _ ed25519.PublicKey) ([]byte, error) { signed.Store(true); return m, nil }}
+		Sign: func(m []byte, _ ed25519.PublicKey, _ ...[]byte) ([]byte, error) { signed.Store(true); return m, nil }}
 	for _, pw := range []string{"secret123", "wrong-pass"} {
 		d.Password = pw
 		if _, err := SpaceJoin(context.Background(), d); !errors.Is(err, ErrSpaceAuth) || !strings.Contains(err.Error(), "denied") {
@@ -403,7 +406,7 @@ func TestSpaceJoinSlowSign(t *testing.T) {
 	_, nkey, _ := ed25519.GenerateKey(nil)
 	out, err := SpaceJoin(context.Background(), SpaceDial{Server: url, ID: "123456789", Key: nkey, Password: "secret123", Code: r.owner.code(),
 		Confirm: 6 * time.Second,
-		Sign: func(m []byte, _ ed25519.PublicKey) ([]byte, error) {
+		Sign: func(m []byte, _ ed25519.PublicKey, _ ...[]byte) ([]byte, error) {
 			time.Sleep(spaceWait + time.Second)
 			return append(bytes.Clone(m), "+N"...), nil
 		}})
@@ -426,5 +429,44 @@ func TestSpaceSyncShut(t *testing.T) {
 	hm, err := SpaceSync(context.Background(), SyncDial{Server: url, ID: "123456789", HostPub: r.a.Key.Public().(ed25519.PublicKey), Key: ckey, S: cli})
 	if err != nil || len(hm) == 0 || asked.Load() {
 		t.Fatalf("сверка при закрытом входе: %q %v (LoginShut спрошен %v)", hm, err, asked.Load())
+	}
+}
+
+// TestSpaceJoinHeads — B1 приёмки Ч1: P отдаёт в "sp" все верхушки (главная — m, остальные — h), Sign получает их.
+func TestSpaceJoinHeads(t *testing.T) {
+	url := local(t)
+	r := spaceHost(t, url, "123456789", func(r *spaceRig) { r.heads = [][]byte{[]byte("H2"), []byte("H3")} })
+	_, nkey, _ := ed25519.GenerateKey(nil)
+	var got [][]byte
+	_, err := SpaceJoin(context.Background(), SpaceDial{Server: url, ID: "123456789", Key: nkey, Password: "secret123", Code: r.owner.code(),
+		Sign: func(m []byte, _ ed25519.PublicKey, heads ...[]byte) ([]byte, error) {
+			got = append([][]byte{m}, heads...)
+			return append(bytes.Clone(m), "+N"...), nil
+		}})
+	if err != nil || len(got) != 3 || string(got[0]) != "M-SECRET-MARK-1" || string(got[1]) != "H2" || string(got[2]) != "H3" {
+		t.Fatalf("верхушки в Sign: %q, %v", got, err)
+	}
+}
+
+// TestSpaceJoinDupM — второй состав от P, пока Sign ждёт человека, — нарушение протокола: второго Sign нет, P
+// ничего не получил.
+func TestSpaceJoinDupM(t *testing.T) {
+	spaceDupM = func() bool { return true }
+	t.Cleanup(func() { spaceDupM = func() bool { return false } })
+	url := local(t)
+	r := spaceHost(t, url, "123456789")
+	_, nkey, _ := ed25519.GenerateKey(nil)
+	var signs atomic.Int32
+	_, err := SpaceJoin(context.Background(), SpaceDial{Server: url, ID: "123456789", Key: nkey, Password: "secret123", Code: r.owner.code(),
+		Sign: func(m []byte, _ ed25519.PublicKey, _ ...[]byte) ([]byte, error) {
+			signs.Add(1)
+			time.Sleep(time.Second)
+			return append(bytes.Clone(m), "+N"...), nil
+		}})
+	r.mu.Lock()
+	joined := r.joined
+	r.mu.Unlock()
+	if !errors.Is(err, errSpaceProtocol) || signs.Load() != 1 || joined != nil {
+		t.Fatalf("второй M: %v, Sign %d раз, P получил %q", err, signs.Load(), joined)
 	}
 }

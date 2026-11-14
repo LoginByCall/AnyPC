@@ -124,7 +124,7 @@ func TestSpaceErrCode(t *testing.T) {
 	}{
 		{spacePhraseOK(strings.Join(strings.Fields(spacePhraseNew())[:9], " ") + " zzzz"), "phrase_word:10"},
 		{fmt.Errorf("%w: none", agent.ErrSpaceRefused), "refused"}, {agent.ErrSpaceAuth, "auth"}, {errSpaceSlow, "slow"},
-		{errSpaceBusy, "busy"}, {errNoLockDetector, "nolock"}, {context.Canceled, "cancel"}, {errSpaceHostID, "id"},
+		{errSpaceBusy, "busy"}, {errSpaceChange, "change"}, {errNoLockDetector, "nolock"}, {context.Canceled, "cancel"}, {errSpaceHostID, "id"},
 		{fmt.Errorf("пространство: нет ответа вовремя (%w)", context.DeadlineExceeded), "timeout"}, // agent/space.go
 		{errors.New("тайна ядра"), "other"},
 	} {
@@ -134,6 +134,9 @@ func TestSpaceErrCode(t *testing.T) {
 	}
 	if _, err := spaceCall(spaceCfg(t, spacePass, totp.NewSecret()), "spaceCreateOK", []json.RawMessage{[]byte(`"x"`)}); err == nil || err.Error() != "space:draft" {
 		t.Errorf("spaceCreateOK без черновика: %v", err)
+	}
+	if g := previewJSON(spacePreview{Gone: []string{"ab12"}})["gone"].([]string); len(g) != 1 || g[0] != "ab12" {
+		t.Errorf("превью: gone %v", g)
 	}
 	var logs syncLog // неизвестная ошибка: окну — только код, текст — в журнал
 	log.SetOutput(&logs)
@@ -184,8 +187,8 @@ func TestSpaceOpZombie(t *testing.T) {
 	signed := make(chan struct{})
 	withSpaceNet(t, func(_ context.Context, d agent.SpaceDial) ([]byte, error) {
 		salt, _, _ := p.secret("")
-		m := p.spaceGet(salt)
-		go func() { d.Sign(m, cfgPub(p)); close(signed) }() // Sign — в своей горутине, как agent
+		ms := p.spaceGet(salt)
+		go func() { d.Sign(ms[0], cfgPub(p), ms[1:]...); close(signed) }() // Sign — в своей горутине, как agent
 		return nil, fmt.Errorf("%w: разрыв", agent.ErrSpaceRefused)
 	})
 	if code, _, e := call("spaceEnter", p.id(), spacePass, spaceCode(p, sec), ph); code != 200 {
@@ -306,6 +309,9 @@ func TestSpaceAPIFlow(t *testing.T) {
 	callN("spaceEnter", p.id(), spacePass, spaceCode(p, sec), ph)
 	op := opWait(t, callN, "confirm")
 	pv := op["preview"].(map[string]any)
+	if g, ok := pv["gone"].([]any); !ok || len(g) != 0 { // исключённых ещё нет
+		t.Errorf("превью: gone %v", pv["gone"])
+	}
 	if pcs := pv["members"].([]any); len(pcs) != 1 || pcs[0].(map[string]any)["id"] != p.id() || pv["password"] != true {
 		t.Errorf("превью: %v", pv)
 	}
