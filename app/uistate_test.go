@@ -27,14 +27,14 @@ func TestUIState(t *testing.T) {
 		// форма: значение другой формы роняло основной скрипт страницы при каждом запуске (приёмка: recent=5)
 		{"recent", `5`}, {"recent", `[1]`}, {"recent", `null`}, {"mine", `{}`}, {"mine", `null`}, {"users", `[]`},
 		{"users", `{"123456789":5}`}, {"stats", `null`}, {"stats", `"true"`}, {"turbo", `2`}, {"turbo", `"1"`},
-		{"tour_home", `true`}, {"turn", `5`},
+		{"tour_home", `true`}, {"turn", `5`}, {"pinbar", `2`}, {"pinbar", `true`},
 	} {
 		if err := c.uiSet(bad[0], bad[1]); err == nil {
 			t.Errorf("принято %s=%.40s", bad[0], bad[1])
 		}
 	}
 	for _, good := range [][2]string{{"mine", `["123456789"]`}, {"recent", `[]`}, {"users", `{}`}, {"stats", `true`},
-		{"turbo", `0`}, {"tour_sess", `1`}, {"turn", `"auto"`}} {
+		{"turbo", `0`}, {"tour_sess", `1`}, {"turn", `"auto"`}, {"pinbar", `1`}} {
 		if err := c.uiSet(good[0], good[1]); err != nil {
 			t.Errorf("%s=%s: %v", good[0], good[1], err)
 		}
@@ -47,8 +47,8 @@ func TestUIState(t *testing.T) {
 			t.Fatalf("%s: %v", kv[0], err)
 		}
 	}
-	// ровно 256 КБ всего: mine, users, recent по 64 КБ + stats true, turbo 0, tour_sess 1 (6 байт) + turn
-	if err := c.uiSet("turn", `"`+pad(uiKeyMax-8)+`"`); err != nil {
+	// ровно 256 КБ всего: mine, users, recent по 64 КБ + stats true, turbo 0, tour_sess 1, pinbar 1 (7 байт) + turn
+	if err := c.uiSet("turn", `"`+pad(uiKeyMax-9)+`"`); err != nil {
 		t.Fatalf("256 КБ: %v", err)
 	}
 	if err := c.uiSet("tour_home", "1"); err == nil { // ещё байт сверх 256 КБ
@@ -68,7 +68,7 @@ func TestUIState(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := other.uiGet()
-	if g["mine"] != `[{"id":"123456789","name":"Офис"}]` || g["turbo"] != "1" || g["tour_sess"] != "0" || g["stats"] != "false" || len(g) != 8 {
+	if g["mine"] != `[{"id":"123456789","name":"Офис"}]` || g["turbo"] != "1" || g["tour_sess"] != "0" || g["stats"] != "false" || len(g) != 9 {
 		t.Errorf("с диска: %d ключей, mine=%s", len(g), g["mine"])
 	}
 	if fi, err := os.Stat(p); err != nil || fi.Mode().Perm() != 0o600 {
