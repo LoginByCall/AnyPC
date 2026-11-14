@@ -146,7 +146,8 @@ with its password and code: the list is removed from it, the password and code s
 любой свежий состав, — старый пароль на нём перестаёт действовать. Если в объединении исключён ПК, которого не было
 среди исключённых, когда задавали победивший вход (встречные исключения: он мог получить секрет кода сверкой), вход
 «скомпрометирован»: пропусков «Работаю тут» и вступлений нет, пока правка фразой не задаст новый код. Смена входа
-(пароля или кода, в том числе при повторном вступлении) рвёт сессии записи по умолчанию; исключение ПК рвёт его
+(пароля или кода, в том числе при повторном вступлении) рвёт сессии записи по умолчанию — и на ПК без пространства:
+новый секрет кода записи по умолчанию рвёт её сессии всегда; исключение ПК рвёт его
 сессии, а при входе без ключа члена (браузер, чужой ключ) — любую такую сессию. Сессия с доказанным ключом
 исключённого ПК рвётся в любом режиме (и «Спрашивать») и для любой записи. Больше 16 параллельных правок —
 непринятые правки хранятся и уже действуют (исключённые не члены), но пропусков нет, пока на этом ПК не будет правки
@@ -163,7 +164,8 @@ that missed password changes switches to the new one as soon as it gets any fres
 working there. If the union has a removed PC that was not removed yet when the winning login was set (concurrent
 removals: it could have got the code secret by sync), the login is "compromised": no "Work here" passes and no joins
 until an edit with the phrase sets a new code. A login change (password or code, also on joining again) drops
-sessions of the default account; removing a PC drops its sessions, and for a login without a member key (browser,
+sessions of the default account — also on a PC without a space: a new code secret of the default account always
+drops its sessions; removing a PC drops its sessions, and for a login without a member key (browser,
 foreign key) any such session. A session with the proven key of a removed PC is dropped in any mode ("Ask" too)
 and for any account. More than 16 concurrent edits — the refused edits are kept and already apply (removed
 PCs are not members), but no passes until an edit with the phrase on this PC or an incoming edit that merges them. A damaged list in the settings
