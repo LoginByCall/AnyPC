@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -15,7 +16,7 @@ import (
 	"anypc/totp"
 )
 
-// Э4: правила сверки без сети (обмен — как agent/spsync.go, регрессии приёмки Э4).
+// Э4 + решение 10 A: правила сверки без сети (обмен — как agent/spsync.go, регрессии приёмки Э4).
 
 func spRaw(c *config) []byte {
 	c.mu.Lock()
@@ -23,14 +24,50 @@ func spRaw(c *config) []byte {
 	c.reload()
 	return bytes.Clone(c.Space)
 }
-func spFork(c *config) bool {
+
+// spSnap — снимок верхушек (для spaceEdit и сравнения двух ПК).
+func spSnap(c *config) []byte {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
-	return len(c.SpaceFork) > 0
+	return c.spaceSnapLocked()
 }
 
-// spSync — обмен сверки cli → host без сети, как agent/spsync.go; true — составы сошлись.
+// spaceHeadsOf — сохранённые верхушки ПК.
+func spaceHeadsOf(c *config) []*space {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reload()
+	return c.spaceStoredLocked()
+}
+
+// spConf — настройки ПК одной строкой (сравнить «ничего не изменилось»).
+func spConf(c *config) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reload()
+	b, _ := json.Marshal(c)
+	return string(b)
+}
+
+// spaceReset — на c ровно состав m (одна верхушка), запись по умолчанию — вход из m.
+func spaceReset(t *testing.T, c *config, m *space) {
+	t.Helper()
+	b, err := m.marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Space, c.SpaceHeads = b, nil
+	u := &c.Users[0]
+	u.Salt, u.Hash, u.TOTP, u.Trusted, u.KeyLogin = bytes.Clone(m.PSalt), bytes.Clone(m.PHash), m.TOTP, nil, nil
+	if err := c.save(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// spSync — обмен сверки cli → host без сети, как agent/spsync.go; true — главные верхушки сошлись.
 func spSync(cli, host *config) bool {
 	mc := cli.SyncGate(cfgPub(host), nil)
 	if mc == nil || !host.SyncKey(cfgPub(cli)) {
@@ -47,7 +84,7 @@ func spSync(cli, host *config) bool {
 func spSet(t *testing.T, c *config, ms ...*space) {
 	t.Helper()
 	for _, n := range ms {
-		if _, err := c.spaceEdit(spRaw(c), n); err != nil {
+		if _, err := c.spaceEdit(spSnap(c), n); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -63,9 +100,9 @@ func fakeNet(t *testing.T, f func(d agent.SyncDial) ([]byte, error)) *atomic.Int
 }
 
 func spSyncer(t *testing.T, c *config) *spaceSyncer {
-	oldR, oldM := spaceSyncRetry, spaceSyncRetryMax
+	oldR, oldM, oldF := spaceSyncRetry, spaceSyncRetryMax, spaceSyncRetryFor
 	spaceSyncRetry, spaceSyncRetryMax = 20*time.Millisecond, 40*time.Millisecond
-	t.Cleanup(func() { spaceSyncRetry, spaceSyncRetryMax = oldR, oldM })
+	t.Cleanup(func() { spaceSyncRetry, spaceSyncRetryMax, spaceSyncRetryFor = oldR, oldM, oldF })
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &spaceSyncer{cfg: c, ctx: ctx}
 	c.syn = s
@@ -73,65 +110,65 @@ func spSyncer(t *testing.T, c *config) *spaceSyncer {
 	return s
 }
 
-// TestSpaceFalseFork — предок слитого состава и запись цепочки основной ветви (Fork относительно него) не дают
-// ложного раскола ни у текущего A, ни у отставшего P (решает только последняя запись); исключение с A проходит;
-// повтор старой ветви после слияния раскола не ставит.
-func TestSpaceFalseFork(t *testing.T) {
+// TestSpaceConcurrentEdits — правки фразой на A и на P, не знавших друг о друге (A: +W и новый код; P: +N): после
+// сверки в любую сторону у обоих одно объединение (W и N — члены, вход — A); повтор старой M ничего не меняет;
+// исключение W с A доходит до P, и W, повторяя старые M, не возвращается.
+func TestSpaceConcurrentEdits(t *testing.T) {
 	sec := totp.NewSecret()
 	ca, cp, cn := spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec)
 	ph, _ := syncSpace(t, 0, ca, cp)
 	m1 := spaceOf(ca)
 	wpub, _, _ := ed25519.GenerateKey(nil)
 	m2, _ := spaceAdd(m1, ph, "9"+hub.RandDigits(8), wpub)
-	m3, err := spaceSetLogin(m2, ph, "", totp.NewSecret()) // запись цепочки (lgen 2), эпоха 3
+	m3, err := spaceSetLogin(m2, ph, "", totp.NewSecret()) // эпоха 3, вход 2
 	if err != nil {
 		t.Fatal(err)
 	}
 	spSet(t, ca, m2, m3)
-	mn, _ := spaceAdd(m1, ph, cn.id(), cfgPub(cn)) // ветвь P: +N
+	mn, _ := spaceAdd(m1, ph, cn.id(), cfgPub(cn)) // на P: +N
 	spSet(t, cp, mn)
-	merged, err := spaceMerge(mn, m3, ph, "")
-	if err != nil {
-		t.Fatal(err)
+	if !spSync(cp, ca) || !bytes.Equal(spSnap(ca), spSnap(cp)) {
+		t.Fatal("не сошлись")
 	}
-	mb, _ := merged.marshal()
-	ca.SyncApply(mb, nil)
-	if !bytes.Equal(spRaw(ca), mb) {
-		t.Fatal("A не принял слитый")
+	for _, c := range []*config{ca, cp} {
+		v := spaceOf(c)
+		if !v.member(wpub) || !v.member(cfgPub(cn)) || !sameLogin(v, m3) || v.Compromised || len(spaceHeadsOf(c)) != 2 {
+			t.Fatalf("объединение: %v", v)
+		}
 	}
-	if !spSync(cp, ca) || spFork(ca) || spFork(cp) || !bytes.Equal(spRaw(cp), mb) {
-		t.Fatalf("ложный раскол: A %v, P %v, P текущий %v", spFork(ca), spFork(cp), bytes.Equal(spRaw(cp), mb))
+	snap := spSnap(ca)
+	for _, old := range []*space{m1, m2, mn} {
+		b, _ := old.marshal()
+		ca.SyncApply(b, nil)
+	}
+	if !bytes.Equal(snap, spSnap(ca)) {
+		t.Error("повтор старых M изменил состояние")
 	}
 	fakeNet(t, func(agent.SyncDial) ([]byte, error) { return nil, agent.ErrSpaceOffline })
 	spSyncer(t, ca)
 	if _, err := ca.syn.spaceExclude(context.Background(), ph, wpub, ""); err != nil {
 		t.Fatalf("исключение: %v", err)
 	}
-	mnb, _ := mn.marshal()
-	ca.SyncApply(mnb, nil) // украденный член повторяет старую ветвь
-	if spFork(ca) {
-		t.Error("повтор предка ставит раскол")
+	if h := spaceHeadsOf(ca); len(h) != 1 || !h[0].member(cfgPub(cn)) || !h[0].gone(wpub) {
+		t.Fatalf("правка не свела верхушки: %d", len(h))
 	}
-	// и наоборот: настоящий раскол последней записью — флаг
-	other, _ := spaceSetLogin(mn, ph, "branch-pass-1", "")
-	ob, _ := other.marshal()
-	ca.SyncApply(ob, nil)
-	if !spFork(ca) {
-		t.Error("раскол последней записью не замечен")
+	if !spSync(cp, ca) {
+		t.Fatal("P не догнал")
 	}
-	// при расколе: смена входа — отказ, исключение — можно (украденный член не заблокирует своё исключение)
-	if _, err := ca.syn.spaceChangeLogin(context.Background(), ph, "pass-again-1"); !errors.Is(err, errSpaceForked) {
-		t.Errorf("смена входа при расколе: %v", err)
+	for _, old := range []*space{m2, m3} { // W повторяет M, где он член
+		b, _ := old.marshal()
+		cp.SyncApply(b, nil)
 	}
-	cpPub := cfgPub(cp)
-	if _, err := ca.syn.spaceExclude(context.Background(), ph, cpPub, ""); err != nil {
-		t.Errorf("исключение при расколе: %v", err)
+	salt, _, _ := cp.secret("")
+	if v := spaceOf(cp); v.member(wpub) || !v.gone(wpub) || cp.SyncKey(wpub) || cp.spaceMember(salt, wpub) {
+		t.Error("исключённый вернулся")
 	}
 }
 
-// TestSpaceGapBehind — состав новее через смену входа, которой нет в цепочке: не раскол, а «отстал» — пропусков нет
-// (и исключённому в новом составе), сверка со всеми; полная цепочка снимает флаг.
-func TestSpaceGapBehind(t *testing.T) {
+// TestSpaceCatchUp — замечание приёмки Э4 (space_behind): ПК, пропустивший две смены входа (исключение, затем
+// пароль), догоняет одной последней M: исключённый сразу не член, вход записи по умолчанию — новый (старый пароль
+// больше не действует), пропуска выдаются — флага «отстал» нет.
+func TestSpaceCatchUp(t *testing.T) {
 	sec := totp.NewSecret()
 	ca, cb := spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec)
 	ph, keys := syncSpace(t, 1, ca, cb)
@@ -140,37 +177,21 @@ func TestSpaceGapBehind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spSet(t, ca, x1, x2)
-	calls := fakeNet(t, func(agent.SyncDial) ([]byte, error) { return nil, agent.ErrSpaceOffline })
-	s := spSyncer(t, cb)
 	b2, _ := x2.marshal()
 	cb.SyncApply(b2, nil)
-	salt, _, _ := cb.secret("")
-	cb.mu.Lock()
-	behind := cb.SpaceBehind
-	cb.mu.Unlock()
-	if spFork(cb) || behind != x2.Epoch {
-		t.Errorf("пропуск в цепочке: раскол %v, отстал %d", spFork(cb), behind)
+	salt, hash, _ := cb.secret("")
+	v := spaceOf(cb)
+	if v.member(keys[0]) || !bytes.Equal(salt, x2.PSalt) || !bytes.Equal(hash, x2.PHash) || !sameLogin(v, x2) {
+		t.Fatalf("не догнал: %v", v)
 	}
-	if cb.spaceMember(salt, keys[0]) || cb.spaceMember(salt, cfgPub(ca)) {
-		t.Error("пропуск выдаётся отставшим ПК")
-	}
-	eventually(t, "отставший не сверяется со всеми", func() bool { return calls.Load() > 0 })
-	_ = s
-	if !spSync(cb, ca) {
-		t.Fatal("полная цепочка не принята")
-	}
-	cb.mu.Lock()
-	behind = cb.SpaceBehind
-	cb.mu.Unlock()
-	salt, _, _ = cb.secret("")
-	if behind != 0 || !cb.spaceMember(salt, cfgPub(ca)) {
-		t.Errorf("флаг «отстал» не снят: %d", behind)
+	if !cb.spaceMember(salt, cfgPub(ca)) || cb.spaceMember(salt, keys[0]) {
+		t.Error("пропуск: члену нет или исключённому да")
 	}
 }
 
-// TestSpaceSyncGateRules — кому отдаётся M: член (не исключённый, не сам), член ветви peer того же пространства, не
-// исключённый здесь; чужое пространство и не член — нет. SyncKey — то же по ключу (с ветвью раскола).
+// TestSpaceSyncGateRules — кому отдаётся M: член объединения (не исключённый ни в одной известной M, не сам); peer —
+// подлинный M того же пространства; иначе — нет. SyncKey — то же по ключу. Член чужой ветви, ещё не принятой здесь,
+// — нет; после приёма его M — да.
 func TestSpaceSyncGateRules(t *testing.T) {
 	sec := totp.NewSecret()
 	ca, cb := spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec)
@@ -180,7 +201,7 @@ func TestSpaceSyncGateRules(t *testing.T) {
 	spSet(t, ca, gone)
 	mb, _ := m.marshal()
 	npub, _, _ := ed25519.GenerateKey(nil)
-	branch, _ := spaceAdd(m, ph, "9"+hub.RandDigits(8), npub)
+	branch, _ := spaceAdd(m, ph, "9"+hub.RandDigits(8), npub) // ветвь, где keys[1] — ещё член
 	bb, _ := branch.marshal()
 	foreign := spaceCfg(t, spacePass, sec)
 	fph := spaceMake(t, foreign)
@@ -196,11 +217,12 @@ func TestSpaceSyncGateRules(t *testing.T) {
 		{"член с M", keys[0], mb, true},
 		{"исключённый", keys[1], nil, false},
 		{"исключённый со своим старым M", keys[1], mb, false},
+		{"исключённый, член в M ветви", keys[1], bb, false},
 		{"сам", cfgPub(ca), nil, false},
-		{"член ветви", npub, bb, true},
+		{"член ветви, не принятой здесь", npub, bb, false},
 		{"не член без M", npub, nil, false},
-		{"не член своей ветви", npub, mb, false},
-		{"чужое пространство", npub, fb, false},
+		{"чужое пространство", cfgPub(cb), fb, false},
+		{"испорченный M", cfgPub(cb), mb[:len(mb)-1], false},
 	} {
 		if got := ca.SyncGate(x.pub, x.peer) != nil; got != x.want {
 			t.Errorf("SyncGate %s: %v", x.name, got)
@@ -209,22 +231,86 @@ func TestSpaceSyncGateRules(t *testing.T) {
 	if !ca.SyncKey(cfgPub(cb)) || ca.SyncKey(keys[1]) || ca.SyncKey(cfgPub(ca)) || ca.SyncKey(npub) {
 		t.Error("SyncKey: член, исключённый, сам, чужой")
 	}
-	ca.mu.Lock()
-	ca.SpaceFork = bb // ветвь раскола, известная здесь
-	ca.save()
-	ca.mu.Unlock()
-	if !ca.SyncKey(npub) {
-		t.Error("SyncKey: член известной ветви раскола")
+	ca.SyncApply(bb, nil) // ветвь принята: её новый член — член, её «член» keys[1] — по-прежнему исключён
+	if !ca.SyncKey(npub) || ca.SyncKey(keys[1]) || ca.SyncGate(keys[1], bb) != nil {
+		t.Error("SyncKey после приёма ветви")
 	}
+	if got := ca.SyncRecs(nil); len(got) != 1 {
+		t.Errorf("SyncRecs: %d верхушек сверх главной", len(got))
+	}
+}
+
+// TestSpaceCompromised — исключения на двух ПК, не знавших друг о друге: секрет каждого нового кода видел ПК,
+// исключённый на другом. После сверки — «скомпрометирован»: пропусков, выдачи M, вступлений и «Работаю тут» нет,
+// правка без нового кода — отказ; новый код фразой снимает состояние на обоих.
+func TestSpaceCompromised(t *testing.T) {
+	sec := totp.NewSecret()
+	ca, cb := spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec)
+	ph, keys := syncSpace(t, 2, ca, cb)
+	m := spaceOf(ca)
+	xa, _ := spaceRemove(m, ph, keys[0])
+	xb, _ := spaceRemove(m, ph, keys[1])
+	spSet(t, ca, xa)
+	spSet(t, cb, xb)
+	if spaceOf(ca).Compromised {
+		t.Fatal("одно исключение — уже скомпрометирован")
+	}
+	if !spSync(cb, ca) {
+		t.Fatal("не сошлись")
+	}
+	fakeNet(t, func(agent.SyncDial) ([]byte, error) { return nil, agent.ErrSpaceOffline })
+	spSyncer(t, ca)
+	for _, c := range []*config{ca, cb} {
+		salt, _, _ := c.secret("")
+		other := cfgPub(cb)
+		if c == cb {
+			other = cfgPub(ca)
+		}
+		if v := spaceOf(c); !v.Compromised || len(v.Members) != 2 {
+			t.Fatalf("не скомпрометирован: %v", v)
+		}
+		if c.spaceMember(salt, other) || c.spaceGet(salt) != nil {
+			t.Error("пропуск или выдача M при скомпрометированном входе")
+		}
+	}
+	npub, _, _ := ed25519.GenerateKey(nil)
+	top, _ := spaceParse(spRaw(ca))
+	in, _ := spaceAdd(top, ph, "9"+hub.RandDigits(8), npub)
+	ib, _ := in.marshal()
 	salt, _, _ := ca.secret("")
-	if err := ca.spaceJoin(salt, bb, npub); !errors.Is(err, errSpaceNotIn) {
-		t.Errorf("вступление при расколе: %v", err)
+	if err := ca.spaceJoin(salt, ib, npub); !errors.Is(err, errSpaceNotIn) {
+		t.Errorf("вступление при скомпрометированном входе: %v", err)
+	}
+	p := testMaster(ca)
+	code, _ := totp.Code(spaceOf(ca).TOTP, time.Now())
+	if _, err := p.workHere(context.Background(), spacePass, code); !errors.Is(err, errSpaceCompromised) {
+		t.Errorf("«Работаю тут»: %v", err)
+	}
+	if _, err := ca.syn.edit(context.Background(), func(m *space) (*space, error) { return spaceSetLogin(m, ph, "other-pass-12", "") }); !errors.Is(err, errSpaceCompromised) {
+		t.Errorf("правка без нового кода: %v", err)
+	}
+	if _, err := ca.syn.spaceChangeLogin(context.Background(), ph, "", false); err != nil { // новый код — сам
+		t.Fatal(err)
+	}
+	if !spSync(cb, ca) {
+		t.Fatal("не сошлись после нового кода")
+	}
+	for _, c := range []*config{ca, cb} {
+		salt, _, _ := c.secret("")
+		other := cfgPub(cb)
+		if c == cb {
+			other = cfgPub(ca)
+		}
+		if v := spaceOf(c); v.Compromised || v.TOTP == xa.TOTP || v.TOTP == xb.TOTP || !c.spaceMember(salt, other) {
+			t.Errorf("новый код не снял состояние: %v", v)
+		}
 	}
 }
 
 // TestSpaceWaitRules — space_wait: пока он есть, пропусков нет; снимает только подтверждение (подписанный M хоста,
-// равный своему) от члена, кроме ПК вступления; «differs» и подделка подтверждения — нет. Повтор рассылки идёт до
-// подтверждения (и для badid: флаг С4 не залипает).
+// равный своему) от члена, кроме ПК вступления; «differs» и подделка подтверждения — нет. Неподписанные "badid" и
+// "clock" состояние решений не меняют ("clock" — только SpaceClock для окна), повтор идёт; "old" — повтора нет;
+// повтор ограничен spaceSyncRetryFor.
 func TestSpaceWaitRules(t *testing.T) {
 	sec := totp.NewSecret()
 	ca, cp, cn := spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec)
@@ -237,7 +323,16 @@ func TestSpaceWaitRules(t *testing.T) {
 	answer := map[string]func() ([]byte, error){}
 	set := func(id string, f func() ([]byte, error)) { mu.Lock(); answer[id] = f; mu.Unlock() }
 	mine := func() ([]byte, error) { return spRaw(cn), nil }
-	calls := fakeNet(t, func(d agent.SyncDial) ([]byte, error) { mu.Lock(); f := answer[d.ID]; mu.Unlock(); return f() })
+	var acalls atomic.Int32
+	fakeNet(t, func(d agent.SyncDial) ([]byte, error) {
+		if d.ID == ca.id() {
+			acalls.Add(1)
+		}
+		mu.Lock()
+		f := answer[d.ID]
+		mu.Unlock()
+		return f()
+	})
 	s := spSyncer(t, cn)
 	salt, _, _ := cn.secret("")
 	if cn.spaceMember(salt, cfgPub(ca)) {
@@ -250,28 +345,54 @@ func TestSpaceWaitRules(t *testing.T) {
 		t.Errorf("снял не тот: %v, сверен %v", st, cn.spaceFreshNow())
 	}
 	set(ca.id(), func() ([]byte, error) { return nil, agent.ErrSpaceIDKey })
+	before := spConf(cn)
 	s.spread(context.Background(), true)
-	cn.mu.Lock()
-	bad := len(cn.SpaceBadID)
-	cn.mu.Unlock()
-	if bad != 1 {
-		t.Fatal("флаг С4 не поставлен")
+	if spConf(cn) != before {
+		t.Error("неподписанный badid изменил настройки")
 	}
-	n := calls.Load()
-	eventually(t, "повтор после badid", func() bool { return calls.Load() >= n+2 }) // повторяет, пока не подтвердят
-	n = calls.Load()
-	set(ca.id(), mine) // ПК под этим ID доказал ключ и подтвердил — повтор снимает и С4, и space_wait
+	n := acalls.Load()
+	eventually(t, "повтор после badid", func() bool { return acalls.Load() >= n+2 }) // повторяет, пока не подтвердят
+	set(ca.id(), func() ([]byte, error) { return nil, agent.ErrSpaceSkew })
+	eventually(t, "часы не отмечены", func() bool {
+		cn.mu.Lock()
+		defer cn.mu.Unlock()
+		return len(cn.SpaceClock) == 1 && cn.SpaceClock[0] == ca.id()
+	})
+	if cn.spaceFreshNow() {
+		t.Error("часы сняли space_wait")
+	}
+	n = acalls.Load()
+	set(ca.id(), mine) // ПК подтвердил — повтор снимает и часы, и space_wait
 	eventually(t, "повтор рассылки не снял флаги", func() bool {
 		cn.mu.Lock()
 		defer cn.mu.Unlock()
-		return len(cn.SpaceBadID) == 0 && cn.SpaceWait == ""
+		return len(cn.SpaceClock) == 0 && cn.SpaceWait == ""
 	})
-	if calls.Load() <= n {
+	if acalls.Load() <= n {
 		t.Error("повтора не было")
 	}
 	salt, _, _ = cn.secret("")
 	if !cn.spaceMember(salt, cfgPub(ca)) {
 		t.Error("пропуска нет после подтверждения")
+	}
+	time.Sleep(100 * time.Millisecond) // повтор кончился на "ok"
+	// старый хост: повтора нет
+	set(ca.id(), func() ([]byte, error) { return nil, agent.ErrSpaceOld })
+	n = acalls.Load()
+	s.spread(context.Background(), true)
+	time.Sleep(150 * time.Millisecond)
+	if got := acalls.Load(); got != n+1 {
+		t.Errorf("старому хосту — %d вызовов, ждали 1", got-n)
+	}
+	// повтор ограничен по времени
+	spaceSyncRetryFor = 100 * time.Millisecond
+	set(ca.id(), func() ([]byte, error) { return nil, agent.ErrSpaceOffline })
+	s.spread(context.Background(), true)
+	time.Sleep(300 * time.Millisecond)
+	n = acalls.Load()
+	time.Sleep(200 * time.Millisecond)
+	if acalls.Load() != n {
+		t.Error("повтор не кончился за spaceSyncRetryFor")
 	}
 }
 
@@ -294,8 +415,8 @@ func TestSpaceEnterWait(t *testing.T) {
 	}
 }
 
-// TestSpaceApplyLogin — принятая смена входа: запись по умолчанию — из M, её Trusted/KeyLogin сброшены, гость не
-// тронут, сессии со старым паролем рвутся (spaceChanged); цепочка — не больше spaceLogMax записей.
+// TestSpaceApplyLogin — принятая смена входа: запись по умолчанию — из объединения, её Trusted/KeyLogin сброшены,
+// гость не тронут, сессии со старым паролем рвутся (spaceChanged); цепочка правок не копится (одна верхушка).
 func TestSpaceApplyLogin(t *testing.T) {
 	sec := totp.NewSecret()
 	ca, cb := spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec)
@@ -328,21 +449,18 @@ func TestSpaceApplyLogin(t *testing.T) {
 		t.Error("spaceChanged не позван")
 	}
 	m := spaceOf(ca)
-	for range spaceLogMax + 4 {
+	for range 4 {
 		m, _ = spaceSetLogin(m, ph, "", totp.NewSecret())
 		spSet(t, ca, m)
 	}
-	ca.mu.Lock()
-	l := len(ca.SpaceLog)
-	ca.mu.Unlock()
-	if l != spaceLogMax {
-		t.Errorf("цепочка: %d записей", l)
+	if h := spaceHeadsOf(ca); len(h) != 1 {
+		t.Errorf("верхушек: %d", len(h))
 	}
 }
 
-// TestSpaceLeaveSelf — выйти из пространства: пароль и верный код записи по умолчанию; M, цепочка и флаги — вон,
-// запись по умолчанию — с тем же паролем и кодом, пропусков нет; после — смена пароля снова можно. Исключить себя
-// с этого же ПК — нельзя.
+// TestSpaceLeaveSelf — выйти из пространства: пароль и верный код записи по умолчанию (код погашен — повтором не
+// войти); верхушки и флаги — вон, запись по умолчанию — с тем же паролем и кодом, пропусков нет; после — смена пароля
+// снова можно. Исключить себя с этого же ПК — нельзя.
 func TestSpaceLeaveSelf(t *testing.T) {
 	sec := totp.NewSecret()
 	ca, cb := spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec)
@@ -364,24 +482,76 @@ func TestSpaceLeaveSelf(t *testing.T) {
 		t.Errorf("чужой код: %v", err)
 	}
 	cb.mu.Lock()
-	cb.SpaceFork, cb.SpaceWait, cb.SpaceLog = []byte{1}, "x", [][]byte{{1}}
+	cb.SpaceHeads, cb.SpaceWait, cb.SpaceClock = [][]byte{{1}}, "x", []string{"x"}
 	cb.save()
 	cb.mu.Unlock()
-	if err := cb.spaceLeave(spacePass, code()); err != nil {
+	c := code()
+	if err := cb.spaceLeave(spacePass, c); err != nil {
 		t.Fatal(err)
 	}
 	cb.mu.Lock()
-	left := cb.Space == nil && cb.SpaceFork == nil && cb.SpaceWait == "" && cb.SpaceLog == nil
+	left := cb.Space == nil && cb.SpaceHeads == nil && cb.SpaceWait == "" && cb.SpaceClock == nil
 	u := cb.Users[0]
 	cb.mu.Unlock()
 	salt, _, _ := cb.secret("")
 	if !left || !bytes.Equal(u.Salt, m.PSalt) || u.TOTP != m.TOTP || cb.spaceMember(salt, cfgPub(ca)) {
 		t.Error("выход: состав или флаги остались, или запись по умолчанию сменилась")
 	}
+	if _, ok := totp.Check(u.TOTP, c, time.Now(), u.TOTPStep); ok { // l3: код выхода погашен
+		t.Error("код выхода можно повторить")
+	}
 	if err := cb.setPassword("own-pass-123"); err != nil {
 		t.Errorf("после выхода пароль не меняется: %v", err)
 	}
 	if err := cb.spaceLeave(spacePass, code()); !errors.Is(err, errSpaceNotIn) {
 		t.Errorf("второй выход: %v", err)
+	}
+}
+
+// TestSpaceWorkHereSync — w1 приёмки Э4: «Работаю тут» сперва сверяется — свежий состав (исключённый, новый код)
+// принимается до открытия целей: старый код уже не годен, исключённый не открывается.
+func TestSpaceWorkHereSync(t *testing.T) {
+	sec := totp.NewSecret()
+	ca, cb := spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec)
+	ph, keys := syncSpace(t, 1, ca, cb)
+	x, err := spaceRemove(spaceOf(cb), ph, keys[0]) // на B — исключение (новый код); A о нём не знает
+	if err != nil {
+		t.Fatal(err)
+	}
+	spSet(t, cb, x)
+	xb, _ := x.marshal()
+	fakeNet(t, func(d agent.SyncDial) ([]byte, error) {
+		if d.ID != cb.id() {
+			return nil, agent.ErrSpaceOffline
+		}
+		return d.S.SyncApply(xb, nil), nil // B отдал своё — A принял
+	})
+	spSyncer(t, ca)
+	var mu sync.Mutex
+	var opened []string
+	oldOpen := passOpenFn
+	t.Cleanup(func() { passOpenFn = oldOpen })
+	passOpenFn = func(_ context.Context, d agent.PassDial) ([]byte, error) {
+		mu.Lock()
+		opened = append(opened, d.ID)
+		mu.Unlock()
+		return nil, nil
+	}
+	p := testMaster(ca)
+	old, _ := totp.Code(sec, time.Now())
+	if nw, _ := totp.Code(x.TOTP, time.Now()); nw == old {
+		t.Skip("коды совпали")
+	}
+	if _, err := p.workHere(context.Background(), spacePass, old); !errors.Is(err, errPassCode) {
+		t.Fatalf("старый код после сверки: %v", err)
+	}
+	nw, _ := totp.Code(x.TOTP, time.Now())
+	if _, err := p.workHere(context.Background(), spacePass, nw); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(opened) != 1 || opened[0] != cb.id() {
+		t.Errorf("открыты %v, ждали только B", opened)
 	}
 }

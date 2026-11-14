@@ -30,22 +30,24 @@ var (
 	errSpaceChange = errors.New("пространство: настройки изменились во время операции — повторите")
 )
 
-// spaceLocked — разобранный Space (под c.mu); nil — пространства нет или запись испорчена (в журнал — без секретов:
-// ошибки разбора их не содержат).
+// spaceLocked — объединение сохранённых верхушек (под c.mu, spaceView); nil — пространства нет или записи
+// испорчены (в журнал — без секретов: ошибки разбора их не содержат). Подписи у объединения нет.
 func (c *config) spaceLocked() *space {
 	if len(c.Space) == 0 {
 		c.sp, c.spRaw = nil, nil
 		return nil
 	}
-	if c.spRaw != nil && bytes.Equal(c.spRaw, c.Space) {
+	snap := c.spaceSnapLocked()
+	if c.spRaw != nil && bytes.Equal(c.spRaw, snap) {
 		return c.sp
 	}
-	m, err := spaceParse(c.Space)
-	if err != nil {
+	var m *space
+	if heads, err := spaceHeads(c.spaceStoredLocked()); err != nil {
 		log.Printf("пространство в настройках не читается: %v", err)
-		m = nil
+	} else {
+		m = spaceView(heads)
 	}
-	c.sp, c.spRaw = m, bytes.Clone(c.Space)
+	c.sp, c.spRaw = m, snap
 	return m
 }
 
@@ -109,28 +111,28 @@ func (c *config) spaceGet(salt []byte) []byte {
 }
 
 // spaceMember — agent.Agent.SpaceMember (Э3, пропуск на цели): ключ pub — член состава этого ПК (не исключён и не
-// сам этот ПК), а вход с солью salt — запись владельца из него (как spaceGet; «Спрашивать» — нет). Э4: при расколе,
-// до первой сверки после вступления и члену, под чьим ID ответил чужой ключ (С4), — нет.
+// сам этот ПК), а вход с солью salt — запись владельца из него (как spaceGet; «Спрашивать» — нет). Членство — по
+// объединению (исключённый в любой известной M — нет); вход скомпрометирован или нет сверки после вступления — нет.
 func (c *config) spaceMember(salt, pub []byte) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
 	m := c.spaceOwnerLocked(salt)
-	if m == nil || len(c.SpaceFork) > 0 || c.SpaceWait != "" || c.SpaceBehind > 0 {
+	if m == nil || c.SpaceWait != "" {
 		return false
 	}
-	i := slices.IndexFunc(m.Members, func(x spaceMember) bool { return bytes.Equal(x.Pub, pub) })
-	return i >= 0 && !m.gone(pub) && !slices.Contains(c.SpaceBadID, m.Members[i].ID) &&
-		!bytes.Equal(pub, ed25519.PrivateKey(c.Key).Public().(ed25519.PublicKey))
+	return m.member(pub) && !m.gone(pub) && !bytes.Equal(pub, ed25519.PrivateKey(c.Key).Public().(ed25519.PublicKey))
 }
 
 // spaceOwnerLocked — состав (под c.mu), если вход с солью salt — запись владельца из него: запись по умолчанию с теми
 // же солью, хэшем и секретом TOTP, режим не «Спрашивать». Иначе nil. Э4 (С6): на члене смена пароля, кода и
 // «Спрашивать» записи по умолчанию запрещены (errSpaceVia) — только правкой M (spaceChangeLogin, фраза); принятый M
-// повторяется в записи по умолчанию (spaceSetLocked). Расхождение остаётся только от правки файла старой версией.
+// повторяется в записи по умолчанию (spaceAddLocked). Расхождение остаётся только от правки файла старой версией.
+// Вход скомпрометирован (секрет кода видел исключённый ПК) — nil: ни пропусков, ни выдачи M, ни вступления до нового
+// кода фразой.
 func (c *config) spaceOwnerLocked(salt []byte) *space {
 	m := c.spaceLocked()
-	if m == nil || c.codeModeLocked() {
+	if m == nil || m.Compromised || c.codeModeLocked() {
 		return nil
 	}
 	u := c.Users[0]
@@ -141,9 +143,9 @@ func (c *config) spaceOwnerLocked(salt []byte) *space {
 }
 
 // spaceJoin — agent.Agent.SpaceJoin (на ПК P): принять M, который новый ПК подписал фразой пространства. Годен только
-// «текущий состав + ровно один ПК с ключом pub» (ключ, которым новый ПК доказал себя в канале), эпоха +1, остальное
-// без изменений; подпись — закреплённым opub (spaceAccept). Сессия — записи владельца (salt, как в spaceGet): сверка
-// под тем же c.mu, что и запись.
+// «главная верхушка (её отдал spaceGet) + ровно один ПК с ключом pub» (ключ, которым новый ПК доказал себя в
+// канале), эпоха +1, остальное без изменений; подпись — закреплённым opub (сравнение байтов с ожидаемым). Сессия —
+// записи владельца (salt, как в spaceGet): сверка под тем же c.mu, что и запись. Принятый M — ещё одна верхушка.
 // ID нового ПК (С4) проверяет рассылка после приёма: ПК под этим ID должен ответить ключом pub (spaceSyncer.one).
 func (c *config) spaceJoin(salt, b []byte, pub ed25519.PublicKey) error {
 	if err := c.spaceJoinSave(salt, b, pub); err != nil {
@@ -165,14 +167,14 @@ func (c *config) spaceJoinSave(salt, b []byte, pub ed25519.PublicKey) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
-	cur := c.spaceOwnerLocked(salt)
-	if cur == nil || len(c.SpaceFork) > 0 {
+	if c.spaceOwnerLocked(salt) == nil {
 		return errSpaceNotIn
 	}
-	if err := spaceAccept(cur, in); err != nil {
+	top, err := spaceParse(c.Space)
+	if err != nil {
 		return err
 	}
-	want, err := cur.next()
+	want, err := top.next()
 	if err != nil {
 		return err
 	}
@@ -185,7 +187,9 @@ func (c *config) spaceJoinSave(salt, b []byte, pub ed25519.PublicKey) error {
 	if !bytes.Equal(want.signBytes(), in.signBytes()) {
 		return errors.New("пространство: состав — не «текущий и новый ПК»")
 	}
-	c.Space = bytes.Clone(b)
+	if _, _, err := c.spaceAddLocked(in); err != nil {
+		return err
+	}
 	return c.save()
 }
 
@@ -299,7 +303,7 @@ func (c *config) spaceEnter(ctx context.Context, hostID, password, code, phrase 
 	if len(c.Space) > 0 || c.ID != id || !bytes.Equal(c.Key, key) {
 		return ch, errSpaceChange
 	}
-	c.Space = out
+	c.Space, c.SpaceHeads, c.SpaceClock = out, nil, nil
 	u := &c.Users[0]
 	ch.Password = !bytes.Equal(u.Salt, joined.PSalt) || !bytes.Equal(u.Hash, joined.PHash)
 	ch.TOTP = u.TOTP != joined.TOTP

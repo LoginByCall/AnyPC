@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"math/rand/v2"
 	"slices"
 	"strings"
 	"sync"
@@ -43,7 +44,7 @@ func spaceFixture(t *testing.T) *space {
 		SID: bytes.Clone(spaceTestSID), Epoch: 1, OSalt: bytes.Clone(spaceTestOSalt),
 		OPub:  bytes.Clone(spaceTestKey().Public().(ed25519.PublicKey)),
 		PSalt: bytes.Clone(spaceTestPSalt), PHash: bytes.Repeat([]byte{0x04}, 32), TOTP: spaceTestTOTP,
-		LGen: 1, LPrev: make([]byte, 32), LMerge: make([]byte, 32),
+		LGen: 1, LPrev: make([]byte, 32),
 		Members: []spaceMember{{"100000001", spacePub(0x10)}, {"100000002", spacePub(0x20)}},
 	}
 	if err := m.seal(spaceTestKey()); err != nil {
@@ -161,8 +162,8 @@ func TestSpaceAddRemove(t *testing.T) {
 	if m2.Epoch != 2 || len(m2.Members) != 3 || m2.Members[0].ID != "100000003" || m2.TOTP != m1.TOTP {
 		t.Fatalf("после добавления: %+v", m2)
 	}
-	if err := spaceAccept(m1, m2); err != nil {
-		t.Fatal(err)
+	if v := spaceJoinT(t, m1, m2); len(v.Members) != 3 || v.Epoch != 2 {
+		t.Fatalf("объединение с добавлением: %v", v)
 	}
 
 	m3, err := spaceRemove(m2, spaceTestPhrase, spacePub(0x20))
@@ -178,14 +179,11 @@ func TestSpaceAddRemove(t *testing.T) {
 	if m3.TOTP == m2.TOTP || m3.TOTP == "" {
 		t.Fatal("исключение не сменило секрет TOTP")
 	}
-	if err := spaceAccept(m2, m3); err != nil {
-		t.Fatal(err)
+	for _, v := range []*space{spaceJoinT(t, m2, m3), spaceJoinT(t, m1, m3), spaceJoinT(t, m3, m2, m1)} { // пропущенная эпоха — не помеха;
+		if v.member(spacePub(0x20)) || !v.gone(spacePub(0x20)) || !sameLogin(v, m3) { // украденный возвращает старый список
+			t.Fatalf("исключённый вернулся: %v", v)
+		}
 	}
-	if err := spaceAccept(m1, m3); err != nil { // пропущенная эпоха — не помеха
-		t.Fatal(err)
-	}
-	spaceWant(t, spaceAccept(m3, m2), errSpaceStale) // украденный ПК возвращает старый список
-	spaceWant(t, spaceAccept(m3, m1), errSpaceStale)
 
 	if after, _ := m1.marshal(); !bytes.Equal(before, after) {
 		t.Fatal("правка изменила исходный состав")
@@ -261,7 +259,7 @@ func TestSpaceTamper(t *testing.T) {
 		if err := s.verify(); !errors.Is(err, errSpaceSig) {
 			t.Errorf("%s: ошибка %v, ждали %v", name, err, errSpaceSig)
 		}
-		if err := spaceAccept(m, s); err == nil {
+		if _, err := spaceJoin(m, s); err == nil {
 			t.Errorf("%s: подделка принята", name)
 		}
 	}
@@ -271,7 +269,9 @@ func TestSpaceTamper(t *testing.T) {
 	spaceWant(t, s.verify(), errSpaceSig)
 }
 
-func TestSpaceAccept(t *testing.T) {
+// Приём в объединение: любой подлинный M того же пространства; откат и повтор ничего не меняют; чужое, неподписанное
+// и «исключённый — член» — отказ.
+func TestSpaceJoinAccept(t *testing.T) {
 	cur := spaceEdit(t, spaceFixture(t), func(s *space) { s.Epoch, s.Gone = 5, [][]byte{spacePub(0x30), spacePub(0x50)} })
 	if err := cur.verify(); err != nil {
 		t.Fatal(err)
@@ -279,26 +279,31 @@ func TestSpaceAccept(t *testing.T) {
 	next := func(edit func(*space)) *space {
 		return spaceEdit(t, cur, func(s *space) { s.Epoch = 6; edit(s) })
 	}
-
-	if err := spaceAccept(cur, next(func(*space) {})); err != nil {
-		t.Fatal(err)
+	if v := spaceJoinT(t, cur, next(func(s *space) { s.Gone = append(s.Gone, spacePub(0x60)) })); len(v.Gone) != 3 {
+		t.Fatalf("новый исключённый: %v", v)
 	}
-	if err := spaceAccept(cur, next(func(s *space) { s.Gone = append(s.Gone, spacePub(0x60)) })); err != nil {
-		t.Fatal(err)
+	for name, old := range map[string]*space{
+		"откат эпохи":        next(func(s *space) { s.Epoch = 4; s.Gone = nil }),
+		"тот же":             cur,
+		"пропал исключённый": next(func(s *space) { s.Gone = s.Gone[:1] }),
+		"пропал член":        next(func(s *space) { s.Members = s.Members[:1] }),
+	} {
+		v := spaceJoinT(t, cur, old)
+		if len(v.Gone) != 2 || len(v.Members) != 2 || !v.gone(spacePub(0x50)) {
+			t.Errorf("%s: объединение потеряло: %v", name, v)
+		}
+		if h, _ := spaceHeads([]*space{cur, old}); len(h) != 1 {
+			t.Errorf("%s: %d верхушек", name, len(h))
+		}
 	}
-
-	spaceWant(t, spaceAccept(cur, next(func(s *space) { s.Epoch = 4 })), errSpaceStale) // откат
-	spaceWant(t, spaceAccept(cur, next(func(s *space) { s.Epoch = 5 })), errSpaceSame)  // равная эпоха, те же байты
-	spaceWant(t, spaceAccept(cur, cur), errSpaceSame)
-	spaceWant(t, spaceAccept(cur, next(func(s *space) { s.Epoch = 5; s.TOTP = "KRSXG5CTMVRXEZLUKRSXG5CTMVRXEZLU" })), errSpaceFork)
-
-	spaceWant(t, spaceAccept(cur, next(func(s *space) { s.Gone = s.Gone[:1] })), errSpaceFork)
-	spaceWant(t, spaceAccept(cur, next(func(s *space) { s.Gone = nil })), errSpaceFork)
-	spaceWant(t, spaceAccept(cur, next(func(s *space) { s.Gone = [][]byte{spacePub(0x30), spacePub(0x51)} })), errSpaceFork)
-
-	spaceWant(t, spaceAccept(cur, next(func(s *space) { s.SID[0] ^= 1 })), errSpaceForeign)
-	spaceWant(t, spaceAccept(cur, next(func(s *space) { s.OSalt[0] ^= 1 })), errSpaceForeign)
-
+	for name, f := range map[string]*space{
+		"sid":   next(func(s *space) { s.SID[0] ^= 1 }),
+		"osalt": next(func(s *space) { s.OSalt[0] ^= 1 }),
+	} {
+		if _, err := spaceJoin(cur, f); !errors.Is(err, errSpaceForeign) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
 	// чужой владелец: состав с тем же sid, честно подписанный другим ключом
 	_, otherKey, _ := ed25519.GenerateKey(nil)
 	foreign := next(func(*space) {})
@@ -307,21 +312,25 @@ func TestSpaceAccept(t *testing.T) {
 	if err := foreign.verify(); err != nil {
 		t.Fatal(err)
 	}
-	spaceWant(t, spaceAccept(cur, foreign), errSpaceForeign)
+	_, err := spaceJoin(cur, foreign)
+	spaceWant(t, err, errSpaceForeign)
 
 	// исключённый ПК числится членом — даже с подписью владельца
-	spaceWant(t, spaceAccept(cur, next(func(s *space) { s.Gone = [][]byte{spacePub(0x20), spacePub(0x30), spacePub(0x50)} })), errSpaceGoneMember)
 	bad := next(func(s *space) { s.Gone = [][]byte{spacePub(0x10), spacePub(0x30), spacePub(0x50)} })
-	spaceWant(t, spaceAccept(cur, bad), errSpaceGoneMember)
+	_, err = spaceJoin(cur, bad)
+	spaceWant(t, err, errSpaceGoneMember)
 	spaceWant(t, bad.verify(), errSpaceGoneMember)
-	_, err := spaceParse(append(bad.signBytes(), bad.Sig...))
+	_, err = spaceParse(append(bad.signBytes(), bad.Sig...))
 	spaceWant(t, err, errSpaceGoneMember)
 
 	unsigned := next(func(*space) {})
 	unsigned.Sig = nil
-	spaceWant(t, spaceAccept(cur, unsigned), errSpaceSig)
-	spaceWant(t, spaceAccept(cur, nil), errSpaceFormat)
-	spaceWant(t, spaceAccept(nil, cur), errSpaceFormat)
+	_, err = spaceJoin(cur, unsigned)
+	spaceWant(t, err, errSpaceSig)
+	_, err = spaceJoin(cur, nil)
+	spaceWant(t, err, errSpaceFormat)
+	_, err = spaceJoin()
+	spaceWant(t, err, errSpaceFormat)
 }
 
 // Постоянный вектор: байты записи собраны здесь вручную по описанию формата, а хэш записи с подписью закреплён —
@@ -332,7 +341,7 @@ func TestSpaceVector(t *testing.T) {
 
 	var w []byte
 	w = append(w, "AnyPC space M\x00"...)
-	w = append(w, 1)                                     // версия
+	w = append(w, 2)                                     // версия
 	w = append(w, bytes.Repeat([]byte{0x03}, 16)...)     // sid
 	w = append(w, 1, 2, 3, 4, 5, 6, 7, 8)                // эпоха, big-endian
 	w = append(w, bytes.Repeat([]byte{0x01}, 16)...)     // osalt
@@ -342,7 +351,8 @@ func TestSpaceVector(t *testing.T) {
 	w = append(w, 32)                                    // длина секрета TOTP
 	w = append(w, "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"...) //
 	w = append(w, 0, 0, 0, 1)                            // номер входа lgen, u32
-	w = append(w, make([]byte, 64)...)                   // lprev и lmerge: нули при lgen 1
+	w = append(w, 0, 0)                                  // lex, u16: 0 при lgen 1
+	w = append(w, make([]byte, 32)...)                   // lprev: нули при lgen 1
 	w = append(w, 2)                                     // число ПК
 	w = append(w, "100000001"...)                        //
 	w = append(w, bytes.Repeat([]byte{0x10}, 32)...)     //
@@ -370,7 +380,7 @@ func TestSpaceVector(t *testing.T) {
 	if len(b) != len(w)+ed25519.SignatureSize || !bytes.Equal(b[:len(w)], w) {
 		t.Fatal("запись — не подписываемые байты плюс подпись")
 	}
-	const wantSum = "bc6d1726e65496079a57b0f11a20b5193a6e207a2a04b8f9f0c37fa4775a2680"
+	const wantSum = "9d1eb439df07d41e9c57d9b00a508bacec0f8b6aca96bdb454ed2f504eee8066"
 	sum := sha256.Sum256(b)
 	if got := hex.EncodeToString(sum[:]); got != wantSum {
 		t.Fatalf("sha256 записи %s, ждали %s", got, wantSum)
@@ -418,11 +428,11 @@ func TestSpaceParseLimits(t *testing.T) {
 	b, _ := m.marshal()
 	const (
 		offVer  = len(spaceDomain)
-		offTOTP = offVer + 1 + 16 + 8 + 16 + 32 + 16 + 32   // байт длины секрета
-		offN    = offTOTP + 1 + len(spaceTestTOTP) + 4 + 64 // байт числа ПК (после lgen, lprev, lmerge)
-		offK    = offN + 1 + 2*(9+32)                       // u16 числа исключённых
+		offTOTP = offVer + 1 + 16 + 8 + 16 + 32 + 16 + 32       // байт длины секрета
+		offN    = offTOTP + 1 + len(spaceTestTOTP) + 4 + 2 + 32 // байт числа ПК (после lgen, lex, lprev)
+		offK    = offN + 1 + 2*(9+32)                           // u16 числа исключённых
 	)
-	if b[offVer] != 1 || b[offTOTP] != 32 || b[offN] != 2 || b[offK] != 0 || b[offK+1] != 0 || len(b) != offK+2+64 {
+	if b[offVer] != 2 || b[offTOTP] != 32 || b[offN] != 2 || b[offK] != 0 || b[offK+1] != 0 || len(b) != offK+2+64 {
 		t.Fatal("смещения теста разошлись с форматом")
 	}
 	with := func(edit func([]byte) []byte) []byte { return edit(bytes.Clone(b)) }
@@ -435,7 +445,7 @@ func TestSpaceParseLimits(t *testing.T) {
 		"пусто":               {nil, errSpaceFormat},
 		"только префикс":      {[]byte(spaceDomain), errSpaceFormat},
 		"чужой префикс":       {with(func(c []byte) []byte { c[0] = 'a'; return c }), errSpaceFormat},
-		"версия 2":            {with(func(c []byte) []byte { c[offVer] = 2; return c }), errSpaceVersion},
+		"версия 3": {with(func(c []byte) []byte { c[offVer] = 3; return c }), errSpaceVersion},
 		"версия 0":            {with(func(c []byte) []byte { c[offVer] = 0; return c }), errSpaceVersion},
 		"обрезана на байт":    {b[:len(b)-1], errSpaceFormat},
 		"обрезана в списке":   {b[:offN+5], errSpaceFormat},
@@ -491,7 +501,8 @@ func TestSpaceParseLimits(t *testing.T) {
 	// сверх пределов в памяти (в обход разбора) — тоже отказ
 	over := spaceEdit(t, max, func(s *space) { s.Gone = append(s.Gone, append([]byte{0x03}, pad(31)...)) })
 	spaceWant(t, over.verify(), errSpaceLimit)
-	spaceWant(t, spaceAccept(m, over), errSpaceLimit)
+	_, err = spaceJoin(m, over)
+	spaceWant(t, err, errSpaceLimit)
 
 	// разобранный состав не держит ссылок на входной буфер
 	c := bytes.Clone(b)
@@ -526,7 +537,7 @@ func TestSpaceForgeOwnerKeyFromPHash(t *testing.T) {
 		SID: bytes.Clone(real.SID), Epoch: real.Epoch + 100, OSalt: bytes.Clone(real.PSalt),
 		OPub:  bytes.Clone(evilKey.Public().(ed25519.PublicKey)),
 		PSalt: evilPSalt, PHash: pake.KDF("attacker-password", evilPSalt), TOTP: "KRSXG5CTMVRXEZLUKRSXG5CTMVRXEZLU",
-		LGen: 1, LPrev: make([]byte, 32), LMerge: make([]byte, 32),
+		LGen: 1, LPrev: make([]byte, 32),
 		Members: []spaceMember{{"666000001", spacePub(0x66)}},
 	}
 	if err := evil.seal(evilKey); err != nil {
@@ -545,7 +556,8 @@ func TestSpaceForgeOwnerKeyFromPHash(t *testing.T) {
 	if joined != nil {
 		t.Fatal("новый ПК подписал состав атакующего")
 	}
-	spaceWant(t, spaceAccept(real, got), errSpaceForeign)
+	_, err = spaceJoin(real, got)
+	spaceWant(t, err, errSpaceForeign)
 }
 
 // Н3: секрет TOTP записан ровно одним способом.
@@ -594,35 +606,32 @@ func TestSpaceErrorReturnsNil(t *testing.T) {
 	if n != nil {
 		t.Fatal("spaceRemove вернул состав при неверной фразе")
 	}
-	b := spaceEdit(t, m, func(s *space) { s.Epoch = 2 })
-	n, err = spaceMerge(m, b, spaceTestWrong, "")
+	n, err = spaceSetLogin(spaceJoinT(t, m), spaceTestWrong, "", spaceTestSec2)
 	spaceWant(t, err, errSpacePhrase)
 	if n != nil {
-		t.Fatal("spaceMerge вернул состав при неверной фразе")
+		t.Fatal("spaceSetLogin вернул состав при неверной фразе")
 	}
 }
 
-// Н6: эпоха MaxUint64 не замораживает пространство — такой скачок не принимается, а правка на ней — отказ.
+// Н6: правка на эпохе MaxUint64 — отказ (такую эпоху честный код не выпустит; объединение её не теряет).
 func TestSpaceEpochMax(t *testing.T) {
 	m := spaceFixture(t)
 	mx := spaceEdit(t, m, func(x *space) { x.Epoch = math.MaxUint64 })
-	spaceWant(t, spaceAccept(m, mx), errSpaceJump)
+	v := spaceJoinT(t, m, mx)
+	if v.Epoch != math.MaxUint64 {
+		t.Fatalf("эпоха объединения: %d", v.Epoch)
+	}
 	_, err := spaceAdd(mx, "", "100000003", spacePub(0x30))
 	spaceWant(t, err, errSpaceLimit)
 	_, err = spaceRemove(mx, "", spacePub(0x20))
 	spaceWant(t, err, errSpaceLimit)
-	_, err = spaceMerge(mx, m, "", "")
+	_, err = spaceAdd(v, "", "100000003", spacePub(0x30))
 	spaceWant(t, err, errSpaceLimit)
-
-	ok := spaceEdit(t, m, func(x *space) { x.Epoch = 1 + spaceMaxJump })
-	if err := spaceAccept(m, ok); err != nil {
-		t.Fatal(err)
-	}
-	far := spaceEdit(t, m, func(x *space) { x.Epoch = 2 + spaceMaxJump })
-	spaceWant(t, spaceAccept(m, far), errSpaceJump)
 }
 
-// Н2: две правки владельца от одной эпохи (A добавил ПК, B исключил украденный) — раскол виден, а не тих.
+// Н2 и решение 10 A: две правки владельца от одной эпохи (A добавил ПК, B исключил украденный) — не раскол, а
+// объединение: добавленные в A остаются, исключённый в B не возвращается, вход — исключения (его секрет украденный
+// не видел). Подписи слияния нет.
 func TestSpaceFork(t *testing.T) {
 	m1 := spaceFixture(t)
 	a, err := spaceAdd(m1, spaceTestPhrase, "100000003", spacePub(0x30))
@@ -633,69 +642,44 @@ func TestSpaceFork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spaceWant(t, spaceAccept(a, b), errSpaceFork)
-	spaceWant(t, spaceAccept(b, a), errSpaceFork)
-	a2, err := spaceAdd(a, spaceTestPhrase, "100000004", spacePub(0x40))
-	if err != nil {
-		t.Fatal(err)
-	}
-	spaceWant(t, spaceAccept(b, a2), errSpaceFork) // на ветви A украденный — снова член
-	b2, err := spaceAdd(b, spaceTestPhrase, "100000005", spacePub(0x50))
-	if err != nil {
-		t.Fatal(err)
-	}
-	spaceWant(t, spaceAccept(a, b2), errSpaceFork) // на ветви B пропал добавленный в A
-	spaceWant(t, spaceAccept(a2, b2), errSpaceFork)
-
-	m, err := spaceMerge(a2, b2, spaceTestPhrase, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if m.Epoch != 4 || len(m.Gone) != 1 || !m.gone(spacePub(0x20)) || m.member(spacePub(0x20)) || len(m.Members) != 4 {
-		t.Fatalf("слияние: %v", m)
-	}
-	for _, p := range []byte{0x10, 0x30, 0x40, 0x50} {
-		if !m.member(spacePub(p)) {
-			t.Errorf("после слияния нет ПК %#x", p)
+	a2, _ := spaceAdd(a, spaceTestPhrase, "100000004", spacePub(0x40)) // на ветви A украденный — член
+	b2, _ := spaceAdd(b, spaceTestPhrase, "100000005", spacePub(0x50))
+	var first []byte
+	for _, order := range [][]*space{{a2, b2}, {b2, a2}, {a, b, a2, b2, m1}, {m1, b2, a, a2, b, b2}} {
+		h, err := spaceHeads(order)
+		if err != nil {
+			t.Fatal(err)
+		}
+		v := spaceView(h)
+		if v.Epoch != 3 || len(v.Gone) != 1 || !v.gone(spacePub(0x20)) || v.member(spacePub(0x20)) || len(v.Members) != 4 ||
+			!sameLogin(v, b) || v.Compromised || len(h) != 2 {
+			t.Fatalf("объединение: %d верхушек, %v", len(h), v)
+		}
+		for _, p := range []byte{0x10, 0x30, 0x40, 0x50} {
+			if !v.member(spacePub(p)) {
+				t.Errorf("в объединении нет ПК %#x", p)
+			}
+		}
+		var bs []byte
+		for _, x := range h {
+			x, _ := x.marshal()
+			bs = append(bs, x...)
+		}
+		if first == nil {
+			first = bs
+		} else if !bytes.Equal(first, bs) {
+			t.Fatal("верхушки зависят от порядка")
 		}
 	}
-	if m.TOTP == a2.TOTP || m.TOTP == b2.TOTP { // ветвь A не знала об исключении — её секрет знает украденный
-		t.Fatal("слияние с новым исключённым не сменило секрет TOTP")
-	}
-	for name, cur := range map[string]*space{"m1": m1, "a": a, "b": b, "a2": a2, "b2": b2} {
-		if err := spaceAccept(cur, m); err != nil {
-			t.Errorf("ветвь %s не принимает слияние: %v", name, err)
-		}
-	}
-	m2, err := spaceMerge(b2, a2, spaceTestPhrase, "") // порядок входов: тот же состав, кроме нового секрета
-	if err != nil {
-		t.Fatal(err)
-	}
-	if m2.Epoch != m.Epoch || len(m2.Members) != len(m.Members) || len(m2.Gone) != len(m.Gone) {
-		t.Fatalf("слияние зависит от порядка входов: %v / %v", m, m2)
-	}
-	spaceWant(t, spaceAccept(m, m2), errSpaceFork) // два слияния одной эпохи с разными секретами — снова раскол
 
-	// без новых исключений секрет прежний
-	c, err := spaceAdd(m1, spaceTestPhrase, "100000006", spacePub(0x60))
-	if err != nil {
-		t.Fatal(err)
-	}
-	mc, err := spaceMerge(a, c, spaceTestPhrase, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if mc.TOTP != m1.TOTP || len(mc.Members) != 4 || mc.Epoch != 3 {
-		t.Fatalf("слияние двух добавлений: %v", mc)
-	}
-
-	// каждая ветвь исключила другой ПК — никого не осталось
+	// каждая ветвь исключила другой ПК — никого не осталось, вход скомпрометирован
 	r1, _ := spaceRemove(m1, spaceTestPhrase, spacePub(0x10))
 	r2, _ := spaceRemove(m1, spaceTestPhrase, spacePub(0x20))
-	_, err = spaceMerge(r1, r2, "", "")
-	spaceWant(t, err, errSpaceLast)
+	if v := spaceJoinT(t, r1, r2); len(v.Members) != 0 || !v.Compromised {
+		t.Fatalf("взаимное исключение: %v", v)
+	}
 
-	// объединение сверх пределов
+	// объединение сверх пределов: виден, но не правится
 	grow := func(base byte, n int) *space {
 		return spaceEdit(t, m1, func(s *space) {
 			s.Epoch = 2
@@ -712,29 +696,179 @@ func TestSpaceFork(t *testing.T) {
 			slices.SortFunc(s.Gone, bytes.Compare)
 		})
 	}
-	_, err = spaceMerge(grow(0x81, 20), grow(0x91, 20), "", "")
-	spaceWant(t, err, errSpaceLimit) // 400 исключённых
-	_, err = spaceMerge(grow(0x81, 20), spaceEdit(t, grow(0x91, 20), func(s *space) { s.Gone = nil }), "", "")
-	spaceWant(t, err, errSpaceLimit) // 42 члена
+	big := spaceJoinT(t, grow(0x81, 20), grow(0x91, 20))
+	if len(big.Gone) != 400 {
+		t.Fatalf("исключённых %d", len(big.Gone))
+	}
+	_, err = spaceAdd(big, "", "100000009", spacePub(0x09))
+	spaceWant(t, err, errSpaceLimit)
 
-	// один ID с разными ключами
+	// один ID с разными ключами (ПК назвался чужим ID, С4): одна пара, одинаково при любом порядке
 	d, _ := spaceAdd(m1, spaceTestPhrase, "100000003", spacePub(0x31))
-	_, err = spaceMerge(a, d, "", "")
-	spaceWant(t, err, errSpaceDup)
+	v1, v2 := spaceJoinT(t, a, d), spaceJoinT(t, d, a)
+	if len(v1.Members) != 3 || v1.member(spacePub(0x30)) == v1.member(spacePub(0x31)) ||
+		v1.member(spacePub(0x30)) != v2.member(spacePub(0x30)) {
+		t.Fatalf("спор ID: %v / %v", v1, v2)
+	}
+	if h, _ := spaceHeads([]*space{a, d}); len(h) != 2 {
+		t.Fatal("спорная пара потеряна из верхушек")
+	}
 
-	_, err = spaceMerge(spaceEdit(t, a, func(s *space) { s.PHash[0] ^= 1 }), b, "", "") // вход B — не продолжение входа A
-	spaceWant(t, err, errSpaceFork)
-	_, err = spaceMerge(a, spaceEdit(t, b, func(s *space) { s.SID[0] ^= 1 }), "", "")
+	_, err = spaceJoin(a, spaceEdit(t, b, func(s *space) { s.SID[0] ^= 1 }))
 	spaceWant(t, err, errSpaceForeign)
-	_, err = spaceMerge(a, nil, "", "")
-	spaceWant(t, err, errSpaceFormat)
 	bad := spaceFixture(t)
 	bad.Epoch = 7
-	_, err = spaceMerge(a, bad, "", "")
+	_, err = spaceJoin(a, bad)
 	spaceWant(t, err, errSpaceSig)
-	_, err = spaceMerge(bad, a, "", "")
+	_, err = spaceJoin(bad, a)
 	spaceWant(t, err, errSpaceSig)
-	spaceWant(t, spaceAccept(bad, a), errSpaceSig) // текущий тоже проверяется
+}
+
+// spaceGen — случайная история правок владельца на разных ПК: каждая правка — от объединения случайного
+// подмножества уже выпущенных M (добавить ПК, исключить члена с новым кодом, новый код); подпись — без Argon2.
+func spaceGen(t *testing.T, rnd *rand.Rand, n int) []*space {
+	t.Helper()
+	all := []*space{spaceFixture(t)}
+	pc := 0
+	for len(all) < n {
+		var base []*space
+		for _, m := range all {
+			if rnd.IntN(3) == 0 {
+				base = append(base, m)
+			}
+		}
+		if len(base) == 0 {
+			base = []*space{all[rnd.IntN(len(all))]}
+		}
+		v, err := spaceJoin(base...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		x, err := v.next()
+		if err != nil {
+			continue // объединение без членов или сверх пределов не правится
+		}
+		switch op := rnd.IntN(3); {
+		case op == 0 || len(x.Members) < 2:
+			pc++
+			x.Members = append(x.Members, spaceMember{ID: fmt.Sprintf("5%08d", pc), Pub: append([]byte{0x60, byte(pc)}, bytes.Repeat([]byte{7}, 30)...)})
+			slices.SortFunc(x.Members, func(a, b spaceMember) int { return bytes.Compare(a.Pub, b.Pub) })
+		case op == 1:
+			i := rnd.IntN(len(x.Members))
+			x.Gone = append(x.Gone, x.Members[i].Pub)
+			slices.SortFunc(x.Gone, bytes.Compare)
+			x.Members = slices.Delete(x.Members, i, i+1)
+			fallthrough
+		default:
+			if err := x.setLogin(spaceTestPhrase, "", totp.NewSecret()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := x.seal(spaceTestKey()); err != nil {
+			t.Fatal(err)
+		}
+		all = append(all, x)
+	}
+	return all
+}
+
+// headsBytes — верхушки множества одной строкой байтов (для сравнения).
+func headsBytes(t *testing.T, ms []*space) string {
+	t.Helper()
+	h, err := spaceHeads(ms)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b []byte
+	for _, x := range h {
+		r, _ := x.marshal()
+		b = append(b, r...)
+	}
+	return string(b)
+}
+
+// Свойства объединения (2P-Set) на случайных историях: коммутативность, ассоциативность, идемпотентность;
+// gone = ∪ gone, members = ∪ members − gone; исключённый не возвращается; вход — сильнейший по развилке, одинаково
+// при любом порядке доставки.
+func TestSpaceJoinProps(t *testing.T) {
+	for seed := range uint64(12) {
+		rnd := rand.New(rand.NewPCG(seed, 7))
+		all := spaceGen(t, rnd, 24)
+		pick := func() []*space {
+			var l []*space
+			for _, m := range all {
+				if rnd.IntN(2) == 0 {
+					l = append(l, m)
+				}
+			}
+			if len(l) == 0 {
+				l = append(l, all[0])
+			}
+			return l
+		}
+		heads := func(ms []*space) []*space {
+			h, err := spaceHeads(ms)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return h
+		}
+		for range 20 {
+			a, b, c := pick(), pick(), pick()
+			ab, ba := slices.Concat(a, b), slices.Concat(b, a)
+			if headsBytes(t, ab) != headsBytes(t, ba) {
+				t.Fatalf("seed %d: не коммутативно", seed)
+			}
+			if headsBytes(t, slices.Concat(heads(slices.Concat(a, b)), c)) != headsBytes(t, slices.Concat(a, heads(slices.Concat(b, c)))) {
+				t.Fatalf("seed %d: не ассоциативно", seed)
+			}
+			if headsBytes(t, slices.Concat(a, a, heads(a))) != headsBytes(t, a) {
+				t.Fatalf("seed %d: не идемпотентно", seed)
+			}
+			sh := slices.Clone(ab)
+			rnd.Shuffle(len(sh), func(i, j int) { sh[i], sh[j] = sh[j], sh[i] })
+			if headsBytes(t, sh) != headsBytes(t, ab) {
+				t.Fatalf("seed %d: зависит от порядка", seed)
+			}
+			v := spaceView(heads(ab))
+			var gone [][]byte
+			best := ab[0]
+			for _, m := range ab {
+				for _, g := range m.Gone {
+					if !slices.ContainsFunc(gone, func(x []byte) bool { return bytes.Equal(x, g) }) {
+						gone = append(gone, g)
+					}
+				}
+				if spaceLoginCmp(m, best) > 0 {
+					best = m
+				}
+			}
+			if len(v.Gone) != len(gone) {
+				t.Fatalf("seed %d: gone %d, ждали %d", seed, len(v.Gone), len(gone))
+			}
+			for _, m := range ab {
+				for _, x := range m.Members {
+					if v.gone(x.Pub) == v.member(x.Pub) { // не исключён — член; исключён — не член
+						t.Fatalf("seed %d: ПК %s: член %v, исключён %v", seed, x.ID, v.member(x.Pub), v.gone(x.Pub))
+					}
+				}
+			}
+			for _, x := range v.Members {
+				if !slices.ContainsFunc(ab, func(m *space) bool { return m.has(x) }) {
+					t.Fatalf("seed %d: ПК %s взялся ниоткуда", seed, x.ID)
+				}
+			}
+			if !sameLogin(v, best) {
+				t.Fatalf("seed %d: вход объединения — не сильнейший", seed)
+			}
+			comp := slices.ContainsFunc(ab, func(m *space) bool {
+				return bytes.Equal(m.loginHash(), best.loginHash()) && slices.ContainsFunc(m.Members, func(x spaceMember) bool { return v.gone(x.Pub) })
+			})
+			if v.Compromised != comp {
+				t.Fatalf("seed %d: скомпрометирован %v, ждали %v (по всем M, а не только верхушкам)", seed, v.Compromised, comp)
+			}
+		}
+	}
 }
 
 // Н4: ключ владельца малого порядка — подпись (R, 0) сходится на любом сообщении.
@@ -867,7 +1001,9 @@ func TestSpaceGuards(t *testing.T) {
 	s.OSalt = s.OSalt[:8]
 	spaceWant(t, s.sign(spaceTestPhrase), errSpaceFormat)
 
-	// член, пропавший без исключения, при большей эпохе — раскол, а не тихая потеря
+	// член, пропавший без исключения, — не тихая потеря: объединение его держит
 	lost := spaceEdit(t, m, func(s *space) { s.Epoch, s.Members = 2, s.Members[:1] })
-	spaceWant(t, spaceAccept(m, lost), errSpaceFork)
+	if v := spaceJoinT(t, m, lost); len(v.Members) != 2 {
+		t.Fatalf("пропавший член: %v", v)
+	}
 }

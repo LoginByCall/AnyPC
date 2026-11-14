@@ -34,7 +34,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"anypc/pake"
@@ -74,22 +73,14 @@ func syncProof(hostID string, t int64) []byte {
 	return []byte(syncDomain + hostID + "\x00" + strconv.FormatInt(t, 10))
 }
 
-// syncTamper — тест: подделка на одной стороне, проверка — на другой: "host"/"client" — ID в подписи; "hostkey" —
-// хост подписывает чужим ключом; "cpub" — клиент в "b" доказывает не тот ключ, что в connect; "early" — клиент шлёт M
-// до "b".
-var syncTamper atomic.Value
-
-func syncFake(side string) bool { s, _ := syncTamper.Load().(string); return s == side }
-
-// syncOther — постоянный посторонний ключ для syncTamper.
-var syncOther = ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
-
-func syncID(side, id string) string {
-	if s, _ := syncTamper.Load().(string); s == side {
-		return id + "x"
-	}
-	return id
-}
+// Испытательные подмены сверки: в рабочем пути — тождество; подделки (syncTamper, syncOther) — только в
+// agent/spsync_test.go.
+var (
+	syncHostKey = func(k ed25519.PrivateKey) ed25519.PrivateKey { return k } // ключ подписи хоста в "sp"
+	syncCliKey  = func(k ed25519.PrivateKey) ed25519.PrivateKey { return k } // ключ клиента в "b"
+	syncSignID  = func(side, id string) string { return id }                 // ID в подписи стороны side
+	syncEarly   = func() bool { return false }                               // клиент шлёт M до "b"
+)
 
 // spSync — состояние сверки на хосте (под mu).
 type spSync struct {
@@ -173,11 +164,8 @@ func (a *Agent) syncB(s *session, m authMsg, keyOK bool, fpc, fph string, send f
 		send(spMsg{T: "sp", Err: "notme"})
 	default:
 		st.phase = 2
-		key := a.Key
-		if syncFake("hostkey") {
-			key = syncOther
-		}
-		send(spMsg{T: "sp", Sync: true, Pub: key.Public().(ed25519.PublicKey), Sig: pake.HostSign(key, syncID("host", a.ID), fpc, fph)})
+		key := syncHostKey(a.Key)
+		send(spMsg{T: "sp", Sync: true, Pub: key.Public().(ed25519.PublicKey), Sig: pake.HostSign(key, syncSignID("host", a.ID), fpc, fph)})
 		return
 	}
 	st.phase = 4
@@ -274,14 +262,11 @@ func syncVia(ctx context.Context, server string, d SyncDial) ([]byte, error) {
 						finish(ErrSpaceOld)
 						return
 					}
-					key := d.Key
-					if syncFake("cpub") {
-						key = syncOther
-					}
-					if syncFake("early") {
+					key := syncCliKey(d.Key)
+					if syncEarly() {
 						send(spMsg{T: "sp", Sync: true, M: d.S.SyncGate(d.HostPub, nil)})
 					}
-					cpub, csig, err := signB(key, syncID("client", d.ID), pc)
+					cpub, csig, err := signB(key, syncSignID("client", d.ID), pc)
 					if err != nil {
 						finish(err)
 						return
