@@ -58,8 +58,9 @@ type config struct {
 	kkey  string
 	mine  string // последний код, заданный этим процессом (setCode, под mu; reload его не трогает)
 	khash []byte
-	sp    *space // разобранный Space (spaceLocked, под mu); только по указателю: печать значения выдала бы секреты
-	spRaw []byte // байты, из которых разобран sp
+	sp    *space       // разобранный Space (spaceLocked, под mu); только по указателю: печать значения выдала бы секреты
+	spRaw []byte       // байты, из которых разобран sp
+	syn   *spaceSyncer // Э4: рассылка правок состава (spsync.go); nil — нет (CLI, тесты без сети)
 }
 
 // settings — то, что лежит в файле.
@@ -82,6 +83,13 @@ type settings struct {
 	// Space — состав «Моего пространства» M (app/space.go, Э2): только запись marshal(), base64 в JSON. Содержит хэш
 	// пароля и секрет TOTP записи владельца — как Users[0] (файл 0600, SECURITY.md). Разбор — spaceLocked.
 	Space []byte `json:"space,omitempty"`
+	// Э4 (spsync.go): цепочка M по сменам входа (байты marshal, последние spaceLogMax) — отдавать отставшему по
+	// порядку; M другой ветви при расколе (флаг: пропуска не выдаются); ID членов, под которыми ответил чужой ключ
+	// (С4); ID ПК вступления, пока нет сверки с другим членом (пропуска не выдаются).
+	SpaceLog   [][]byte `json:"space_log,omitempty"`
+	SpaceFork  []byte   `json:"space_fork,omitempty"`
+	SpaceBadID []string `json:"space_bad_id,omitempty"`
+	SpaceWait  string   `json:"space_wait,omitempty"`
 	// Одноразовый код (REQ-S-23): в режиме «Спрашивать» — пароль записи по умолчанию; меняется после каждой сессии,
 	// блокировки и по ↻. В файле (0600, как запомненные пароли): окно, ключи CLI и запущенная программа видят один код.
 	Code     string `json:"code,omitempty"`
@@ -282,6 +290,9 @@ func (c *config) setAccount(name, p, rights string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
+	if name == "" && len(c.Space) > 0 { // С6: вход записи по умолчанию — вход пространства
+		return errSpaceVia
+	}
 	u := c.user(name)
 	switch {
 	case u != nil:
@@ -337,6 +348,9 @@ func (c *config) setConfirm(on bool) error {
 	c.reload()
 	if !on && c.Users[0].TOTP == "" {
 		return errors.New("вход без подтверждения — только со вторым фактором (TOTP)")
+	}
+	if on && len(c.Space) > 0 { // С6: «Спрашивать» выключил бы пространство на этом ПК
+		return errSpaceVia
 	}
 	c.Confirm = &on
 	if on { // TOTP записи по умолчанию; у остальных записей свой — остаётся (действует, когда подтверждение снова выключат)
@@ -448,6 +462,9 @@ func (c *config) otpEnable(secret, code, user string) error {
 	u := c.user(agent.UserKey(user))
 	if u == nil {
 		return errors.New("нет такой учётной записи")
+	}
+	if u.Name == "" && len(c.Space) > 0 { // С6: код записи по умолчанию — код пространства
+		return errSpaceVia
 	}
 	u.TOTP, u.TOTPStep = secret, step // этот код уже не войдёт (повтор)
 	if u.Name == "" {
