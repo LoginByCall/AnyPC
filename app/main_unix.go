@@ -145,9 +145,10 @@ func main() {
 	}
 	once := &onceCode{}
 	run := &runner{a: a, ctx: ctx}
-	if cdpWindows { // «ПК как монитор»: окна ПК — в своём Chrome по pipe (cdp_unix.go)
+	// «ПК как монитор»: окна ПК — в своём Chrome по pipe (cdp_unix.go); без него (и на Маке) — окно AnyPC прежним способом
+	pcFallback = func() { openWindow("http://" + addr + "/?n=" + once.issue()) }
+	if cdpWindows {
 		pcWin = &chromeWin{base: "http://" + addr, issue: once.issue, dir: filepath.Join(cfgDir, "AnyPC", "chrome"), look: exec.LookPath}
-		pcFallback = func() { openWindow("http://" + addr + "/?n=" + once.issue()) }
 	}
 	h := handler(addr, token, page, cfg, a, run, info, newFiles(downloads()), once)
 	go http.Serve(l, h)
@@ -295,6 +296,7 @@ func handler(addr, token string, page []byte, cfg *config, a *agent.Agent, run *
 				http.Error(w, "Ссылка уже использована — откройте адрес из журнала AnyPC", http.StatusForbidden)
 				return
 			}
+			w.Header().Set("Cache-Control", "no-store") // адрес с токеном — не в кэш браузера
 			http.Redirect(w, r, "/?t="+token, http.StatusSeeOther)
 		case r.URL.Path == "/blank": // пустая страница источника окна: список мониторов (cdp_unix.go, screens)
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -375,7 +377,10 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 	case "pcWindow": // [ID, монитор, {ключ localStorage: значение}] — ПК во весь экран в своём окне (cdp_unix.go)
 		var seed map[string]string
 		if len(args) > 2 {
-			json.Unmarshal(args[2], &seed)
+			if err = json.Unmarshal(args[2], &seed); err != nil {
+				err = fmt.Errorf("pcWindow: третий аргумент — {ключ: строка}: %v", err)
+				break
+			}
 		}
 		res, err = openPCWindow(str(0), int(num(1)), seed)
 	case "pcScreens":
