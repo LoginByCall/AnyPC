@@ -96,7 +96,7 @@ func (c *config) spaceCreate(password string) (string, error) {
 // spaceGet — agent.Agent.SpaceGet (на ПК P): запись M для сессии, вошедшей записью по умолчанию с солью salt. Только
 // если запись по умолчанию — запись владельца из M (те же соль, хэш и секрет TOTP) и режим не «Спрашивать».
 func (c *config) spaceGet(salt []byte) []byte {
-	if s := c.syn; s != nil { // Э4: до выдачи M новому ПК — сверка с остальными (иначе он вступит в старую ветвь)
+	if s := c.syn; s != nil { // Э4: до выдачи M новому ПК — сверка с остальными (иначе он вступит в устаревший состав)
 		ctx, cancel := context.WithTimeout(s.bgCtx(), spaceGetSync)
 		s.spread(ctx, false)
 		cancel()
