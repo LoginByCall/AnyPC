@@ -69,7 +69,8 @@ func TestRTOffWhileSession(t *testing.T) {
 	mpub := mkey.Public().(ed25519.PublicKey)
 	p := passTarget(t, url, nil, mpub)
 	d := passDial(url, p, mkey)
-	if err := PassOpen(context.Background(), d); err != nil {
+	var err error
+	if d.PID, err = PassOpenID(context.Background(), d); err != nil {
 		t.Fatal(err)
 	}
 	idle(t, p.a)
@@ -86,7 +87,7 @@ func TestRTOffWhileSession(t *testing.T) {
 	if !rtAuthed(p.a) {
 		t.Fatal("сессия по пропуску не вошла")
 	}
-	err := PassOff(context.Background(), d)
+	err = PassOff(context.Background(), d)
 	t.Logf("PassOff при живой сессии: err=%v", err)
 	time.Sleep(500 * time.Millisecond)
 	t.Logf("сессия по пропуску жива после PassOff: %v; пропуск жив: %v", rtAuthed(p.a), p.a.passValid(mpub, salt))
@@ -104,7 +105,8 @@ func TestRTOffWhilePending(t *testing.T) {
 	mpub := mkey.Public().(ed25519.PublicKey)
 	p := passTarget(t, url, nil, mpub)
 	d := passDial(url, p, mkey)
-	if err := PassOpen(context.Background(), d); err != nil {
+	var err error
+	if d.PID, err = PassOpenID(context.Background(), d); err != nil {
 		t.Fatal(err)
 	}
 	idle(t, p.a)
@@ -122,7 +124,7 @@ func TestRTOffWhilePending(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	err := PassOff(context.Background(), d)
+	err = PassOff(context.Background(), d)
 	t.Logf("PassOff при 3 незавершённых входах постороннего: err=%v; пропуск жив: %v", err, p.a.passValid(mpub, salt))
 	if err != nil {
 		t.Errorf("регрессия: посторонний (знает только ID) блокирует «снять»: %v", err)
@@ -136,7 +138,8 @@ func TestRTExpireNoPoll(t *testing.T) {
 	mpub := mkey.Public().(ed25519.PublicKey)
 	p := passTarget(t, url, nil, mpub)
 	d := passDial(url, p, mkey)
-	if err := PassOpen(context.Background(), d); err != nil {
+	var err error
+	if d.PID, err = PassOpenID(context.Background(), d); err != nil {
 		t.Fatal(err)
 	}
 	idle(t, p.a)
@@ -175,7 +178,8 @@ func TestRTOffStrangerReplay(t *testing.T) {
 	mpub := mkey.Public().(ed25519.PublicKey)
 	p := passTarget(t, url, nil, mpub)
 	d := passDial(url, p, mkey)
-	if err := PassOpen(context.Background(), d); err != nil {
+	var err error
+	if d.PID, err = PassOpenID(context.Background(), d); err != nil {
 		t.Fatal(err)
 	}
 	run := func(name string, key ed25519.PrivateKey, b func(cpub, csig []byte) authMsg) string {
@@ -305,7 +309,8 @@ func TestRT2OffOnlyNoLogin(t *testing.T) {
 	mpub := mkey.Public().(ed25519.PublicKey)
 	p := passTarget(t, url, nil, mpub)
 	d := passDial(url, p, mkey)
-	if err := PassOpen(context.Background(), d); err != nil {
+	var err error
+	if d.PID, err = PassOpenID(context.Background(), d); err != nil {
 		t.Fatal(err)
 	}
 	idle(t, p.a)

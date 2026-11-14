@@ -117,6 +117,9 @@ type Agent struct {
 	passes      map[string]passEntry   // Э3: ключ мастера → пропуск; только в памяти (pass.go)
 	offs        map[*session]time.Time // Э3: соединения «снять» (offConnect) → когда пришли; вне pend и maxPending
 	offStarting int                    // занятые места offs, пока newSession шлёт offer
+	offRej      int                    // Э3: отказов «снять» через хаб с offRejAt (журнал раз в минуту, pass.go)
+	offRejAt    time.Time
+	noOffMsg    bool // тест: хост старой версии — «снять» сообщением не объявляет
 }
 
 type session struct {
@@ -258,6 +261,7 @@ type authMsg struct {
 	Space bool   `json:"space,omitempty"` // в первом "a" хоста: хост понимает ctl "sp" (Э2, space.go)
 	Pass  bool   `json:"pass,omitempty"`  // Э3, пропуск (pass.go): в "a" — хост понимает; в "b" — просьба или вход по нему; в "ok" — выдан
 	Off   bool   `json:"off,omitempty"`   // Э3: в "b" с key — снять свой пропуск
+	PID   []byte `json:"pid,omitempty"`   // Э3: в "ok" с pass — id пропуска (им мастер снимает пропуск через хаб, pass.go)
 }
 
 // ctlMsg — канал "ctl": {"t":"clip","text":"…"} — буфер обмена в обе стороны (REQ-F-11);
@@ -452,6 +456,7 @@ func (s *session) sendMode(m modeMsg) {
 // сессия рвётся (REQ-S-20). Зовут после правки записей и из опроса настроек; ещё не вошедшую не трогать — она
 // войдёт по тем данным, что были, и следующий вызов её разорвёт.
 func (a *Agent) DropRevoked() {
+	a.passPrune() // Э3: пропуска исключённых из M и при «Спрашивать» — вон сразу (pass.go)
 	a.mu.Lock()
 	s := a.sess
 	a.mu.Unlock()
@@ -658,6 +663,9 @@ func (a *Agent) run(ctx context.Context, server string) error {
 	if a.Version != "" {
 		q += "&os=" + runtime.GOOS + "&v=" + url.QueryEscape(a.Version)
 	}
+	if a.SpaceMember != nil && !a.noOffMsg { // Э3: «снять» одним сообщением через хаб (pass.go)
+		q += "&off=1"
+	}
 	c, err := dial(ctx, server+q)
 	if err != nil {
 		return err
@@ -703,6 +711,12 @@ func (a *Agent) run(ctx context.Context, server string) error {
 			}
 		case "connect":
 			a.onConnect(ctx, c, m)
+		case "off": // Э3: «снять» пропуск сообщением через хаб — без сессии (pass.go)
+			if a.SpaceMember != nil {
+				if ack := a.offMsg(m); ack != nil {
+					a.send(ctx, c, "offack", m.From, ack)
+				}
+			}
 		case "answer", "ice", "bye":
 			s := a.byCID(m.From)
 			if s == nil || s.conn != c { // ответ клиента — только по хабу его сессии
@@ -1541,7 +1555,14 @@ func (a *Agent) accept(ctx context.Context, s *session, track *webrtc.TrackLocal
 		log.Printf("сессия %s: выдан пропуск ПК %s на %v", s.label(), pake.KeyFingerprint(pub)[:9], PassTTL)
 	}
 	view := s.view.Load()
-	send(authMsg{T: "ok", Conf: conf, Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph), View: view, Audio: a.Audio, Mode: s.byAsk.Load() && a.ConfirmControl != nil, Pause: a.Pause, Key: kp != nil, Pass: s.pass.Load()})
+	var pid []byte
+	if s.pass.Load() {
+		s.mu.Lock()
+		cpub := s.cpub
+		s.mu.Unlock()
+		pid = a.passID(cpub)
+	}
+	send(authMsg{T: "ok", PID: pid, Conf: conf, Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph), View: view, Audio: a.Audio, Mode: s.byAsk.Load() && a.ConfirmControl != nil, Pause: a.Pause, Key: kp != nil, Pass: s.pass.Load()})
 	log.Printf("сессия %s: вход выполнен%s", s.label(), map[bool]string{true: " (только просмотр)"}[view]) // REQ-F-16, F-24
 	s.sendMonitors()
 	closeInd, err := indicator(s.label(), s.plaque(), a.userClose(s)) // REQ-F-15, F-24
