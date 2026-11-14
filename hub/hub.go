@@ -56,8 +56,9 @@ type Hub struct {
 
 	mu    sync.Mutex
 	peers map[string]*websocket.Conn
-	keys  map[string]string // ID → публичный ключ (base64url)
-	news  map[string]int    // новых привязок с IP за текущий час
+	offc  map[*websocket.Conn]bool // хосты, объявившие при регистрации ?off=1: принимают «снять» сообщением
+	keys  map[string]string        // ID → публичный ключ (base64url)
+	news  map[string]int           // новых привязок с IP за текущий час
 	newAt time.Time
 
 	lim     sync.Mutex         // лимиты F4 (limit.go)
@@ -206,13 +207,13 @@ func encode(m Msg) []byte {
 
 func send(ctx context.Context, c *websocket.Conn, m Msg) { sendRaw(ctx, c, encode(m)) }
 
-func sendRaw(ctx context.Context, c *websocket.Conn, b []byte) {
+func sendRaw(ctx context.Context, c *websocket.Conn, b []byte) error {
 	if b == nil {
-		return
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	_ = c.Write(ctx, websocket.MessageText, b)
+	return c.Write(ctx, websocket.MessageText, b)
 }
 
 // PingEvery — проверка живости WebSocket. Без неё обрыв (смена сети, NAT забыл маппинг) виден только
@@ -259,16 +260,20 @@ func (h *Hub) ICEServers(id string) []ICEServer {
 	return s
 }
 
-func (h *Hub) add(id string, c *websocket.Conn) bool {
+// add — занять id соединением c; off — хост принимает «снять» сообщением.
+func (h *Hub) add(id string, c *websocket.Conn, off bool) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.peers == nil {
-		h.peers = map[string]*websocket.Conn{}
+		h.peers, h.offc = map[string]*websocket.Conn{}, map[*websocket.Conn]bool{}
 	}
 	if _, busy := h.peers[id]; busy {
 		return false
 	}
 	h.peers[id] = c
+	if off {
+		h.offc[c] = true
+	}
 	return true
 }
 
@@ -277,7 +282,14 @@ func (h *Hub) del(id string, c *websocket.Conn) {
 	defer h.mu.Unlock()
 	if h.peers[id] == c {
 		delete(h.peers, id)
+		delete(h.offc, c)
 	}
+}
+
+func (h *Hub) offOK(c *websocket.Conn) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.offc[c]
 }
 
 func (h *Hub) get(id string) *websocket.Conn {
@@ -334,13 +346,13 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		send(ctx, c, errMsg(e))
 		return
 	}
-	if !h.add(id, c) {
+	isHost := IsHostID(id)
+	q := r.URL.Query()
+	if !h.add(id, c, isHost && q.Get("off") == "1") {
 		send(ctx, c, errMsg("id_taken"))
 		return
 	}
 	defer h.del(id, c)
-	isHost := IsHostID(id)
-	q := r.URL.Query()
 	h.online(isHost, id, osVer(q.Get("os"), q.Get("v")), 1)
 	defer h.online(isHost, id, "", -1)
 	if !isHost { // ?c= — окно программы, браузер или anypc-probe; старые клиенты без него
@@ -358,6 +370,8 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	send(ctx, c, Msg{V: 1, Type: "hello", Data: hello})
 	msgs, size := newBucket(ClientMsgBurst, ClientMsgRate), newBucket(ClientByteBurst, ClientByteRate)
 	connects := newBucket(ConnectBurst, 1/ConnectEvery.Seconds())
+	offs := newBucket(OffBurst, 1/OffEvery.Seconds())
+	offReply := func(r string) { d, _ := json.Marshal(r); send(ctx, c, Msg{V: 1, Type: "off", Data: d}) }
 	if isHost {
 		msgs, size = newBucket(HostMsgBurst, HostMsgRate), newBucket(HostByteBurst, HostByteRate)
 	}
@@ -401,6 +415,10 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			send(ctx, c, errMsg("busy"))
 			continue
 		}
+		if m.Type == "off" && !offs.take(1) {
+			offReply("busy")
+			continue
+		}
 		dst := h.get(m.To)
 		if dst == nil {
 			if !isHost { // хост шлёт ушедшему клиенту законно (клиент закрыл вкладку посреди ice)
@@ -413,7 +431,11 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h.Count("not_found", 1)
 			continue
 		}
-		if m.Type != "ice" { // connect, offer, answer, error, bye; ice — десятки на сессию, шум
+		if m.Type == "off" && !h.offOK(dst) { // старый хост «снять» сообщением не знает: мастер — на off-connect
+			offReply("old")
+			continue
+		}
+		if m.Type != "ice" { // connect, offer, answer, error, bye, off; ice — десятки на сессию, шум
 			h.Count(m.Type, 1)
 		}
 		var fresh []byte
@@ -424,21 +446,30 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.V, m.From = 1, id
 		out := encode(m) // ведро считает то, что уйдёт хосту, а не то, что пришло (N1)
 		// D2: медленный хост не выбивается суммой клиентов
-		if !isHost && !h.toHost(m.To, addr, len(out)+len(fresh)) {
-			continue
+		ok := isHost || h.toHost(m.To, addr, len(out)+len(fresh))
+		if ok {
+			sendRaw(ctx, dst, fresh)
+			ok = sendRaw(ctx, dst, out) == nil
 		}
-		sendRaw(ctx, dst, fresh)
-		sendRaw(ctx, dst, out)
+		if m.Type == "off" { // ответ отправителю: хаб отдал хосту («ok») или нет («busy» — повторить)
+			offReply(map[bool]string{true: "ok", false: "busy"}[ok])
+		}
 	}
 }
 
-// relayed — что хаб пересылает: клиент → хост — connect/answer/ice/bye, хост → клиент — offer/ice/error/bye.
+// relayed — что хаб пересылает: клиент → хост — connect/answer/ice/bye/off, хост → клиент — offer/ice/error/bye.
 // Остальное (hello, challenge, error клиента) получатель принял бы за слова самого хаба.
+//
+// "off" (Э3, решение владельца 8 A) — «снять» пропуск одним сообщением: клиент → {"type":"off","to":ID,"data":
+// "<base64 тела pake.OffSign>"}; хаб тело не разбирает (ключей членов не знает), не хранит и пересылает только хосту,
+// объявившему ?off=1, без места сессии и WebRTC. Отправителю — {"type":"off","data":"ok"|"old"|"busy"} ("old" —
+// хост «снять» сообщением не знает; нет хоста — обычный error "not_found"). Лимиты — OffBurst/OffEvery на соединение
+// и toHost (байты к одному хосту, доля адреса) на цель.
 func relayed(fromHost bool, typ string) bool {
 	switch typ {
 	case "ice", "bye":
 		return true
-	case "connect", "answer":
+	case "connect", "answer", "off":
 		return !fromHost
 	case "offer", "error":
 		return fromHost

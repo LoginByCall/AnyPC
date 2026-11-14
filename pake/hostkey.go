@@ -1,10 +1,12 @@
 package pake
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"strings"
@@ -91,4 +93,34 @@ func ClientSignB64(seedB64, hostID, localSDP, remoteSDP string) (map[string]stri
 	k := ed25519.NewKeyFromSeed(seed)
 	sig := ed25519.Sign(k, clientMsg(hostID, Fingerprint(localSDP), Fingerprint(remoteSDP)))
 	return map[string]string{"seed": b64.EncodeToString(seed), "pub": b64.EncodeToString(k.Public().(ed25519.PublicKey)), "sig": b64.EncodeToString(sig)}, nil
+}
+
+// «Снять» пропуск одним сообщением через хаб (Э3, решение владельца 8 A): мастер подписывает ключом хоста ID цели,
+// время unix и случайный nonce; тело — pub ‖ время (8 байт BE) ‖ nonce ‖ подпись. Подпись самодостаточна (без
+// DTLS): от повтора — окно времени и кэш nonce на цели (agent/pass.go). Требует ревью человеком (A13, A2 #10).
+const (
+	OffNonce = 16
+	OffSize  = ed25519.PublicKeySize + 8 + OffNonce + ed25519.SignatureSize
+)
+
+func offMsg(hostID string, body []byte) []byte {
+	return append([]byte("anypc-pass-off-v1\n"+hostID+"\n"), body[ed25519.PublicKeySize:ed25519.PublicKeySize+8+OffNonce]...)
+}
+
+// OffSign — тело «снять» на цель hostID ключом priv во время unix t с nonce (OffNonce байт).
+func OffSign(priv ed25519.PrivateKey, hostID string, t int64, nonce []byte) []byte {
+	b := append(bytes.Clone(priv.Public().(ed25519.PublicKey)), binary.BigEndian.AppendUint64(nil, uint64(t))...)
+	b = append(b, nonce[:OffNonce]...)
+	return append(b, ed25519.Sign(priv, offMsg(hostID, b))...)
+}
+
+// OffVerify — тело для цели hostID подписано ключом pub (первые 32 байта); ok — подпись верна.
+func OffVerify(body []byte, hostID string) (pub ed25519.PublicKey, t int64, nonce []byte, ok bool) {
+	if len(body) != OffSize {
+		return nil, 0, nil, false
+	}
+	pub, sig := body[:ed25519.PublicKeySize], body[OffSize-ed25519.SignatureSize:]
+	t = int64(binary.BigEndian.Uint64(body[ed25519.PublicKeySize:]))
+	nonce = body[ed25519.PublicKeySize+8 : ed25519.PublicKeySize+8+OffNonce]
+	return pub, t, nonce, ed25519.Verify(pub, offMsg(hostID, body), sig)
 }

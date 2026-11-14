@@ -117,6 +117,8 @@ type Agent struct {
 	passes      map[string]passEntry   // Э3: ключ мастера → пропуск; только в памяти (pass.go)
 	offs        map[*session]time.Time // Э3: соединения «снять» (offConnect) → когда пришли; вне pend и maxPending
 	offStarting int                    // занятые места offs, пока newSession шлёт offer
+	offSeen     map[string]time.Time   // Э3: nonce принятых «снять» через хаб → до каких пор помнить (pass.go)
+	noOffMsg    bool                   // тест: хост старой версии — «снять» сообщением не объявляет
 }
 
 type session struct {
@@ -658,6 +660,9 @@ func (a *Agent) run(ctx context.Context, server string) error {
 	if a.Version != "" {
 		q += "&os=" + runtime.GOOS + "&v=" + url.QueryEscape(a.Version)
 	}
+	if a.SpaceMember != nil && !a.noOffMsg { // Э3: «снять» одним сообщением через хаб (pass.go)
+		q += "&off=1"
+	}
 	c, err := dial(ctx, server+q)
 	if err != nil {
 		return err
@@ -703,6 +708,10 @@ func (a *Agent) run(ctx context.Context, server string) error {
 			}
 		case "connect":
 			a.onConnect(ctx, c, m)
+		case "off": // Э3: «снять» пропуск сообщением через хаб — без сессии (pass.go)
+			if a.SpaceMember != nil {
+				a.offMsg(m.Data)
+			}
 		case "answer", "ice", "bye":
 			s := a.byCID(m.From)
 			if s == nil || s.conn != c { // ответ клиента — только по хабу его сессии
