@@ -420,3 +420,85 @@ func TestSpaceWhoOnce(t *testing.T) {
 		t.Error("\"who\": не ключ хоста или подпись не над отпечатками соединения")
 	}
 }
+
+// TestSpaceWhoResult — клиент сверки, чей sx не открылся, разбирает ответ "who": подпись не над отпечатками этого
+// соединения или чужим ключом под заявленным — ErrSpaceHostKey (ни отказа «не член», ни С4); ключ из M клиента —
+// отказ (не член там); другой ключ с верной подписью — ErrSpaceIDKey.
+func TestSpaceWhoResult(t *testing.T) {
+	hpub, hkey, _ := ed25519.GenerateKey(nil)
+	opub, okey, _ := ed25519.GenerateKey(nil)
+	const id, fc, fh = "123456789", "sha-256 AA", "sha-256 BB"
+	who := func(pub ed25519.PublicKey, key ed25519.PrivateKey, fc, fh string) authMsg {
+		return authMsg{T: "who", Pub: pub, Sig: pake.HostSign(key, id, fc, fh)}
+	}
+	for name, c := range map[string]struct {
+		am   authMsg
+		want error
+	}{
+		"другие отпечатки (посредник)": {who(hpub, hkey, fc, "sha-256 MITM"), ErrSpaceHostKey},
+		"другой ID": {authMsg{T: "who", Pub: hpub, Sig: pake.HostSign(hkey, "223456789", fc, fh)}, ErrSpaceHostKey},
+		"чужая подпись под ключом M": {who(hpub, okey, fc, fh), ErrSpaceHostKey},
+		"без подписи":                {authMsg{T: "who", Pub: hpub}, ErrSpaceHostKey},
+		"тот ключ — не член там":     {who(hpub, hkey, fc, fh), ErrSpaceRefused},
+		"другой ПК под ID":           {who(opub, okey, fc, fh), ErrSpaceIDKey},
+	} {
+		err := whoResult(c.am, id, hpub, fc, fh)
+		if !errors.Is(err, c.want) || c.want != ErrSpaceHostKey && errors.Is(err, ErrSpaceHostKey) ||
+			c.want == ErrSpaceRefused && errors.Is(err, ErrSpaceIDKey) {
+			t.Errorf("%s: %v, нужно %v", name, err, c.want)
+		}
+	}
+}
+
+// TestSpaceSealWork — Б2: работа хоста над sx одна и та же при любом исходе: Open — max(размер состава, sxPad) раз,
+// где бы ни стоял член, открылся sx или это случайные байты; X25519 считается один раз на ключ (кэш sxPeers), новый
+// ключ состава — один X25519, ушедший — из кэша; смена ключа хоста — кэш заново.
+func TestSpaceSealWork(t *testing.T) {
+	hpub, host, _ := ed25519.GenerateKey(nil)
+	for _, n := range []int{1, 5, sxPad, sxPad + 6} {
+		var keys []ed25519.PublicKey
+		var privs []ed25519.PrivateKey
+		for range n {
+			pub, priv, _ := ed25519.GenerateKey(nil)
+			keys, privs = append(keys, pub), append(privs, priv)
+		}
+		a := &Agent{ID: "123456789", Key: host}
+		e0 := sxECDHs.Load()
+		a.sxPeers(keys)
+		if d := sxECDHs.Load() - e0; d != int64(n) {
+			t.Fatalf("n=%d: X25519 при первом переборе %d", n, d)
+		}
+		want := int64(max(n, sxPad))
+		for name, sx := range map[string][]byte{"первый": nil, "последний": nil, "случайный": sxRand(sxLen)} {
+			if sx == nil {
+				i := map[string]int{"первый": 0, "последний": n - 1}[name]
+				sx, _, _ = sxMake(privs[i], hpub, a.ID, time.Now().Unix())
+			}
+			e, o := sxECDHs.Load(), sxOpens.Load()
+			pub, _, _, ok := sxOpenPeers(a.sxPeers(keys), a.ID, sx)
+			if ok != (name != "случайный") || ok && pub == nil {
+				t.Errorf("n=%d %s: открылся %v", n, name, ok)
+			}
+			if d := sxOpens.Load() - o; d != want {
+				t.Errorf("n=%d %s: Open %d, нужно %d", n, name, d, want)
+			}
+			if d := sxECDHs.Load() - e; d != 0 {
+				t.Errorf("n=%d %s: X25519 при кэше %d", n, name, d)
+			}
+		}
+		if n == 5 {
+			np, _, _ := ed25519.GenerateKey(nil)
+			e := sxECDHs.Load()
+			a.sxPeers(append(keys[1:], np)) // один ушёл, один пришёл
+			if d := sxECDHs.Load() - e; d != 1 || len(a.sxCache) != 5 || a.sxCache[string(keys[0])] != nil {
+				t.Errorf("смена состава: X25519 %d, в кэше %d, ушедший в кэше %v", d, len(a.sxCache), a.sxCache[string(keys[0])] != nil)
+			}
+			_, a.Key, _ = ed25519.GenerateKey(nil)
+			e = sxECDHs.Load()
+			a.sxPeers(keys)
+			if d := sxECDHs.Load() - e; d != 5 {
+				t.Errorf("смена ключа хоста: X25519 %d, нужно 5", d)
+			}
+		}
+	}
+}
