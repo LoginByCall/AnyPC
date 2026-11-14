@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -96,7 +97,8 @@ func TestMainWindowClose(t *testing.T) {
 	if creates != 1 || !activated {
 		t.Errorf("повторное «Открыть»: окон %d, поднято %v", creates, activated)
 	}
-	f.emit("Target.detachedFromTarget", map[string]any{"sessionId": "S-pc", "targetId": "T-pc"}) // окно ПК закрыто
+	f.emit("Target.detachedFromTarget", map[string]any{"sessionId": "S-pc", "targetId": "T-pc"})      // окно ПК закрыто
+	f.emit("Target.detachedFromTarget", map[string]any{"sessionId": "S-other", "targetId": "T-main"}) // чужая сессия к главной цели
 	f.emit("Inspector.detached", map[string]any{"reason": "target_closed"})
 	f.emit("Target.targetInfoChanged", map[string]any{"targetInfo": map[string]any{"targetId": "T-main", "url": "http://127.0.0.1:5000/?t=x"}}) // перезагрузка, переход
 	f.emit("Target.detachedFromTarget", map[string]any{})
@@ -108,23 +110,71 @@ func TestMainWindowClose(t *testing.T) {
 	noClose(t, closed, "повтор")
 }
 
-// TestMainWindowChromeGone: Chrome AnyPC упал или убит (pipe закрыт без detach) — не выход (значок остаётся, окно —
-// по «Открыть»); Chrome закрыл окно и вышел сам (меню Chrome «Выход»: detach, затем pipe) — выход.
-func TestMainWindowChromeGone(t *testing.T) {
-	var f fakeChrome
-	w, closed := mainFake(t, &f, nil)
-	if err := w.openMain(context.Background()); err != nil {
-		t.Fatal(err)
+// chromeEnd — Chrome вышел: конец pipe и (если code не nil) код выхода; exitFirst — код раньше конца pipe.
+func chromeEnd(f *fakeChrome, c *cdpConn, code *error, exitFirst bool) {
+	send := func() {
+		if code != nil {
+			c.exit <- *code
+		}
+	}
+	if exitFirst {
+		send()
 	}
 	f.wmu.Lock()
-	f.outW.Close() // Chrome убит: канал закрыт, событий нет
+	f.outW.Close()
 	f.wmu.Unlock()
-	noClose(t, closed, "Chrome упал")
-	w.mu.Lock()
-	m := w.main
-	w.mu.Unlock()
-	if m != "" {
-		t.Errorf("цель упавшего Chrome осталась главной: %q", m)
+	if !exitFirst {
+		time.Sleep(100 * time.Millisecond) // конец pipe раньше, чем Wait вернул код
+		send()
+	}
+}
+
+// TestMainWindowChromeGone: конец pipe при открытом главном окне. Код 0 (Chrome 157 по SIGTERM выходит так, без
+// detachedFromTarget; так может закрыться и последнее окно) — закрыто пользователем → выход, в любом порядке кода и
+// конца pipe. Сигнал (OOM −9, падение −11), ненулевой код, кода нет — падение: не выход, окно — по «Открыть».
+// Меню Chrome «Выход» (detach, затем pipe) — выход один раз.
+func TestMainWindowChromeGone(t *testing.T) {
+	defer func(d time.Duration) { cdpExitWait = d }(cdpExitWait)
+	cdpExitWait = 300 * time.Millisecond
+	ok := error(nil)
+	killed, segv, rc1 := errors.New("signal: killed"), errors.New("signal: segmentation fault"), errors.New("exit status 1")
+	for _, tc := range []struct {
+		name      string
+		code      *error
+		exitFirst bool
+		quit      bool
+	}{
+		{"код 0, pipe первым", &ok, false, true},
+		{"код 0, код первым", &ok, true, true},
+		{"OOM -9", &killed, false, false},
+		{"падение -11", &segv, true, false},
+		{"код 1", &rc1, false, false},
+		{"кода нет", nil, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var f fakeChrome
+			w, closed := mainFake(t, &f, nil)
+			if err := w.openMain(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			chromeEnd(&f, w.c, tc.code, tc.exitFirst)
+			if tc.quit {
+				gotClose(t, closed, tc.name)
+				noClose(t, closed, "повтор")
+			} else {
+				select {
+				case <-closed:
+					t.Errorf("%s: принято за закрытие окна", tc.name)
+				case <-time.After(cdpExitWait + 200*time.Millisecond):
+				}
+			}
+			w.mu.Lock()
+			m := w.main
+			w.mu.Unlock()
+			if m != "" {
+				t.Errorf("цель вышедшего Chrome осталась главной: %q", m)
+			}
+		})
 	}
 
 	var g fakeChrome
@@ -132,12 +182,24 @@ func TestMainWindowChromeGone(t *testing.T) {
 	if err := w2.openMain(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	g.emit("Target.detachedFromTarget", map[string]any{"targetId": "T-main"})
-	g.wmu.Lock()
-	g.outW.Close()
-	g.wmu.Unlock()
+	g.emit("Target.detachedFromTarget", map[string]any{"sessionId": "S-main", "targetId": "T-main"})
+	chromeEnd(&g, w2.c, &ok, false)
 	gotClose(t, closed2, "окно закрыто, Chrome вышел")
 	noClose(t, closed2, "повтор после выхода Chrome")
+}
+
+// TestMainWindowStaleConn: событие прежнего (вышедшего) Chrome не закрывает окно нового.
+func TestMainWindowStaleConn(t *testing.T) {
+	var f, g fakeChrome
+	old, _ := mainFake(t, &g, nil)
+	w, closed := mainFake(t, &f, nil)
+	if err := w.openMain(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	w.event(old.c, "Target.detachedFromTarget", []byte(`{"sessionId":"S-main","targetId":"T-main"}`))
+	w.event(old.c, cdpGone, nil)
+	old.c.exit <- nil
+	noClose(t, closed, "событие прежнего Chrome")
 }
 
 // TestMainWindowRestart: Chrome AnyPC жив без окон, главного нет — перезапуск с --app (Browser.close и новый запуск),
@@ -176,7 +238,7 @@ func TestMainWindowShut(t *testing.T) {
 	var f fakeChrome
 	w, closed := mainFake(t, &f, func(m string, p map[string]any) any {
 		if m == "Browser.close" {
-			f.emit("Target.detachedFromTarget", map[string]any{"targetId": "T-main"}) // Chrome закрывает окна и выходит
+			f.emit("Target.detachedFromTarget", map[string]any{"sessionId": "S-main", "targetId": "T-main"}) // Chrome закрывает окна и выходит
 			return fakeExit
 		}
 		return nil
@@ -203,7 +265,7 @@ func TestMainWindowFail(t *testing.T) {
 		case "Runtime.evaluate":
 			return map[string]any{"result": map[string]any{"value": false}} // «Ссылка уже использована»: привязок нет
 		case "Target.closeTarget":
-			f.emit("Target.detachedFromTarget", map[string]any{"targetId": "T-main"})
+			f.emit("Target.detachedFromTarget", map[string]any{"sessionId": "S-main", "targetId": "T-main"})
 		}
 		return nil
 	})
@@ -307,6 +369,13 @@ func TestMainClosedService(t *testing.T) {
 	if !inService() {
 		t.Fatal("cgroup службы не узнан")
 	}
+	for _, cg := range []string{"0::/user.slice/app.slice/myanypc.service\n", "0::/user.slice/app.slice/anypc.service/sub\n"} {
+		setCgroup(t, cg)
+		if inService() {
+			t.Errorf("чужая служба принята за anypc.service: %q", cg)
+		}
+	}
+	setCgroup(t, "0::/user.slice/user-1000.slice/user@1000.service/app.slice/anypc.service\n")
 	mainClosed(&agent.Agent{})
 	if w.c.alive() {
 		t.Error("служба: Chrome AnyPC не закрыт")
@@ -499,10 +568,20 @@ func TestCDPMainLive(t *testing.T) {
 	}
 	c.call(ctx, "", "Target.closeTarget", map[string]any{"targetId": tid}, nil) // как крестик
 	gotClose(t, closed, "закрытие окна")
-	if err := w.openMain(ctx); err != nil { // служба: окно снова (Chrome жив — обычное окно)
+	if err := w.openMain(ctx); err != nil { // служба: окно снова (Chrome жив без окон — перезапуск с --app)
 		t.Fatal(err)
 	}
+	w.mu.Lock()
 	c = w.c
+	w.mu.Unlock()
+	syscall.Kill(c.pid, syscall.SIGTERM) // Chrome 157 по SIGTERM: код 0, без detachedFromTarget — как закрытие окна
+	gotClose(t, closed, "SIGTERM Chrome")
+	if err := w.openMain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	c = w.c
+	w.mu.Unlock()
 	w.shut()
 	select {
 	case <-c.done:

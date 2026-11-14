@@ -40,7 +40,11 @@ type cdpConn struct {
 	kill func() // убить Chrome (запись в pipe не прошла в срок); nil — нечего
 	bctx string // свой контекст браузера (Target.createBrowserContext): история и кэш — в памяти, не в профиле
 	ev   cdpEvents
+	exit chan error // итог Wait процесса Chrome (буфер 1); у соединения без процесса (тесты) — никто не пишет
+	pid  int        // процесс Chrome (живой тест); 0 — нет
 }
+
+var cdpExitWait = 2 * time.Second // сколько ждать кода выхода Chrome после конца pipe
 
 // cdpEvents — обработчик событий; зовётся из читающей горутины: вызывать c.call в нём нельзя (ответ читает она же).
 type cdpEvents func(c *cdpConn, method string, params json.RawMessage)
@@ -56,7 +60,7 @@ type cdpReply struct {
 }
 
 func newCDP(r io.Reader, w io.WriteCloser, ev cdpEvents) *cdpConn {
-	c := &cdpConn{w: w, wait: map[int]chan cdpReply{}, done: make(chan struct{}), ev: ev}
+	c := &cdpConn{w: w, wait: map[int]chan cdpReply{}, done: make(chan struct{}), ev: ev, exit: make(chan error, 1)}
 	go c.read(bufio.NewReaderSize(r, 64<<10))
 	return c
 }
@@ -233,6 +237,7 @@ type chromeWin struct {
 	mu      sync.Mutex
 	c       *cdpConn
 	main    string               // цель главного окна AnyPC в c; "" — его нет (или закрываем сами)
+	mainS   string               // сессия openMain к ней: выход — по отсоединению только её (не чужой сессии к той же цели)
 	mainMu  sync.Mutex           // одно открытие главного окна за раз (двойной щелчок в трее — не два окна)
 	bad     map[string]time.Time // браузеры, не ответившие по pipe (snap за обёрткой-скриптом и т. п.): мимо до указанного времени
 }
@@ -345,8 +350,13 @@ func (w *chromeWin) start(ctx context.Context, app bool) (*cdpConn, bool, error)
 		return nil, false, err
 	}
 	c := newCDP(outR, inW, w.event)
-	c.kill = func() { cmd.Process.Kill() }
-	go func() { err := cmd.Wait(); c.close(fmt.Errorf("Chrome вышел (%v)", err)); outR.Close() }()
+	c.kill, c.pid = func() { cmd.Process.Kill() }, cmd.Process.Pid
+	go func() {
+		err := cmd.Wait()
+		c.exit <- err
+		c.close(fmt.Errorf("Chrome вышел (%v)", err))
+		outR.Close()
+	}()
 	var v struct {
 		Product string `json:"product"`
 	}
@@ -371,13 +381,18 @@ func (w *chromeWin) start(ctx context.Context, app bool) (*cdpConn, bool, error)
 	return c, true, nil
 }
 
-// event — события Chrome AnyPC. Пользователь закрыл главное окно (крестик, Alt+F4: detachedFromTarget его цели при
-// живом Chrome) → onClose. Chrome упал или убит (OOM): канал закрыт без detach → не выход, окно — заново по «Открыть».
+// event — события Chrome AnyPC. Пользователь закрыл главное окно (крестик, Alt+F4) → onClose:
+//   - detachedFromTarget сессии openMain к главной цели при живом Chrome;
+//   - конец pipe при открытом главном окне и код выхода Chrome 0: так Chrome 157 выходит по SIGTERM (detach не
+//     приходит — только Inspector.detached; измерено приёмщиком), так может закрыться и последнее окно.
+//
+// Сигнал или ненулевой код (OOM −9, падение −11), кода нет за cdpExitWait — падение: не выход, окно — по «Открыть».
 // Перезагрузка и переходы внутри окна цель не меняют (измерено, Chrome 157); окна ПК — другие цели. Сессию CDP к главной
 // цели не отсоединять: авто-выгрузка вкладки дала бы detachedFromTarget → ложный выход.
 func (w *chromeWin) event(c *cdpConn, method string, params json.RawMessage) {
 	var p struct {
-		TargetID string `json:"targetId"`
+		TargetID  string `json:"targetId"`
+		SessionID string `json:"sessionId"`
 	}
 	switch method {
 	case "Target.detachedFromTarget":
@@ -385,24 +400,39 @@ func (w *chromeWin) event(c *cdpConn, method string, params json.RawMessage) {
 			return
 		}
 	case cdpGone:
-		w.mu.Lock()
-		if w.c == c && w.main != "" {
-			w.main = ""
-			log.Printf("окно AnyPC: Chrome вышел — программа работает, окно — по «Открыть» в трее")
-		}
-		w.mu.Unlock()
-		return
 	default:
 		return
 	}
 	w.mu.Lock()
-	fire := w.c == c && w.main != "" && p.TargetID == w.main
+	fire := w.c == c && w.main != "" && (method == cdpGone || p.TargetID == w.main && p.SessionID == w.mainS)
 	if fire {
-		w.main = ""
+		w.main, w.mainS = "", ""
 	}
 	w.mu.Unlock()
-	if fire && w.onClose != nil {
-		log.Printf("окно AnyPC закрыто")
+	if !fire {
+		return
+	}
+	if method == cdpGone { // конец pipe может прийти раньше, чем Wait вернёт код
+		go func() {
+			select {
+			case err := <-c.exit:
+				if err != nil {
+					log.Printf("окно AnyPC: Chrome упал (%v) — программа работает, окно — по «Открыть» в трее", err)
+					return
+				}
+			case <-time.After(cdpExitWait):
+				log.Printf("окно AnyPC: Chrome вышел без кода — программа работает, окно — по «Открыть» в трее")
+				return
+			}
+			log.Printf("окно AnyPC закрыто (Chrome вышел, код 0)")
+			if w.onClose != nil {
+				w.onClose()
+			}
+		}()
+		return
+	}
+	log.Printf("окно AnyPC закрыто")
+	if w.onClose != nil {
 		go w.onClose()
 	}
 }
@@ -450,7 +480,7 @@ func (w *chromeWin) openMain(ctx context.Context) error {
 	if err == nil {
 		w.mu.Lock()
 		if w.c == c {
-			w.main = tid
+			w.main, w.mainS = tid, s.SessionID
 		}
 		w.mu.Unlock()
 		err = c.call(ctx, s.SessionID, "Page.navigate", map[string]any{"url": w.base + "/?n=" + w.issue()}, nil)
