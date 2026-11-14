@@ -384,10 +384,11 @@ func TestPeerUID(t *testing.T) {
 	}
 }
 
-// TestLaunchCmd: под systemd (INVOCATION_ID) браузер — в своём scope с описанием (не командной строкой с кодом);
-// systemd-run упал — браузер напрямую; отработал — второго запуска нет.
+// TestLaunchCmd: под службой (cgroup anypc.service) браузер — в своём scope с описанием (не командной строкой с кодом);
+// systemd-run упал — браузер напрямую; отработал — второго запуска нет. INVOCATION_ID без службы (app-gnome-*.scope) — напрямую.
 func TestLaunchCmd(t *testing.T) {
-	t.Setenv("INVOCATION_ID", "")
+	t.Setenv("INVOCATION_ID", "abc")
+	setCgroup(t, "0::/user.slice/app.slice/app-gnome-nemo-tabs-1.scope\n")
 	if c, scoped := launchCmd("/usr/bin/chrome", "--app=x"); scoped || strings.Join(c.Args, " ") != "/usr/bin/chrome --app=x" {
 		t.Errorf("без systemd: %q", c.Args)
 	}
@@ -398,7 +399,7 @@ func TestLaunchCmd(t *testing.T) {
 		browser := filepath.Join(dir, "browser")
 		os.WriteFile(browser, []byte("#!/bin/sh\necho \"$@\" > "+mark+"\n"), 0o755)
 		t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
-		t.Setenv("INVOCATION_ID", "abc")
+		setCgroup(t, "0::/user.slice/user@1000.service/app.slice/anypc.service\n")
 		c, scoped := launchCmd(browser, "--app=x")
 		if !scoped || c.Args[0] != filepath.Join(dir, "systemd-run") ||
 			strings.Join(c.Args[1:], " ") != "--user --scope --quiet --description=AnyPC window -- "+browser+" --app=x" {
