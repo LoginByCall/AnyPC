@@ -553,6 +553,16 @@ func (c *config) keyGone(pub []byte) bool {
 	return m != nil && m.gone(pub)
 }
 
+// loginShut — agent.Agent.LoginShut (решение 12 A): вход паролем в запись по умолчанию закрыт, пока ПК, вступивший
+// в пространство, не сверился с членом ≠ поручитель (SpaceWait). «Спрашивать» (одноразовый код) и гости — открыты.
+// ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ (A13: вход).
+func (c *config) loginShut(user string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reload()
+	return user == "" && c.SpaceWait != "" && len(c.Space) > 0 && !c.codeModeLocked()
+}
+
 // spaceDamaged — записи состава есть, но не читаются (для окна: «выйти и вступить снова»).
 func (c *config) spaceDamaged() bool {
 	c.mu.Lock()

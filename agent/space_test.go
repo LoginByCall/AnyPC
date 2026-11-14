@@ -362,3 +362,69 @@ func TestSpaceAlready(t *testing.T) {
 		t.Fatalf("уже в составе: %q %v, P получил %q", out, err, joined)
 	}
 }
+
+// TestSpaceLoginShut — решение 12 A: LoginShut закрывает вход паролем в запись по умолчанию — отказ и с верным, и с
+// неверным паролем, M не отдаётся, неудач нет ни у записи, ни у хоста; снят — вход открыт.
+func TestSpaceLoginShut(t *testing.T) {
+	url := local(t)
+	var shut atomic.Bool
+	shut.Store(true)
+	r := spaceHost(t, url, "123456789", func(r *spaceRig) { r.a.LoginShut = func(u string) bool { return u == "" && shut.Load() } })
+	_, nkey, _ := ed25519.GenerateKey(nil)
+	var signed atomic.Bool
+	d := SpaceDial{Server: url, ID: "123456789", Key: nkey, Password: "secret123", Code: r.owner.code(),
+		Sign: func(m []byte, _ ed25519.PublicKey) ([]byte, error) { signed.Store(true); return m, nil }}
+	for _, pw := range []string{"secret123", "wrong-pass"} {
+		d.Password = pw
+		if _, err := SpaceJoin(context.Background(), d); !errors.Is(err, ErrSpaceAuth) || !strings.Contains(err.Error(), "denied") {
+			t.Errorf("закрыто, пароль %q: %v", pw, err)
+		}
+	}
+	f, _ := lock(r.a)
+	nf, _ := nlock(r.a, "")
+	if f != 0 || nf != 0 || signed.Load() {
+		t.Fatalf("закрыто: неудач у хоста %d, у записи %d, M отдан %v", f, nf, signed.Load())
+	}
+	shut.Store(false)
+	d.Password = "secret123"
+	if _, err := SpaceJoin(context.Background(), d); err != nil || !signed.Load() {
+		t.Fatalf("открыто: %v (M отдан %v)", err, signed.Load())
+	}
+}
+
+// TestSpaceJoinSlowSign — решение 12 A: Sign ждёт человека в своей горутине; ожидание Confirm прибавляется к
+// spaceWait — Sign дольше spaceWait, но в пределах Confirm, вступление проходит.
+func TestSpaceJoinSlowSign(t *testing.T) {
+	url := local(t)
+	r := spaceHost(t, url, "123456789")
+	old := spaceWait
+	spaceWait = 4 * time.Second
+	t.Cleanup(func() { spaceWait = old })
+	_, nkey, _ := ed25519.GenerateKey(nil)
+	out, err := SpaceJoin(context.Background(), SpaceDial{Server: url, ID: "123456789", Key: nkey, Password: "secret123", Code: r.owner.code(),
+		Confirm: 6 * time.Second,
+		Sign: func(m []byte, _ ed25519.PublicKey) ([]byte, error) {
+			time.Sleep(spaceWait + time.Second)
+			return append(bytes.Clone(m), "+N"...), nil
+		}})
+	if err != nil || string(out) != "M-SECRET-MARK-1+N" {
+		t.Fatalf("медленное подтверждение: %q, %v", out, err)
+	}
+}
+
+// TestSpaceSyncShut — решение 12 A: закрытый вход паролем (LoginShut) сверку не закрывает.
+func TestSpaceSyncShut(t *testing.T) {
+	url := local(t)
+	_, ckey, _ := ed25519.GenerateKey(nil)
+	host := &fakeSync{m: []byte("M1"), gate: true, members: []ed25519.PublicKey{ckey.Public().(ed25519.PublicKey)}}
+	var asked atomic.Bool
+	r := spaceHost(t, url, "123456789", func(r *spaceRig) {
+		r.a.SpaceSync = host
+		r.a.LoginShut = func(string) bool { asked.Store(true); return true }
+	})
+	cli := &fakeSync{m: []byte("M3"), gate: true}
+	hm, err := SpaceSync(context.Background(), SyncDial{Server: url, ID: "123456789", HostPub: r.a.Key.Public().(ed25519.PublicKey), Key: ckey, S: cli})
+	if err != nil || len(hm) == 0 || asked.Load() {
+		t.Fatalf("сверка при закрытом входе: %q %v (LoginShut спрошен %v)", hm, err, asked.Load())
+	}
+}

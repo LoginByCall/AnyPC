@@ -61,6 +61,7 @@ type config struct {
 	sp    *space       // объединение Space и SpaceHeads (spaceLocked, под mu); только по указателю: печать выдала бы секреты
 	spRaw []byte       // снимок (spaceSnapLocked), из которого получен sp
 	syn   *spaceSyncer // Э4: рассылка правок состава (spsync.go); nil — нет (CLI, тесты без сети)
+	spNew []byte       // черновик создания (spaceDraft, под mu): запись M до повторного ввода фразы; только в памяти
 }
 
 // settings — то, что лежит в файле.

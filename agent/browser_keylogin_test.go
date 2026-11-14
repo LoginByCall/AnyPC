@@ -74,9 +74,10 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await ev(go);
   console.log('old=' + await until(s => s.includes('rror')) + '|' + await ev(login));
   await ev("JSON.parse = op; 1");
-  await fetch(url + 'revoke'); // на хосте ключ отозвали
+  await fetch(url + 'ask'); // на хосте ключ в списке, но вход им выключен: "nokey" без why — попросить отозвать там
   await ev(go);
   console.log('nokey=' + await until(s => s.includes('rror')) + '|' + await ev(login) + '|' + await ev("document.getElementById('keylogin').checked"));
+  await fetch(url + 'revoke');
   await ev(go); await sleep(300);
   console.log('nopw=' + await state());
   // снова «Доверять» (новый ключ), отпечаток у галочки; снятие галочки — забыть и попросить отозвать
@@ -89,6 +90,14 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   console.log('fp=' + await ev("document.getElementById('keyfp').textContent + '|' + document.getElementById('keylogin').checked"));
   await ev("const c = document.getElementById('keylogin'); c.checked = false; c.dispatchEvent(new Event('change')); 1"); await sleep(300);
   console.log('forgot=' + await ev("document.getElementById('msg').textContent + '|' + localStorage.getItem('ckeys') + '|' + document.getElementById('keyfp').textContent"));
+  // ключа на хосте нет (отозван там, сброшен вступлением в пространство): "nokey" why:"none" — отзывать нечего
+  await ev("document.getElementById('pw').value='secret123'; document.getElementById('keylogin').checked = true; document.getElementById('go').click()");
+  await otp();
+  await until(s => s.endsWith('|true'));
+  await ev("document.getElementById('bye').click()"); await sleep(300);
+  await fetch(url + 'revoke');
+  await ev(go);
+  console.log('nonekey=' + await until(s => s.includes('rror')) + '|' + await ev(login));
   process.exit(0);
 })();`
 
@@ -118,7 +127,8 @@ func TestBrowserKeyLogin(t *testing.T) {
 		o.mu.Unlock()
 		w.Write([]byte(o.code()))
 	})
-	mux.HandleFunc("/revoke", func(http.ResponseWriter, *http.Request) { ks.set("") })
+	mux.HandleFunc("/revoke", func(http.ResponseWriter, *http.Request) { ks.set(""); ks.mu.Lock(); ks.ask = false; ks.mu.Unlock() })
+	mux.HandleFunc("/ask", func(http.ResponseWriter, *http.Request) { ks.mu.Lock(); ks.ask = true; ks.mu.Unlock() })
 	mux.Handle("/", http.FileServer(http.FS(ui.FS)))
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -145,7 +155,7 @@ func TestBrowserKeyLogin(t *testing.T) {
 	mu.Lock()
 	fps := slices.Clone(added)
 	mu.Unlock()
-	if len(fps) != 2 {
+	if len(fps) != 3 {
 		t.Fatalf("добавлено ключей %d: %v", len(fps), fps)
 	}
 	fp, fp2 := fps[0], fps[1]
@@ -164,6 +174,7 @@ func TestBrowserKeyLogin(t *testing.T) {
 		"old=Error: the remote PC does not accept sign-in without a password — enter the password|false|false|[[true,\"\"]]",
 		"nokey=Error: this PC’s key was not accepted: it was revoked, or the remote PC has no TOTP code or has “Ask before each connection” on — sign in with the password. Sign-in without a password from this PC is off. Also revoke key " + fp + " in the remote PC’s window|false|false|[]|false",
 		"nopw=Enter the password|false|false",
+		"nonekey=Error: this PC’s key was not accepted: it was revoked, or the remote PC has no TOTP code or has “Ask before each connection” on — sign in with the password|false|false|[]\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("нет %q", want)
