@@ -660,8 +660,8 @@ func (c *config) savedSet(id, pw string) error {
 }
 
 // uiKeys — ключи localStorage окна, которые живут в config.json: «Мои ПК» (имена), имена записей для входа по ID
-// (не пароли: пароли — Saved), «Недавние», статистика, Турбо, TURN, тур. Секретов среди них нет.
-var uiKeys = []string{"mine", "users", "recent", "stats", "turbo", "turn", "tour_home", "tour_sess"}
+// (не пароли: пароли — Saved), «Недавние», статистика, Турбо, TURN, тур, булавка панели. Секретов среди них нет.
+var uiKeys = []string{"mine", "users", "recent", "stats", "turbo", "turn", "tour_home", "tour_sess", "pinbar"}
 
 const (
 	uiKeyMax   = 64 << 10  // значение одного ключа
@@ -686,7 +686,7 @@ func uiValid(k, v string) bool {
 	case bool:
 		return k == "stats"
 	case float64:
-		return (k == "turbo" || k == "tour_home" || k == "tour_sess") && (x == 0 || x == 1)
+		return (k == "turbo" || k == "tour_home" || k == "tour_sess" || k == "pinbar") && (x == 0 || x == 1)
 	case string:
 		return k == "turn"
 	}

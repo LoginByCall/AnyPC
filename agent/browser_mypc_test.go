@@ -111,6 +111,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   console.log('held=' + await ev("JSON.stringify([...document.querySelectorAll('#frames iframe')].map(f => { try { return f.contentWindow.sessHeld(); } catch { return -1; } }))"));
   // буфер/звук — только у активной вкладки (активна вторая: Ctrl+Alt+2)
   console.log('active=' + await ev("JSON.stringify([...document.querySelectorAll('#frames iframe')].map(f => { try { return f.contentWindow.sessActive(); } catch { return 'x'; } }))"));
+  // 📌 во вкладке: закрепила — у соседних вкладок панель тоже закреплена (общий localStorage, событие storage), открепила — снова прячется
+  console.log('pinsync=' + await ev("(async fr => { const p = i => fr[i].contentWindow.document, z = () => new Promise(r => setTimeout(r, 300)); p(1).getElementById('pinbtn').click(); await z(); const a = p(0).body.classList.contains('pinbar') + ',' + p(1).body.classList.contains('pinbar'); p(1).getElementById('pinbtn').click(); await z(); return a + ',' + p(0).body.classList.contains('pinbar'); })([...document.querySelectorAll('#frames iframe')])"));
   // переименование в списке «Мои ПК» (⌂): Enter сохраняет, Esc отменяет, пробелы — снова ID, длинное — до 40 символов
   await ev("document.getElementById('tabhome').click(); 1"); await sleep(200);
   await ren(ids[1], 'Офис', 'Enter');
@@ -311,6 +313,7 @@ func TestBrowserMyPC(t *testing.T) {
 		`stillconnected=["connected","connected","connected"]`,
 		`held=[0,0,0]`,                                // залипших клавиш не осталось
 		`active=[false,true,false]`,                   // буфер/звук — только у активной (второй) вкладки
+		`pinsync=true,true,false`,                     // булавка во вкладке — у всех вкладок «Моих ПК»
 		`brokenms=true|`,                              // метка «разорвано» за ≤ 1 с через событие (не из тормозимого таймера)
 		`afterbye=["connected","connected","broken"]`, // обрыв третьего не тронул первые два; его вкладка «разорвано»
 		// имена: Enter сохранил, Esc отменил, пробелы → ID, длинное обрезано до 40
