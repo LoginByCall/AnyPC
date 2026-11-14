@@ -180,7 +180,7 @@ func hostMain() {
 	passes.cfg = cfg
 	startSpaceSync(ctx, cfg, a)
 	if startLock != nil { // Э3: блокировка экрана этого ПК снимает пропуска, выданные ему как мастеру
-		go startLock(ctx, func() { go passes.offAll(ctx) }, passes.lockAlive)
+		go startLock(ctx, func() { go passes.offAll(context.WithoutCancel(ctx)) }, passes.lockAlive) // SIGTERM не рвёт летящее «снять»
 	}
 	if startTray != nil { // значок в трее (Linux) или строке меню (Мак): окно — повторно, каждый раз новым одноразовым кодом
 		go startTray(ctx, cfg.ID, trayOpen, trayQuit)

@@ -116,6 +116,11 @@ func runTray(ctx context.Context, id string, open, quit func()) {
 		return
 	}
 	defer context.AfterFunc(ctx, func() { pPostMsg.Call(h, wmClose, 0, 0) })()
+	msgLoop()
+}
+
+// msgLoop — цикл сообщений потока до WM_QUIT (или ошибки GetMessage).
+func msgLoop() {
 	var m [6]uint64 // MSG, 48 байт
 	for {
 		if r, _, _ := pGetMessage.Call(uintptr(unsafe.Pointer(&m)), 0, 0, 0); int32(r) <= 0 {
