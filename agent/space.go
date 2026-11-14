@@ -126,9 +126,162 @@ func SpaceJoin(ctx context.Context, d SpaceDial) ([]byte, error) {
 }
 
 func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, error) {
+	var (
+		mu      sync.Mutex
+		hostPub ed25519.PublicKey // из "ok", подпись проверена
+		ctl     *webrtc.DataChannel
+		authed  bool
+		asked   bool   // запрос M ушёл
+		newM    []byte // M, отданный P
+		out     []byte // итог: M, который P принял
+	)
+	err := hostDial(ctx, server, d.ID, func(pc *webrtc.PeerConnection, finish func(error)) {
+		done := func(m []byte) { mu.Lock(); out = m; mu.Unlock(); finish(nil) }
+		fps := func() (string, string) { // свой отпечаток, отпечаток хоста
+			return pake.Fingerprint(pc.LocalDescription().SDP), pake.Fingerprint(pc.RemoteDescription().SDP)
+		}
+		askM := func() { // под mu: вход есть и ctl открыт — запросить M один раз
+			if authed && ctl != nil && !asked {
+				asked = true
+				ctl.SendText(`{"t":"sp"}`)
+			}
+		}
+		pc.OnDataChannel(func(dc *webrtc.DataChannel) {
+			switch dc.Label() {
+			case "auth":
+				var want []byte // ожидаемое подтверждение хоста (CPace)
+				first := true
+				otpN := 0
+				sendA := func(v authMsg) { b, _ := json.Marshal(v); dc.SendText(string(b)) }
+				hostOK := func(am authMsg) bool { // хост доказал пароль (conf) и ключ (подпись над DTLS-отпечатками)
+					fc, fh := fps()
+					return len(want) > 0 && bytes.Equal(am.Conf, want) && pake.HostVerify(am.Pub, am.Sig, d.ID, fc, fh) == nil
+				}
+				knownOK := func(am authMsg) bool { return d.Known == "" || pake.KeyFingerprint(am.Pub) == d.Known }
+				dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+					var am authMsg
+					if json.Unmarshal(msg.Data, &am) != nil {
+						return
+					}
+					switch am.T {
+					case "a":
+						if !first || am.User != "" {
+							finish(errSpaceProtocol)
+							return
+						}
+						first = false
+						if !am.Space {
+							finish(ErrSpaceOld)
+							return
+						}
+						fc, fh := fps()
+						b, conf, hc, err := pake.ClientRespond(d.Password, am.Salt, am.Msg, d.ID, fc, fh)
+						if err != nil {
+							finish(err)
+							return
+						}
+						want = hc
+						// ключ клиента — ключ хоста этого ПК: P сверит с ним ключ нового члена в M
+						cpub, csig, err := signB(d.Key, d.ID, pc)
+						if err != nil {
+							finish(err)
+							return
+						}
+						sendA(authMsg{T: "b", Msg: b, Conf: conf, CPub: cpub, CSig: csig})
+					case "otp":
+						if otpN++; otpN > 1 || !hostOK(am) { // второй запрос — код не подошёл
+							finish(ErrSpaceAuth)
+							return
+						}
+						if !knownOK(am) { // код — только запомненному P
+							finish(ErrSpaceHostKey)
+							return
+						}
+						sendA(authMsg{T: "otp", Code: d.Code})
+					case "ok":
+						if !hostOK(am) {
+							finish(ErrSpaceAuth)
+							return
+						}
+						if !knownOK(am) {
+							finish(ErrSpaceHostKey)
+							return
+						}
+						mu.Lock()
+						hostPub, authed = bytes.Clone(am.Pub), true
+						askM()
+						mu.Unlock()
+					case "ask":
+						finish(ErrSpaceAsk)
+					case "fail", "locked", "denied", "nokey", "busy":
+						finish(fmt.Errorf("%w: %s", ErrSpaceAuth, am.T))
+					}
+				})
+			case "ctl":
+				dc.OnOpen(func() { mu.Lock(); ctl = dc; askM(); mu.Unlock() })
+				dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+					var sm spMsg
+					if json.Unmarshal(msg.Data, &sm) != nil || sm.T != "sp" {
+						return // monitors, state, cur… — вступлению не нужны
+					}
+					mu.Lock()
+					hp, mine := hostPub, newM
+					mu.Unlock()
+					switch {
+					case hp == nil:
+						finish(errSpaceProtocol)
+					case sm.Err != "":
+						finish(fmt.Errorf("%w: %s", ErrSpaceRefused, sm.Err))
+					case sm.OK && mine != nil:
+						done(mine)
+					case len(sm.M) > 0 && mine == nil:
+						m, err := d.Sign(sm.M, hp)
+						if err != nil {
+							finish(err)
+							return
+						}
+						if bytes.Equal(m, sm.M) { // уже в составе P (полу-вступление): принять как есть
+							done(m)
+							return
+						}
+						mu.Lock()
+						newM = m
+						mu.Unlock()
+						b, _ := json.Marshal(spMsg{T: "sp", M: m})
+						dc.SendText(string(b))
+					default:
+						finish(errSpaceProtocol)
+					}
+				})
+			}
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	return out, nil
+}
+
+// signB — ключ клиента key и его подпись над DTLS-отпечатками этого соединения — для "b" (У3).
+func signB(key ed25519.PrivateKey, id string, pc *webrtc.PeerConnection) (cpub, csig []byte, err error) {
+	k, err := pake.ClientSignB64(base64.StdEncoding.EncodeToString(key.Seed()), id, pc.LocalDescription().SDP, pc.RemoteDescription().SDP)
+	if err != nil {
+		return nil, nil, err
+	}
+	csig, _ = base64.StdEncoding.DecodeString(k["sig"])
+	return bytes.Clone(key.Public().(ed25519.PublicKey)), csig, nil
+}
+
+// hostDial — служебное соединение с хостом id через хаб server (вступление Э2, пропуск Э3): connect «только
+// просмотр» без ключа (хаб видит connect открытым и узнал бы по ключу, какой ПК к какому ходит; ключ идёт только в
+// "b" внутри DTLS), offer/answer, ICE. setup вешает обработчики каналов на pc до ответа; обмен кончает первый
+// finish (nil — успех), разрыв или ctx. Хост не в сети — ErrSpaceOffline (вызывающий пробует следующий хаб).
+func hostDial(ctx context.Context, server, id string, setup func(pc *webrtc.PeerConnection, finish func(error))) error {
 	ws, err := dial(ctx, server)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrSpaceOffline, err)
+		return fmt.Errorf("%w: %v", ErrSpaceOffline, err)
 	}
 	defer ws.CloseNow()
 	ws.SetReadLimit(64 << 10)
@@ -137,173 +290,40 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 		b, _ := json.Marshal(v)
 		wmu.Lock()
 		defer wmu.Unlock()
-		wsjson.Write(ctx, ws, hub.Msg{V: 1, Type: typ, To: d.ID, Data: b})
+		wsjson.Write(ctx, ws, hub.Msg{V: 1, Type: typ, To: id, Data: b})
 	}
 	var m hub.Msg
 	if err := wsjson.Read(ctx, ws, &m); err != nil || m.Type != "hello" {
-		return nil, fmt.Errorf("%w: хаб не ответил", ErrSpaceOffline)
+		return fmt.Errorf("%w: хаб не ответил", ErrSpaceOffline)
 	}
 	var hello struct{ ICE []webrtc.ICEServer }
 	json.Unmarshal(m.Data, &hello)
-	pub := d.Key.Public().(ed25519.PublicKey)
-	// только просмотр: вступлению ввод не нужен. Ключа в connect нет: хаб видит connect открытым и узнал бы по ключу,
-	// какой ПК к какому ходит; ключ идёт только в "b" внутри DTLS
-	send("connect", connectReq{View: true})
+	send("connect", connectReq{View: true}) // ввод служебному соединению не нужен
 	if err := wsjson.Read(ctx, ws, &m); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrSpaceOffline, err)
+		return fmt.Errorf("%w: %v", ErrSpaceOffline, err)
 	}
 	if m.Type != "offer" {
 		var why string
 		json.Unmarshal(m.Data, &why)
 		if m.Type == "error" && why == "not_found" {
-			return nil, ErrSpaceOffline
+			return ErrSpaceOffline
 		}
-		return nil, fmt.Errorf("%w: %s %s", ErrSpaceRefused, m.Type, why)
+		return fmt.Errorf("%w: %s %s", ErrSpaceRefused, m.Type, why)
 	}
 	defer send("bye", "client")
 	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{ICEServers: hello.ICE})
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer pc.Close()
-	type result struct {
-		m   []byte
-		err error
-	}
-	done := make(chan result, 1)
-	finish := func(m []byte, err error) {
+	done := make(chan error, 1)
+	finish := func(err error) {
 		select {
-		case done <- result{m, err}:
+		case done <- err:
 		default:
 		}
 	}
-	var (
-		mu      sync.Mutex
-		hostPub ed25519.PublicKey // из "ok", подпись проверена
-		ctl     *webrtc.DataChannel
-		authed  bool
-		asked   bool // запрос M ушёл
-		newM    []byte
-	)
-	fps := func() (string, string) { // свой отпечаток, отпечаток хоста
-		return pake.Fingerprint(pc.LocalDescription().SDP), pake.Fingerprint(pc.RemoteDescription().SDP)
-	}
-	askM := func() { // под mu: вход есть и ctl открыт — запросить M один раз
-		if authed && ctl != nil && !asked {
-			asked = true
-			ctl.SendText(`{"t":"sp"}`)
-		}
-	}
-	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
-		switch dc.Label() {
-		case "auth":
-			var want []byte // ожидаемое подтверждение хоста (CPace)
-			space, first := false, true
-			otpN := 0
-			sendA := func(v authMsg) { b, _ := json.Marshal(v); dc.SendText(string(b)) }
-			hostOK := func(am authMsg) bool { // хост доказал пароль (conf) и ключ (подпись над DTLS-отпечатками)
-				fc, fh := fps()
-				return len(want) > 0 && bytes.Equal(am.Conf, want) && pake.HostVerify(am.Pub, am.Sig, d.ID, fc, fh) == nil
-			}
-			knownOK := func(am authMsg) bool { return d.Known == "" || pake.KeyFingerprint(am.Pub) == d.Known }
-			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-				var am authMsg
-				if json.Unmarshal(msg.Data, &am) != nil {
-					return
-				}
-				switch am.T {
-				case "a":
-					if !first || am.User != "" {
-						finish(nil, errSpaceProtocol)
-						return
-					}
-					first, space = false, am.Space
-					if !space {
-						finish(nil, ErrSpaceOld)
-						return
-					}
-					fc, fh := fps()
-					b, conf, hc, err := pake.ClientRespond(d.Password, am.Salt, am.Msg, d.ID, fc, fh)
-					if err != nil {
-						finish(nil, err)
-						return
-					}
-					want = hc
-					// ключ клиента — ключ хоста этого ПК: P сверит с ним ключ нового члена в M
-					k, err := pake.ClientSignB64(base64.StdEncoding.EncodeToString(d.Key.Seed()), d.ID, pc.LocalDescription().SDP, pc.RemoteDescription().SDP)
-					if err != nil {
-						finish(nil, err)
-						return
-					}
-					csig, _ := base64.StdEncoding.DecodeString(k["sig"])
-					sendA(authMsg{T: "b", Msg: b, Conf: conf, CPub: pub, CSig: csig})
-				case "otp":
-					if otpN++; otpN > 1 || !hostOK(am) { // второй запрос — код не подошёл
-						finish(nil, ErrSpaceAuth)
-						return
-					}
-					if !knownOK(am) { // код — только запомненному P
-						finish(nil, ErrSpaceHostKey)
-						return
-					}
-					sendA(authMsg{T: "otp", Code: d.Code})
-				case "ok":
-					if !hostOK(am) {
-						finish(nil, ErrSpaceAuth)
-						return
-					}
-					if !knownOK(am) {
-						finish(nil, ErrSpaceHostKey)
-						return
-					}
-					mu.Lock()
-					hostPub, authed = bytes.Clone(am.Pub), true
-					askM()
-					mu.Unlock()
-				case "ask":
-					finish(nil, ErrSpaceAsk)
-				case "fail", "locked", "denied", "nokey", "busy":
-					finish(nil, fmt.Errorf("%w: %s", ErrSpaceAuth, am.T))
-				}
-			})
-		case "ctl":
-			dc.OnOpen(func() { mu.Lock(); ctl = dc; askM(); mu.Unlock() })
-			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-				var sm spMsg
-				if json.Unmarshal(msg.Data, &sm) != nil || sm.T != "sp" {
-					return // monitors, state, cur… — вступлению не нужны
-				}
-				mu.Lock()
-				hp, mine := hostPub, newM
-				mu.Unlock()
-				switch {
-				case hp == nil:
-					finish(nil, errSpaceProtocol)
-				case sm.Err != "":
-					finish(nil, fmt.Errorf("%w: %s", ErrSpaceRefused, sm.Err))
-				case sm.OK && mine != nil:
-					finish(mine, nil)
-				case len(sm.M) > 0 && mine == nil:
-					out, err := d.Sign(sm.M, hp)
-					if err != nil {
-						finish(nil, err)
-						return
-					}
-					if bytes.Equal(out, sm.M) { // уже в составе P (полу-вступление): принять как есть
-						finish(out, nil)
-						return
-					}
-					mu.Lock()
-					newM = out
-					mu.Unlock()
-					b, _ := json.Marshal(spMsg{T: "sp", M: out})
-					dc.SendText(string(b))
-				default:
-					finish(nil, errSpaceProtocol)
-				}
-			})
-		}
-	})
+	setup(pc, finish)
 	pc.OnICECandidate(func(ci *webrtc.ICECandidate) {
 		if ci != nil {
 			send("ice", ci.ToJSON())
@@ -311,17 +331,17 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 	})
 	var offer webrtc.SessionDescription
 	if err := json.Unmarshal(m.Data, &offer); err != nil {
-		return nil, errSpaceProtocol
+		return errSpaceProtocol
 	}
 	if err := pc.SetRemoteDescription(offer); err != nil {
-		return nil, err
+		return err
 	}
 	ans, err := pc.CreateAnswer(nil)
 	if err == nil {
 		err = pc.SetLocalDescription(ans)
 	}
 	if err != nil {
-		return nil, err
+		return err
 	}
 	send("answer", ans)
 	go func() {
@@ -331,24 +351,24 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 				return
 			}
 			switch {
-			case m.From != d.ID: // служебное хаба — сессии не касается
+			case m.From != id: // служебное хаба — сессии не касается
 			case m.Type == "ice":
 				var ci webrtc.ICECandidateInit
 				if json.Unmarshal(m.Data, &ci) == nil {
 					pc.AddICECandidate(ci)
 				}
 			case m.Type == "bye":
-				finish(nil, fmt.Errorf("%w: разрыв", ErrSpaceRefused))
+				finish(fmt.Errorf("%w: разрыв", ErrSpaceRefused))
 			}
 		}
 	}()
 	select {
-	case r := <-done:
-		return r.m, r.err
+	case err := <-done:
+		return err
 	case <-ctx.Done():
 		if ctx.Err() == context.DeadlineExceeded {
-			return nil, fmt.Errorf("пространство: нет ответа за %v", spaceWait)
+			return fmt.Errorf("пространство: нет ответа за %v", spaceWait)
 		}
-		return nil, ctx.Err()
+		return ctx.Err()
 	}
 }

@@ -105,6 +105,7 @@ func main() {
 		Confirm: agent.AskAccept, ConfirmControl: agent.AskControl, Unattended: func() bool { return !cfg.confirm() }, OTP: cfg.otp, ViewOnly: cfg.viewOnly, // без подтверждения — с TOTP (PLAN.md)
 		CodeUsed: cfg.codeUsed,                           // «Спрашивать»: код сменить после сессии и блокировки (REQ-S-23)
 		SpaceGet: cfg.spaceGet, SpaceJoin: cfg.spaceJoin, // «Моё пространство», Э2: отдать состав и принять вступление
+		SpaceMember: cfg.spaceMember, // Э3: пропуск 12 ч на ключ мастера (agent/pass.go); детектора блокировки нет (startLock)
 		Capture: func(ctx context.Context, c agent.Cap) (*exec.Cmd, error) { // выход DXGI c.Mon
 			ffMu.Lock()
 			ff := ff
