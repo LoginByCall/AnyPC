@@ -95,6 +95,16 @@ func (c *config) spaceGet(salt []byte) []byte {
 	return bytes.Clone(c.Space)
 }
 
+// spaceMember — agent.Agent.SpaceMember (Э3, пропуск на цели): ключ pub — член состава этого ПК (не исключён и не
+// сам этот ПК), а вход с солью salt — запись владельца из него (как spaceGet; «Спрашивать» — нет).
+func (c *config) spaceMember(salt, pub []byte) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reload()
+	m := c.spaceOwnerLocked(salt)
+	return m != nil && m.member(pub) && !m.gone(pub) && !bytes.Equal(pub, ed25519.PrivateKey(c.Key).Public().(ed25519.PublicKey))
+}
+
 // spaceOwnerLocked — состав (под c.mu), если вход с солью salt — запись владельца из него: запись по умолчанию с теми
 // же солью, хэшем и секретом TOTP, режим не «Спрашивать». Иначе nil.
 // TODO(Э4/Э5): смена пароля (setPassword), включение «Спрашивать» и новый TOTP записи по умолчанию молча выключают
