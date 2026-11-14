@@ -89,6 +89,17 @@ func (c *config) spaceGet(salt []byte) []byte {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
+	if c.spaceOwnerLocked(salt) == nil {
+		return nil
+	}
+	return bytes.Clone(c.Space)
+}
+
+// spaceOwnerLocked — состав (под c.mu), если вход с солью salt — запись владельца из него: запись по умолчанию с теми
+// же солью, хэшем и секретом TOTP, режим не «Спрашивать». Иначе nil.
+// TODO(Э4/Э5): смена пароля (setPassword), включение «Спрашивать» и новый TOTP записи по умолчанию молча выключают
+// пространство на этом ПК (С6 приёмки Э2) — нужны тексты окна и решение о смене пароля владельца.
+func (c *config) spaceOwnerLocked(salt []byte) *space {
 	m := c.spaceLocked()
 	if m == nil || c.codeModeLocked() {
 		return nil
@@ -97,13 +108,16 @@ func (c *config) spaceGet(salt []byte) []byte {
 	if !bytes.Equal(salt, m.PSalt) || !bytes.Equal(u.Salt, m.PSalt) || !bytes.Equal(u.Hash, m.PHash) || u.TOTP != m.TOTP {
 		return nil
 	}
-	return bytes.Clone(c.Space)
+	return m
 }
 
 // spaceJoin — agent.Agent.SpaceJoin (на ПК P): принять M, который новый ПК подписал паролем владельца. Годен только
 // «текущий состав + ровно один ПК с ключом pub» (ключ, которым новый ПК доказал себя в канале), эпоха +1, остальное
-// без изменений; подпись — закреплённым opub (spaceAccept).
-func (c *config) spaceJoin(b []byte, pub ed25519.PublicKey) error {
+// без изменений; подпись — закреплённым opub (spaceAccept). Сессия — записи владельца (salt, как в spaceGet): сверка
+// под тем же c.mu, что и запись.
+// TODO(Э4): ID нового ПК не сверяется с соединением (С4 приёмки Э2): у клиента на хабе ID нет, его заявляет N под
+// подписью владельца; чужой ID закроет вступление настоящему ПК — нужна проверка ID при сверке членов.
+func (c *config) spaceJoin(salt, b []byte, pub ed25519.PublicKey) error {
 	in, err := spaceParse(b)
 	if err != nil {
 		return err
@@ -111,7 +125,7 @@ func (c *config) spaceJoin(b []byte, pub ed25519.PublicKey) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
-	cur := c.spaceLocked()
+	cur := c.spaceOwnerLocked(salt)
 	if cur == nil {
 		return errSpaceNotIn
 	}
@@ -152,24 +166,41 @@ func spaceOwnerCheck(m *space, password string) error {
 // spaceDial — вход на ПК пространства (agent.SpaceJoin); переменная — для теста.
 var spaceDial = agent.SpaceJoin
 
+// spaceChanges — что вступление поменяло на этом ПК (для окна; секретов нет).
+type spaceChanges struct {
+	Password bool // пароль записи по умолчанию — теперь пароль владельца
+	TOTP     bool // секрет кода записи по умолчанию — теперь секрет пространства
+	Trusted  int  // сброшено закреплённых ключей записи по умолчанию (У3)
+	KeyLogin int  // сброшено ключей входа без пароля записи по умолчанию (REQ-S-24)
+	Ask      bool // остался режим «Спрашивать»: вход паролем и кодом — после его выключения
+	Already  bool // этот ПК уже был в составе P (прошлое вступление P сохранил, а ответ не дошёл)
+}
+
+func (s spaceChanges) String() string {
+	return fmt.Sprintf("пароль заменён: %v, код заменён: %v, сброшено ключей: %d+%d, «Спрашивать» остался: %v, уже в составе: %v",
+		s.Password, s.TOTP, s.Trusted, s.KeyLogin, s.Ask, s.Already)
+}
+
 // spaceEnter — вступить этим ПК в пространство через его ПК hostID (Э2, п. 3–4): владелец ввёл здесь ID, пароль и
-// код. После успеха запись по умолчанию этого ПК — запись владельца из M (тот же пароль и код), вход — без
-// подтверждения с TOTP. Пароль в сеть не уходит: M подписывается здесь.
-func (c *config) spaceEnter(ctx context.Context, hostID, password, code string) error {
+// код. После успеха запись по умолчанию этого ПК — запись владельца из M (тот же пароль и код). Режим подтверждения
+// и записи гостей не меняются (С3 приёмки Э2: иначе ожили бы спящие гостевые записи режима «Спрашивать»). Пароль в
+// сеть не уходит: M подписывается здесь.
+func (c *config) spaceEnter(ctx context.Context, hostID, password, code string) (spaceChanges, error) {
+	var ch spaceChanges
 	c.mu.Lock()
 	c.reload()
 	in := len(c.Space) > 0
-	id, key, server := c.ID, bytes.Clone(c.Key), c.Server
+	id, key, server, known := c.ID, bytes.Clone(c.Key), c.Server, c.Known[hostID]
 	c.mu.Unlock()
 	switch {
 	case in:
-		return errSpaceIn // переход в другое пространство и слияние — не Э2
+		return ch, errSpaceIn // переход в другое пространство и слияние — не Э2
 	case !hub.IsHostID(hostID) || hostID == id:
-		return errors.New("пространство: неверный ID ПК")
+		return ch, errors.New("пространство: неверный ID ПК")
 	}
 	pub := ed25519.PrivateKey(key).Public().(ed25519.PublicKey)
 	var joined *space
-	out, err := spaceDial(ctx, agent.SpaceDial{Server: server, ID: hostID, Key: key, Password: password, Code: code,
+	out, err := spaceDial(ctx, agent.SpaceDial{Server: server, ID: hostID, Key: key, Password: password, Code: code, Known: known,
 		Sign: func(b []byte, hostPub ed25519.PublicKey) ([]byte, error) {
 			m, err := spaceParse(b)
 			if err != nil {
@@ -183,6 +214,10 @@ func (c *config) spaceEnter(ctx context.Context, hostID, password, code string) 
 			}
 			// TODO(Э4): свежесть первого M — исключённый P может отдать старый подлинный M (подпись владельца верна).
 			// Сразу после вступления сверить состав с остальными членами (UI-REDESIGN.md, «Открыто», требования к Э4).
+			if slices.ContainsFunc(m.Members, func(x spaceMember) bool { return x.ID == id && bytes.Equal(x.Pub, pub) }) {
+				joined, ch.Already = m, true // полу-вступление (С1): P уже сохранил нас — принять его M как есть
+				return b, nil
+			}
 			n, err := spaceAdd(m, password, id, pub)
 			if err != nil {
 				return nil, err
@@ -191,26 +226,32 @@ func (c *config) spaceEnter(ctx context.Context, hostID, password, code string) 
 			return n.marshal()
 		}})
 	if err != nil {
-		return err
+		return ch, err
 	}
 	if joined == nil {
-		return errors.New("пространство: нет подписанного состава") // SpaceJoin без Sign — не бывает
+		return ch, errors.New("пространство: нет подписанного состава") // SpaceJoin без Sign — не бывает
 	}
 	if mb, _ := joined.marshal(); !bytes.Equal(mb, out) {
-		return errors.New("пространство: принятый состав — не подписанный здесь")
+		return ch, errors.New("пространство: принятый состав — не подписанный здесь")
 	}
 	step, _ := totp.Check(joined.TOTP, code, time.Now(), 0) // этот код уже вошёл на P — здесь он повтор
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
 	if len(c.Space) > 0 || c.ID != id || !bytes.Equal(c.Key, key) {
-		return errSpaceChange // P уже принял: повтор вступления ответит дублем ПК — нужна сверка (Э4)
+		return ch, errSpaceChange
 	}
 	c.Space = out
 	u := &c.Users[0]
+	ch.Password = !bytes.Equal(u.Salt, joined.PSalt) || !bytes.Equal(u.Hash, joined.PHash)
+	ch.TOTP = u.TOTP != joined.TOTP
+	ch.Trusted, ch.KeyLogin = len(u.Trusted), len(u.KeyLogin)
 	u.Salt, u.Hash, u.TOTP, u.TOTPStep = bytes.Clone(joined.PSalt), bytes.Clone(joined.PHash), joined.TOTP, step
-	u.Trusted, u.KeyLogin = nil, nil // новый пароль — доверие ключам заново (как setAccount)
-	off := false
-	c.Confirm = &off // вход паролем и кодом без подтверждения, как на остальных ПК пространства
-	return c.save()
+	u.Trusted, u.KeyLogin = nil, nil // новый пароль — доверие ключам заново (как setAccount); гостей не трогаем
+	ch.Ask = c.codeModeLocked()
+	if err := c.save(); err != nil {
+		return ch, err
+	}
+	log.Printf("пространство: этот ПК вступил через %s (%s)", hostID, ch)
+	return ch, nil
 }

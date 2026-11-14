@@ -78,7 +78,10 @@ func spaceNet(p *config, give func([]byte) []byte) func(context.Context, agent.S
 		if err != nil {
 			return nil, err
 		}
-		if err := p.spaceJoin(out, d.Key.Public().(ed25519.PublicKey)); err != nil {
+		if bytes.Equal(out, m) { // как agent: уже в составе — P ничего не шлём
+			return out, nil
+		}
+		if err := p.spaceJoin(salt, out, d.Key.Public().(ed25519.PublicKey)); err != nil {
 			return nil, fmt.Errorf("%w: bad (%v)", agent.ErrSpaceRefused, err)
 		}
 		return out, nil
@@ -186,8 +189,15 @@ func TestSpaceEnter(t *testing.T) {
 	n.setUser("гость", "guest-pass-1", "view")
 	withSpaceNet(t, spaceNet(p, nil))
 	code := spaceCode(p, sec)
-	if err := n.spaceEnter(context.Background(), p.id(), spacePass, code); err != nil {
+	ch, err := n.spaceEnter(context.Background(), p.id(), spacePass, code)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !ch.Password || !ch.TOTP || ch.Ask || ch.Already {
+		t.Errorf("изменения: %v", ch)
+	}
+	if !strings.Contains(logs.String(), "вступил через "+p.id()) {
+		t.Error("вступление не в журнале")
 	}
 	p.mu.Lock()
 	pm, pb := p.spaceLocked(), bytes.Clone(p.Space)
@@ -213,7 +223,7 @@ func TestSpaceEnter(t *testing.T) {
 	if _, ok := n.otp("", code); ok {
 		t.Error("код, вошедший на P, на N принят повторно")
 	}
-	if !errors.Is(n.spaceEnter(context.Background(), p.id(), spacePass, code), errSpaceIn) {
+	if _, err := n.spaceEnter(context.Background(), p.id(), spacePass, code); !errors.Is(err, errSpaceIn) {
 		t.Error("второе вступление")
 	}
 	for _, s := range []string{sec, hex.EncodeToString(pu.Hash), base64.StdEncoding.EncodeToString(pu.Hash), base64.StdEncoding.EncodeToString(pb)} {
@@ -265,7 +275,7 @@ func TestSpaceEnterForeign(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			n := spaceCfg(t, "n-local-pass", totp.NewSecret())
 			withSpaceNet(t, spaceNet(p, func([]byte) []byte { return c.m }))
-			err := n.spaceEnter(context.Background(), p.id(), spacePass, spaceCode(p, sec))
+			_, err := n.spaceEnter(context.Background(), p.id(), spacePass, spaceCode(p, sec))
 			if err == nil || errors.Is(err, agent.ErrSpaceAuth) || !strings.Contains(err.Error(), c.why) {
 				t.Fatalf("чужой состав: %v", err)
 			}
@@ -323,6 +333,7 @@ func TestSpaceJoinStrict(t *testing.T) {
 	newTOTP := edit(one, func(m *space) { m.TOTP = totp.NewSecret() })
 	forged := b(one)
 	forged[len(forged)-1] ^= 1
+	salt, _, _ := p.secret("")
 	for name, c := range map[string]struct {
 		m   []byte
 		pub ed25519.PublicKey
@@ -335,11 +346,14 @@ func TestSpaceJoinStrict(t *testing.T) {
 		"тот же":     {b(cur), cfgPub(p)},
 		"мусор":      {[]byte("M"), pub1},
 	} {
-		if p.spaceJoin(c.m, c.pub) == nil {
+		if p.spaceJoin(salt, c.m, c.pub) == nil {
 			t.Errorf("%s: принят", name)
 		}
 	}
-	if err := p.spaceJoin(b(one), pub1); err != nil {
+	if p.spaceJoin(bytes.Repeat([]byte{1}, 16), b(one), pub1) == nil { // С7: сессия не записи владельца
+		t.Error("принят от чужой записи")
+	}
+	if err := p.spaceJoin(salt, b(one), pub1); err != nil {
 		t.Fatal(err)
 	}
 	p.mu.Lock()
@@ -358,3 +372,99 @@ type syncLog struct {
 
 func (l *syncLog) Write(p []byte) (int, error) { l.mu.Lock(); defer l.mu.Unlock(); return l.b.Write(p) }
 func (l *syncLog) String() string              { l.mu.Lock(); defer l.mu.Unlock(); return l.b.String() }
+
+// TestSpaceEnterHalf — С1: P сохранил вступление, а ответ до N не дошёл; повтор принимает M от P как есть (N в нём уже
+// есть) вместо вечного errSpaceDup.
+func TestSpaceEnterHalf(t *testing.T) {
+	sec := totp.NewSecret()
+	p := spaceCfg(t, spacePass, sec)
+	if err := p.spaceCreate(spacePass); err != nil {
+		t.Fatal(err)
+	}
+	n := spaceCfg(t, "n-local-pass", totp.NewSecret())
+	inner := spaceNet(p, nil)
+	withSpaceNet(t, func(ctx context.Context, d agent.SpaceDial) ([]byte, error) {
+		if _, err := inner(ctx, d); err != nil {
+			return nil, err
+		}
+		return nil, errors.New("ответ потерян")
+	})
+	if _, err := n.spaceEnter(context.Background(), p.id(), spacePass, spaceCode(p, sec)); err == nil {
+		t.Fatal("потерянный ответ — успех")
+	}
+	withSpaceNet(t, inner)
+	ch, err := n.spaceEnter(context.Background(), p.id(), spacePass, spaceCode(p, sec))
+	if err != nil || !ch.Already {
+		t.Fatalf("повтор: %v %v", err, ch)
+	}
+	p.mu.Lock()
+	pb := bytes.Clone(p.Space)
+	p.mu.Unlock()
+	n.mu.Lock()
+	nb := bytes.Clone(n.Space)
+	n.mu.Unlock()
+	if !bytes.Equal(pb, nb) {
+		t.Error("составы P и N разные")
+	}
+}
+
+// TestSpaceEnterSideEffects — С3: вступление меняет только запись по умолчанию (пароль, код, её ключи); режим
+// «Спрашивать» и гостевые записи — как были: спящая запись гостя с TOTP не оживает. Known[P] уходит в SpaceDial (С8).
+func TestSpaceEnterSideEffects(t *testing.T) {
+	sec := totp.NewSecret()
+	p := spaceCfg(t, spacePass, sec)
+	if err := p.spaceCreate(spacePass); err != nil {
+		t.Fatal(err)
+	}
+	n, err := loadConfig(filepath.Join(t.TempDir(), "AnyPC", "config.json")) // «Спрашивать», как новая установка
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.setPassword("n-own-pass-1")
+	n.setUser("bob", "bob-pass-123", "full")
+	bsec := totp.NewSecret()
+	bc, _ := totp.Code(bsec, time.Now())
+	if err := n.otpEnable(bsec, bc, "bob"); err != nil {
+		t.Fatal(err)
+	}
+	fp := pake.KeyFingerprint(cfgPub(p))
+	n.knownSet(p.id(), fp)
+	n.mu.Lock()
+	n.Users[0].Trusted = [][]byte{bytes.Repeat([]byte{7}, 32)}
+	n.Users[0].KeyLogin = []loginKey{{Pub: bytes.Repeat([]byte{8}, 32)}}
+	bob := n.Users[1]
+	n.save()
+	n.mu.Unlock()
+	if !n.codeMode() {
+		t.Fatal("N не в «Спрашивать»")
+	}
+	inner := spaceNet(p, nil)
+	withSpaceNet(t, func(ctx context.Context, d agent.SpaceDial) ([]byte, error) {
+		if d.Known != fp {
+			t.Errorf("Known[P] не передан: %q", d.Known)
+		}
+		return inner(ctx, d)
+	})
+	ch, err := n.spaceEnter(context.Background(), p.id(), spacePass, spaceCode(p, sec))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ch.Ask || ch.Trusted != 1 || ch.KeyLogin != 1 || !ch.Password || !ch.TOTP {
+		t.Errorf("изменения: %v", ch)
+	}
+	if !n.confirm() || !n.codeMode() {
+		t.Error("режим «Спрашивать» на N выключен вступлением")
+	}
+	if _, h, _ := n.secret("bob"); len(h) != 0 {
+		t.Error("спящая запись гостя ожила")
+	}
+	n.mu.Lock()
+	u0, b1 := n.Users[0], n.Users[1]
+	n.mu.Unlock()
+	if u0.Trusted != nil || u0.KeyLogin != nil || u0.TOTP != sec {
+		t.Error("запись по умолчанию не обновлена")
+	}
+	if b1.Name != bob.Name || !bytes.Equal(b1.Hash, bob.Hash) || b1.TOTP != bob.TOTP || b1.View != bob.View {
+		t.Error("запись гостя изменена")
+	}
+}

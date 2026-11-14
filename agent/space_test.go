@@ -68,10 +68,10 @@ func newSpaceRig(a *Agent) *spaceRig {
 		}
 		return bytes.Clone(r.m)
 	}
-	a.SpaceJoin = func(m []byte, pub ed25519.PublicKey) error {
+	a.SpaceJoin = func(s, m []byte, pub ed25519.PublicKey) error {
 		r.mu.Lock()
 		defer r.mu.Unlock()
-		if bytes.Contains(m, []byte("reject")) {
+		if !bytes.Equal(s, salt) || bytes.Contains(m, []byte("reject")) {
 			return errors.New("тест: не принят")
 		}
 		r.joined, r.joinPub = bytes.Clone(m), bytes.Clone(pub)
@@ -120,7 +120,21 @@ func TestSpaceJoin(t *testing.T) {
 	log.SetOutput(&logs)
 	defer log.SetOutput(os.Stderr)
 	url := local(t)
-	r := spaceHost(t, url, "123456789")
+	var leaked atomic.Int32 // С5: ключ клиента в connect (его видит хаб) — хост спросил бы о нём с AnyUser
+	r := spaceHost(t, url, "123456789", func(r *spaceRig) {
+		r.a.Trusted = func(_ []byte, u string) bool {
+			if u == AnyUser {
+				leaked.Add(1)
+			}
+			return false
+		}
+		r.a.KeyLogin = func(_ []byte, u string) (bool, bool) {
+			if u == AnyUser {
+				leaked.Add(1)
+			}
+			return false, false
+		}
+	})
 	_, nkey, _ := ed25519.GenerateKey(nil)
 	var gotHost ed25519.PublicKey
 	out, err := SpaceJoin(context.Background(), SpaceDial{Server: url, ID: "123456789", Key: nkey, Password: "secret123", Code: r.owner.code(),
@@ -146,6 +160,9 @@ func TestSpaceJoin(t *testing.T) {
 	if !bytes.Equal(jp, nkey.Public().(ed25519.PublicKey)) {
 		t.Error("ключ нового ПК в SpaceJoin — не тот, которым он вошёл")
 	}
+	if leaked.Load() != 0 {
+		t.Error("ключ клиента ушёл в connect (виден хабу)")
+	}
 	for _, s := range []string{"M-SECRET-MARK", base64.StdEncoding.EncodeToString(r.m), r.owner.secret} {
 		if strings.Contains(logs.String(), s) {
 			t.Errorf("в журнале секрет %q", s)
@@ -164,7 +181,10 @@ func TestSpaceJoinRefused(t *testing.T) {
 	_, nkey, _ := ed25519.GenerateKey(nil)
 	signed := false
 	d := SpaceDial{Server: url, ID: "123456789", Key: nkey, Password: "secret123", Code: "000000",
-		Sign: func(m []byte, _ ed25519.PublicKey) ([]byte, error) { signed = true; return m, nil }}
+		Sign: func(m []byte, _ ed25519.PublicKey) ([]byte, error) {
+			signed = true
+			return append(bytes.Clone(m), '+'), nil
+		}}
 	if r.owner.code() == "000000" {
 		d.Code = "111111"
 	}
@@ -243,6 +263,7 @@ func TestSpaceCtlRights(t *testing.T) {
 		name      string
 		user, key string
 		ask, code bool
+		viewOnly  bool // «Только показ экрана» на хосте
 		send      []string
 		want      []spMsg
 	}
@@ -252,11 +273,15 @@ func TestSpaceCtlRights(t *testing.T) {
 		{name: "разрешить", ask: true, send: []string{`{"t":"sp"}`}, want: []spMsg{{T: "sp", Err: "rights"}}},
 		{name: "без ключа", code: true, send: []string{`{"t":"sp"}`, join}, want: []spMsg{{T: "sp", M: []byte("M-SECRET-MARK-1")}, {T: "sp", Err: "key"}}},
 		{name: "с ключом", code: true, key: e2eSeed(), send: []string{join, join}, want: []spMsg{{T: "sp", OK: true}, {T: "sp", Err: "again"}}},
+		{name: "только показ", code: true, key: e2eSeed(), viewOnly: true, send: []string{`{"t":"sp"}`, join}, want: []spMsg{{T: "sp", Err: "rights"}, {T: "sp", Err: "rights"}}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			e2eAgent = func(a *Agent) {
 				r = newSpaceRig(a)
 				r.ask.Store(c.ask)
+				if c.viewOnly {
+					a.ViewOnly = func() bool { return true }
+				}
 			}
 			e2eUser, e2eGood, e2eKey, e2eOTP = c.user, "", c.key, nil
 			pass := "secret123"
@@ -289,7 +314,7 @@ func TestSpaceOldClient(t *testing.T) {
 	o := &otpHost{secret: totp.NewSecret()}
 	e2eAgent = func(a *Agent) {
 		a.OTP, a.SpaceGet = o.check, func([]byte) []byte { return []byte("M") }
-		a.SpaceJoin = func([]byte, ed25519.PublicKey) error {
+		a.SpaceJoin = func([]byte, []byte, ed25519.PublicKey) error {
 			t.Error("вступление без запроса")
 			return nil
 		}
@@ -297,4 +322,43 @@ func TestSpaceOldClient(t *testing.T) {
 	e2eOTP = func(int) string { return o.code() }
 	defer func() { e2eAgent, e2eOTP = nil, nil }()
 	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000}), "secret123")
+}
+
+// TestSpaceKnownHost — С8: ключ P не тот, что запомнен на этом ПК (Known), — отказ до отправки кода (код на P не
+// израсходован); тот же — вступление идёт.
+func TestSpaceKnownHost(t *testing.T) {
+	url := local(t)
+	r := spaceHost(t, url, "123456789")
+	_, nkey, _ := ed25519.GenerateKey(nil)
+	d := SpaceDial{Server: url, ID: "123456789", Key: nkey, Password: "secret123", Code: r.owner.code(),
+		Known: pake.KeyFingerprint(bytes.Repeat([]byte{9}, 32)),
+		Sign:  func(m []byte, _ ed25519.PublicKey) ([]byte, error) { return append(bytes.Clone(m), '+'), nil }}
+	if _, err := SpaceJoin(context.Background(), d); !errors.Is(err, ErrSpaceHostKey) {
+		t.Fatalf("чужой ключ P: %v", err)
+	}
+	r.owner.mu.Lock()
+	used := r.owner.last != 0
+	r.owner.mu.Unlock()
+	if used {
+		t.Error("код отдан P с незапомненным ключом")
+	}
+	d.Known = pake.KeyFingerprint(r.a.Key.Public().(ed25519.PublicKey))
+	if _, err := SpaceJoin(context.Background(), d); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestSpaceAlready — С1: Sign вернул тот же M (этот ПК уже в составе P) — P ничего не шлётся, вступление успешно.
+func TestSpaceAlready(t *testing.T) {
+	url := local(t)
+	r := spaceHost(t, url, "123456789")
+	_, nkey, _ := ed25519.GenerateKey(nil)
+	out, err := SpaceJoin(context.Background(), SpaceDial{Server: url, ID: "123456789", Key: nkey, Password: "secret123", Code: r.owner.code(),
+		Sign: func(m []byte, _ ed25519.PublicKey) ([]byte, error) { return m, nil }})
+	r.mu.Lock()
+	joined := r.joined
+	r.mu.Unlock()
+	if err != nil || string(out) != "M-SECRET-MARK-1" || joined != nil {
+		t.Fatalf("уже в составе: %q %v, P получил %q", out, err, joined)
+	}
 }

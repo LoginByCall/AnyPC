@@ -90,10 +90,11 @@ type Agent struct {
 	ConfirmControl func(cid, peer string) bool
 	// «Моё пространство», Э2 (space.go, UI-REDESIGN.md): состав M для сессии записи по умолчанию, вошедшей паролем и
 	// кодом TOTP. SpaceGet(salt) — запись M (salt — соль записи при входе; nil — пространства нет или пароль не его);
-	// SpaceJoin(m, pub) — принять M следующей эпохи, где добавлен ровно ПК с ключом pub (ключ клиента, доказанный
-	// подписью в "b"). SpaceGet == nil — хост пространства не знает (ctl "sp" пропускается, как у старой версии).
+	// SpaceJoin(salt, m, pub) — принять M следующей эпохи, где добавлен ровно ПК с ключом pub (ключ клиента,
+	// доказанный подписью в "b"), для той же записи, что и SpaceGet(salt). SpaceGet == nil — хост пространства не
+	// знает (ctl "sp" пропускается, как у старой версии). «Только показ экрана» — "sp" отвечает rights.
 	SpaceGet  func(salt []byte) []byte
-	SpaceJoin func(m []byte, pub ed25519.PublicKey) error
+	SpaceJoin func(salt, m []byte, pub ed25519.PublicKey) error
 
 	mu        sync.Mutex
 	ice       []webrtc.ICEServer
