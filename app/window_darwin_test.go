@@ -17,6 +17,28 @@ import (
 // AppKit — главный поток и в тестах: тесты идут горутиной, главный поток ждёт первого окна (window_darwin.go).
 func TestMain(m *testing.M) { mainLoop(func() { os.Exit(m.Run()) }) }
 
+// TestMainWindowWay — главное окно по умолчанию в браузере (данные localStorage остаются там), своё — по ANYPC_MACWIN=1.
+func TestMainWindowWay(t *testing.T) {
+	env := map[string]string{}
+	if mainNative(func(k string) string { return env[k] }) {
+		t.Error("без ANYPC_MACWIN главное окно своё")
+	}
+	env["ANYPC_MACWIN"] = "1"
+	if !mainNative(func(k string) string { return env[k] }) {
+		t.Error("ANYPC_MACWIN=1 не включает своё окно")
+	}
+	if os.Getenv("ANYPC_MACWIN") == "1" {
+		return
+	}
+	defer func(f func(string)) { openBrowser = f }(openBrowser)
+	var got string
+	openBrowser = func(u string) { got = u }
+	openWindow("http://127.0.0.1:1/?n=x")
+	if got != "http://127.0.0.1:1/?n=x" {
+		t.Errorf("главное окно не в браузере: %q", got)
+	}
+}
+
 // TestMacWindowLive — своё окно на настоящем экране: страница с токеном по одноразовому коду, WebRTC и канал данных
 // в окне, родной полный экран окна ПК, значок в строке меню. Запуск: ANYPC_MACWIN_LIVE=1 go test ./app -run MacWindow -v
 func TestMacWindowLive(t *testing.T) {

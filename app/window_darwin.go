@@ -85,12 +85,20 @@ func nativeOpen(u, title string, monitor int, main bool, seed string) int {
 	return int(C.anypcOpen(cu, ct, C.int(monitor), m, cs))
 }
 
-// openWindow — главное окно AnyPC своё; не создалось — браузер по умолчанию, как раньше.
+// openWindow — главное окно AnyPC: по умолчанию браузер, как раньше; своё (WKWebView) — с ANYPC_MACWIN=1
+// (не создалось — тоже браузер). Окна ПК и значок в строке меню — свои всегда.
+// ponytail: своё главное окно по умолчанию — до переноса mine/users/stats в config.json (FINDINGS): localStorage
+// браузера в WKWebView не переходит, у пользователей пропали бы «Мои ПК».
 func openWindow(u string) {
-	if nativeOpen(u, "AnyPC", -1, true, "") == 0 {
-		exec.Command("open", u).Start()
+	if !mainNative(os.Getenv) || nativeOpen(u, "AnyPC", -1, true, "") == 0 {
+		openBrowser(u)
 	}
 }
+
+// mainNative — главное окно своё: переменная окружения ANYPC_MACWIN=1.
+func mainNative(getenv func(string) string) bool { return getenv("ANYPC_MACWIN") == "1" }
+
+var openBrowser = func(u string) { exec.Command("open", u).Start() } // в тестах подменяется
 
 func nativeClose(w int) { C.anypcClose(C.int(w)) }
 
