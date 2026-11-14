@@ -50,44 +50,45 @@ func (c *config) spaceLocked() *space {
 }
 
 // spaceCreate — новое пространство с этим ПК (Э2, п. 2; решение 8 B): пароль входа записи по умолчанию (сверяется с
-// её хэшем: создать пространство за незаблокированным чужим ПК без пароля нельзя), её секрет TOTP, ключ хоста и
-// новая фраза пространства (spacePhraseOK, не равна паролю входа). Нужен режим «пароль + TOTP» (не «Спрашивать»).
-func (c *config) spaceCreate(password, phrase string) error {
+// её хэшем: создать пространство за незаблокированным чужим ПК без пароля нельзя), её секрет TOTP и ключ хоста.
+// Фразу выдаёт генератор (С3) — она возвращается один раз: окно показывает её для записи. Нужен режим «пароль +
+// TOTP» (не «Спрашивать»).
+func (c *config) spaceCreate(password string) (string, error) {
 	c.mu.Lock()
 	c.reload()
 	if len(c.Space) > 0 {
 		c.mu.Unlock()
-		return errSpaceIn
+		return "", errSpaceIn
 	}
 	if c.codeModeLocked() || len(c.Users[0].Hash) == 0 {
 		c.mu.Unlock()
-		return errors.New("пространство: сначала пароль этого ПК и TOTP (вход без подтверждения)")
+		return "", errors.New("пространство: сначала пароль этого ПК и TOTP (вход без подтверждения)")
 	}
 	u := c.Users[0]
 	salt, hash, sec, id, key := bytes.Clone(u.Salt), bytes.Clone(u.Hash), u.TOTP, c.ID, bytes.Clone(c.Key)
 	c.mu.Unlock()
-	if err := spacePhraseOK(phrase); err != nil { // до Argon2
-		return err
-	}
 	if subtle.ConstantTimeCompare(pake.KDF(password, salt), hash) != 1 { // Argon2 — без c.mu
-		return errSpacePassword
+		return "", errSpacePassword
 	}
-	m, err := spaceNew(phrase, salt, hash, sec, id, ed25519.PrivateKey(key).Public().(ed25519.PublicKey))
+	m, phrase, err := spaceNew(salt, hash, sec, id, ed25519.PrivateKey(key).Public().(ed25519.PublicKey))
 	if err != nil {
-		return err
+		return "", err
+	}
+	if err := spacePhraseLoginOK(phrase, password); err != nil { // С1; у фразы генератора — 2^-80
+		return "", err
 	}
 	b, err := m.marshal()
 	if err != nil {
-		return err
+		return "", err
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
 	if len(c.Space) > 0 || !bytes.Equal(c.Users[0].Salt, salt) || c.Users[0].TOTP != sec || c.ID != id || !bytes.Equal(c.Key, key) {
-		return errSpaceChange
+		return "", errSpaceChange
 	}
 	c.Space = b
-	return c.save()
+	return phrase, c.save()
 }
 
 // spaceGet — agent.Agent.SpaceGet (на ПК P): запись M для сессии, вошедшей записью по умолчанию с солью salt. Только
@@ -171,6 +172,9 @@ func (c *config) spaceJoin(salt, b []byte, pub ed25519.PublicKey) error {
 // spaceOwnerCheck — Н1 приёмки Э1: первому составу из сети верят, только если ключ владельца из введённой фразы и
 // osalt состава равен его opub. Сверка локальная: фраза не уходит никуда.
 func spaceOwnerCheck(m *space, phrase string) error {
+	if err := spacePhraseOK(phrase); err != nil { // до Argon2; окну — номер слова с опечаткой
+		return err
+	}
 	key := spaceOwnerKey(phrase, m.OSalt)
 	defer clear(key)
 	if subtle.ConstantTimeCompare(key.Public().(ed25519.PublicKey), m.OPub) != 1 {
@@ -222,6 +226,9 @@ func (c *config) spaceEnter(ctx context.Context, hostID, password, code, phrase 
 		return ch, errSpaceIn // переход в другое пространство и слияние — не Э2
 	case !hub.IsHostID(hostID) || hostID == id:
 		return ch, errors.New("пространство: неверный ID ПК")
+	}
+	if err := spacePhraseOK(phrase); err != nil { // опечатка во фразе — до сети: код не тратится
+		return ch, err
 	}
 	pub := ed25519.PrivateKey(key).Public().(ed25519.PublicKey)
 	var joined *space

@@ -21,10 +21,17 @@ import (
 	"anypc/totp"
 )
 
-const (
-	spacePass   = "owner-pass-1"
-	spacePhrase = "owner space phrase one"
-)
+const spacePass = "owner-pass-1"
+
+// spaceMake — пространство на c паролем spacePass; возвращает фразу генератора.
+func spaceMake(t *testing.T, c *config) string {
+	t.Helper()
+	ph, err := c.spaceCreate(spacePass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ph
+}
 
 // spaceCfg — ПК с паролем spacePass и TOTP записи по умолчанию (вход без подтверждения); секрет TOTP — sec.
 func spaceCfg(t *testing.T, pass, sec string) *config {
@@ -102,23 +109,20 @@ func withSpaceNet(t *testing.T, f func(context.Context, agent.SpaceDial) ([]byte
 func TestSpaceCreateStore(t *testing.T) {
 	sec := totp.NewSecret()
 	p := spaceCfg(t, spacePass, sec)
-	if !errors.Is(p.spaceCreate("wrong-pass-1", spacePhrase), errSpacePassword) {
+	if ph, err := p.spaceCreate("wrong-pass-1"); !errors.Is(err, errSpacePassword) || ph != "" {
 		t.Fatal("пространство создано чужим паролем")
 	}
-	if !errors.Is(p.spaceCreate(spacePass, "short phrase"), errSpacePhraseWeak) {
-		t.Fatal("пространство с короткой фразой")
+	ph := spaceMake(t, p)
+	if spacePhraseOK(ph) != nil || len(strings.Fields(ph)) != 10 {
+		t.Fatalf("фраза генератора %q", ph)
 	}
-	q0 := spaceCfg(t, "owner login equals phrase", totp.NewSecret())
-	if !errors.Is(q0.spaceCreate("owner login equals phrase", "Owner login  equals phrase"), errSpacePhraseLogin) {
-		t.Fatal("фраза = пароль входа")
-	}
-	if err := p.spaceCreate(spacePass, spacePhrase); err != nil {
-		t.Fatal(err)
-	}
-	if !errors.Is(p.spaceCreate(spacePass, spacePhrase), errSpaceIn) {
+	if _, err := p.spaceCreate(spacePass); !errors.Is(err, errSpaceIn) {
 		t.Error("второе пространство поверх первого")
 	}
 	raw, _ := os.ReadFile(p.path)
+	if bytes.Contains(raw, []byte(strings.Fields(ph)[0]+" ")) {
+		t.Error("фраза в файле настроек")
+	}
 	for _, k := range []string{`"SID"`, `"OPub"`, `"Members"`, `"PHash"`, `"TOTP"`} {
 		if bytes.Contains(raw, []byte(k)) {
 			t.Errorf("в файле поле состава %s", k)
@@ -156,7 +160,7 @@ func TestSpaceCreateStore(t *testing.T) {
 	if err := c.setConfirm(true); err != nil {
 		t.Fatal(err)
 	}
-	if c.spaceCreate(spacePass, spacePhrase) == nil {
+	if _, err := c.spaceCreate(spacePass); err == nil {
 		t.Error("пространство в режиме «Спрашивать»")
 	}
 }
@@ -164,9 +168,7 @@ func TestSpaceCreateStore(t *testing.T) {
 // TestSpaceGetGate — P отдаёт M только записи по умолчанию, которая и есть запись владельца из M.
 func TestSpaceGetGate(t *testing.T) {
 	p := spaceCfg(t, spacePass, totp.NewSecret())
-	if err := p.spaceCreate(spacePass, spacePhrase); err != nil {
-		t.Fatal(err)
-	}
+	spaceMake(t, p)
 	salt, _, _ := p.secret("")
 	if p.spaceGet(salt) == nil {
 		t.Fatal("M не отдан владельцу")
@@ -192,14 +194,12 @@ func TestSpaceEnter(t *testing.T) {
 	defer log.SetOutput(os.Stderr)
 	sec := totp.NewSecret()
 	p := spaceCfg(t, spacePass, sec)
-	if err := p.spaceCreate(spacePass, spacePhrase); err != nil {
-		t.Fatal(err)
-	}
+	ph := spaceMake(t, p)
 	n := spaceCfg(t, "n-local-pass", totp.NewSecret())
 	n.setUser("гость", "guest-pass-1", "view")
 	withSpaceNet(t, spaceNet(p, nil))
 	code := spaceCode(p, sec)
-	ch, err := n.spaceEnter(context.Background(), p.id(), spacePass, code, spacePhrase)
+	ch, err := n.spaceEnter(context.Background(), p.id(), spacePass, code, ph)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +233,7 @@ func TestSpaceEnter(t *testing.T) {
 	if _, ok := n.otp("", code); ok {
 		t.Error("код, вошедший на P, на N принят повторно")
 	}
-	if _, err := n.spaceEnter(context.Background(), p.id(), spacePass, code, spacePhrase); !errors.Is(err, errSpaceIn) {
+	if _, err := n.spaceEnter(context.Background(), p.id(), spacePass, code, ph); !errors.Is(err, errSpaceIn) {
 		t.Error("второе вступление")
 	}
 	for _, s := range []string{sec, hex.EncodeToString(pu.Hash), base64.StdEncoding.EncodeToString(pu.Hash), base64.StdEncoding.EncodeToString(pb)} {
@@ -252,23 +252,19 @@ func TestSpaceEnter(t *testing.T) {
 func TestSpaceEnterForeign(t *testing.T) {
 	sec := totp.NewSecret()
 	p := spaceCfg(t, spacePass, sec)
-	if err := p.spaceCreate(spacePass, spacePhrase); err != nil {
-		t.Fatal(err)
-	}
+	ph := spaceMake(t, p)
 	p.mu.Lock()
 	real := p.spaceLocked()
 	p.mu.Unlock()
 	// подделка: запись владельца как в настоящем M (psalt/phash/TOTP), ключ владельца — из фразы злоумышленника
-	evil, err := spaceNew("evil phrase of the thief", real.PSalt, real.PHash, real.TOTP, p.id(), cfgPub(p))
+	evil, _, err := spaceNew(real.PSalt, real.PHash, real.TOTP, p.id(), cfgPub(p))
 	if err != nil {
 		t.Fatal(err)
 	}
 	eb, _ := evil.marshal()
 	rb, _ := real.marshal()
 	other := spaceCfg(t, spacePass, totp.NewSecret()) // другое пространство той же фразы: свой osalt — свой opub
-	if err := other.spaceCreate(spacePass, spacePhrase); err != nil {
-		t.Fatal(err)
-	}
+	oph := spaceMake(t, other)
 	other.mu.Lock()
 	ob := bytes.Clone(other.Space)
 	other.mu.Unlock()
@@ -276,10 +272,10 @@ func TestSpaceEnterForeign(t *testing.T) {
 		m           []byte
 		phrase, why string
 	}{
-		"подделка opub":     {eb, spacePhrase, "ключ владельца из фразы не совпал"},
-		"не та фраза":       {rb, "another owner phrase two", "ключ владельца из фразы не совпал"},
-		"пароль а не фраза": {rb, spacePass, "ключ владельца из фразы не совпал"},
-		"P не в составе":    {ob, spacePhrase, "не числится"}, // opub верный для фразы, но P там нет
+		"подделка opub":     {eb, ph, "ключ владельца из фразы не совпал"},
+		"не та фраза":       {rb, spaceTestWrong, "ключ владельца из фразы не совпал"},
+		"пароль а не фраза": {rb, spacePass, "не из словаря"},
+		"P не в составе":    {ob, oph, "не числится"}, // opub верный для фразы, но P там нет
 	} {
 		t.Run(name, func(t *testing.T) {
 			n := spaceCfg(t, "n-local-pass", totp.NewSecret())
@@ -299,7 +295,7 @@ func TestSpaceEnterForeign(t *testing.T) {
 			}
 		})
 	}
-	if spaceOwnerCheck(evil, spacePhrase) == nil {
+	if spaceOwnerCheck(evil, ph) == nil {
 		t.Error("Н1: подделка прошла сверку opub")
 	}
 }
@@ -308,9 +304,7 @@ func TestSpaceEnterForeign(t *testing.T) {
 // секрет кода, M без подписи владельца — отказ.
 func TestSpaceJoinStrict(t *testing.T) {
 	p := spaceCfg(t, spacePass, totp.NewSecret())
-	if err := p.spaceCreate(spacePass, spacePhrase); err != nil {
-		t.Fatal(err)
-	}
+	ph := spaceMake(t, p)
 	p.mu.Lock()
 	cur := p.spaceLocked()
 	p.mu.Unlock()
@@ -318,7 +312,7 @@ func TestSpaceJoinStrict(t *testing.T) {
 	_, k2, _ := ed25519.GenerateKey(nil)
 	pub1, pub2 := k1.Public().(ed25519.PublicKey), k2.Public().(ed25519.PublicKey)
 	add := func(m *space, id string, pub ed25519.PublicKey) *space {
-		n, err := spaceAdd(m, spacePhrase, id, pub)
+		n, err := spaceAdd(m, ph, id, pub)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -333,7 +327,7 @@ func TestSpaceJoinStrict(t *testing.T) {
 			t.Fatal(err)
 		}
 		f(n)
-		if err := n.sign(spacePhrase); err != nil {
+		if err := n.sign(ph); err != nil {
 			t.Fatal(err)
 		}
 		return n
@@ -387,9 +381,7 @@ func (l *syncLog) String() string              { l.mu.Lock(); defer l.mu.Unlock(
 func TestSpaceEnterHalf(t *testing.T) {
 	sec := totp.NewSecret()
 	p := spaceCfg(t, spacePass, sec)
-	if err := p.spaceCreate(spacePass, spacePhrase); err != nil {
-		t.Fatal(err)
-	}
+	ph := spaceMake(t, p)
 	n := spaceCfg(t, "n-local-pass", totp.NewSecret())
 	inner := spaceNet(p, nil)
 	withSpaceNet(t, func(ctx context.Context, d agent.SpaceDial) ([]byte, error) {
@@ -398,11 +390,11 @@ func TestSpaceEnterHalf(t *testing.T) {
 		}
 		return nil, errors.New("ответ потерян")
 	})
-	if _, err := n.spaceEnter(context.Background(), p.id(), spacePass, spaceCode(p, sec), spacePhrase); err == nil {
+	if _, err := n.spaceEnter(context.Background(), p.id(), spacePass, spaceCode(p, sec), ph); err == nil {
 		t.Fatal("потерянный ответ — успех")
 	}
 	withSpaceNet(t, inner)
-	ch, err := n.spaceEnter(context.Background(), p.id(), spacePass, spaceCode(p, sec), spacePhrase)
+	ch, err := n.spaceEnter(context.Background(), p.id(), spacePass, spaceCode(p, sec), ph)
 	if err != nil || !ch.Already {
 		t.Fatalf("повтор: %v %v", err, ch)
 	}
@@ -422,9 +414,7 @@ func TestSpaceEnterHalf(t *testing.T) {
 func TestSpaceEnterSideEffects(t *testing.T) {
 	sec := totp.NewSecret()
 	p := spaceCfg(t, spacePass, sec)
-	if err := p.spaceCreate(spacePass, spacePhrase); err != nil {
-		t.Fatal(err)
-	}
+	ph := spaceMake(t, p)
 	n, err := loadConfig(filepath.Join(t.TempDir(), "AnyPC", "config.json")) // «Спрашивать», как новая установка
 	if err != nil {
 		t.Fatal(err)
@@ -454,7 +444,7 @@ func TestSpaceEnterSideEffects(t *testing.T) {
 		}
 		return inner(ctx, d)
 	})
-	ch, err := n.spaceEnter(context.Background(), p.id(), spacePass, spaceCode(p, sec), spacePhrase)
+	ch, err := n.spaceEnter(context.Background(), p.id(), spacePass, spaceCode(p, sec), ph)
 	if err != nil {
 		t.Fatal(err)
 	}
