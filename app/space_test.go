@@ -20,8 +20,9 @@ import (
 )
 
 const (
-	spaceTestPw   = "space-test-password"
-	spaceTestTOTP = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+	spaceTestPhrase = "space test phrase vectors"
+	spaceTestLogin  = "space-test-login"
+	spaceTestTOTP   = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
 )
 
 var (
@@ -29,7 +30,7 @@ var (
 	spaceTestPSalt = bytes.Repeat([]byte{0x02}, 16)
 	spaceTestSID   = bytes.Repeat([]byte{0x03}, 16)
 	// Argon2id — 64 МБ на вызов: ключ владельца для всех тестов считается один раз.
-	spaceTestKey = sync.OnceValue(func() ed25519.PrivateKey { return spaceOwnerKey(spaceTestPw, spaceTestOSalt) })
+	spaceTestKey = sync.OnceValue(func() ed25519.PrivateKey { return spaceOwnerKey(spaceTestPhrase, spaceTestOSalt) })
 )
 
 func spacePub(n byte) ed25519.PublicKey { return bytes.Repeat([]byte{n}, ed25519.PublicKeySize) }
@@ -74,8 +75,8 @@ func spaceWant(t *testing.T, err, want error) {
 }
 
 func TestSpaceNewVerify(t *testing.T) {
-	phash := pake.KDF(spaceTestPw, spaceTestPSalt)
-	m, err := spaceNew(spaceTestPw, spaceTestPSalt, phash, spaceTestTOTP, "100000001", spacePub(0x10))
+	phash := pake.KDF(spaceTestLogin, spaceTestPSalt)
+	m, err := spaceNew(spaceTestPhrase, spaceTestPSalt, phash, spaceTestTOTP, "100000001", spacePub(0x10))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,9 +93,9 @@ func TestSpaceNewVerify(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := spaceOwnerKey(spaceTestPw, m.OSalt)
+	key := spaceOwnerKey(spaceTestPhrase, m.OSalt)
 	if !bytes.Equal(key.Public().(ed25519.PublicKey), m.OPub) {
-		t.Fatal("opub не от пароля владельца")
+		t.Fatal("opub не от фразы")
 	}
 	if bytes.Contains(b, key.Seed()) {
 		t.Fatal("закрытая часть ключа владельца попала в запись")
@@ -111,7 +112,7 @@ func TestSpaceNewVerify(t *testing.T) {
 	}
 
 	// другое пространство того же пароля — другие sid, соль и ключ владельца
-	m2, err := spaceNew(spaceTestPw, spaceTestPSalt, phash, spaceTestTOTP, "100000001", spacePub(0x10))
+	m2, err := spaceNew(spaceTestPhrase, spaceTestPSalt, phash, spaceTestTOTP, "100000001", spacePub(0x10))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,13 +120,19 @@ func TestSpaceNewVerify(t *testing.T) {
 		t.Fatal("два пространства совпали")
 	}
 
-	_, err = spaceNew("not-the-password", spaceTestPSalt, phash, spaceTestTOTP, "100000001", spacePub(0x10))
-	spaceWant(t, err, errSpacePassword)
-	_, err = spaceNew(spaceTestPw, spaceTestPSalt[:8], phash, spaceTestTOTP, "100000001", spacePub(0x10))
+	for _, weak := range []string{"", "not-the-password", "one two three", "one two three four", "aa aa aa aa aa aa aa aa", "onetwothreefourfivesix"} {
+		_, err = spaceNew(weak, spaceTestPSalt, phash, spaceTestTOTP, "100000001", spacePub(0x10))
+		spaceWant(t, err, errSpacePhraseWeak) // фраза короче правила — отказ
+	}
+	for _, pw := range []string{"Same  Phrase as the LOGIN", "same phrase as the login"} { // фраза = пароль входа
+		_, err = spaceNew("Same  Phrase as the LOGIN", spaceTestPSalt, pake.KDF(pw, spaceTestPSalt), spaceTestTOTP, "100000001", spacePub(0x10))
+		spaceWant(t, err, errSpacePhraseLogin)
+	}
+	_, err = spaceNew(spaceTestPhrase, spaceTestPSalt[:8], phash, spaceTestTOTP, "100000001", spacePub(0x10))
 	spaceWant(t, err, errSpaceFormat)
-	_, err = spaceNew(spaceTestPw, spaceTestPSalt, phash, spaceTestTOTP, "12345", spacePub(0x10))
+	_, err = spaceNew(spaceTestPhrase, spaceTestPSalt, phash, spaceTestTOTP, "12345", spacePub(0x10))
 	spaceWant(t, err, errSpaceFormat)
-	_, err = spaceNew(spaceTestPw, spaceTestPSalt, phash, "", "100000001", spacePub(0x10))
+	_, err = spaceNew(spaceTestPhrase, spaceTestPSalt, phash, "", "100000001", spacePub(0x10))
 	spaceWant(t, err, errSpaceFormat)
 }
 
@@ -133,10 +140,10 @@ func TestSpaceWrongPassword(t *testing.T) {
 	m := spaceFixture(t)
 	before, _ := m.marshal()
 	_, err := spaceAdd(m, "not-the-password", "100000003", spacePub(0x30))
-	spaceWant(t, err, errSpacePassword)
+	spaceWant(t, err, errSpacePhrase)
 	_, err = spaceRemove(m, "not-the-password", spacePub(0x20))
-	spaceWant(t, err, errSpacePassword)
-	spaceWant(t, m.sign("not-the-password"), errSpacePassword)
+	spaceWant(t, err, errSpacePhrase)
+	spaceWant(t, m.sign("not-the-password"), errSpacePhrase)
 	if after, _ := m.marshal(); !bytes.Equal(before, after) {
 		t.Fatal("состав изменился при неверном пароле")
 	}
@@ -149,7 +156,7 @@ func TestSpaceAddRemove(t *testing.T) {
 	m1 := spaceFixture(t)
 	before, _ := m1.marshal()
 
-	m2, err := spaceAdd(m1, spaceTestPw, "100000003", spacePub(0x05)) // меньший ключ встаёт первым
+	m2, err := spaceAdd(m1, spaceTestPhrase, "100000003", spacePub(0x05)) // меньший ключ встаёт первым
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +167,7 @@ func TestSpaceAddRemove(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m3, err := spaceRemove(m2, spaceTestPw, spacePub(0x20))
+	m3, err := spaceRemove(m2, spaceTestPhrase, spacePub(0x20))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +224,7 @@ func TestSpaceAddRemove(t *testing.T) {
 
 	forged := spaceFixture(t)
 	forged.Epoch = 9 // правка без подписи: менять такой состав нельзя
-	_, err = spaceAdd(forged, spaceTestPw, "100000003", spacePub(0x30))
+	_, err = spaceAdd(forged, spaceTestPhrase, "100000003", spacePub(0x30))
 	spaceWant(t, err, errSpaceSig)
 }
 
@@ -347,9 +354,14 @@ func TestSpaceVector(t *testing.T) {
 		t.Fatalf("подписываемые байты:\n%x\nждали:\n%x", got, w)
 	}
 
-	const wantOPub = "1a3e44d5d0a4e47282106bf99605790f7bcd12ff42dcdfca0562222eb64db3fe"
+	const wantOPub = "5a6ab672c311453d77f8be39de4ff7f321424541ef8f7aebe946005d35326ae2"
 	if got := hex.EncodeToString(m.OPub); got != wantOPub {
 		t.Fatalf("opub %s, ждали %s", got, wantOPub)
+	}
+	// вывод ключа владельца по описанию (решение 8 B): Argon2id("AnyPC space owner key v2\0" + фраза, osalt) → зерно
+	seed := pake.KDF("AnyPC space owner key v2\x00space test phrase vectors", bytes.Repeat([]byte{0x01}, 16))
+	if pub := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey); !bytes.Equal(pub, m.OPub) {
+		t.Fatal("opub — не по описанию вывода из фразы")
 	}
 	b, err := m.marshal()
 	if err != nil {
@@ -358,7 +370,7 @@ func TestSpaceVector(t *testing.T) {
 	if len(b) != len(w)+ed25519.SignatureSize || !bytes.Equal(b[:len(w)], w) {
 		t.Fatal("запись — не подписываемые байты плюс подпись")
 	}
-	const wantSum = "164afe31eeb3a1ae2e7e20c89ca36ef30d07cea28a4b490756c58f57478d645b"
+	const wantSum = "5a783462c8768ca75021096335456be353f0dae0557ab225b68b638ed5c30e38"
 	sum := sha256.Sum256(b)
 	if got := hex.EncodeToString(sum[:]); got != wantSum {
 		t.Fatalf("sha256 записи %s, ждали %s", got, wantSum)
@@ -494,13 +506,13 @@ func TestSpaceParseLimits(t *testing.T) {
 }
 
 // Регрессия приёмки Э1 (Н1): знающий phash (он в составе и в config.json каждого члена) собирал состав с
-// osalt' = psalt — зерно ключа владельца без доменного префикса равнялось phash, и новый ПК с настоящим паролем
+// osalt' = psalt — зерно ключа владельца без доменного префикса равнялось phash, и новый ПК с настоящим паролем (теперь — фразой)
 // вступал в поддельный состав.
 func TestSpaceForgeOwnerKeyFromPHash(t *testing.T) {
-	const realPw = "owner-real-password"
+	const realPw, realPhrase = "owner-real-password", "owner real space phrase"
 	psalt := bytes.Repeat([]byte{0xA1}, 16)
 	phash := pake.KDF(realPw, psalt)
-	real, err := spaceNew(realPw, psalt, phash, spaceTestTOTP, "100000001", spacePub(0x10))
+	real, err := spaceNew(realPhrase, psalt, phash, spaceTestTOTP, "100000001", spacePub(0x10))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -527,8 +539,8 @@ func TestSpaceForgeOwnerKeyFromPHash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined, err := spaceAdd(got, realPw, "100000007", spacePub(0x77))
-	spaceWant(t, err, errSpacePassword)
+	joined, err := spaceAdd(got, realPhrase, "100000007", spacePub(0x77))
+	spaceWant(t, err, errSpacePhrase)
 	if joined != nil {
 		t.Fatal("новый ПК подписал состав атакующего")
 	}
@@ -572,20 +584,20 @@ func TestSpaceTOTPCanon(t *testing.T) {
 func TestSpaceErrorReturnsNil(t *testing.T) {
 	m := spaceFixture(t)
 	n, err := spaceAdd(m, "wrong", "100000003", spacePub(0x30))
-	spaceWant(t, err, errSpacePassword)
+	spaceWant(t, err, errSpacePhrase)
 	if n != nil {
-		t.Fatal("spaceAdd вернул состав при неверном пароле")
+		t.Fatal("spaceAdd вернул состав при неверной фразе")
 	}
 	n, err = spaceRemove(m, "wrong", spacePub(0x20))
-	spaceWant(t, err, errSpacePassword)
+	spaceWant(t, err, errSpacePhrase)
 	if n != nil {
-		t.Fatal("spaceRemove вернул состав при неверном пароле")
+		t.Fatal("spaceRemove вернул состав при неверной фразе")
 	}
 	b := spaceEdit(t, m, func(s *space) { s.Epoch = 2 })
-	n, err = spaceMerge(m, b, "wrong")
-	spaceWant(t, err, errSpacePassword)
+	n, err = spaceMerge(m, b, "wrong", nil, nil)
+	spaceWant(t, err, errSpacePhrase)
 	if n != nil {
-		t.Fatal("spaceMerge вернул состав при неверном пароле")
+		t.Fatal("spaceMerge вернул состав при неверной фразе")
 	}
 }
 
@@ -598,7 +610,7 @@ func TestSpaceEpochMax(t *testing.T) {
 	spaceWant(t, err, errSpaceLimit)
 	_, err = spaceRemove(mx, "", spacePub(0x20))
 	spaceWant(t, err, errSpaceLimit)
-	_, err = spaceMerge(mx, m, "")
+	_, err = spaceMerge(mx, m, "", nil, nil)
 	spaceWant(t, err, errSpaceLimit)
 
 	ok := spaceEdit(t, m, func(x *space) { x.Epoch = 1 + spaceMaxJump })
@@ -612,29 +624,29 @@ func TestSpaceEpochMax(t *testing.T) {
 // Н2: две правки владельца от одной эпохи (A добавил ПК, B исключил украденный) — раскол виден, а не тих.
 func TestSpaceFork(t *testing.T) {
 	m1 := spaceFixture(t)
-	a, err := spaceAdd(m1, spaceTestPw, "100000003", spacePub(0x30))
+	a, err := spaceAdd(m1, spaceTestPhrase, "100000003", spacePub(0x30))
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := spaceRemove(m1, spaceTestPw, spacePub(0x20)) // 0x20 украден
+	b, err := spaceRemove(m1, spaceTestPhrase, spacePub(0x20)) // 0x20 украден
 	if err != nil {
 		t.Fatal(err)
 	}
 	spaceWant(t, spaceAccept(a, b), errSpaceFork)
 	spaceWant(t, spaceAccept(b, a), errSpaceFork)
-	a2, err := spaceAdd(a, spaceTestPw, "100000004", spacePub(0x40))
+	a2, err := spaceAdd(a, spaceTestPhrase, "100000004", spacePub(0x40))
 	if err != nil {
 		t.Fatal(err)
 	}
 	spaceWant(t, spaceAccept(b, a2), errSpaceFork) // на ветви A украденный — снова член
-	b2, err := spaceAdd(b, spaceTestPw, "100000005", spacePub(0x50))
+	b2, err := spaceAdd(b, spaceTestPhrase, "100000005", spacePub(0x50))
 	if err != nil {
 		t.Fatal(err)
 	}
 	spaceWant(t, spaceAccept(a, b2), errSpaceFork) // на ветви B пропал добавленный в A
 	spaceWant(t, spaceAccept(a2, b2), errSpaceFork)
 
-	m, err := spaceMerge(a2, b2, spaceTestPw)
+	m, err := spaceMerge(a2, b2, spaceTestPhrase, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -654,7 +666,7 @@ func TestSpaceFork(t *testing.T) {
 			t.Errorf("ветвь %s не принимает слияние: %v", name, err)
 		}
 	}
-	m2, err := spaceMerge(b2, a2, spaceTestPw) // порядок входов: тот же состав, кроме нового секрета
+	m2, err := spaceMerge(b2, a2, spaceTestPhrase, nil, nil) // порядок входов: тот же состав, кроме нового секрета
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -664,11 +676,11 @@ func TestSpaceFork(t *testing.T) {
 	spaceWant(t, spaceAccept(m, m2), errSpaceFork) // два слияния одной эпохи с разными секретами — снова раскол
 
 	// без новых исключений секрет прежний
-	c, err := spaceAdd(m1, spaceTestPw, "100000006", spacePub(0x60))
+	c, err := spaceAdd(m1, spaceTestPhrase, "100000006", spacePub(0x60))
 	if err != nil {
 		t.Fatal(err)
 	}
-	mc, err := spaceMerge(a, c, spaceTestPw)
+	mc, err := spaceMerge(a, c, spaceTestPhrase, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -677,9 +689,9 @@ func TestSpaceFork(t *testing.T) {
 	}
 
 	// каждая ветвь исключила другой ПК — никого не осталось
-	r1, _ := spaceRemove(m1, spaceTestPw, spacePub(0x10))
-	r2, _ := spaceRemove(m1, spaceTestPw, spacePub(0x20))
-	_, err = spaceMerge(r1, r2, "")
+	r1, _ := spaceRemove(m1, spaceTestPhrase, spacePub(0x10))
+	r2, _ := spaceRemove(m1, spaceTestPhrase, spacePub(0x20))
+	_, err = spaceMerge(r1, r2, "", nil, nil)
 	spaceWant(t, err, errSpaceLast)
 
 	// объединение сверх пределов
@@ -699,27 +711,27 @@ func TestSpaceFork(t *testing.T) {
 			slices.SortFunc(s.Gone, bytes.Compare)
 		})
 	}
-	_, err = spaceMerge(grow(0x81, 20), grow(0x91, 20), "")
+	_, err = spaceMerge(grow(0x81, 20), grow(0x91, 20), "", nil, nil)
 	spaceWant(t, err, errSpaceLimit) // 400 исключённых
-	_, err = spaceMerge(grow(0x81, 20), spaceEdit(t, grow(0x91, 20), func(s *space) { s.Gone = nil }), "")
+	_, err = spaceMerge(grow(0x81, 20), spaceEdit(t, grow(0x91, 20), func(s *space) { s.Gone = nil }), "", nil, nil)
 	spaceWant(t, err, errSpaceLimit) // 42 члена
 
 	// один ID с разными ключами
-	d, _ := spaceAdd(m1, spaceTestPw, "100000003", spacePub(0x31))
-	_, err = spaceMerge(a, d, "")
+	d, _ := spaceAdd(m1, spaceTestPhrase, "100000003", spacePub(0x31))
+	_, err = spaceMerge(a, d, "", nil, nil)
 	spaceWant(t, err, errSpaceDup)
 
-	_, err = spaceMerge(a, spaceEdit(t, b, func(s *space) { s.PHash[0] ^= 1 }), "")
+	_, err = spaceMerge(a, spaceEdit(t, b, func(s *space) { s.PHash[0] ^= 1 }), "", nil, nil)
 	spaceWant(t, err, errSpaceFork)
-	_, err = spaceMerge(a, spaceEdit(t, b, func(s *space) { s.SID[0] ^= 1 }), "")
+	_, err = spaceMerge(a, spaceEdit(t, b, func(s *space) { s.SID[0] ^= 1 }), "", nil, nil)
 	spaceWant(t, err, errSpaceForeign)
-	_, err = spaceMerge(a, nil, "")
+	_, err = spaceMerge(a, nil, "", nil, nil)
 	spaceWant(t, err, errSpaceFormat)
 	bad := spaceFixture(t)
 	bad.Epoch = 7
-	_, err = spaceMerge(a, bad, "")
+	_, err = spaceMerge(a, bad, "", nil, nil)
 	spaceWant(t, err, errSpaceSig)
-	_, err = spaceMerge(bad, a, "")
+	_, err = spaceMerge(bad, a, "", nil, nil)
 	spaceWant(t, err, errSpaceSig)
 	spaceWant(t, spaceAccept(bad, a), errSpaceSig) // текущий тоже проверяется
 }
@@ -843,16 +855,16 @@ func TestSpaceGuards(t *testing.T) {
 
 	forged := spaceFixture(t)
 	forged.Epoch = 9
-	_, err := spaceRemove(forged, spaceTestPw, spacePub(0x20))
+	_, err := spaceRemove(forged, spaceTestPhrase, spacePub(0x20))
 	spaceWant(t, err, errSpaceSig)
-	_, err = spaceAdd(nil, spaceTestPw, "100000003", spacePub(0x30))
+	_, err = spaceAdd(nil, spaceTestPhrase, "100000003", spacePub(0x30))
 	spaceWant(t, err, errSpaceFormat)
-	_, err = spaceRemove(nil, spaceTestPw, spacePub(0x20))
+	_, err = spaceRemove(nil, spaceTestPhrase, spacePub(0x20))
 	spaceWant(t, err, errSpaceFormat)
 
 	s := spaceFixture(t)
 	s.OSalt = s.OSalt[:8]
-	spaceWant(t, s.sign(spaceTestPw), errSpaceFormat)
+	spaceWant(t, s.sign(spaceTestPhrase), errSpaceFormat)
 
 	// член, пропавший без исключения, при большей эпохе — раскол, а не тихая потеря
 	lost := spaceEdit(t, m, func(s *space) { s.Epoch, s.Members = 2, s.Members[:1] })

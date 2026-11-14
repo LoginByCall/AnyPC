@@ -14,6 +14,19 @@ AnyPC gives remote control of a computer, so please report vulnerabilities **pri
 сессия, вошедшая паролем и кодом владельца, получает этот список целиком. Кража одного ПК пространства — повод
 исключить его и сменить пароль. / "My space": every member PC stores the shared member list with the shared secrets;
 a session logged in with the owner's password and code receives it.
+
+«Моё пространство»: корень доверия — **фраза пространства**, отдельная от пароля входа. Из неё выводится ключ,
+которым подписан состав (кто в пространстве, пароль входа, секрет кода); фраза не хранится ни на одном ПК и не
+уходит в сеть — её вводят при создании пространства, вступлении ПК, исключении ПК и смене пароля входа или кода.
+Храните фразу офлайн (на бумаге). Пароль входа и код дают вход и «Работаю тут», но менять состав не позволяют:
+кража ПК пространства или утечка пароля входа не дают вору добавить свой ПК или исключить ваши. Утечка или потеря
+фразы — создайте пространство заново (восстановления нет).
+"My space": the root of trust is the **space phrase**, separate from the login password. It derives the key that signs
+the member list (members, login password, code secret); the phrase is stored on no PC and never sent over the
+network — it is typed when creating the space, adding or removing a PC, and changing the login password or code.
+Keep the phrase offline (on paper). The login password and code allow login and "Work here" but not membership
+changes: a stolen member PC or a leaked login password does not let a thief add their PC or remove yours. If the
+phrase leaks or is lost, create the space anew (there is no recovery).
 Login without confirmation is protected by a TOTP second factor; the host's settings file holds both factors (password
 hash and TOTP secret), so TOTP protects against a leaked password, not against theft of that file.
 
