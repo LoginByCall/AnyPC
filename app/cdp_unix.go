@@ -23,6 +23,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -35,7 +36,9 @@ type cdpConn struct {
 	next int
 	wait map[int]chan cdpReply
 	done chan struct{}
-	err  error // причина закрытия; задаётся до close(done)
+	err  error  // причина закрытия; задаётся до close(done)
+	kill func() // убить Chrome (запись в pipe не прошла в срок); nil — нечего
+	bctx string // свой контекст браузера (Target.createBrowserContext): история и кэш — в памяти, не в профиле
 }
 
 type cdpReply struct {
@@ -118,10 +121,20 @@ func (c *cdpConn) call(ctx context.Context, session, method string, params, out 
 		return err
 	}
 	c.wmu.Lock()
+	if d, ok := c.w.(interface{ SetWriteDeadline(time.Time) error }); ok { // Chrome завис и не читает — не ждать вечно
+		dl, has := ctx.Deadline()
+		if !has {
+			dl = time.Now().Add(10 * time.Second)
+		}
+		d.SetWriteDeadline(dl)
+	}
 	_, err = c.w.Write(append(msg, 0))
 	c.wmu.Unlock()
 	if err != nil {
 		c.close(err)
+		if c.kill != nil {
+			c.kill()
+		}
 		return err
 	}
 	select {
@@ -156,14 +169,20 @@ func (c *cdpConn) eval(ctx context.Context, session, expr string, gesture bool, 
 	if err := c.call(ctx, session, "Runtime.evaluate", map[string]any{"expression": expr, "awaitPromise": true, "returnByValue": true, "userGesture": gesture}, &r); err != nil {
 		return err
 	}
-	if r.Exc != nil {
-		return fmt.Errorf("страница: %s %s", r.Exc.Text, r.Exc.Exception.Description)
+	if r.Exc != nil { // описание исключения — со стеком и адресами страницы (?t=токен): в ошибку — первая строка без них
+		d, _, _ := strings.Cut(r.Exc.Exception.Description, "\n")
+		return fmt.Errorf("страница: %s %s", scrub(r.Exc.Text), scrub(d))
 	}
 	if out != nil && len(r.Result.Value) > 0 {
 		return json.Unmarshal(r.Result.Value, out)
 	}
 	return nil
 }
+
+var secretRe = regexp.MustCompile(`([?&][tn]=)[^\s&#"'\x60)]*`)
+
+// scrub — убрать из текста для журнала токен (?t=) и код окна (?n=).
+func scrub(s string) string { return secretRe.ReplaceAllString(s, "${1}…") }
 
 // until — ждать, пока выражение не станет true (страница грузится).
 func (c *cdpConn) until(ctx context.Context, session, expr string) error {
@@ -190,12 +209,15 @@ type chromeWin struct {
 	look  func(string) (string, error)
 	mu    sync.Mutex
 	c     *cdpConn
+	bad   map[string]bool // браузеры, не ответившие по pipe (snap за обёрткой-скриптом и т. п.): до перезапуска AnyPC — мимо
 }
+
+var cdpStartWait = 10 * time.Second // сколько ждать ответа Chrome по pipe при запуске
 
 // pcWin — окна ПК (только Linux: main_unix.go); nil — нет.
 var pcWin *chromeWin
 
-// pcFallback — прежнее поведение (окно AnyPC в браузере), когда Chrome по pipe не открылся.
+// pcFallback — прежнее поведение (окно AnyPC в браузере), когда Chrome по pipe не открылся или pcWin нет (Мак).
 var pcFallback func()
 
 // cdpBrowsers — Chromium-браузеры с CDP по pipe. Snap (Chromium Ubuntu) — мимо: каталог ~/.config ему закрыт.
@@ -227,14 +249,17 @@ func (w *chromeWin) conn(ctx context.Context) (*cdpConn, error) {
 		return w.c, nil
 	}
 	w.c = nil
-	bin := cdpBrowser(w.look, filepath.EvalSymlinks)
+	bin := cdpBrowser(func(n string) (string, error) {
+		p, err := w.look(n)
+		if err == nil && w.bad[p] {
+			return "", errors.New("не ответил по pipe")
+		}
+		return p, err
+	}, filepath.EvalSymlinks)
 	if bin == "" {
-		return nil, errors.New("нет Chrome, Chromium или Edge (не snap)")
+		return nil, errors.New("нет Chrome, Chromium или Edge (не snap), ответившего по pipe")
 	}
-	if err := os.MkdirAll(w.dir, 0o700); err != nil {
-		return nil, err
-	}
-	if err := os.Chmod(w.dir, 0o700); err != nil {
+	if err := profileDir(w.dir); err != nil {
 		return nil, err
 	}
 	inR, inW, err := os.Pipe()
@@ -256,23 +281,66 @@ func (w *chromeWin) conn(ctx context.Context) (*cdpConn, error) {
 	if err != nil {
 		inW.Close()
 		outR.Close()
+		w.markBad(bin)
 		return nil, err
 	}
 	c := newCDP(outR, inW)
+	c.kill = func() { cmd.Process.Kill() }
 	go func() { err := cmd.Wait(); c.close(fmt.Errorf("Chrome вышел (%v)", err)); outR.Close() }()
 	var v struct {
 		Product string `json:"product"`
 	}
-	vctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	vctx, cancel := context.WithTimeout(ctx, cdpStartWait)
 	defer cancel()
-	if err := c.call(vctx, "", "Browser.getVersion", nil, &v); err != nil {
+	var b struct {
+		ID string `json:"browserContextId"`
+	}
+	err = c.call(vctx, "", "Browser.getVersion", nil, &v)
+	if err == nil { // измерено приёмщиком: в своём контексте полный экран и keyboard.lock работают, в профиле — ни адресов, ни кодов
+		err = c.call(vctx, "", "Target.createBrowserContext", map[string]any{"disposeOnDetach": true}, &b)
+	}
+	if err != nil {
 		c.close(err)
 		cmd.Process.Kill()
+		w.markBad(bin)
 		return nil, fmt.Errorf("%s по pipe: %w", filepath.Base(bin), err)
 	}
+	c.bctx = b.ID
 	log.Printf("окно ПК: %s по pipe, профиль %s", v.Product, w.dir)
 	w.c = c
 	return c, nil
+}
+
+func (w *chromeWin) markBad(bin string) {
+	if w.bad == nil {
+		w.bad = map[string]bool{}
+	}
+	w.bad[bin] = true
+}
+
+// profileDir — каталог профиля: абсолютный, свой (uid), не ссылка, 0700.
+func profileDir(dir string) error {
+	if !filepath.IsAbs(dir) {
+		return fmt.Errorf("профиль Chrome: путь %q не абсолютный (нет каталога настроек)", dir)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); !fi.IsDir() || !ok || int(st.Uid) != os.Getuid() {
+		return fmt.Errorf("профиль Chrome %s: не свой каталог (или ссылка)", dir)
+	}
+	return os.Chmod(dir, 0o700)
+}
+
+// closeTarget — закрыть окно после неудачи (повтор не плодит окна).
+func closeTarget(c *cdpConn, tid string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c.call(ctx, "", "Target.closeTarget", map[string]any{"targetId": tid}, nil)
 }
 
 var errNoWindow = errors.New("окно не открыто") // ошибка до появления окна: можно открыть прежнее
@@ -286,7 +354,7 @@ func (w *chromeWin) page(ctx context.Context, path, seed, ready string) (*cdpCon
 	var t struct {
 		TargetID string `json:"targetId"`
 	}
-	if err := c.call(ctx, "", "Target.createTarget", map[string]any{"url": "about:blank", "newWindow": true}, &t); err != nil {
+	if err := c.call(ctx, "", "Target.createTarget", map[string]any{"url": "about:blank", "newWindow": true, "browserContextId": c.bctx}, &t); err != nil {
 		return nil, "", "", fmt.Errorf("%w: %v", errNoWindow, err)
 	}
 	var s struct {
@@ -298,8 +366,8 @@ func (w *chromeWin) page(ctx context.Context, path, seed, ready string) (*cdpCon
 			err = c.call(ctx, s.SessionID, "Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": seed}, nil)
 		}
 	}
-	if err == nil {
-		err = c.call(ctx, "", "Browser.grantPermissions", map[string]any{"permissions": []string{"windowManagement"}, "origin": w.base}, nil)
+	if err == nil { // grantPermissions отклонил бы источнику все прочие разрешения (микрофон, буфер) — измерено приёмщиком
+		err = c.call(ctx, "", "Browser.setPermission", map[string]any{"permission": map[string]any{"name": "window-management"}, "setting": "granted", "origin": w.base, "browserContextId": c.bctx}, nil)
 	}
 	if err == nil {
 		err = c.call(ctx, s.SessionID, "Page.navigate", map[string]any{"url": w.base + path}, nil)
@@ -307,7 +375,11 @@ func (w *chromeWin) page(ctx context.Context, path, seed, ready string) (*cdpCon
 	if err == nil {
 		err = c.until(ctx, s.SessionID, ready)
 	}
-	return c, t.TargetID, s.SessionID, err
+	if err != nil {
+		closeTarget(c, t.TargetID)
+		return nil, "", "", err
+	}
+	return c, t.TargetID, s.SessionID, nil
 }
 
 var pcIDre = regexp.MustCompile(`^\d{9}$`)
@@ -315,7 +387,7 @@ var pcIDre = regexp.MustCompile(`^\d{9}$`)
 // open — ПК id во весь экран на мониторе monitor (индекс window.getScreenDetails().screens).
 // Страница — окно AnyPC (вне фрейма ?embed= сам не входит, см. EMBED в ui/index.html) с одной вкладкой «Моих ПК»;
 // полный экран — кнопкой панели фрейма (её путь — window.fullscreen шима с anypcScreen), то есть с keyboard.lock.
-func (w *chromeWin) open(ctx context.Context, id string, monitor int, seed map[string]string) error {
+func (w *chromeWin) open(ctx context.Context, id string, monitor int, seed map[string]string) (err error) {
 	src, err := seedScript(w.base, seed)
 	if err != nil {
 		return err
@@ -324,15 +396,20 @@ func (w *chromeWin) open(ctx context.Context, id string, monitor int, seed map[s
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if err != nil {
+			closeTarget(c, tid)
+		}
+	}()
 	idj, _ := json.Marshal(id)
 	frame := fmt.Sprintf("[...document.querySelectorAll('#frames iframe')].find(f => f.src.includes('embed=' + %s))", idj)
-	if err := c.eval(ctx, sid, "myPcAdd("+string(idj)+")", false, nil); err != nil {
+	if err = c.eval(ctx, sid, "myPcAdd("+string(idj)+")", false, nil); err != nil {
 		return err
 	}
-	if err := c.until(ctx, sid, "!!"+frame+"?.contentWindow?.embedSetActive"); err != nil {
+	if err = c.until(ctx, sid, "!!"+frame+"?.contentWindow?.embedSetActive"); err != nil {
 		return err
 	}
-	if err := c.call(ctx, "", "Target.activateTarget", map[string]any{"targetId": tid}, nil); err != nil {
+	if err = c.call(ctx, "", "Target.activateTarget", map[string]any{"targetId": tid}, nil); err != nil {
 		return err
 	}
 	var b *screenInfo
@@ -351,7 +428,7 @@ func (w *chromeWin) open(ctx context.Context, id string, monitor int, seed map[s
 		} `json:"bounds"`
 	}
 	for i := 0; i < 15; i++ { // полный экран страницы → окно fullscreen (измерено: < 1 с)
-		if err := c.call(ctx, "", "Browser.getWindowForTarget", map[string]any{"targetId": tid}, &win); err != nil {
+		if err = c.call(ctx, "", "Browser.getWindowForTarget", map[string]any{"targetId": tid}, &win); err != nil {
 			return err
 		}
 		if win.Bounds.State == "fullscreen" {
@@ -379,12 +456,10 @@ type screenInfo struct {
 // окно /blank на миг открывается и закрывается (скрытые цели по pipe Chrome не создаёт).
 func (w *chromeWin) screens(ctx context.Context) ([]screenInfo, error) {
 	c, tid, sid, err := w.page(ctx, "/blank", "", "document.readyState === 'complete' && location.origin === "+jsStr(w.base))
-	if tid != "" {
-		defer c.call(context.Background(), "", "Target.closeTarget", map[string]any{"targetId": tid}, nil)
-	}
 	if err != nil {
 		return nil, err
 	}
+	defer closeTarget(c, tid)
 	var l []screenInfo
 	err = c.eval(ctx, sid, `getScreenDetails().then(d => d.screens.map(s => ({label: s.label, left: s.left, top: s.top, width: s.width, height: s.height, primary: s.isPrimary, scale: s.devicePixelRatio})))`, false, &l)
 	return l, err
@@ -421,12 +496,12 @@ func openPCWindow(id string, monitor int, seed map[string]string) (string, error
 		err := pcWin.open(ctx, id, monitor, seed)
 		if err == nil || !errors.Is(err, errNoWindow) {
 			if err != nil {
-				log.Printf("окно ПК %s: %v", id, err)
-				return "window", err
+				log.Printf("окно ПК %s: %s", id, scrub(err.Error()))
+				return "window", errors.New(scrub(err.Error()))
 			}
 			return "window", nil
 		}
-		log.Printf("окно ПК: %v — окно AnyPC прежним способом", err)
+		log.Printf("окно ПК: %s — окно AnyPC прежним способом", scrub(err.Error()))
 	}
 	if pcFallback != nil {
 		pcFallback()

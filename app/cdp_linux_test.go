@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -162,6 +163,7 @@ func TestPCWindowFlow(t *testing.T) {
 		}
 		return map[string]any{}
 	})
+	c.bctx = "B1"
 	w := &chromeWin{base: "http://127.0.0.1:5000", issue: func() string { return "code42" }, c: c}
 	if err := w.open(context.Background(), "123456789", 1, map[string]string{"mine": `[{"id":"123456789","name":"Офис"}]`}); err != nil {
 		t.Fatal(err)
@@ -171,17 +173,22 @@ func TestPCWindowFlow(t *testing.T) {
 		seen = append(seen, k.Method)
 		switch k.Method {
 		case "Target.createTarget":
-			if k.Params["url"] != "about:blank" || k.Params["newWindow"] != true {
+			if k.Params["url"] != "about:blank" || k.Params["newWindow"] != true || k.Params["browserContextId"] != "B1" {
 				t.Errorf("createTarget: %+v", k.Params)
 			}
 		case "Page.navigate":
 			if k.Params["url"] != "http://127.0.0.1:5000/?n=code42" || k.Session != "S1" {
 				t.Errorf("navigate: %+v %q", k.Params, k.Session)
 			}
-		case "Browser.grantPermissions":
-			if k.Params["origin"] != "http://127.0.0.1:5000" {
-				t.Errorf("разрешение не только своему источнику: %+v", k.Params)
+		case "Browser.grantPermissions": // отклонил бы источнику микрофон и буфер
+			t.Error("grantPermissions вместо setPermission")
+		case "Browser.setPermission":
+			if k.Params["origin"] != "http://127.0.0.1:5000" || k.Params["setting"] != "granted" || k.Params["browserContextId"] != "B1" ||
+				k.Params["permission"].(map[string]any)["name"] != "window-management" {
+				t.Errorf("разрешение: %+v", k.Params)
 			}
+		case "Target.closeTarget":
+			t.Error("удавшееся окно закрыто")
 		case "Page.addScriptToEvaluateOnNewDocument":
 			if s := k.Params["source"].(string); !strings.Contains(s, `location.origin === "http://127.0.0.1:5000"`) || !strings.Contains(s, "Офис") {
 				t.Errorf("перенос localStorage: %s", s)
@@ -194,11 +201,136 @@ func TestPCWindowFlow(t *testing.T) {
 			t.Error("запасной путь при удавшемся полном экране страницы")
 		}
 	}
-	if want := "Target.createTarget Target.attachToTarget Page.enable Page.addScriptToEvaluateOnNewDocument Browser.grantPermissions Page.navigate"; !strings.HasPrefix(strings.Join(seen, " "), want) {
+	if want := "Target.createTarget Target.attachToTarget Page.enable Page.addScriptToEvaluateOnNewDocument Browser.setPermission Page.navigate"; !strings.HasPrefix(strings.Join(seen, " "), want) {
 		t.Errorf("порядок: %v", seen)
 	}
 	if _, err := seedScript("http://x", map[string]string{"pass": "{}"}); err == nil {
 		t.Error("перенос ключа вне списка (пароли браузера)")
+	}
+	if _, err := seedScript("http://x", map[string]string{"mine": strings.Repeat("x", 64<<10)}); err != nil {
+		t.Errorf("64 КБ: %v", err)
+	}
+	if _, err := seedScript("http://x", map[string]string{"mine": strings.Repeat("x", 64<<10+1)}); err == nil {
+		t.Error("больше 64 КБ принято")
+	}
+}
+
+// TestPCWindowErrors: любая ошибка после создания окна закрывает его (повтор не плодит окна); исключение страницы —
+// в ошибке первой строкой и без ?t= и ?n=.
+func TestPCWindowErrors(t *testing.T) {
+	exc := func(d string) any {
+		return map[string]any{"result": map[string]any{}, "exceptionDetails": map[string]any{"text": "Uncaught", "exception": map[string]any{"description": d}}}
+	}
+	for _, tc := range []struct {
+		name, fail string
+		ret        any
+	}{
+		{"setPermission", "Browser.setPermission", errors.New("Permission can't be granted")},
+		{"navigate", "Page.navigate", errors.New("Cannot navigate")},
+		{"fullscreen", "getScreenDetails", exc("TypeError: not granted at http://127.0.0.1:5000/?t=SECRETTOK&x=1\n    at f (http://127.0.0.1:5000/?n=SECRETCODE:1:2)")},
+		{"monitor", "getScreenDetails", map[string]any{"result": map[string]any{"type": "object", "subtype": "null", "value": nil}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var f fakeChrome
+			c := f.start(t, func(m string, p map[string]any) any {
+				e, _ := p["expression"].(string)
+				if m == tc.fail || m == "Runtime.evaluate" && strings.Contains(e, tc.fail) {
+					return tc.ret
+				}
+				switch m {
+				case "Target.createTarget":
+					return map[string]any{"targetId": "T1"}
+				case "Target.attachToTarget":
+					return map[string]any{"sessionId": "S1"}
+				case "Runtime.evaluate":
+					return map[string]any{"result": map[string]any{"value": true}}
+				}
+				return map[string]any{}
+			})
+			w := &chromeWin{base: "http://127.0.0.1:5000", issue: func() string { return "SECRETCODE" }, c: c}
+			err := w.open(context.Background(), "123456789", 3, nil)
+			if err == nil {
+				t.Fatal("нет ошибки")
+			}
+			if strings.Contains(err.Error(), "SECRET") || strings.Contains(err.Error(), "    at ") {
+				t.Errorf("в ошибке токен, код или стек: %v", err)
+			}
+			if tc.name == "monitor" && !strings.Contains(err.Error(), "нет монитора 3") {
+				t.Errorf("монитор вне списка: %v", err)
+			}
+			closed := false
+			for _, k := range f.log() {
+				closed = closed || k.Method == "Target.closeTarget" && k.Params["targetId"] == "T1"
+			}
+			if !closed {
+				t.Errorf("окно не закрыто после ошибки: %v", err)
+			}
+		})
+	}
+	if s := scrub("at http://h/?t=abc&n=def#x and /?n=123)"); s != "at http://h/?t=…&n=…#x and /?n=…)" {
+		t.Errorf("scrub: %q", s)
+	}
+}
+
+// TestPCWindowAPI: /api/pcWindow — ID, монитор и перенос; кривой перенос — 400, без Chrome — прежнее окно.
+func TestPCWindowAPI(t *testing.T) {
+	defer func(w *chromeWin, f func()) { pcWin, pcFallback = w, f }(pcWin, pcFallback)
+	opened := 0
+	pcWin, pcFallback = nil, func() { opened++ } // как на Маке: своего Chrome нет
+	cfg, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
+	h := handler("127.0.0.1:5000", "tok123", []byte("page"), cfg, &agent.Agent{}, nil, nil, newFiles(t.TempDir()), nil)
+	do := func(body string) (int, string) {
+		r := httptest.NewRequest("POST", "/api/pcWindow", strings.NewReader(body))
+		r.Host = "127.0.0.1:5000"
+		r.Header.Set("X-Token", "tok123")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w.Code, strings.TrimSpace(w.Body.String())
+	}
+	if c, b := do(`["123456789", 0, {"mine": "[]"}]`); c != 200 || b != `{"result":"browser"}` || opened != 1 {
+		t.Errorf("без Chrome: %d %s %d", c, b, opened)
+	}
+	if c, b := do(`["123456789", 0, "x"]`); c != 400 || opened != 1 {
+		t.Errorf("кривой перенос: %d %s", c, b)
+	}
+	if c, _ := do(`["123456789", 0, {"mine": 5}]`); c != 400 {
+		t.Errorf("перенос не строкой: %d", c)
+	}
+	if c, _ := do(`["1234", 0]`); c != 400 || opened != 1 {
+		t.Errorf("неверный ID: %d", c)
+	}
+}
+
+// TestCDPBadBrowser: браузер, не ответивший по pipe, до перезапуска AnyPC больше не запускается.
+func TestCDPBadBrowser(t *testing.T) {
+	defer func(d time.Duration) { cdpStartWait = d }(cdpStartWait)
+	cdpStartWait = 300 * time.Millisecond
+	dir := t.TempDir()
+	bin, starts := filepath.Join(dir, "chromium-browser"), filepath.Join(dir, "starts")
+	os.WriteFile(bin, []byte("#!/bin/sh\necho x >> "+starts+"\nexec sleep 5\n"), 0o755)
+	w := &chromeWin{base: "http://127.0.0.1:5000", dir: filepath.Join(dir, "p"), look: func(n string) (string, error) {
+		if n == "chromium-browser" {
+			return bin, nil
+		}
+		return "", errors.New("нет")
+	}}
+	for i := 0; i < 2; i++ {
+		if _, err := w.conn(context.Background()); err == nil {
+			t.Fatal("заглушка ответила по pipe")
+		}
+	}
+	if b, _ := os.ReadFile(starts); strings.Count(string(b), "x") != 1 {
+		t.Errorf("запусков: %q", b)
+	}
+	if st, err := os.Stat(w.dir); err != nil || st.Mode().Perm() != 0o700 {
+		t.Errorf("профиль: %v %v", st, err)
+	}
+	if profileDir("AnyPC/chrome") == nil {
+		t.Error("относительный путь профиля принят (нет каталога настроек)")
+	}
+	os.Symlink(dir, filepath.Join(dir, "link"))
+	if profileDir(filepath.Join(dir, "link")) == nil {
+		t.Error("профиль — ссылка, принят")
 	}
 }
 
@@ -271,6 +403,10 @@ func TestCDPLive(t *testing.T) {
 	if dir == "" {
 		t.Skip("ANYPC_CDP_LIVE не задан")
 	}
+	dir, err := os.MkdirTemp(dir, "live-") // удаляется только свой подкаталог
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer os.RemoveAll(dir)
 	cfg, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -284,7 +420,8 @@ func TestCDPLive(t *testing.T) {
 		return map[string]any{"id": cfg.ID, "users": []any{}, "keys": []any{}, "version": "test"}
 	}
 	go http.Serve(l, handler(addr, "toklive", page, cfg, &agent.Agent{}, nil, info, newFiles(t.TempDir()), once))
-	w := &chromeWin{base: "http://" + addr, issue: once.issue, dir: dir, look: exec.LookPath}
+	var codes []string
+	w := &chromeWin{base: "http://" + addr, issue: func() string { c := once.issue(); codes = append(codes, c); return c }, dir: dir, look: exec.LookPath}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	t0 := time.Now()
@@ -301,6 +438,7 @@ func TestCDPLive(t *testing.T) {
 		Fs   bool   `json:"fs"`
 		Tok  bool   `json:"tok"`
 		Body string `json:"fsbody"`
+		Mic  string `json:"mic"`
 	}
 	c := w.c
 	var tg struct {
@@ -315,10 +453,10 @@ func TestCDPLive(t *testing.T) {
 	}
 	var s struct{ SessionID string }
 	c.call(ctx, "", "Target.attachToTarget", map[string]any{"targetId": pid, "flatten": true}, &s)
-	err = c.eval(ctx, s.SessionID, `({mine: localStorage.getItem('mine') + JSON.stringify(Object.keys(localStorage)), fs: !!document.fullscreenElement, tok: location.search.includes('t=toklive'), fsbody: [...document.querySelectorAll('#frames iframe')].map(f => f.contentDocument.body.className).join()})`, false, &st)
+	err = c.eval(ctx, s.SessionID, `(async () => ({mine: localStorage.getItem('mine') + JSON.stringify(Object.keys(localStorage)), fs: !!document.fullscreenElement, tok: location.search.includes('t=toklive'), fsbody: [...document.querySelectorAll('#frames iframe')].map(f => f.contentDocument.body.className).join(), mic: await navigator.permissions.query({name: 'microphone'}).then(p => p.state)}))()`, false, &st)
 	t.Logf("страница: %+v %v, за %v", st, err, time.Since(t0))
-	if !st.Fs || !strings.Contains(st.Mine, "Офис") || !st.Tok {
-		t.Error("окно ПК не в полном экране или без переноса")
+	if !st.Fs || !strings.Contains(st.Mine, "Офис") || !st.Tok || st.Mic != "prompt" {
+		t.Error("окно ПК не в полном экране, без переноса или с отклонённым микрофоном")
 	}
 	time.Sleep(time.Second)
 	c.call(ctx, "", "Browser.close", nil, nil)
@@ -327,4 +465,16 @@ func TestCDPLive(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Error("Chrome не вышел")
 	}
+	time.Sleep(500 * time.Millisecond)
+	filepath.Walk(dir, func(p string, fi os.FileInfo, err error) error { // свой контекст браузера: на диске ни токена, ни кодов
+		if err == nil && fi.Mode().IsRegular() {
+			b, _ := os.ReadFile(p)
+			for _, x := range append(codes, "toklive") {
+				if strings.Contains(string(b), x) {
+					t.Errorf("%s в профиле: %s", x, p)
+				}
+			}
+		}
+		return nil
+	})
 }
