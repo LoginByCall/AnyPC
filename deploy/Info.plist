@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>org.anypc.host</string>
+	<key>CFBundleName</key>
+	<string>AnyPC</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>AnyPC передаёт звук микрофона на удалённый компьютер, когда вы включаете «Микрофон» в сессии. / AnyPC sends your microphone to the remote computer when you turn on Microphone in a session.</string>
+</dict>
+</plist>
