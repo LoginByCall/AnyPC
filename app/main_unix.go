@@ -145,6 +145,11 @@ func main() {
 	}
 	once := &onceCode{}
 	run := &runner{a: a, ctx: ctx}
+	// «ПК как монитор»: окна ПК — в своём Chrome по pipe (cdp_unix.go); без него (и на Маке) — окно AnyPC прежним способом
+	pcFallback = func() { openWindow("http://" + addr + "/?n=" + once.issue()) }
+	if cdpWindows {
+		pcWin = &chromeWin{base: "http://" + addr, issue: once.issue, dir: filepath.Join(cfgDir, "AnyPC", "chrome"), look: exec.LookPath}
+	}
 	h := handler(addr, token, page, cfg, a, run, info, newFiles(downloads()), once)
 	go http.Serve(l, h)
 	// токен — ключ к окну (смена пароля): не в журнал (journald читают администраторы, anypc.log прикладывают к тикетам),
@@ -291,7 +296,11 @@ func handler(addr, token string, page []byte, cfg *config, a *agent.Agent, run *
 				http.Error(w, "Ссылка уже использована — откройте адрес из журнала AnyPC", http.StatusForbidden)
 				return
 			}
+			w.Header().Set("Cache-Control", "no-store") // адрес с токеном — не в кэш браузера
 			http.Redirect(w, r, "/?t="+token, http.StatusSeeOther)
+		case r.URL.Path == "/blank": // пустая страница источника окна: список мониторов (cdp_unix.go, screens)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write([]byte("<!doctype html><title>AnyPC</title><body style=\"background:#000\"></body>"))
 		case r.URL.Path == "/" || r.URL.Path == "/index.html":
 			if r.URL.Query().Get("t") != token {
 				http.Error(w, "Откройте ссылку, которую напечатал AnyPC в терминале", http.StatusForbidden)
@@ -320,8 +329,8 @@ window.ANYPC = {ws: %s, clipPoll: %t};
   const T = %s;
   const api = (n, ...a) => fetch('/api/' + n, {method: 'POST', headers: {'X-Token': T, 'Content-Type': 'application/json'}, body: JSON.stringify(a)})
     .then(async r => { const j = await r.json(); if (!r.ok) throw j.error; return j.result; });
-  for (const n of ['hostInfo', 'setPassword', 'setConfirm', 'setNode', 'quit', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'hostVerify', 'knownGet', 'knownSet', 'savedGet', 'savedSet', 'otpNew', 'otpEnable', 'otpOff', 'newCode', 'userSet', 'userDel', 'keyDel', 'clientSign', 'ckeyGet', 'ckeySet', 'setViewOnly', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort', 'audioAnswer', 'audioMic']) window[n] = (...a) => api(n, ...a);
-  window.fullscreen = on => on ? document.documentElement.requestFullscreen().then(() => navigator.keyboard?.lock()).catch(() => {})
+  for (const n of ['hostInfo', 'setPassword', 'setConfirm', 'setNode', 'quit', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'hostVerify', 'knownGet', 'knownSet', 'savedGet', 'savedSet', 'otpNew', 'otpEnable', 'otpOff', 'newCode', 'userSet', 'userDel', 'keyDel', 'clientSign', 'ckeyGet', 'ckeySet', 'setViewOnly', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort', 'audioAnswer', 'audioMic', 'pcWindow', 'pcScreens']) window[n] = (...a) => api(n, ...a);
+  window.fullscreen = on => on ? document.documentElement.requestFullscreen(window.anypcScreen ? {screen: window.anypcScreen} : undefined).then(() => navigator.keyboard?.lock()).catch(() => {})
                                : document.fullscreenElement && document.exitFullscreen();
 })();
 `, ws, agent.ClipCheap(), t)
@@ -365,6 +374,17 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 		fl.Abort(int(num(0)), keep)
 	case "hostInfo":
 		res = info()
+	case "pcWindow": // [ID, монитор, {ключ localStorage: значение}] — ПК во весь экран в своём окне (cdp_unix.go)
+		var seed map[string]string
+		if len(args) > 2 {
+			if err = json.Unmarshal(args[2], &seed); err != nil {
+				err = fmt.Errorf("pcWindow: третий аргумент — {ключ: строка}: %v", err)
+				break
+			}
+		}
+		res, err = openPCWindow(str(0), int(num(1)), seed)
+	case "pcScreens":
+		res, err = pcScreens()
 	case "audioAnswer":
 		err = a.AudioAnswer(str(0), str(1))
 	case "audioMic":

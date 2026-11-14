@@ -136,7 +136,7 @@ func TestOnceCode(t *testing.T) {
 	if w := get("/?n=wrong"); w.Code != 403 {
 		t.Errorf("чужой код: %d", w.Code)
 	}
-	if w := get("/?n=abc123"); w.Code != 303 || w.Header().Get("Location") != "/?t=tok123" {
+	if w := get("/?n=abc123"); w.Code != 303 || w.Header().Get("Location") != "/?t=tok123" || w.Header().Get("Cache-Control") != "no-store" {
 		t.Errorf("первый заход: %d %q", w.Code, w.Header().Get("Location"))
 	}
 	if w := get("/?n=abc123"); w.Code != 403 {
