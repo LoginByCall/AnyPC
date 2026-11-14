@@ -78,7 +78,7 @@ type settings struct {
 	UIPort  int               `json:"ui_port,omitempty"`   // порт окна на 127.0.0.1 (listenUI)
 	// UI — несекретные настройки окна (uiKeys): одни на все окна (браузер, WKWebView, окна ПК), не в localStorage окна
 	// (ключ → текст JSON, как в localStorage)
-	UI map[string]string `json:"ui,omitempty"`
+	UI uiMap `json:"ui,omitempty"`
 	// Space — состав «Моего пространства» M (app/space.go, Э2): только запись marshal(), base64 в JSON. Содержит хэш
 	// пароля и секрет TOTP записи владельца — как Users[0] (файл 0600, SECURITY.md). Разбор — spaceLocked.
 	Space []byte `json:"space,omitempty"`
@@ -668,6 +668,59 @@ const (
 	uiTotalMax = 256 << 10 // все вместе
 )
 
+// uiValid — v годится для ключа k: из списка, JSON, ≤ uiKeyMax и той формы, что пишет страница (ui/index.html UID):
+// значение другой формы роняло бы её основной скрипт при каждом запуске.
+func uiValid(k, v string) bool {
+	var x any
+	if len(v) > uiKeyMax || json.Unmarshal([]byte(v), &x) != nil {
+		return false
+	}
+	all := func(l []any) bool {
+		return !slices.ContainsFunc(l, func(e any) bool { _, ok := e.(string); return !ok })
+	}
+	switch x := x.(type) {
+	case []any: // mine: [{id, name}] или прежний формат — [ID] (разбирает страница, mineNorm); recent: [ID]
+		return k == "mine" || k == "recent" && all(x)
+	case map[string]any: // users: ID → имя записи
+		return k == "users" && all(slices.Collect(maps.Values(x)))
+	case bool:
+		return k == "stats"
+	case float64:
+		return (k == "turbo" || k == "tour_home" || k == "tour_sess") && (x == 0 || x == 1)
+	case string:
+		return k == "turn"
+	}
+	return false
+}
+
+// uiMap — поле ui в файле. Испорченное (правка руками, чужая версия) не мешает запуску: негодные ключи отбрасываются
+// с одной строкой в журнал, остальные настройки грузятся.
+type uiMap map[string]string
+
+func (m *uiMap) UnmarshalJSON(b []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		log.Printf("настройки: поле ui испорчено — отброшено: %v", err)
+		*m = nil
+		return nil
+	}
+	out, bad := uiMap{}, []string{}
+	for k, r := range raw {
+		var v string
+		if json.Unmarshal(r, &v) == nil && uiValid(k, v) {
+			out[k] = v
+		} else {
+			bad = append(bad, k)
+		}
+	}
+	if len(bad) > 0 {
+		slices.Sort(bad)
+		log.Printf("настройки: в ui отброшены негодные ключи %q", bad)
+	}
+	*m = out
+	return nil
+}
+
 // uiGet — копия UI (окно получает её при загрузке страницы); пустая — {}, не null.
 func (c *config) uiGet() map[string]string {
 	c.mu.Lock()
@@ -683,8 +736,8 @@ func (c *config) uiSet(k, v string) error {
 	if !slices.Contains(uiKeys, k) {
 		return fmt.Errorf("ключ %q не хранится", k)
 	}
-	if len(v) > uiKeyMax || !json.Valid([]byte(v)) {
-		return fmt.Errorf("%s: не JSON или больше %d КБ", k, uiKeyMax>>10)
+	if !uiValid(k, v) {
+		return fmt.Errorf("%s: не той формы или больше %d КБ", k, uiKeyMax>>10)
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -699,7 +752,7 @@ func (c *config) uiSet(k, v string) error {
 		return fmt.Errorf("настройки окна больше %d КБ", uiTotalMax>>10)
 	}
 	if c.UI == nil {
-		c.UI = map[string]string{}
+		c.UI = uiMap{}
 	}
 	c.UI[k] = v
 	return c.save()

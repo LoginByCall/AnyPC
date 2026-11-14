@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="ru">
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-GZtoaBS+XVkekRpg4HjhkcdRRKF1iA0HC+ZPSI3UDMM=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-/o4gT19ayk3GlVUYeNjy1jFJN41HFFmKuor869sXOd8=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AnyPC</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26'><style>.a{stroke:%2317181c}.b{fill:%23d2452d}@media(prefers-color-scheme:dark){.a{stroke:%23eceae4}.b{fill:%23ef6a52}}</style><rect class='a' x='1.5' y='3' width='15' height='11' rx='2' fill='none' stroke-width='2.6'/><rect class='b' x='10' y='12' width='15' height='11' rx='2'/></svg>">
@@ -335,11 +335,31 @@ document.querySelectorAll('[data-tp]').forEach(e => e.placeholder = t(e.dataset.
 document.querySelectorAll('[data-tt]').forEach(e => e.title = t(e.dataset.tt));
 // Настройки окна из UIK в программе живут в config.json (uiGet/uiSet): одни на все окна — браузер, WKWebView, окна ПК.
 // localStorage — кэш для синхронного чтения; запись идёт и туда, и в Go (по очереди: порядок записей сохраняется).
-const UIK = ['mine', 'users', 'recent', 'stats', 'turbo', 'turn', 'tour_home', 'tour_sess'];
+// UID — форма каждого ключа (как в app/config.go uiValid): чужое значение в кэше или в Go читается как значение по умолчанию.
+const UID = { mine: [], users: {}, recent: [], stats: false, turbo: 1, turn: '', tour_home: 0, tour_sess: 0 }, UIK = Object.keys(UID);
+const fit = (v, d) => v !== null && typeof v === typeof d && Array.isArray(v) === Array.isArray(d);
+const uiFit = (k, s) => { try { return typeof s === 'string' && fit(JSON.parse(s), UID[k]); } catch { return false; } };
 let uiQ = Promise.resolve(), uiOn = false; // uiOn — после uiSync: запись при запуске не обгоняет чтение из Go
-const store = { get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
-                set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {}
-                  if (uiOn && UIK.includes(k)) uiQ = uiQ.then(() => uiSet(k, JSON.stringify(v))).catch(() => {}); } };
+const uiErr = e => { try { $('msg').textContent = t('err') + e; } catch {} }; // правка остаётся в кэше
+const store = { get(k, d) { try { const v = JSON.parse(localStorage.getItem(k)); return d === undefined || fit(v, d) ? v ?? d : d; } catch { return d; } },
+  set(k, v) { // то же значение — не писать (config.json с секретами не переписывается на каждое открытие окна)
+    const s = JSON.stringify(v);
+    try { if (localStorage.getItem(k) === s) return; localStorage.setItem(k, s); } catch {}
+    if (uiOn && UIK.includes(k)) uiQ = uiQ.then(() => uiSet(k, s)).catch(uiErr);
+  },
+  // edit — правка mine/users/recent: f(значение) → новое. Сразу — в кэш (кнопки читают синхронно), затем та же правка —
+  // к свежему значению из Go: другое окно могло изменить ключ, и запись целиком стёрла бы его правку.
+  edit(k, d, f, after) {
+    const old = store.get(k, d), s = JSON.stringify(f(old));
+    try { localStorage.setItem(k, s); } catch {}
+    after?.();
+    if (uiOn) uiQ = uiQ.then(async () => {
+      const g = await uiGet(), v = JSON.stringify(f(uiFit(k, g[k]) ? JSON.parse(g[k]) : old));
+      try { localStorage.setItem(k, v); } catch {}
+      if (v !== s) after?.();
+      if (v !== g[k]) await uiSet(k, v);
+    }).catch(uiErr);
+  } };
 // uiSync: в Go есть — побеждает Go (в кэш); в Go нет, в localStorage есть — отдать в Go (перенос из окна прежней версии,
 // один раз: дальше ключ в Go). true — кэш изменён. Во фрейме «Мои ПК» не нужно: localStorage общий с родителем.
 const uiSame = (a, b) => { try { return JSON.stringify(JSON.parse(a)) === JSON.stringify(JSON.parse(b)); } catch { return a === b; } };
@@ -347,16 +367,33 @@ const uiSync = g => {
   let changed = false;
   for (const k of UIK) try {
     const v = localStorage.getItem(k);
-    if (typeof g[k] === 'string') {
+    if (uiFit(k, g[k])) {
       if (!uiSame(v, g[k])) { localStorage.setItem(k, g[k]); changed ||= localStorage.getItem(k) === g[k]; }
-    } else if (v !== null) uiQ = uiQ.then(() => uiSet(k, v)).catch(() => {});
+    } else if (uiFit(k, v)) uiQ = uiQ.then(() => uiSet(k, v)).catch(uiErr);
   } catch {}
   return changed;
 };
+const ss = { get: k => { try { return sessionStorage.getItem(k); } catch { return '1'; } }, // недоступно — «уже было»: без перезагрузок
+             set: k => { try { sessionStorage.setItem(k, '1'); return sessionStorage.getItem(k) === '1'; } catch { return false; } },
+             del: k => { try { sessionStorage.removeItem(k); } catch {} } };
 if (APP && typeof uiSet === 'function') {
   if (EMBED) uiOn = true;
   else if (window.ANYPC_UI) { uiSync(window.ANYPC_UI); uiOn = true; } // unix, Мак: Go вписал их в страницу — до чтения ниже
-  else uiGet().then(g => { if (uiSync(g || {})) location.reload(); else uiOn = true; }).catch(() => {}); // Windows: привязки асинхронны — Go победил → перечитать
+  else (function load(n) { // Windows: привязки асинхронны — Go победил → перечитать, но не дважды подряд (нормализация страницы)
+    uiGet().then(g => {
+      const ch = uiSync(g || {});
+      if (ch && !ss.get('uiReload') && ss.set('uiReload')) { location.reload(); return; }
+      ss.del('uiReload'); uiOn = true; if (ch) uiRender();
+    }, e => n < 4 ? setTimeout(() => load(n + 1), 3000) : (uiOn = true, uiErr(e)));
+  })(0);
+}
+// другое окно могло изменить настройки: при возврате в окно — свежие из Go, без перезагрузки
+const uiRefresh = () => { if (uiOn && !EMBED) uiQ = uiQ.then(async () => { if (uiSync(await uiGet())) uiRender(); }).catch(() => {}); };
+addEventListener('focus', uiRefresh);
+document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && uiRefresh());
+function uiRender() {
+  try { renderRecent(); window.myPcRender?.(); $('turbo').checked = store.get('turbo', 1) !== 0; statShow(store.get('stats', false), false);
+    turnSel = store.get('turn', 'auto'); if (turns.length) renderTurn(); } catch {}
 }
 
 // ---------- Это рабочее место (только в AnyPC.exe) ----------
@@ -488,7 +525,7 @@ const saved = {
   set: async (id, pw) => { if (APP) return savedSet(id, pw); const k = store.get('pass', {}); if (pw) k[id] = pw; else delete k[id]; store.set('pass', k); },
 };
 // имя записи (REQ-S-20) запоминается вместе с паролем: не секрет — в localStorage и в программе, и в браузере
-const savedUser = { get: id => store.get('users', {})[id] || '', set: (id, u) => { const k = store.get('users', {}); if (u) k[id] = u; else delete k[id]; store.set('users', k); } };
+const savedUser = { get: id => String(store.get('users', {})[id] || ''), set: (id, u) => store.edit('users', {}, k => { k = { ...k }; if (u) k[id] = u; else delete k[id]; return k; }) };
 // ключ этого ПК для удалённого (У3, REQ-S-24): ID → {seed, pub, login, lu}; seed — секрет: в программе — в настройках
 // (config.json 0600, как запомненные пароли), в браузере — localStorage
 const ckey = {
@@ -503,24 +540,25 @@ if (APP) try { localStorage.removeItem('ckeys'); } catch {}
 // своего ПК хост клиенту не сообщает. Удаление — только явное (× в списке, снятие ★), не по "nokey" и не по «Доверять».
 const NAME_MAX = 40;
 const grp = id => String(id).replace(/(\d{3})(?=\d)/g, '$1 ');
+const mineNorm = v => {
+  const out = [];
+  if (!Array.isArray(v)) return out; // чужая запись в ключе не должна ронять обработчик входа
+  for (const x of v) {
+    const id = typeof x === 'string' ? x : x && typeof x === 'object' && typeof x.id === 'string' ? x.id : '';
+    if (!/^\d{9}$/.test(id) || out.some(p => p.id === id)) continue;
+    const nm = typeof x?.name === 'string' ? x.name.trim().slice(0, NAME_MAX) : '';
+    out.push({ id, name: nm || id });
+  }
+  return out;
+};
 const myPcs = {
-  get: () => {
-    const v = store.get('mine', []), out = [];
-    if (!Array.isArray(v)) return out; // чужая запись в ключе не должна ронять обработчик входа
-    for (const x of v) {
-      const id = typeof x === 'string' ? x : x && typeof x === 'object' && typeof x.id === 'string' ? x.id : '';
-      if (!/^\d{9}$/.test(id) || out.some(p => p.id === id)) continue;
-      const nm = typeof x?.name === 'string' ? x.name.trim().slice(0, NAME_MAX) : '';
-      out.push({ id, name: nm || id });
-    }
-    return out;
-  },
+  get: () => mineNorm(store.get('mine', [])),
   has: id => myPcs.get().some(p => p.id === id),
   label: id => { const p = myPcs.get().find(x => x.id === id); return p && p.name !== id ? p.name : grp(id); }, // имя или ID группами
-  save: l => { store.set('mine', l); try { top.myPcRender && top.myPcRender(); } catch {} },
-  add: id => { const l = myPcs.get(); if (!l.some(p => p.id === id)) myPcs.save([...l, { id, name: id }]); },
-  rename: (id, name) => myPcs.save(myPcs.get().map(p => p.id === id ? { id, name: String(name).trim().slice(0, NAME_MAX) || id } : p)),
-  del: id => myPcs.save(myPcs.get().filter(p => p.id !== id)),
+  save: f => store.edit('mine', [], v => f(mineNorm(v)), () => { try { top.myPcRender && top.myPcRender(); } catch {} }),
+  add: id => myPcs.save(l => l.some(p => p.id === id) ? l : [...l, { id, name: id }]),
+  rename: (id, name) => myPcs.save(l => l.map(p => p.id === id ? { id, name: String(name).trim().slice(0, NAME_MAX) || id } : p)),
+  del: id => myPcs.save(l => l.filter(p => p.id !== id)),
 };
 // имя ПК на месте элемента anchor: Enter и уход фокуса — сохранить, Esc — отмена; пустое — снова ID (без prompt())
 function editName(anchor, id, after) {
@@ -767,8 +805,8 @@ for (const id of ['newpw', 'pw']) {
 document.querySelectorAll('[data-eye]').forEach(b => b.onclick = () => { // «глазик»: показать введённый пароль
   const i = $(b.dataset.eye); i.type = i.type === 'password' ? 'text' : 'password'; b.classList.toggle('on', i.type === 'text'); i.focus();
 });
-const statShow = on => { document.body.classList.toggle('nostat', !on); $('statbtn').classList.toggle('on', on); store.set('stats', on); };
-statShow(store.get('stats', false)); // по умолчанию скрыта: нужна для замеров, а не в каждой сессии
+const statShow = (on, save = true) => { document.body.classList.toggle('nostat', !on); $('statbtn').classList.toggle('on', on); if (save) store.set('stats', on); };
+statShow(store.get('stats', false), false); // по умолчанию скрыта: нужна для замеров, а не в каждой сессии
 $('statbtn').onclick = () => { statShow(document.body.classList.contains('nostat')); v.focus(); };
 $('bye').onclick = () => end(t('ended'));
 if (typeof window.minimize === 'function') { $('minbtn').classList.remove('hidden'); $('minbtn').onclick = () => minimize(); }
@@ -910,7 +948,7 @@ async function onAuth(ch, e, mine) {
     if ($('remember').checked && again.pw) { saved.set(host, again.pw).catch(() => {}); savedUser.set(host, pc.user); }
     show(true); v.focus(); $('pw').value = ''; pwAuto(false);
     emit('ok'); // фрейм «Мои ПК»: соединение установлено — убрать метку «нужен код»/«разорвано»
-    store.set('recent', [target, ...store.get('recent', []).filter(x => x !== target)].slice(0, 8)); renderRecent();
+    store.edit('recent', [], r => [target, ...r.filter(x => x !== target)].slice(0, 8), renderRecent);
   } else if (m.t === 'ask') { askNoOtp = !!m.nootp; $('msg').textContent = t('asking') + (askNoOtp ? ' — ' + t('ask_nootp') : ''); }
   else if (m.t === 'denied') end(t('err') + (otpStep ? t('e_otp_late') : t('e_denied') + (askNoOtp ? ' — ' + t('ask_nootp') : ''))); // на шаге кода — срок вышел
   else if (m.t === 'fail') end(t('err') + t(pc?.user ? 'e_auth_u' : 'e_auth')); // по ответу хоста не узнать, есть ли имя (REQ-S-21)
@@ -1609,7 +1647,7 @@ if (!EMBED) {
     if (!e.ctrlKey || !e.altKey || e.repeat || e.getModifierState('AltGraph') || $('mypc').classList.contains('hidden')) return;
     if (switchKey(e.code)) { e.preventDefault(); myPcKey(e.code); }
   });
-  { const raw = store.get('mine', []), m = myPcs.get(); if (JSON.stringify(raw) !== JSON.stringify(m)) store.set('mine', m); } // прежний формат (массив ID) — в новый, мусор — прочь
+  { const raw = store.get('mine', []), m = myPcs.get(); if (JSON.stringify(raw) !== JSON.stringify(m)) myPcs.save(l => l); } // прежний формат (массив ID) — в новый, мусор — прочь
   myPcRender();
 }
 </script>
