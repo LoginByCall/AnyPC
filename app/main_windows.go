@@ -107,14 +107,15 @@ func main() {
 	defer w.Destroy()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	passes.cfg = cfg // Э3: детектора блокировки нет — «Работаю тут» отказывает (errNoLockDetector)
+	passes.cfg = cfg
+	go startLock(ctx, func() { go passes.offAll(context.WithoutCancel(ctx)) }, passes.lockAlive) // Э3: блокировка экрана снимает пропуска мастера (lock_windows.go)
 	a := &agent.Agent{Audio: true, Pause: true,
 		Version: version, Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, Key: cfg.key(), FPS: 30, Stderr: logf, Trusted: cfg.trusted, Trust: cfg.trust, KeyLogin: cfg.keyLogin, KeyTrust: cfg.keyTrust,
 		Bitrate: agent.Kbps(cfg.Bitrate),
 		Confirm: agent.AskAccept, ConfirmControl: agent.AskControl, Unattended: func() bool { return !cfg.confirm() }, OTP: cfg.otp, ViewOnly: cfg.viewOnly, // без подтверждения — с TOTP (PLAN.md)
 		CodeUsed: cfg.codeUsed,                           // «Спрашивать»: код сменить после сессии и блокировки (REQ-S-23)
 		SpaceGet: cfg.spaceGet, SpaceJoin: cfg.spaceJoin, // «Моё пространство», Э2: отдать состав и принять вступление
-		SpaceMember: cfg.spaceMember, // Э3: пропуск 12 ч на ключ мастера (agent/pass.go); детектора блокировки нет (startLock)
+		SpaceMember: cfg.spaceMember, // Э3: пропуск 12 ч на ключ мастера (agent/pass.go)
 		LoginTag:    cfg.loginTag,    // Э4: смена входа пространства и исключение рвут сессии (revoked)
 		KeyGone:     cfg.keyGone,     // решение A: ключ исключённого ПК рвёт сессию в любом режиме
 		LoginShut:   cfg.loginShut,   // решение 12 A: вход паролем на новом ПК — после сверки с членом ≠ поручитель
@@ -202,6 +203,9 @@ func main() {
 	startSpaceSync(ctx, cfg, a)
 	run.start(cfg.Server)
 	w.Run()
+	quit, qcancel := context.WithTimeout(context.Background(), 3*time.Second) // Э3: выход мастера снимает его пропуска —
+	passes.offAll(quit)                                                       // до cancel(): летящие «снять» дождаться
+	qcancel()
 	cancel()
 	select { // значок снять до выхода, иначе он висит у часов до наведения мыши
 	case <-trayDone:

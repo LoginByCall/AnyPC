@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -30,10 +31,10 @@ var passHoldFor = 90 * time.Second
 // Сеть (agent/pass.go); переменные — для теста.
 var passOpenFn, passOffFn = agent.PassOpenID, agent.PassOff
 
-// startLock — до конца ctx звать on() при блокировке экрана этого ПК, alive(источник, жив) — о подписке на шину
-// (lock_linux.go). На Маке и Windows nil — «Работаю тут» там отказывает (errNoLockDetector, решение приёмки Э3):
-// TODO(Э3, macOS): com.apple.screenIsLocked из NSDistributedNotificationCenter (нужен cgo или отдельный помощник).
-// TODO(Э3, Windows): WTSRegisterSessionNotification + WM_WTSSESSION_CHANGE / WTS_SESSION_LOCK окна программы.
+// startLock — до конца ctx звать on() при блокировке экрана этого ПК, alive(источник, жив) — о подписке на источник
+// (lock_linux.go — шина, lock_windows.go — WTS, lock_darwin.go — NSDistributedNotificationCenter). Ни один источник
+// не жив (служба вне сеанса пользователя, нет графического сеанса) — «Работаю тут» отказывает (errNoLockDetector,
+// решение приёмки Э3).
 var startLock func(ctx context.Context, on func(), alive func(src string, ok bool))
 
 // passOffRetry, passOffRetryMax — пауза повтора «снять», не дошедшего до цели (растёт вдвое до предела).
@@ -87,6 +88,7 @@ type passMaster struct {
 	alive  map[string]bool        // источники детектора блокировки, подписанные сейчас
 	bg     sync.WaitGroup         // повторы «снять»
 	retry  map[string]*passIssued // ID цели → «снять» в повторе (запись — метка своего повтора); offAll забирает и их
+	flying []chan struct{}        // offAll, чьи «снять» ещё в пути (закрывается, когда неудачные уже в retry)
 }
 
 // lockAlive — alive для startLock.
@@ -236,9 +238,24 @@ func passSummary(rs []passResult) string {
 // «Снять» — одно подписанное сообщение через хабы по очереди, пока цель не ответит подписью своего ключа; без id
 // пропуска и целям старых версий — отдельным соединением (agent.PassOff). Без ответа цели «снять» повторяется в фоне с нарастающей паузой, пока не дойдёт, пропуск на цели не истечёт или новый
 // «Работаю тут» его не заменит; кончился ctx — цель остаётся в повторе, и следующий offAll (выход) её возьмёт.
+// Синхронный offAll (выход, WM_ENDSESSION) сначала ждёт в пределах своего ctx «снять», уже летящие от прежних
+// offAll (фоновый по блокировке забрал список раньше): дошло — готово, нет — цель уже в retry, и он её берёт.
+// Ждёт до пустого p.flying: пока ждал, другой ожидающий мог забрать retry и сам полететь. Список берётся под тем же
+// замком, под которым p.flying пуст: в p.flying попадает только offAll, никого не ждущий, — циклов ожидания нет.
 func (p *passMaster) offAll(ctx context.Context) {
 	p.mu.Lock()
 	p.locks++
+	for len(p.flying) > 0 && ctx.Err() == nil {
+		prev := slices.Clone(p.flying)
+		p.mu.Unlock()
+		for _, f := range prev {
+			select {
+			case <-f:
+			case <-ctx.Done():
+			}
+		}
+		p.mu.Lock()
+	}
 	list := p.issued
 	p.issued = nil
 	for id, t := range p.retry { // повтор, который сейчас ждёт, увидит, что запись не его, и кончится
@@ -250,10 +267,19 @@ func (p *passMaster) offAll(ctx context.Context) {
 		}
 	}
 	p.retry = nil
-	p.mu.Unlock()
 	if len(list) == 0 {
+		p.mu.Unlock()
 		return
 	}
+	fly := make(chan struct{})
+	p.flying = append(p.flying, fly)
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		p.flying = slices.DeleteFunc(p.flying, func(c chan struct{}) bool { return c == fly })
+		p.mu.Unlock()
+		close(fly)
+	}()
 	key, server := p.cfg.key(), p.cfg.server()
 	off := func(id string, t passIssued) bool {
 		err := passOffFn(ctx, agent.PassDial{Server: server, ID: id, HostPub: t.pub, Key: key, PID: t.pid})
