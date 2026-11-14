@@ -79,20 +79,22 @@ and the target's reply; it can drop "off" selectively — the master then repeat
 время: при запуске программа сверяется со всеми членами сразу, потом раз в 5–15 мин (случайно) — с одним случайным,
 повторы — со случайной паузой; в минуты блокировки перебора или занятых мест входа — сравнение с отказами обычным
 подключениям; время ответа цели: перебор ключей состава одинаков у сверки и обычного подключения (общие секреты пар
-считаются один раз и держатся только в памяти, перебор всегда полный и не короче 64 ключей), так что ни сверку, ни
-размер состава по нему не узнать — остаются единицы микросекунд (замер на ПК разработки: около 2 мкс из 75) на фоне
-миллисекунд сети и то, что первое подключение после смены состава у всех дольше (хаб может заметить, что состав
-сменился). Хаб, вставший посредником в шифрование канала (он пересылает его описание), ключа члена не получит: ответ
-цели зашифрован ключом, который знают только член и цель, и привязан к отпечаткам канала, а nonce каждого ответа
-случаен, так что подделать «сверка принята» хаб не может и после повторов перехваченного запроса; клиент проверяет
-ответ до того, как назвать себя, затем спрашивает ключ цели («who», подпись над отпечатками канала) — у посредника
-подпись не сходится, и клиент кончает; по такому обрыву и по самому «who» хаб может догадаться о служебном соединении.
-Повтор хабом перехваченного запроса цель узнаёт и ведёт как обычное подключение; по ответам на повторы хаб не узнаёт
-ни статус, ни ключ; после перезапуска цели в пределах 10 минут повтор может занять место этого члена до 20 секунд. Хаб
-может не пропускать сверку — состав тогда не обновится, пока она не пройдёт. Остаточный риск: ПК, вступающий через ПК,
-у которого старый подлинный состав, где других членов нет, проверить свежесть не может — такой ПК сверять не с кем.
-Выйти из пространства на одном ПК (без фразы) можно паролем и кодом этого ПК: состав с него удаляется, пароль и код
-остаются.
+считаются один раз и держатся только в памяти, перебор всегда полный и не короче 64 ключей), так что сверку от
+обычного подключения по нему не отличить — остаются единицы микросекунд (замер на ПК разработки: около 2 мкс из 75) на
+фоне миллисекунд сети. Размер состава грубо оценим: первое подключение после перезапуска цели (его хаб видит по
+регистрации) или смены состава дольше на 80–170 мкс за каждый новый ключ (около +3,5 мс при 32 ключах, +6 мс при 64) —
+у любого подключения, сверка это или нет. Остаточный канал, ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ: кэш повтора сверки (соли за 10
+минут) чистится линейным проходом только при сверке — её время растёт с числом недавних сверок на цели. Хаб, вставший
+посредником в шифрование канала (он пересылает его описание), ключа члена не получит: ответ цели зашифрован ключом,
+который знают только член и цель, и привязан к отпечаткам канала, а nonce каждого ответа случаен, так что подделать
+«сверка принята» хаб не может и после повторов перехваченного запроса; клиент проверяет ответ до того, как назвать
+себя, затем спрашивает ключ цели («who», подпись над отпечатками канала) — у посредника подпись не сходится, и клиент
+кончает; по такому обрыву и по самому «who» хаб может догадаться о служебном соединении. Повтор хабом перехваченного
+запроса цель узнаёт и ведёт как обычное подключение; по ответам на повторы хаб не узнаёт ни статус, ни ключ; после
+перезапуска цели в пределах 10 минут повтор может занять место этого члена до 20 секунд. Хаб может не пропускать
+сверку — состав тогда не обновится, пока она не пройдёт. Остаточный риск: ПК, вступающий через ПК, у которого старый
+подлинный состав, где других членов нет, проверить свежесть не может — такой ПК сверять не с кем. Выйти из
+пространства на одном ПК (без фразы) можно паролем и кодом этого ПК: состав с него удаляется, пароль и код остаются.
 "My space", member list sync: member PCs reconcile the member list (members, login password, code secret) over a
 separate connection without video or login — outside the login slots (three) and the password brute-force lockout; it
 does not take the session slot, but while the target is in a session a sync gets the same "busy" as an ordinary
@@ -117,10 +119,13 @@ differs from a browser one by headers and field values (TURN measurements); timi
 all members at once, then every 5–15 min (random) with one random member, retries with random pauses; during a
 brute-force lockout or with full login slots — comparison with refusals to ordinary connects; the target's response
 time: scanning the member keys costs the same for a sync and an ordinary connect (the pair secrets are computed once
-and kept in memory only, the scan is always full and at least 64 keys long), so it reveals neither a sync nor the list
-size — what remains is a few microseconds (measured on the dev PC: about 2 µs of 75) against milliseconds of network
-and the first connect after a list change being slower for everyone (the hub may notice that the list changed). A hub
-that puts itself into the channel encryption (it relays the channel description) does not get the member key: the
+and kept in memory only, the scan is always full and at least 64 keys long), so it does not tell a sync from an
+ordinary connect — what remains is a few microseconds (measured on the dev PC: about 2 µs of 75) against milliseconds
+of network. The list size can be roughly estimated: the first connect after the target restarts (which the hub sees by
+the registration) or after a list change is slower by 80–170 µs per new key (about +3.5 ms with 32 keys, +6 ms with
+64) — for any connect, sync or not. Residual channel, NEEDS HUMAN REVIEW: the sync replay cache (salts of the last 10
+minutes) is cleaned by a linear pass on syncs only — its time grows with the number of recent syncs at the target. A
+hub that puts itself into the channel encryption (it relays the channel description) does not get the member key: the
 target's answer is encrypted with a key only the member and the target know and is bound to the channel fingerprints,
 and every answer has a random nonce, so the hub cannot forge "sync accepted" even after replaying a captured request;
 the client checks the answer before identifying itself, then asks for the target key ("who", signed over the channel
