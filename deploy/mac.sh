@@ -10,7 +10,11 @@ vpx() { L=$PWD/third_party/libvpx/darwin-$1; if [ -f $L/lib/libvpx.a ]; then exp
 vpx $(uname -m | sed s/x86_64/amd64/)
 go vet $T ./app ./agent
 go test -count=1 $T ./agent ./app # сетевые e2e на Маке вернулись 2026-11-10: 4 прогона подряд и 3 полных — зелёные при включённом LuLu
-for a in amd64 arm64; do vpx $a; GOARCH=$a go build $T -ldflags="-s -w -X main.version=$V" -o AnyPC-macos-$a ./app; done
+# Info.plist в бинарнике (решение владельца 2026-11-14): без NSMicrophoneUsageDescription WebKit не даёт окну getUserMedia;
+# CFBundleIdentifier = идентификатор подписи ниже (-i org.anypc.host), чтобы требование подписи и разрешения не менялись.
+P="-extldflags '-Wl,-sectcreate,__TEXT,__info_plist,$PWD/deploy/Info.plist'"
+for a in amd64 arm64; do vpx $a; GOARCH=$a go build $T -ldflags="-s -w -X main.version=$V $P" -o AnyPC-macos-$a ./app; done
+for a in amd64 arm64; do otool -s __TEXT __info_plist AnyPC-macos-$a | grep -q . || { echo "AnyPC-macos-$a: нет Info.plist"; exit 1; }; done
 for a in amd64 arm64; do otool -L AnyPC-macos-$a | grep -q libvpx && { echo "AnyPC-macos-$a: libvpx слинкована динамически"; exit 1; }; done
 lipo -create -output AnyPC-macos AnyPC-macos-amd64 AnyPC-macos-arm64
 # Подпись: свой сертификат «AnyPC Code Signing» (связка anypc-sign, решение владельца 2026-11-11) — требование подписи
