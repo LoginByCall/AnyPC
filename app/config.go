@@ -143,7 +143,8 @@ func loadConfig(path string) (*config, error) {
 	if c.migrate() {
 		changed = true
 	}
-	c.spaceLocked() // состав пространства (Э2): испорченная запись — в журнал сразу при запуске
+	// состав пространства (Э2): испорченная запись — в журнал сразу при запуске
+	c.spaceLocked()
 	if c.codeModeLocked() && c.Code == "" { // режим «Спрашивать» без кода (новая установка, обновление) — завести
 		c.setCode(randCode())
 		changed = true

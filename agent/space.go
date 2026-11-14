@@ -45,7 +45,8 @@ func (a *Agent) spaceCtl(s *session, data []byte, reply func(spMsg)) {
 	if json.Unmarshal(data, &m) != nil {
 		return
 	}
-	if !s.spaceOK.Load() {
+	// «Только показ экрана» на хосте — никаких правок через сессию, и состава тоже (решение приёмки Э2, строже)
+	if !s.spaceOK.Load() || a.ViewOnly != nil && a.ViewOnly() {
 		reply(spMsg{T: "sp", Err: "rights"})
 		return
 	}
@@ -61,14 +62,14 @@ func (a *Agent) spaceCtl(s *session, data []byte, reply func(spMsg)) {
 		return
 	}
 	switch {
-	case a.SpaceJoin == nil || a.SpaceGet(salt) == nil: // пароль записи сменили после входа — не её пространство
+	case a.SpaceJoin == nil:
 		reply(spMsg{T: "sp", Err: "none"})
 	case cpub == nil:
 		reply(spMsg{T: "sp", Err: "key"})
 	case !s.spJoin.CompareAndSwap(false, true):
 		reply(spMsg{T: "sp", Err: "again"})
 	default:
-		if err := a.SpaceJoin(m.M, cpub); err != nil {
+		if err := a.SpaceJoin(salt, m.M, cpub); err != nil {
 			log.Printf("сессия %s: состав пространства не принят: %v", s.label(), err)
 			reply(spMsg{T: "sp", Err: "bad"})
 			return
@@ -87,7 +88,11 @@ type SpaceDial struct {
 	Key      ed25519.PrivateKey // ключ хоста этого ПК
 	Password string
 	Code     string
+	// Known — отпечаток ключа P (pake.KeyFingerprint), если этот ПК уже входил на P (config.Known): другой ключ —
+	// отказ до отправки кода. "" — первое знакомство (TOFU). TODO(Э4): сверка ключей P по составам других членов.
+	Known string
 	// Sign — по M от P (проверенный подписью хоста P и CPace) вернуть новый M; ошибка — отказ, P ничего не получит.
+	// Вернул тот же M — этот ПК в нём уже есть (P сохранил прошлое вступление, а ответ не дошёл): P ничего не шлём.
 	Sign func(m []byte, hostPub ed25519.PublicKey) ([]byte, error)
 }
 
@@ -98,6 +103,7 @@ var (
 	ErrSpaceOld      = errors.New("пространство: на том ПК старая версия AnyPC")
 	ErrSpaceAsk      = errors.New("пространство: тот ПК в режиме «Спрашивать» — нужен вход паролем и кодом")
 	ErrSpaceRefused  = errors.New("пространство: тот ПК отказал")
+	ErrSpaceHostKey  = errors.New("пространство: ключ того ПК не совпал с запомненным")
 	errSpaceProtocol = errors.New("пространство: нарушение протокола")
 )
 
@@ -140,7 +146,9 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 	var hello struct{ ICE []webrtc.ICEServer }
 	json.Unmarshal(m.Data, &hello)
 	pub := d.Key.Public().(ed25519.PublicKey)
-	send("connect", connectReq{CPub: pub, View: true}) // только просмотр: вступлению ввод не нужен
+	// только просмотр: вступлению ввод не нужен. Ключа в connect нет: хаб видит connect открытым и узнал бы по ключу,
+	// какой ПК к какому ходит; ключ идёт только в "b" внутри DTLS
+	send("connect", connectReq{View: true})
 	if err := wsjson.Read(ctx, ws, &m); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrSpaceOffline, err)
 	}
@@ -197,6 +205,7 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 				fc, fh := fps()
 				return len(want) > 0 && bytes.Equal(am.Conf, want) && pake.HostVerify(am.Pub, am.Sig, d.ID, fc, fh) == nil
 			}
+			knownOK := func(am authMsg) bool { return d.Known == "" || pake.KeyFingerprint(am.Pub) == d.Known }
 			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 				var am authMsg
 				if json.Unmarshal(msg.Data, &am) != nil {
@@ -233,10 +242,18 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 						finish(nil, ErrSpaceAuth)
 						return
 					}
+					if !knownOK(am) { // код — только запомненному P
+						finish(nil, ErrSpaceHostKey)
+						return
+					}
 					sendA(authMsg{T: "otp", Code: d.Code})
 				case "ok":
 					if !hostOK(am) {
 						finish(nil, ErrSpaceAuth)
+						return
+					}
+					if !knownOK(am) {
+						finish(nil, ErrSpaceHostKey)
 						return
 					}
 					mu.Lock()
@@ -270,6 +287,10 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 					out, err := d.Sign(sm.M, hp)
 					if err != nil {
 						finish(nil, err)
+						return
+					}
+					if bytes.Equal(out, sm.M) { // уже в составе P (полу-вступление): принять как есть
+						finish(out, nil)
 						return
 					}
 					mu.Lock()
