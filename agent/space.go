@@ -135,7 +135,7 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 		newM    []byte // M, отданный P
 		out     []byte // итог: M, который P принял
 	)
-	err := hostDial(ctx, server, d.ID, func(pc *webrtc.PeerConnection, finish func(error)) {
+	err := hostDial(ctx, server, d.ID, connectReq{View: true}, func(pc *webrtc.PeerConnection, finish func(error)) {
 		done := func(m []byte) { mu.Lock(); out = m; mu.Unlock(); finish(nil) }
 		fps := func() (string, string) { // свой отпечаток, отпечаток хоста
 			return pake.Fingerprint(pc.LocalDescription().SDP), pake.Fingerprint(pc.RemoteDescription().SDP)
@@ -278,7 +278,7 @@ func signB(key ed25519.PrivateKey, id string, pc *webrtc.PeerConnection) (cpub, 
 // просмотр» без ключа (хаб видит connect открытым и узнал бы по ключу, какой ПК к какому ходит; ключ идёт только в
 // "b" внутри DTLS), offer/answer, ICE. setup вешает обработчики каналов на pc до ответа; обмен кончает первый
 // finish (nil — успех), разрыв или ctx. Хост не в сети — ErrSpaceOffline (вызывающий пробует следующий хаб).
-func hostDial(ctx context.Context, server, id string, setup func(pc *webrtc.PeerConnection, finish func(error))) error {
+func hostDial(ctx context.Context, server, id string, req connectReq, setup func(pc *webrtc.PeerConnection, finish func(error))) error {
 	ws, err := dial(ctx, server)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrSpaceOffline, err)
@@ -298,7 +298,7 @@ func hostDial(ctx context.Context, server, id string, setup func(pc *webrtc.Peer
 	}
 	var hello struct{ ICE []webrtc.ICEServer }
 	json.Unmarshal(m.Data, &hello)
-	send("connect", connectReq{View: true}) // ввод служебному соединению не нужен
+	send("connect", req) // View: ввод служебному соединению не нужен
 	if err := wsjson.Read(ctx, ws, &m); err != nil {
 		return fmt.Errorf("%w: %v", ErrSpaceOffline, err)
 	}

@@ -160,7 +160,7 @@ func main() {
 	}
 	passes.cfg = cfg
 	if startLock != nil { // Э3: блокировка экрана этого ПК снимает пропуска, выданные ему как мастеру
-		go startLock(ctx, func() { go passes.offAll(ctx) })
+		go startLock(ctx, func() { go passes.offAll(ctx) }, passes.lockAlive)
 	}
 	if startTray != nil { // значок в трее (Linux): окно — повторно, каждый раз новым одноразовым кодом
 		go startTray(ctx, cfg.ID, func() { openWindow("http://" + addr + "/?n=" + once.issue()) }, func() { quitNow(a) })
@@ -174,6 +174,9 @@ func main() {
 	}()
 	run.start(srv) // настройки дальше — только под c.mu (опрос выше их перечитывает)
 	run.wait()
+	quit, cancel := context.WithTimeout(context.Background(), 3*time.Second) // SIGTERM/SIGINT: снять пропуска (Э3)
+	passes.offAll(quit)
+	cancel()
 }
 
 // startTray — значок в трее до конца ctx (tray_linux.go; на Маке nil): id — ID этого ПК, open — окно, quit — выход.

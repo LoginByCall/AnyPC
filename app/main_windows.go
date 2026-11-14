@@ -99,6 +99,7 @@ func main() {
 	defer w.Destroy()
 
 	ctx, cancel := context.WithCancel(context.Background())
+	passes.cfg = cfg // Э3: детектора блокировки нет — «Работаю тут» отказывает (errNoLockDetector)
 	a := &agent.Agent{Audio: true, Pause: true,
 		Version: version, Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, Key: cfg.key(), FPS: 30, Stderr: logf, Trusted: cfg.trusted, Trust: cfg.trust, KeyLogin: cfg.keyLogin, KeyTrust: cfg.keyTrust,
 		Bitrate: agent.Kbps(cfg.Bitrate),

@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -256,7 +257,7 @@ func TestPassRevoked(t *testing.T) {
 	if gone, _ := a.revoked(s); !gone {
 		t.Error("без пропуска — не отозвана")
 	}
-	a.passGive(pub)
+	a.passGive(pub, salt)
 	if gone, _ := a.revoked(s); gone {
 		t.Error("с пропуском — отозвана")
 	}
@@ -268,5 +269,83 @@ func TestPassRevoked(t *testing.T) {
 	a.passDrop(pub)
 	if gone, _ := a.revoked(s); !gone {
 		t.Error("пропуск снят — не отозвана")
+	}
+}
+
+// TestPassWall — приёмка Э3: срок истёк по настенным часам (ПК спал: монотонные стояли) — пропуска нет.
+func TestPassWall(t *testing.T) {
+	a := newAgent("", "123456789", nil)
+	a.SpaceMember = func(s, _ []byte) bool { return bytes.Equal(s, salt) }
+	_, mkey, _ := ed25519.GenerateKey(nil)
+	pub := mkey.Public().(ed25519.PublicKey)
+	a.passGive(pub, salt)
+	if !a.passValid(pub, salt) {
+		t.Fatal("свежий пропуск не годен")
+	}
+	a.mu.Lock()
+	e := a.passes[string(pub)]
+	e.wall = time.Now().Round(0).Add(-time.Second) // настенные ушли за срок, монотонные — нет
+	a.passes[string(pub)] = e
+	a.mu.Unlock()
+	if a.passValid(pub, salt) {
+		t.Error("истёк по настенным часам — годен")
+	}
+}
+
+// TestPassViewOnly — приёмка Э3: «Только показ экрана» на цели — пропуск не выдаётся и не действует.
+func TestPassViewOnly(t *testing.T) {
+	_, mkey, _ := ed25519.GenerateKey(nil)
+	for _, before := range []bool{true, false} { // включён до выдачи; включили после
+		url := local(t)
+		var vo atomic.Bool
+		p := passTarget(t, url, nil, mkey.Public().(ed25519.PublicKey), func(p *passRig) { p.a.ViewOnly = vo.Load })
+		d := passDial(url, p, mkey)
+		vo.Store(before)
+		err := PassOpen(context.Background(), d)
+		if before {
+			if !errors.Is(err, ErrPassNone) {
+				t.Errorf("выдача при «Только показ»: %v", err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		vo.Store(true)
+		idle(t, p.a)
+		if err := PassLogin(context.Background(), d); !errors.Is(err, ErrPassNone) {
+			t.Errorf("вход по пропуску при «Только показ»: %v", err)
+		}
+	}
+}
+
+// TestPassOffLocked — приёмка Э3: хост заперт перебором паролей — «снять» доходит (это не вход); ответ «off»
+// подписан ключом хоста: другой ключ в M — мастер не верит.
+func TestPassOffLocked(t *testing.T) {
+	url := local(t)
+	_, mkey, _ := ed25519.GenerateKey(nil)
+	p := passTarget(t, url, nil, mkey.Public().(ed25519.PublicKey))
+	d := passDial(url, p, mkey)
+	if err := PassOpen(context.Background(), d); err != nil {
+		t.Fatal(err)
+	}
+	idle(t, p.a)
+	p.a.mu.Lock()
+	p.a.lockUntil = time.Now().Add(time.Hour)
+	p.a.mu.Unlock()
+	bad := d
+	_, other, _ := ed25519.GenerateKey(nil)
+	bad.HostPub = other.Public().(ed25519.PublicKey)
+	if err := PassOff(context.Background(), bad); !errors.Is(err, ErrSpaceHostKey) {
+		t.Errorf("«off» с ключом не того хоста: %v", err)
+	}
+	if err := PassOff(context.Background(), d); err != nil {
+		t.Errorf("«снять» при запертом хосте: %v", err)
+	}
+	if p.a.passValid(mkey.Public().(ed25519.PublicKey), salt) {
+		t.Error("пропуск не снят")
+	}
+	if f, _ := lock(p.a); f != 0 {
+		t.Errorf("неудач %d", f)
 	}
 }
