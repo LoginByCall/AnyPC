@@ -27,7 +27,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -142,8 +141,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	rand.Read(tok)
-	once := &onceCode{code: hex.EncodeToString(tok)}
+	once := &onceCode{}
 	run := &runner{a: a, ctx: ctx}
 	h := handler(addr, token, page, cfg, a, run, info, newFiles(downloads()), once)
 	go http.Serve(l, h)
@@ -156,7 +154,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Окно:", url)
 	}
 	if !*noBrowser { // аргументы браузера видны всем пользователям ПК (/proc/*/cmdline) — в них одноразовый код, не токен
-		openWindow("http://" + addr + "/?n=" + once.code)
+		openWindow("http://" + addr + "/?n=" + once.issue())
+	}
+	if startTray != nil { // значок в трее (Linux): окно — повторно, каждый раз новым одноразовым кодом
+		go startTray(ctx, cfg.ID, func() { openWindow("http://" + addr + "/?n=" + once.issue()) }, func() { quitNow(a) })
 	}
 	srv := cfg.Server
 	code := cfg.code()
@@ -169,18 +170,81 @@ func main() {
 	run.wait()
 }
 
-// onceCode — код для первого открытия окна. Токен в аргументах xdg-open/open читал бы любой пользователь ПК;
+// startTray — значок в трее до конца ctx (tray_linux.go; на Маке nil): id — ID этого ПК, open — окно, quit — выход.
+var startTray func(ctx context.Context, id string, open, quit func())
+
+// quitNow — выход по кнопке окна или пункту трея: сессию закрыть, ответу на запрос дать уйти.
+func quitNow(a *agent.Agent) {
+	a.Disconnect()
+	go func() { time.Sleep(300 * time.Millisecond); os.Exit(0) }()
+}
+
+// onceCode — коды открытия окна (при запуске и из трея). Токен в аргументах xdg-open/open читал бы любой пользователь ПК;
 // код годен один раз, и браузер тратит его сразу. Файл со ссылкой не годится: Firefox из snap (Ubuntu) не читает ~/.config.
 // ponytail: локальный пользователь, опрашивающий /proc в цикле, может успеть раньше браузера — тогда окно владельца
 // покажет «ссылка уже использована» (заметно); закрыть совсем — ключ через stdin браузера, которого у xdg-open нет.
+// Код живёт onceTTL, живых не больше onceMax (старые вытесняются): браузер тратит код за секунды.
 type onceCode struct {
-	code string
-	used atomic.Bool
+	mu    sync.Mutex
+	codes []onceEntry // выданные и ещё не использованные, старые первыми
 }
 
-func (o *onceCode) use(c string) bool {
-	return o != nil && c != "" && subtle.ConstantTimeCompare([]byte(c), []byte(o.code)) == 1 && o.used.CompareAndSwap(false, true)
+type onceEntry struct {
+	code string
+	at   time.Time
 }
+
+const (
+	onceTTL = time.Minute
+	onceMax = 8
+)
+
+// prune — убрать просроченные и лишние; под o.mu.
+func (o *onceCode) prune() {
+	o.codes = slices.DeleteFunc(o.codes, func(e onceEntry) bool { return time.Since(e.at) > onceTTL })
+	if n := len(o.codes) - onceMax; n > 0 {
+		o.codes = slices.Delete(o.codes, 0, n)
+	}
+}
+
+// issue — новый код на одно открытие.
+func (o *onceCode) issue() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	c := hex.EncodeToString(b)
+	o.mu.Lock()
+	o.codes = append(o.codes, onceEntry{c, time.Now()})
+	o.prune()
+	o.mu.Unlock()
+	return c
+}
+
+func (o *onceCode) use(c string) bool { return o.find(c, true) }
+
+// has — код выдан и не просрочен; не тратит его.
+func (o *onceCode) has(c string) bool { return o.find(c, false) }
+
+func (o *onceCode) find(c string, spend bool) bool {
+	if o == nil || c == "" {
+		return false
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.prune()
+	for i, e := range o.codes {
+		if subtle.ConstantTimeCompare([]byte(c), []byte(e.code)) == 1 {
+			if spend {
+				o.codes = slices.Delete(o.codes, i, i+1)
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// peerOK — запрос с кодом пришёл от процесса того же пользователя (peer_linux.go; на Маке nil — не проверяется):
+// код виден в аргументах браузера всем пользователям ПК.
+var peerOK func(r *http.Request) bool
 
 // handler — интерфейс и API. Чужие страницы не могут ни прочитать токен, ни вызвать API:
 // страница отдаётся только с ?t=токен, API требует заголовок X-Token (кросс-доменный запрос с ним
@@ -200,7 +264,18 @@ func handler(addr, token string, page []byte, cfg *config, a *agent.Agent, run *
 			}
 			api(w, r, strings.TrimPrefix(r.URL.Path, "/api/"), cfg, a, run, info, fl)
 		case r.URL.Path == "/" && r.URL.Query().Has("n"): // одноразовый код из аргументов браузера → страница с токеном
-			if !once.use(r.URL.Query().Get("n")) {
+			// порядок: код жив (без траты; /proc не читается на любой /?n=x) → партнёр того же uid (чужой не сжигает
+			// код владельца) → погасить
+			n := r.URL.Query().Get("n")
+			if !once.has(n) {
+				http.Error(w, "Ссылка уже использована — откройте адрес из журнала AnyPC", http.StatusForbidden)
+				return
+			}
+			if peerOK != nil && !peerOK(r) {
+				http.Error(w, "Окно AnyPC открывает только пользователь, запустивший программу", http.StatusForbidden)
+				return
+			}
+			if !once.use(n) {
 				http.Error(w, "Ссылка уже использована — откройте адрес из журнала AnyPC", http.StatusForbidden)
 				return
 			}
@@ -301,8 +376,7 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 		}
 		res, err = setNode(cfg, run, str(0), pub)
 	case "quit": // вкладка браузера — не процесс: без кнопки программа живёт до Ctrl+C
-		a.Disconnect()
-		go func() { time.Sleep(300 * time.Millisecond); os.Exit(0) }()
+		quitNow(a)
 	case "hostDisconnect":
 		a.Disconnect()
 	case "getClip":
