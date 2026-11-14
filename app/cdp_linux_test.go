@@ -20,10 +20,22 @@ import (
 )
 
 // fakeChrome — поддельный Chrome на паре os.Pipe: читает команды до \0, отвечает reply(method, params)
-// (nil — ответа нет), перед каждым ответом шлёт событие, а ответ режет на две записи.
+// (nil — ответа нет; fakeExit — выйти), перед каждым ответом шлёт событие, а ответ режет на две записи.
 type fakeChrome struct {
 	mu    sync.Mutex
 	calls []fakeCall
+	wmu   sync.Mutex // запись в outW: ответы и emit
+	outW  *os.File
+}
+
+var fakeExit = errors.New("выход")
+
+// emit — событие от Chrome (окно закрыто и т. п.).
+func (f *fakeChrome) emit(method string, params any) {
+	b, _ := json.Marshal(map[string]any{"method": method, "params": params})
+	f.wmu.Lock()
+	f.outW.Write(append(b, 0))
+	f.wmu.Unlock()
 }
 
 type fakeCall struct {
@@ -33,11 +45,16 @@ type fakeCall struct {
 }
 
 func (f *fakeChrome) start(t *testing.T, reply func(method string, p map[string]any) any) *cdpConn {
+	return f.startEv(t, reply, nil)
+}
+
+func (f *fakeChrome) startEv(t *testing.T, reply func(method string, p map[string]any) any, ev cdpEvents) *cdpConn {
 	inR, inW, _ := os.Pipe()   // AnyPC → Chrome (fd 3)
 	outR, outW, _ := os.Pipe() // Chrome → AnyPC (fd 4)
+	f.outW = outW
 	t.Cleanup(func() { inW.Close(); outR.Close() })
 	go func() {
-		defer outW.Close()
+		defer func() { f.wmu.Lock(); outW.Close(); f.wmu.Unlock() }()
 		r := bufio.NewReader(inR)
 		for {
 			b, err := r.ReadBytes(0)
@@ -61,6 +78,10 @@ func (f *fakeChrome) start(t *testing.T, reply func(method string, p map[string]
 			if res == nil {
 				continue
 			}
+			if res == fakeExit {
+				return
+			}
+			f.wmu.Lock() // до конца ответа: emit не вклинится между половинами
 			outW.Write([]byte(`{"method":"Target.targetInfoChanged","params":{}}` + "\x00"))
 			var out []byte
 			if e, ok := res.(error); ok {
@@ -72,9 +93,10 @@ func (f *fakeChrome) start(t *testing.T, reply func(method string, p map[string]
 			outW.Write(out[:len(out)/2])
 			time.Sleep(time.Millisecond)
 			outW.Write(out[len(out)/2:])
+			f.wmu.Unlock()
 		}
 	}()
-	return newCDP(outR, inW)
+	return newCDP(outR, inW, ev)
 }
 
 func (f *fakeChrome) log() []fakeCall {
@@ -378,7 +400,7 @@ func TestCDPBrowser(t *testing.T) {
 // TestNoDebugPort: окно ПК — только pipe. Отладочного TCP-порта нет ни в аргументах Chrome, ни где-либо в исходниках
 // программы; в аргументах нет кода окна и токена.
 func TestNoDebugPort(t *testing.T) {
-	a := strings.Join(chromeArgs("/home/u/.config/AnyPC/chrome"), " ")
+	a := strings.Join(chromeArgs("/home/u/.config/AnyPC/chrome", true), " ")
 	if !strings.Contains(a, "--remote-debugging-pipe") || strings.Contains(a, "remote-debugging-port") || strings.Contains(a, "remote-debugging-address") {
 		t.Errorf("аргументы: %s", a)
 	}
