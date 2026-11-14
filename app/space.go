@@ -88,6 +88,9 @@ const (
 	// spaceMaxHeads — сколько неперекрытых M держит ПК: столько параллельных правок фразой на разных ПК, не
 	// узнавших друг о друге; любая следующая правка фразой сводит верхушки к одной.
 	spaceMaxHeads = 16
+	// spaceMaxPend — сколько непринятых сверх spaceMaxHeads M держит ПК (SpacePend); дальше пришедшие сверх не
+	// запоминаются (ПК и так закрыт; их владелец пришлёт снова).
+	spaceMaxPend = 32
 	// spaceMaxBytes — потолок записи с подписью: больше не разбираем вовсе.
 	spaceMaxBytes = len(spaceDomain) + 1 + spaceSaltLen + 8 + spaceSaltLen + ed25519.PublicKeySize + spaceSaltLen + spaceHashLen +
 		1 + spaceMaxTOTP + 4 + 2 + sha256.Size + 1 + spaceMaxListed*(spaceIDLen+ed25519.PublicKeySize) + 2 + spaceMaxGone*ed25519.PublicKeySize +
@@ -451,6 +454,15 @@ func spaceOrder(a, b *space) int {
 // повторов): heads(heads(A) ∪ B) = heads(A ∪ B). Каждый состав проверяется (verify); чужое пространство —
 // errSpaceForeign; больше spaceMaxHeads верхушек — errSpaceHeads (ничего не принято).
 func spaceHeads(ms []*space) ([]*space, error) {
+	out, err := spaceHeadsAll(ms)
+	if err == nil && len(out) > spaceMaxHeads {
+		return nil, fmt.Errorf("%w (%d)", errSpaceHeads, len(out))
+	}
+	return out, err
+}
+
+// spaceHeadsAll — spaceHeads без предела числа верхушек (состав ПК с непринятыми правками, SpacePend).
+func spaceHeadsAll(ms []*space) ([]*space, error) {
 	if len(ms) == 0 {
 		return nil, errSpaceFormat
 	}
@@ -476,9 +488,6 @@ func spaceHeads(ms []*space) ([]*space, error) {
 			continue // перекрыт строго (тот, кто перекрывает, — сам верхушка или перекрыт верхушкой)
 		}
 		out = append(out, m)
-	}
-	if len(out) > spaceMaxHeads {
-		return nil, fmt.Errorf("%w (%d)", errSpaceHeads, len(out))
 	}
 	return out, nil
 }

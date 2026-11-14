@@ -829,16 +829,26 @@ func TestSpaceHeadsOver(t *testing.T) {
 		t.Fatal(err)
 	}
 	xb, _ := x.marshal()
-	snap := spSnap(ca)
+	stored := spRaw(ca)
 	if err := ca.spaceSync(xb, nil); !errors.Is(err, errSpaceHeads) {
 		t.Fatalf("сверх предела: %v", err)
 	}
 	ca.mu.Lock()
-	over := ca.SpaceOver
+	over, pend := ca.SpaceOver, len(ca.SpacePend)
 	ca.mu.Unlock()
 	salt, _, _ := ca.secret("")
-	if !bytes.Equal(snap, spSnap(ca)) || over == "" || ca.spaceMember(salt, cfgPub(cb)) || ca.spaceGet(salt) != nil {
-		t.Fatalf("переполнение: верхушки сменились %v, причина %q, пропуск или выдача M есть", !bytes.Equal(snap, spSnap(ca)), over)
+	if !bytes.Equal(stored, spRaw(ca)) || len(spaceHeadsOf(ca)) != spaceMaxHeads || pend != 1 || over == "" ||
+		ca.spaceMember(salt, cfgPub(cb)) || ca.spaceGet(salt) != nil {
+		t.Fatalf("переполнение: верхушек %d, непринятых %d, причина %q, пропуск или выдача M есть", len(spaceHeadsOf(ca)), pend, over)
+	}
+	if v := spaceOf(ca); !v.gone(keys[0]) || !sameLogin(v, x) { // непринятое исключение уже в составе для решений
+		t.Fatalf("непринятая M не в составе: %v", v)
+	}
+	ca.mu.Lock()
+	tw := ca.Users[0].TOTP
+	ca.mu.Unlock()
+	if tw != x.TOTP { // вход непринятой (сильнее) — уже в записи по умолчанию: старый код не действует
+		t.Fatal("запись по умолчанию не перешла на вход непринятой M")
 	}
 	fakeNet(t, func(agent.SyncDial) ([]byte, error) { return nil, agent.ErrSpaceOffline })
 	spSyncer(t, ca)
@@ -860,8 +870,8 @@ func TestSpaceHeadsOver(t *testing.T) {
 		t.Fatal(err)
 	}
 	salt, _, _ = ca.secret("")
-	if v := spaceOf(ca); !v.gone(keys[0]) || v.member(keys[0]) || ca.spaceMember(salt, keys[0]) || !sameLogin(v, x) || v.Compromised {
-		t.Errorf("исключение потеряно: %v", v) // вход исключения сильнее (lex 1) и чист: Y — единственный исключённый
+	if v := spaceOf(ca); !v.gone(keys[0]) || v.member(keys[0]) || ca.spaceMember(salt, keys[0]) || v.LEx != 1 || v.Compromised {
+		t.Errorf("исключение потеряно: %v", v) // правка — от состава с непринятым исключением: lex 1, чиста
 	}
 }
 
@@ -909,8 +919,8 @@ func TestSpaceHeadCorrupt(t *testing.T) {
 func TestSpaceLoginTag(t *testing.T) {
 	sec := totp.NewSecret()
 	ca, cb, cn := spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec)
-	if cn.loginTag("", nil) != nil {
-		t.Error("вне пространства — метка")
+	if tg := cn.loginTag("", nil); tg == nil || !bytes.Equal(tg, cn.loginTag("", cfgPub(ca))) {
+		t.Error("вне пространства: метки нет или зависит от ключа клиента")
 	}
 	ph, keys := syncSpace(t, 2, ca, cb)
 	if err := ca.setUser("bob", "guest-pass-1", "view"); err != nil {
@@ -951,8 +961,8 @@ func TestSpaceLoginTag(t *testing.T) {
 	if !bytes.Equal(k1, ca.loginTag("", cfgPub(cb))) { // 3а приёмки: чужое исключение сессию с ключом не рвёт
 		t.Error("исключение чужого ПК без смены входа сменило метку клиента с ключом")
 	}
-	if bytes.Equal(ca.loginTag("", keys[0]), ca.loginTag("", keys[0])) {
-		t.Error("исключённый ПК клиента — метка повторяется")
+	if !ca.keyGone(keys[0]) || ca.keyGone(cfgPub(cb)) || ca.keyGone(keys[1]) == false { // keys[1] исключён в n1
+		t.Error("keyGone: исключённый не исключён или член исключён")
 	}
 	on := true
 	ca.mu.Lock()
@@ -990,6 +1000,9 @@ func TestSpaceHeadsOverSync(t *testing.T) {
 	if err := ca.spaceSync(last, nil); !errors.Is(err, errSpaceHeads) {
 		t.Fatalf("сверх предела: %v", err)
 	}
+	if disk, err := loadConfig(ca.path); err != nil || len(disk.SpacePend) != 1 || disk.SpaceOver == "" { // и на диске
+		t.Fatalf("непринятая (вход тот же) не сохранена: %v", err)
+	}
 	v := spaceView(all) // правка на B от объединения всех семнадцати (там они — все верхушки)
 	n, err := spaceSetLogin(v, ph, "", totp.NewSecret())
 	if err != nil {
@@ -1005,5 +1018,188 @@ func TestSpaceHeadsOverSync(t *testing.T) {
 	salt, _, _ := ca.secret("")
 	if h := spaceHeadsOf(ca); len(h) != 1 || over != "" || !ca.spaceMember(salt, cfgPub(cb)) {
 		t.Errorf("сводящая правка сверкой: верхушек %d, причина %q", len(h), over)
+	}
+}
+
+// TestSpaceOverFlap — приёмка круга 3 (zz_acc7): 10 своих верхушек, пачка из 7 (с исключением) — отказ; пустая
+// сверка с другим членом SpaceOver не снимает: непринятые не приняты, пропусков нет, исключённый не член. Сводящая
+// правка сверкой принимает непринятые — снимает. Ровно spaceMaxHeads верхушек — не переполнение.
+func TestSpaceOverFlap(t *testing.T) {
+	sec := totp.NewSecret()
+	ca, cb := spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec)
+	ph, keys := syncSpace(t, 1, ca, cb)
+	base := spaceOf(ca)
+	var adds [][]byte
+	var all []*space
+	for range spaceMaxHeads {
+		pub, _, _ := ed25519.GenerateKey(nil)
+		m, err := spaceAdd(base, ph, "9"+hub.RandDigits(8), pub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := m.marshal()
+		adds, all = append(adds, b), append(all, m)
+	}
+	x, _ := spaceRemove(base, ph, keys[0])
+	xb, _ := x.marshal()
+	ca.SyncApply(adds[0], adds[1:10])                                       // 10 своих верхушек
+	if err := ca.spaceSync(xb, adds[10:]); !errors.Is(err, errSpaceHeads) { // исключение + 6 добавлений = 17
+		t.Fatalf("пачка сверх предела: %v", err)
+	}
+	over := func() string { ca.mu.Lock(); defer ca.mu.Unlock(); ca.reload(); return ca.SpaceOver }
+	ca.SyncApply(adds[0], nil) // пустая сверка с другим членом
+	salt, _, _ := ca.secret("")
+	if v := spaceOf(ca); over() == "" || v.member(keys[0]) || ca.spaceMember(salt, cfgPub(cb)) || ca.spaceMember(salt, keys[0]) {
+		t.Fatalf("пустая сверка сняла переполнение: причина %q, исключённый член %v", over(), v.member(keys[0]))
+	}
+	flip := func() {
+		ca.mu.Lock()
+		p := ca.SpacePend[0]
+		p[len(p)-1] ^= 1
+		ca.save()
+		ca.mu.Unlock()
+	}
+	flip() // испорченная непринятая — тоже закрыто (исключённый не вернётся)
+	if !ca.spaceDamaged() {
+		t.Error("испорченная непринятая M пропущена")
+	}
+	flip()
+	hs, err := spaceHeadsAll(append(all, x))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := spaceSetLogin(spaceView(hs), ph, "", totp.NewSecret()) // сводящая правка на P1: от объединения
+	if err != nil {
+		t.Fatal(err)
+	}
+	nb, _ := n.marshal()
+	if err := ca.spaceSync(nb, nil); err != nil {
+		t.Fatal(err)
+	}
+	salt, _, _ = ca.secret("")
+	if v := spaceOf(ca); over() != "" || len(spaceHeadsOf(ca)) != 1 || !v.gone(keys[0]) || !ca.spaceMember(salt, cfgPub(cb)) {
+		t.Errorf("сводящая правка: причина %q, верхушек %d", over(), len(spaceHeadsOf(ca)))
+	}
+	// граница: ровно spaceMaxHeads — принято
+	cc := spaceCfg(t, spacePass, sec)
+	spaceReset(t, cc, base)
+	if err := cc.spaceSync(adds[0], adds[1:spaceMaxHeads]); err != nil || len(spaceHeadsOf(cc)) != spaceMaxHeads {
+		t.Errorf("ровно %d верхушек: %v, %d", spaceMaxHeads, err, len(spaceHeadsOf(cc)))
+	}
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+	if cc.SpaceOver != "" || cc.SpacePend != nil {
+		t.Error("ровно предел — переполнение")
+	}
+}
+
+// TestSpaceRejoinTag — приёмка круга 3 (zz_acc6): выход, в пространстве сменили только код, вступление снова — соль
+// та же, но метка входа другая (сессия, открытая вне пространства старым кодом, рвётся), и spaceChanged позван.
+// Создание пространства тем же паролем и кодом метку не меняет.
+func TestSpaceRejoinTag(t *testing.T) {
+	sec := totp.NewSecret()
+	ca, cc := spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec)
+	before := ca.loginTag("", nil)
+	var calls atomic.Int32
+	old := spaceChanged
+	spaceChanged = func() { calls.Add(1) }
+	t.Cleanup(func() { spaceChanged = old })
+	ph := spaceMake(t, ca)
+	if !bytes.Equal(before, ca.loginTag("", nil)) || calls.Load() == 0 {
+		t.Fatal("создание тем же паролем и кодом сменило метку или spaceChanged нет")
+	}
+	m, _ := spaceAdd(spaceOf(ca), ph, cc.id(), cfgPub(cc))
+	spSet(t, ca, m)
+	spaceReset(t, cc, m)
+	code, _ := totp.Code(sec, time.Now())
+	cc.mu.Lock()
+	cc.Users[0].TOTPStep = 0
+	cc.save()
+	cc.mu.Unlock()
+	if err := cc.spaceLeave(spacePass, code); err != nil {
+		t.Fatal(err)
+	}
+	salt0, _, _ := cc.secret("")
+	tagOut := cc.loginTag("", nil)
+	n, err := spaceSetLogin(spaceOf(ca), ph, "", totp.NewSecret()) // в пространстве сменили только код
+	if err != nil {
+		t.Fatal(err)
+	}
+	spSet(t, ca, n)
+	withSpaceNet(t, spaceNet(ca, nil))
+	calls.Store(0)
+	if _, err := cc.spaceEnter(context.Background(), ca.id(), spacePass, spaceCode(ca, n.TOTP), ph); err != nil {
+		t.Fatal(err)
+	}
+	salt1, _, _ := cc.secret("")
+	if !bytes.Equal(salt0, salt1) || tagOut == nil || bytes.Equal(tagOut, cc.loginTag("", nil)) || calls.Load() == 0 {
+		t.Errorf("вступление с другим кодом: соль та же %v, метка сменилась %v, spaceChanged %d", bytes.Equal(salt0, salt1), !bytes.Equal(tagOut, cc.loginTag("", nil)), calls.Load())
+	}
+}
+
+// TestSpaceTagStranger — приёмка круга 3 (п. 3): доказанный ключ не члена — как сессия без ключа: исключение без
+// смены входа меняет его метку; у члена — нет.
+func TestSpaceTagStranger(t *testing.T) {
+	sec := totp.NewSecret()
+	ca, cb := spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec)
+	ph, keys := syncSpace(t, 2, ca, cb)
+	base := spaceOf(ca)
+	n1, _ := spaceRemove(base, ph, keys[1])
+	n, _ := spaceSetLogin(n1, ph, "", totp.NewSecret())
+	spSet(t, ca, n1, n)
+	stranger, _, _ := ed25519.GenerateKey(nil)
+	m0, s0 := ca.loginTag("", cfgPub(cb)), ca.loginTag("", stranger)
+	x, _ := spaceRemove(base, ph, keys[0]) // проигрывает развилку: вход тот же
+	xb, _ := x.marshal()
+	ca.SyncApply(xb, nil)
+	if !bytes.Equal(m0, ca.loginTag("", cfgPub(cb))) || bytes.Equal(s0, ca.loginTag("", stranger)) {
+		t.Error("метка: член должен остаться, посторонний ключ — смениться")
+	}
+}
+
+// TestSpaceDamagedErrors — приёмка круга 3 (п. 4): при испорченной записи «Работаю тут», создание и вступление
+// отвечают errSpaceDamaged, окно получает признак spaceDamaged.
+func TestSpaceDamagedErrors(t *testing.T) {
+	sec := totp.NewSecret()
+	ca, cb := spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec)
+	ph, _ := syncSpace(t, 0, ca, cb)
+	if ca.spaceDamaged() {
+		t.Fatal("целая запись — испорчена")
+	}
+	ca.mu.Lock()
+	ca.Space[len(ca.Space)-1] ^= 1
+	ca.save()
+	ca.mu.Unlock()
+	if !ca.spaceDamaged() || hostInfo(ca, &agent.Agent{}, false, "", "")["spaceDamaged"] != true {
+		t.Fatal("признак испорченной записи (и в состоянии окна)")
+	}
+	code, _ := totp.Code(sec, time.Now())
+	if _, err := testMaster(ca).workHere(context.Background(), spacePass, code); !errors.Is(err, errSpaceDamaged) {
+		t.Errorf("«Работаю тут»: %v", err)
+	}
+	if _, err := ca.spaceCreate(spacePass); !errors.Is(err, errSpaceDamaged) {
+		t.Errorf("создание: %v", err)
+	}
+	if _, err := ca.spaceEnter(context.Background(), cb.id(), spacePass, code, ph); !errors.Is(err, errSpaceDamaged) {
+		t.Errorf("вступление: %v", err)
+	}
+}
+
+// TestSpaceKeyGone — решение владельца A: ключ ПК, исключённого в объединении, — keyGone и в режиме «Спрашивать»;
+// член, посторонний ключ и ПК вне пространства — нет.
+func TestSpaceKeyGone(t *testing.T) {
+	sec := totp.NewSecret()
+	ca, cb, cn := spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec)
+	ph, keys := syncSpace(t, 1, ca, cb)
+	x, _ := spaceRemove(spaceOf(ca), ph, keys[0])
+	spSet(t, ca, x)
+	stranger, _, _ := ed25519.GenerateKey(nil)
+	on := true
+	ca.mu.Lock()
+	ca.Confirm = &on // «Спрашивать»
+	ca.save()
+	ca.mu.Unlock()
+	if !ca.keyGone(keys[0]) || ca.keyGone(cfgPub(cb)) || ca.keyGone(stranger) || cn.keyGone(keys[0]) {
+		t.Error("keyGone: исключённый, член, посторонний, вне пространства")
 	}
 }

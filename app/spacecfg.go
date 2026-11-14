@@ -42,9 +42,14 @@ func (c *config) spaceLocked() *space {
 		return c.sp
 	}
 	var m *space
-	if stored, err := c.spaceStoredLocked(); err != nil {
+	stored, err := c.spaceStoredLocked()
+	pend, perr := c.spacePendLocked()
+	if err == nil {
+		err = perr
+	}
+	if err != nil {
 		log.Printf("пространство в настройках не читается: %v", err)
-	} else if heads, err := spaceHeads(stored); err != nil {
+	} else if heads, err := spaceHeadsAll(append(stored, pend...)); err != nil {
 		log.Printf("пространство в настройках не читается: %v", err)
 	} else {
 		m = spaceView(heads)
@@ -61,8 +66,12 @@ func (c *config) spaceCreate(password string) (string, error) {
 	c.mu.Lock()
 	c.reload()
 	if len(c.Space) > 0 {
+		err := errSpaceIn
+		if c.spaceDamagedLocked() {
+			err = errSpaceDamaged
+		}
 		c.mu.Unlock()
-		return "", errSpaceIn
+		return "", err
 	}
 	if c.codeModeLocked() || len(c.Users[0].Hash) == 0 {
 		c.mu.Unlock()
@@ -92,7 +101,15 @@ func (c *config) spaceCreate(password string) (string, error) {
 		return "", errSpaceChange
 	}
 	c.Space = b
-	return phrase, c.save()
+	if err := c.save(); err != nil {
+		return "", err
+	}
+	if spaceChanged != nil { // метка входа (agent.LoginTag) — уже с пространством; без c.mu: DropRevoked читает настройки
+		c.mu.Unlock()
+		spaceChanged()
+		c.mu.Lock()
+	}
+	return phrase, nil
 }
 
 // spaceGet — agent.Agent.SpaceGet (на ПК P): запись M для сессии, вошедшей записью по умолчанию с солью salt. Только
@@ -248,10 +265,12 @@ func (c *config) spaceEnter(ctx context.Context, hostID, password, code, phrase 
 	var ch spaceChanges
 	c.mu.Lock()
 	c.reload()
-	in := len(c.Space) > 0
+	in, bad := len(c.Space) > 0, c.spaceDamagedLocked()
 	id, key, server, known := c.ID, bytes.Clone(c.Key), c.Server, c.Known[hostID]
 	c.mu.Unlock()
 	switch {
+	case bad:
+		return ch, errSpaceDamaged
 	case in:
 		return ch, errSpaceIn // переход в другое пространство и слияние — не Э2
 	case !hub.IsHostID(hostID) || hostID == id:
@@ -305,7 +324,7 @@ func (c *config) spaceEnter(ctx context.Context, hostID, password, code, phrase 
 	if len(c.Space) > 0 || c.ID != id || !bytes.Equal(c.Key, key) {
 		return ch, errSpaceChange
 	}
-	c.Space, c.SpaceHeads, c.SpaceClock, c.SpaceOver = out, nil, nil, ""
+	c.Space, c.SpaceHeads, c.SpaceClock, c.SpaceOver, c.SpacePend = out, nil, nil, "", nil
 	u := &c.Users[0]
 	ch.Password = !bytes.Equal(u.Salt, joined.PSalt) || !bytes.Equal(u.Hash, joined.PHash)
 	ch.TOTP = u.TOTP != joined.TOTP
@@ -321,6 +340,9 @@ func (c *config) spaceEnter(ctx context.Context, hostID, password, code, phrase 
 		return ch, err
 	}
 	c.mu.Unlock()
+	if spaceChanged != nil { // вход записи по умолчанию — из M (пароль или код могли смениться): сессии со старым — вон
+		spaceChanged()
+	}
 	ch.Fresh = c.spaceFresh(ctx)
 	c.mu.Lock()
 	log.Printf("пространство: этот ПК вступил через %s (%s)", hostID, ch)
