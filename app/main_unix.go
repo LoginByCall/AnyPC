@@ -118,7 +118,8 @@ func main() {
 		Confirm: agent.AskAccept, ConfirmControl: agent.AskControl, Unattended: func() bool { return !cfg.confirm() }, OTP: cfg.otp, ViewOnly: cfg.viewOnly, // без подтверждения — с TOTP (PLAN.md)
 		CodeUsed: cfg.codeUsed,                           // «Спрашивать»: код сменить после сессии и блокировки (REQ-S-23)
 		SpaceGet: cfg.spaceGet, SpaceJoin: cfg.spaceJoin, // «Моё пространство», Э2: отдать состав и принять вступление
-		Capture: hostCapture(cfg.Enc), Locked: hostLocked, FileDir: downloads(), Stderr: logw}
+		SpaceMember: cfg.spaceMember, // Э3: пропуск 12 ч на ключ мастера (agent/pass.go)
+		Capture:     hostCapture(cfg.Enc), Locked: hostLocked, FileDir: downloads(), Stderr: logw}
 	var mu sync.Mutex
 	online, session, update := false, "", ""
 	a.OnState = func(on bool, s string) { mu.Lock(); online, session = on, s; mu.Unlock() }
@@ -157,6 +158,10 @@ func main() {
 	if !*noBrowser { // аргументы браузера видны всем пользователям ПК (/proc/*/cmdline) — в них одноразовый код, не токен
 		openWindow("http://" + addr + "/?n=" + once.issue())
 	}
+	passes.cfg = cfg
+	if startLock != nil { // Э3: блокировка экрана этого ПК снимает пропуска, выданные ему как мастеру
+		go startLock(ctx, func() { go passes.offAll(ctx) })
+	}
 	if startTray != nil { // значок в трее (Linux): окно — повторно, каждый раз новым одноразовым кодом
 		go startTray(ctx, cfg.ID, func() { openWindow("http://" + addr + "/?n=" + once.issue()) }, func() { quitNow(a) })
 	}
@@ -176,6 +181,9 @@ var startTray func(ctx context.Context, id string, open, quit func())
 
 // quitNow — выход по кнопке окна или пункту трея: сессию закрыть, ответу на запрос дать уйти.
 func quitNow(a *agent.Agent) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	passes.offAll(ctx) // Э3: выход мастера снимает его пропуска (нет выданных — сразу)
+	cancel()
 	a.Disconnect()
 	go func() { time.Sleep(300 * time.Millisecond); os.Exit(0) }()
 }
