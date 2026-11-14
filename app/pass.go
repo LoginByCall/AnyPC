@@ -30,10 +30,10 @@ var passHoldFor = 90 * time.Second
 // Сеть (agent/pass.go); переменные — для теста.
 var passOpenFn, passOffFn = agent.PassOpenID, agent.PassOff
 
-// startLock — до конца ctx звать on() при блокировке экрана этого ПК, alive(источник, жив) — о подписке на шину
-// (lock_linux.go). На Маке и Windows nil — «Работаю тут» там отказывает (errNoLockDetector, решение приёмки Э3):
-// TODO(Э3, macOS): com.apple.screenIsLocked из NSDistributedNotificationCenter (нужен cgo или отдельный помощник).
-// TODO(Э3, Windows): WTSRegisterSessionNotification + WM_WTSSESSION_CHANGE / WTS_SESSION_LOCK окна программы.
+// startLock — до конца ctx звать on() при блокировке экрана этого ПК, alive(источник, жив) — о подписке на источник
+// (lock_linux.go — шина, lock_windows.go — WTS, lock_darwin.go — NSDistributedNotificationCenter). Ни один источник
+// не жив (служба вне сеанса пользователя, нет графического сеанса) — «Работаю тут» отказывает (errNoLockDetector,
+// решение приёмки Э3).
 var startLock func(ctx context.Context, on func(), alive func(src string, ok bool))
 
 // passOffRetry, passOffRetryMax — пауза повтора «снять», не дошедшего до цели (растёт вдвое до предела).
