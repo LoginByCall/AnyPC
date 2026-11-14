@@ -176,7 +176,8 @@ func TestSpaceSyncWire(t *testing.T) {
 }
 
 // TestSpaceSyncSigs — подписи сверяются на обеих сторонах: подпись хоста не та — клиент кончает (ErrSpaceHostKey) и
-// M не отдаёт; подпись клиента в "b" не та — хост отказывает ("denied") и M не отдаёт.
+// M не отдаёт (и в "who", когда sx не открылся: whosig); подпись клиента в "b" не та — хост отказывает ("denied") и M
+// не отдаёт.
 func TestSpaceSyncSigs(t *testing.T) {
 	_, _, host, d := syncRig(t)
 	t.Cleanup(func() { syncTamper.Store("") })
@@ -191,7 +192,8 @@ func TestSpaceSyncSigs(t *testing.T) {
 	for _, x := range []struct {
 		tamper string
 		want   error
-	}{{"hostkey", ErrSpaceHostKey}, {"cpub", ErrSpaceRefused}, {"early", ErrSpaceRefused}, {"sx", ErrSpaceRefused}, {"old", ErrSpaceSkew}} {
+	}{{"hostkey", ErrSpaceHostKey}, {"cpub", ErrSpaceRefused}, {"early", ErrSpaceRefused}, {"sx", ErrSpaceRefused}, {"old", ErrSpaceSkew},
+		{"whosig", ErrSpaceHostKey}} {
 		syncTamper.Store(x.tamper)
 		if _, err := SpaceSync(context.Background(), d); !errors.Is(err, x.want) {
 			t.Errorf("%s: %v", x.tamper, err)

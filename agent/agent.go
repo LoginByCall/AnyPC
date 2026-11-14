@@ -794,8 +794,8 @@ func (a *Agent) onConnect(ctx context.Context, c *websocket.Conn, m hub.Msg) {
 		a.offConnect(ctx, c, m.From, req)
 		return
 	}
-	// Э4в: сверка состава — запечатанное доказательство члена в sx (spseal.go); вне места сессии и блокировки
-	// (spsync.go). Не открылось или не годно — обычный connect, статус сверки уйдёт клиенту в "a".
+	// Э4в: сверка состава — запечатанное доказательство члена в sx (spseal.go); вне maxPending и блокировки, при
+	// идущей сессии — тот же отказ, что обычному (spsync.go). Не открылось или не годно — обычный connect, статус сверки уйдёт клиенту в "a".
 	pub, seal := a.sxCheck(req.SX)
 	if seal != nil && seal.status == sxOK && a.syncConnect(ctx, c, m.From, req, pub, seal) {
 		return
@@ -1319,6 +1319,9 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 			whoDone = true
 			s.mu.Unlock()
 			if !again && fpc != "" {
+				if syncFake("whosig") { // тест: подпись не над этими отпечатками (посредник в DTLS)
+					fph += "x"
+				}
 				send(authMsg{T: "who", Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph)})
 			}
 			return
