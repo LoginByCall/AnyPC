@@ -124,7 +124,7 @@ func (t passIssued) live() bool {
 // passes — мастер этого процесса (main).
 var passes passMaster
 
-// workHere — «Работаю тут» (Э3): человек ввёл пароль владельца и код TOTP пространства. Пароль и код сверяются
+// workHere — «Работаю тут» (Э3): человек ввёл пароль входа владельца (не фразу — решение 8 B) и код TOTP пространства. Пароль и код сверяются
 // здесь (неверные не уходят в сеть и не тратят попытки целей), затем все остальные члены M открываются параллельно.
 // Ошибка — до сети (детектор блокировки не жив, не в пространстве, неверный пароль или код). Блокировка экрана,
 // пришедшая во время входов, снимает в конце всё, что успели выдать.
@@ -142,8 +142,8 @@ func (p *passMaster) workHere(ctx context.Context, password, code string) ([]pas
 	if m == nil || !m.member(self) {
 		return nil, errSpaceNotIn
 	}
-	if spaceOwnerCheck(m, password) != nil { // свой состав: «другой владелец» здесь — тоже неверный пароль
-		return nil, errSpacePassword
+	if err := spaceLoginCheck(m, password); err != nil {
+		return nil, err
 	}
 	if _, ok := totp.Check(m.TOTP, code, time.Now(), 0); !ok {
 		return nil, errPassCode
