@@ -136,7 +136,17 @@ func (c *config) spaceAddLocked(in ...*space) (changed, drop bool, err error) {
 	if bytes.Equal(before, c.spaceSnapLocked()) {
 		return false, false, nil
 	}
+	c.spaceWaitLocked()
 	return true, c.spaceFollowLocked(), nil
+}
+
+// spaceWaitLocked — правило вступления (решение 12 A) на каждом изменении объединения: членов, кроме себя и
+// поручителя, нет (остальных исключили) — сверять не с кем, SpaceWait снимается. Дефолт A вопроса владельцу.
+func (c *config) spaceWaitLocked() {
+	if m := c.spaceLocked(); c.SpaceWait != "" && m != nil &&
+		!slices.ContainsFunc(m.Members, func(x spaceMember) bool { return x.ID != c.ID && x.ID != c.SpaceWait }) {
+		c.SpaceWait = ""
+	}
 }
 
 // spaceFollowLocked — вход состава (объединения) повторяется в записи по умолчанию (под c.mu): сменился — true.
@@ -611,7 +621,9 @@ func (c *config) spaceLeave(password, code string) error {
 	}
 	u.TOTPStep = step
 	if c.SpaceWait != "" { // решение 12 A: пароль и код — из M поручителя, сверкой не подтверждённого: не оставлять
-		u.Salt, u.Hash, u.TOTP, u.TOTPStep = nil, nil, "", 0 // вход — одноразовым кодом с экрана, окно попросит пароль
+		on := true // вход — «Спрашивать» с новым одноразовым кодом с экрана (как setConfirm), окно попросит пароль
+		u.Salt, u.Hash, u.TOTP, u.TOTPStep, c.Confirm = nil, nil, "", 0, &on
+		c.setCode(randCode())
 	}
 	c.Space, c.SpaceHeads, c.SpaceWait, c.SpaceClock, c.SpaceOver, c.SpacePend = nil, nil, "", nil, "", nil
 	err := c.save()

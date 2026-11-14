@@ -102,8 +102,8 @@ func TestSpaceEnterAsk(t *testing.T) {
 	if got.spaceChanges != want || !got.Password || !got.TOTP || got.Trusted != 2 || got.KeyLogin != 1 || !got.Ask || got.Already {
 		t.Errorf("превью %v, итог %v", got.spaceChanges, r.ch)
 	}
-	if spaceEpoch(p) != 2 {
-		t.Error("после подтверждения P не принял M")
+	if spaceEpoch(p) != 2 || !r.ch.Fresh { // других членов, кроме P, нет — сверять не с кем
+		t.Errorf("после подтверждения: эпоха P %d, сверен %v", spaceEpoch(p), r.ch.Fresh)
 	}
 }
 
@@ -518,7 +518,7 @@ func TestSpaceEnterDriftLate(t *testing.T) {
 }
 
 // TestSpaceLeaveWait — M3: выход до сверки после вступления — пароль и код записи по умолчанию (из M поручителя)
-// стёрты: вход — одноразовым кодом с экрана («Спрашивать»), закрытия входа больше нет.
+// стёрты: вход — «Спрашивать» с новым одноразовым кодом с экрана, закрытия входа больше нет.
 func TestSpaceLeaveWait(t *testing.T) {
 	sec := totp.NewSecret()
 	p := spaceCfg(t, spacePass, sec)
@@ -531,13 +531,16 @@ func TestSpaceLeaveWait(t *testing.T) {
 	if !n.loginShut("") {
 		t.Fatal("вход не закрыт")
 	}
+	n.mu.Lock()
+	before := n.Code // код, лежавший в настройках до вступления (мог быть виден)
+	n.mu.Unlock()
 	if err := n.spaceLeave(spacePass, spaceCode(n, sec)); err != nil {
 		t.Fatal(err)
 	}
 	n.mu.Lock()
 	u := n.Users[0]
 	n.mu.Unlock()
-	if len(u.Hash) != 0 || u.TOTP != "" || !n.codeMode() || n.loginShut("") || spaceOf(n) != nil {
+	if len(u.Hash) != 0 || u.TOTP != "" || !n.codeMode() || !n.confirm() || n.code() == "" || n.code() == before || n.loginShut("") || spaceOf(n) != nil {
 		t.Errorf("после выхода при SpaceWait: хэш %d байт, TOTP %v, «Спрашивать» %v", len(u.Hash), u.TOTP != "", n.codeMode())
 	}
 }
@@ -584,5 +587,123 @@ func TestSpaceAskOff(t *testing.T) {
 	}
 	if err := n.setConfirm(true); !errors.Is(err, errSpaceVia) || n.codeMode() {
 		t.Errorf("включить «Спрашивать» в пространстве: %v, режим кода %v", err, n.codeMode())
+	}
+}
+
+// TestSpaceEnterCompromised — P отдаёт подлинные верхушки со скомпрометированным входом (два встречных исключения
+// без смены кода): отказ до превью.
+func TestSpaceEnterCompromised(t *testing.T) {
+	p := spaceCfg(t, spacePass, totp.NewSecret())
+	ph := spaceMake(t, p)
+	xid, xpub := newPC(t)
+	m1, err := spaceAdd(topOf(t, p), ph, xid, xpub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	yid, ypub := newPC(t)
+	m2, err := spaceAdd(m1, ph, yid, ypub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bs [][]byte
+	for _, pub := range []ed25519.PublicKey{xpub, ypub} {
+		ex, err := spaceRemove(m2, ph, pub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := ex.marshal()
+		bs = append(bs, b)
+	}
+	if u, _ := spaceJoin(spaceMust(t, bs[0]), spaceMust(t, bs[1])); u == nil || !u.Compromised {
+		t.Fatal("объединение не скомпрометировано")
+	}
+	n := spaceCfg(t, "n-local-pass", totp.NewSecret())
+	withSpaceNet(t, func(_ context.Context, d agent.SpaceDial) ([]byte, error) { return d.Sign(bs[0], cfgPub(p), bs[1]) })
+	previewed := false
+	yes := make(chan bool, 1)
+	yes <- true
+	_, err = n.spaceEnterAsk(context.Background(), p.id(), spacePass, "000000", ph, func(spacePreview) { previewed = true }, yes)
+	if !errors.Is(err, errSpaceCompromised) || previewed || spaceOf(n) != nil {
+		t.Errorf("скомпрометирован: %v (превью %v)", err, previewed)
+	}
+}
+
+func spaceMust(t *testing.T, b []byte) *space {
+	t.Helper()
+	m, err := spaceParse(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+// TestSpaceEnterHalfHeads — полу-вступление при двух верхушках у P, N — только в неглавной: «уже в составе», N
+// сохраняет все верхушки P — составы совпадают.
+func TestSpaceEnterHalfHeads(t *testing.T) {
+	sec := totp.NewSecret()
+	p := spaceCfg(t, spacePass, sec)
+	ph := spaceMake(t, p)
+	n := spaceCfg(t, "n-local-pass", totp.NewSecret())
+	top := topOf(t, p)
+	xid, xpub := newPC(t)
+	h1, err := spaceAdd(top, ph, xid, xpub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h2, err := spaceAdd(top, ph, n.id(), cfgPub(n))
+	if err != nil {
+		t.Fatal(err)
+	}
+	headsOn(t, p, h1, h2)
+	withSpaceNet(t, spaceNet(p, nil))
+	ch, err := n.spaceEnter(context.Background(), p.id(), spacePass, spaceCode(p, sec), ph)
+	pu, nu := spaceOf(p), spaceOf(n)
+	if err != nil || !ch.Already || nu == nil || !bytes.Equal(pu.signBytes(), nu.signBytes()) || len(spaceHeadsOf(n)) != 2 {
+		t.Errorf("полу-вступление при двух верхушках: %v %v", ch, err)
+	}
+}
+
+// TestSpaceEnterCancelYes — вступление отменено, когда «да» уже лежит в ok: подписи нет, P пуст. Выбор select между
+// готовыми ok и ctx.Done случаен — повторы ловят пропуск проверки ctx после «да».
+func TestSpaceEnterCancelYes(t *testing.T) {
+	sec := totp.NewSecret()
+	p := spaceCfg(t, spacePass, sec)
+	ph := spaceMake(t, p)
+	n := spaceCfg(t, "n-local-pass", totp.NewSecret())
+	withSpaceNet(t, spaceNet(p, nil))
+	for i := range 12 {
+		ctx, cancel := context.WithCancel(context.Background())
+		yes := make(chan bool, 1)
+		_, err := n.spaceEnterAsk(ctx, p.id(), spacePass, spaceCode(p, sec), ph, func(spacePreview) { yes <- true; cancel() }, yes)
+		cancel()
+		if !errors.Is(err, context.Canceled) || spaceEpoch(p) != 1 || spaceOf(n) != nil {
+			t.Fatalf("попытка %d: %v, эпоха P %d", i, err, spaceEpoch(p))
+		}
+	}
+}
+
+// TestSpaceWaitGone — N ждёт сверки с Q (не в сети); Q исключили фразой, исключение дошло до N: кроме поручителя
+// членов нет — SpaceWait снят, вход открыт (правило вступления; дефолт A вопроса владельцу). Пока Q — член, закрыт.
+func TestSpaceWaitGone(t *testing.T) {
+	sec := totp.NewSecret()
+	p := spaceCfg(t, spacePass, sec)
+	ph, keys := syncSpace(t, 1, p)
+	withSpaceNet(t, spaceNet(p, nil))
+	n := spaceCfg(t, "n-local-pass", totp.NewSecret())
+	if _, err := n.spaceEnter(context.Background(), p.id(), spacePass, spaceCode(p, sec), ph); err != nil {
+		t.Fatal(err)
+	}
+	if !n.loginShut("") {
+		t.Fatal("вход не закрыт")
+	}
+	ex, err := spaceRemove(topOf(t, n), ph, keys[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := n.spaceEdit(spSnap(n), ex); err != nil {
+		t.Fatal(err)
+	}
+	if n.loginShut("") || !n.spaceFreshNow() {
+		t.Error("сверять не с кем, а вход закрыт")
 	}
 }
