@@ -111,7 +111,11 @@ var (
 	errSpaceNoChange    = errors.New("пространство: менять нечего")
 	errSpaceForeign     = errors.New("пространство: состав другого пространства или другого владельца")
 	errSpaceHeads       = errors.New("пространство: слишком много параллельных правок — сделайте правку фразой")
-	errSpaceDamaged     = errors.New("пространство: записи состава на этом ПК испорчены — выйдите из пространства (пароль и код) и вступите снова")
+	// errSpaceDamaged — лечение без кода (у записи нет TOTP; решение владельца B, 2026-11-14): переустановка config.json
+	// не трогает, поэтому — убрать "space" руками (путь — main_unix.go/main_windows.go loadConfig).
+	errSpaceDamaged = errors.New("пространство: записи состава на этом ПК испорчены — выйдите из пространства (пароль и код) и вступите снова. " +
+		"Если кода нет: закройте AnyPC, удалите поле \"space\" из config.json (Linux: ~/.config/AnyPC, macOS: ~/Library/Application Support/AnyPC, " +
+		"Windows: %APPDATA%\\AnyPC) или весь файл настроек и запустите AnyPC заново")
 	errSpaceCompromised = errors.New("пространство: секрет кода видел исключённый ПК — задайте новый код (фраза)")
 	errSpaceGoneMember  = errors.New("пространство: исключённый ПК числится членом")
 	errSpaceDup         = errors.New("пространство: такой ПК уже в составе")
