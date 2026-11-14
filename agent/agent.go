@@ -1841,7 +1841,9 @@ func ClipCheap() bool { return !clipOnCopy.Load() }
 // watchClip отправляет клиенту изменения буфера обмена хоста (только изменения после начала сессии).
 // Д-5: до успешного входа — ничего: иначе любой, кто знает ID, читал бы буфер хоста 20 с ожидания пароля.
 func (s *session) watchClip(ctx context.Context, send func([]byte)) {
-	seq := clipSeq()
+	// Буфер читается только в сессии после входа и с управлением: раньше первый clipSeq шёл при каждом подключении,
+	// даже без пароля и в просмотре/сверке — на Wayland это wl-paste с окном и фокусом на каждое подключение.
+	seq, have := uint32(0), false
 	t := time.NewTicker(500 * time.Millisecond)
 	defer t.Stop()
 	recheck := 0
@@ -1850,6 +1852,13 @@ func (s *session) watchClip(ctx context.Context, send func([]byte)) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		}
+		if !s.authed.Load() || s.view.Load() {
+			continue
+		}
+		if !have { // отсчёт — с первого такта управления; ponytail: копия в первые 0,5 с после входа клиенту не уйдёт
+			seq, have = clipSeq(), true
+			continue
 		}
 		if clipOnCopy.Load() { // через 0,5, 1 и 1,5 с после Ctrl+C: приложение кладёт текст в буфер не сразу
 			if s.copied.Swap(false) {
@@ -1862,9 +1871,6 @@ func (s *session) watchClip(ctx context.Context, send func([]byte)) {
 		}
 		if n := clipSeq(); n != seq {
 			seq = n
-			if !s.authed.Load() || s.view.Load() {
-				continue
-			}
 			if text, err := clipText(); err == nil && s.clip.toRemote(text) {
 				b, _ := json.Marshal(ctlMsg{T: "clip", Text: text})
 				send(b)
