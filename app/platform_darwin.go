@@ -39,6 +39,9 @@ func hostCapture(enc string) func(ctx context.Context, c agent.Cap) (*exec.Cmd, 
 	return agent.MacCapture(enc)
 }
 
+// cdpWindows — окна ПК в своём Chrome по CDP: на Маке — нет (маршрут M1, своё NSWindow).
+const cdpWindows = false
+
 // hostLocked — заблокированный экран Мака: захват ждёт разблокировки (F7).
 var hostLocked = agent.ScreenLocked
 
