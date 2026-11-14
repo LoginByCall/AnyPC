@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"log"
 	"os"
@@ -12,6 +13,10 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"anypc/hub"
+
+	"github.com/coder/websocket/wsjson"
 )
 
 // passRig — цель T для тестов Э3: P из Э2 (spaceRig) и состав M — набор ключей членов.
@@ -249,11 +254,33 @@ func TestPassRestart(t *testing.T) {
 	}
 	idle(t, p.a)
 	p.stop()
-	time.Sleep(200 * time.Millisecond) // хаб снимает старую регистрацию
+	hubGone(t, url, p.a.ID) // хаб снял старую регистрацию — иначе новый T получит id_taken и ждёт повтора 60 с
 	passTarget(t, url, p.a.Key, mpub)
 	if err := PassLogin(context.Background(), d); !errors.Is(err, ErrPassNone) {
 		t.Errorf("после перезапуска: %v", err)
 	}
+}
+
+// hubGone — ждёт, пока хаб снимет регистрацию хоста id: connect клиента к нему получает "not_found" (опрос, не сон).
+func hubGone(t *testing.T, url, id string) {
+	t.Helper()
+	for end := time.Now().Add(10 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		ws, err := dial(ctx, url)
+		if err == nil {
+			var m hub.Msg
+			wsjson.Read(ctx, ws, &m) // hello
+			wsjson.Write(ctx, ws, hub.Msg{V: 1, Type: "connect", To: id, Data: json.RawMessage(`{}`)})
+			gone := wsjson.Read(ctx, ws, &m) == nil && m.Type == "error" && string(m.Data) == `"not_found"`
+			ws.CloseNow()
+			if gone {
+				cancel()
+				return
+			}
+		}
+		cancel()
+	}
+	t.Fatalf("хаб не снял регистрацию %s", id)
 }
 
 // TestPassRevoked — сессия, вошедшая по пропуску, отозвана, когда пропуск сняли или ключ исключили (DropRevoked).
