@@ -3,22 +3,35 @@ package main
 // «Моё пространство», этап Э1: состав пространства M и его подпись (UI-REDESIGN.md, «Проект ядра пространства»).
 // Только формат и правила — без сети, без диска, без окна. ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ (CLAUDE.md A13: ключевой материал).
 //
-// Ключ владельца — Ed25519 с зерном Argon2id(spaceOwnerDomain+пароль, osalt) (pake.KDF, те же параметры, что у
-// паролей). Доменный префикс обязателен: без него зерно совпало бы с хэшем пароля Argon2id(пароль, psalt), который
-// лежит в составе открыто, — знающий хэш собрал бы состав с osalt = psalt и подписывал бы за владельца.
-// Закрытая часть не хранится и не передаётся: пересчитывается из пароля на время одной подписи; на диск и в сеть
+// Ключ владельца (решение 8 владельца, вариант B) — Ed25519 с зерном Argon2id(spaceOwnerDomain+фраза, osalt)
+// (pake.KDF, те же параметры, что у паролей). Фраза пространства — отдельный от пароля входа секрет: пароль входа
+// (psalt/phash записи владельца) и секрет TOTP — обычные поля M, меняются правкой M(epoch+1) под тем же ключом;
+// знающий пароль входа (и phash) состав не подписывает. Доменный префикс и запрет osalt = psalt сохранены (Н1
+// приёмки Э1): зерно не совпадёт с хэшем Argon2id(пароль, psalt), который лежит в составе открыто, даже если фраза
+// равна паролю (это запрещено отдельно — spacePhraseLoginOK). Префикс v2: в v1 в KDF шёл пароль входа (составы v1
+// нигде не созданы: spaceCreate не вызывался вне тестов); новый префикс разводит обе производные при равных строках.
+// Закрытая часть не хранится и не передаётся: пересчитывается из фразы на время одной подписи; на диск и в сеть
 // идут только opub и osalt. Затирание памяти (clear) — по возможности: Go не гарантирует, что копий не осталось.
 //
 // Доверие к составу — только через ключ владельца: первому составу, пришедшему из сети, верят, лишь если ключ,
-// выведенный из введённого пароля, равен его opub (spaceAdd/sign это и сверяют), или по закреплённому ранее opub
+// выведенный из введённой фразы, равен его opub (spaceAdd/sign это и сверяют), или по закреплённому ранее opub
 // (spaceAccept сверяет с текущим). Сама по себе верная подпись ничего не доказывает: подписать может кто угодно
 // своим ключом.
 //
-// Запись M (версия 1), все числа — big-endian, длины полей постоянные, кроме секрета TOTP и двух списков:
+// Фраза (С3/С4 приёмки Э1b): ровно 10 слов словаря spaceWords (80 бит), только ASCII; при создании — только фраза
+// генератора. Вход (пароль входа и секрет TOTP) имеет свой номер lgen и ссылку lprev на прежний вход (С2): смена
+// входа в одной ветви не теряется молча, если другая ветвь ушла дальше по эпохам (spaceAccept, spaceMerge).
+//
+// Запись M (версия 1; до Э1b состав v1 нигде не создавался — формат менялся без совместимости), все числа —
+// big-endian, длины полей постоянные, кроме секрета TOTP и двух списков:
 //
 //	"AnyPC space M\x00" | ver=1 | sid[16] | epoch u64 | osalt[16] | opub[32] | psalt[16] | phash[32]
-//	| u8 len, totp | u8 n, n×{id[9], pub[32]} | u16 k, k×pub[32]            ← эти байты подписываются
+//	| u8 len, totp | lgen u32 | lprev[32] | lmerge[32]
+//	| u8 n, n×{id[9], pub[32]} | u16 k, k×pub[32]                            ← эти байты подписываются
 //	| sig[64]                                                                 ← подпись владельца
+//
+// lgen — с 1, растёт при каждой смене psalt/phash/totp; lprev — loginHash прежнего входа (нули при lgen 1);
+// lmerge — вход второй ветви при слиянии с новым входом (иначе нули).
 //
 // Запись однозначна: члены и исключённые идут по возрастанию открытого ключа без повторов, секрет TOTP — только
 // [A-Z2-7] в каноническом base32; иное — ошибка разбора. Поэтому одинаковый состав — одинаковые байты на любой ОС
@@ -28,6 +41,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base32"
 	"encoding/binary"
@@ -36,6 +50,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strings"
 
 	"anypc/hub"
 	"anypc/pake"
@@ -44,7 +59,9 @@ import (
 
 const (
 	spaceDomain      = "AnyPC space M\x00"            // доменный префикс подписи: она не сойдёт за подпись чего-то другого
-	spaceOwnerDomain = "AnyPC space owner key v1\x00" // доменный префикс пароля в Argon2id ключа владельца
+	spaceOwnerDomain = "AnyPC space owner key v2\x00" // доменный префикс фразы в Argon2id ключа владельца
+	spaceLoginDomain = "AnyPC space login\x00"        // доменный префикс хэша входа (lprev, lmerge)
+	spacePhraseWords = 10                             // слов во фразе: 10 × 8 бит = 80 бит
 	spaceVer         = 1
 	spaceIDLen       = 9  // ID хоста (hub.IsHostID)
 	spaceSaltLen     = 16 // sid, osalt, psalt
@@ -57,25 +74,31 @@ const (
 	spaceMaxJump = 1 << 20
 	// spaceMaxBytes — потолок записи с подписью: больше не разбираем вовсе.
 	spaceMaxBytes = len(spaceDomain) + 1 + spaceSaltLen + 8 + spaceSaltLen + ed25519.PublicKeySize + spaceSaltLen + spaceHashLen +
-		1 + spaceMaxTOTP + 1 + spaceMaxMembers*(spaceIDLen+ed25519.PublicKeySize) + 2 + spaceMaxGone*ed25519.PublicKeySize +
+		1 + spaceMaxTOTP + 4 + 2*sha256.Size + 1 + spaceMaxMembers*(spaceIDLen+ed25519.PublicKeySize) + 2 + spaceMaxGone*ed25519.PublicKeySize +
 		ed25519.SignatureSize
 )
 
 var (
-	errSpaceFormat     = errors.New("пространство: запись состава испорчена")
-	errSpaceVersion    = errors.New("пространство: неизвестная версия записи состава")
-	errSpaceLimit      = errors.New("пространство: превышен предел размера состава")
-	errSpaceSig        = errors.New("пространство: подпись владельца неверна")
-	errSpacePassword   = errors.New("пространство: неверный пароль владельца")
-	errSpaceForeign    = errors.New("пространство: состав другого пространства или другого владельца")
-	errSpaceStale      = errors.New("пространство: состав старее текущего")
-	errSpaceSame       = errors.New("пространство: этот состав уже есть") // не раскол: менять нечего
-	errSpaceFork       = errors.New("пространство: раскол состава — нужно слияние (spaceMerge)")
-	errSpaceJump       = errors.New("пространство: слишком большой скачок эпохи")
-	errSpaceGoneMember = errors.New("пространство: исключённый ПК числится членом")
-	errSpaceDup        = errors.New("пространство: такой ПК уже в составе")
-	errSpaceNoMember   = errors.New("пространство: такого ПК в составе нет")
-	errSpaceLast       = errors.New("пространство: нельзя исключить последний ПК")
+	errSpaceFormat      = errors.New("пространство: запись состава испорчена")
+	errSpaceVersion     = errors.New("пространство: неизвестная версия записи состава")
+	errSpaceLimit       = errors.New("пространство: превышен предел размера состава")
+	errSpaceSig         = errors.New("пространство: подпись владельца неверна")
+	errSpacePassword    = errors.New("пространство: неверный пароль входа")
+	errSpacePhrase      = errors.New("пространство: неверная фраза пространства")
+	errSpacePhraseCount = errors.New("пространство: во фразе должно быть ровно 10 слов")
+	errSpacePhraseASCII = errors.New("пространство: во фразе только латинские буквы и пробелы — проверьте раскладку")
+	errSpacePhraseWord  = errors.New("пространство: слово фразы не из словаря")
+	errSpacePhraseLogin = errors.New("пространство: пароль входа не должен совпадать с фразой пространства")
+	errSpaceNoChange    = errors.New("пространство: менять нечего")
+	errSpaceForeign     = errors.New("пространство: состав другого пространства или другого владельца")
+	errSpaceStale       = errors.New("пространство: состав старее текущего")
+	errSpaceSame        = errors.New("пространство: этот состав уже есть") // не раскол: менять нечего
+	errSpaceFork        = errors.New("пространство: раскол состава — нужно слияние (spaceMerge)")
+	errSpaceJump        = errors.New("пространство: слишком большой скачок эпохи")
+	errSpaceGoneMember  = errors.New("пространство: исключённый ПК числится членом")
+	errSpaceDup         = errors.New("пространство: такой ПК уже в составе")
+	errSpaceNoMember    = errors.New("пространство: такого ПК в составе нет")
+	errSpaceLast        = errors.New("пространство: нельзя исключить последний ПК")
 )
 
 var spaceB32 = base32.StdEncoding.WithPadding(base32.NoPadding)
@@ -126,6 +149,9 @@ type space struct {
 	PSalt   []byte            // соль и хэш пароля записи владельца (account.Salt / account.Hash)
 	PHash   []byte            //
 	TOTP    string            // секрет кода пространства, канонический base32 без '='
+	LGen    uint32            // номер входа (PSalt, PHash, TOTP): с 1, +1 при каждой смене
+	LPrev   []byte            // loginHash прежнего входа; нули при LGen 1
+	LMerge  []byte            // вход второй ветви при слиянии с новым входом; иначе нули
 	Members []spaceMember     // по возрастанию Pub
 	Gone    [][]byte          // открытые ключи исключённых ПК, по возрастанию; только растёт
 	Sig     []byte
@@ -144,42 +170,156 @@ func (m space) String() string {
 // Format — любая печать через fmt идёт через String: %+v и %#v не выдадут поля с секретами.
 func (m space) Format(f fmt.State, _ rune) { fmt.Fprint(f, m.String()) }
 
-// spaceOwnerKey — закрытый ключ владельца из пароля; вызывающий не хранит его дольше одной подписи.
-func spaceOwnerKey(password string, osalt []byte) ed25519.PrivateKey {
-	seed := pake.KDF(spaceOwnerDomain+password, osalt)
+// spaceOwnerKey — закрытый ключ владельца из фразы (spacePhraseNorm); вызывающий не хранит его дольше одной подписи.
+func spaceOwnerKey(phrase string, osalt []byte) ed25519.PrivateKey {
+	seed := pake.KDF(spaceOwnerDomain+spacePhraseNorm(phrase), osalt)
 	key := ed25519.NewKeyFromSeed(seed)
 	clear(seed)
 	return key
 }
 
-// spaceNew — новое пространство с одним ПК (id, pub): свежие sid и osalt, эпоха 1. psalt/phash/totpSecret — из
-// записи владельца на этом ПК; пароль сверяется с phash, чтобы ключ владельца и запись были от одного пароля.
-func spaceNew(password string, psalt, phash []byte, totpSecret, id string, pub ed25519.PublicKey) (*space, error) {
+// spacePhraseNorm — фраза как её вводит человек на любом ПК: строчные буквы, слова через один пробел, без пробелов
+// по краям. Только для фразы, прошедшей spacePhraseOK (ASCII).
+func spacePhraseNorm(phrase string) string {
+	return strings.ToLower(strings.Join(strings.Fields(phrase), " "))
+}
+
+// spacePhraseWordError — слово N (с 1) фразы не из словаря: окно подсветит опечатку.
+type spacePhraseWordError struct{ N int }
+
+func (e spacePhraseWordError) Error() string {
+	return fmt.Sprintf("%v: слово %d", errSpacePhraseWord, e.N)
+}
+func (e spacePhraseWordError) Is(t error) bool { return t == errSpacePhraseWord }
+
+var spaceWordSet = func() map[string]bool {
+	m := make(map[string]bool, len(spaceWords))
+	for _, w := range spaceWords {
+		m[w] = true
+	}
+	return m
+}()
+
+// spacePhraseOK — правило фразы при каждом вводе: только ASCII (NBSP и прочие Юникод-пробелы — тоже отказ), после
+// spacePhraseNorm ровно spacePhraseWords слов, каждое из словаря. Проверяется до Argon2.
+func spacePhraseOK(phrase string) error {
+	for i := 0; i < len(phrase); i++ {
+		if phrase[i] >= 0x80 {
+			return errSpacePhraseASCII
+		}
+	}
+	w := strings.Fields(strings.ToLower(phrase))
+	for i, x := range w {
+		if !spaceWordSet[x] {
+			return spacePhraseWordError{i + 1}
+		}
+	}
+	if len(w) != spacePhraseWords {
+		return errSpacePhraseCount
+	}
+	return nil
+}
+
+// spacePhraseLoginOK — пароль входа открытым текстом не равен фразе с точностью до нормализации (С1): иначе знающий
+// пароль входа (его вводят на каждом «Работаю тут») подписывал бы состав. Окно вызывает до смены пароля; правки
+// состава с новым паролем (setLogin) сверяют сами.
+func spacePhraseLoginOK(phrase, password string) error {
+	if spacePhraseOK(password) == nil && spacePhraseNorm(password) == spacePhraseNorm(phrase) {
+		return errSpacePhraseLogin
+	}
+	return nil
+}
+
+// spacePhraseNew — случайная фраза: spacePhraseWords слов из spaceWords (256 слов — один байт crypto/rand на слово,
+// без смещения). Итог перепроверяется правилом: испорченный словарь — паника, а не слабая фраза.
+func spacePhraseNew() string {
+	b := make([]byte, spacePhraseWords)
+	rand.Read(b)
+	w := make([]string, len(b))
+	for i, x := range b {
+		w[i] = spaceWords[x]
+	}
+	p := strings.Join(w, " ")
+	if err := spacePhraseOK(p); err != nil {
+		panic(err)
+	}
+	return p
+}
+
+// spaceNew — новое пространство с одним ПК (id, pub): свежие sid и osalt, эпоха 1, вход 1 и новая фраза генератора
+// (своя фраза при создании не принимается — С3); фраза возвращается один раз — окно показывает её для записи.
+// psalt/phash/totpSecret — из записи владельца на этом ПК (пароль входа сверяет вызывающий).
+func spaceNew(psalt, phash []byte, totpSecret, id string, pub ed25519.PublicKey) (*space, string, error) {
 	if len(psalt) != spaceSaltLen || len(phash) != spaceHashLen {
-		return nil, fmt.Errorf("%w: соль или хэш пароля", errSpaceFormat)
+		return nil, "", fmt.Errorf("%w: соль или хэш пароля", errSpaceFormat)
 	}
-	if subtle.ConstantTimeCompare(pake.KDF(password, psalt), phash) != 1 {
-		return nil, errSpacePassword
-	}
+	phrase := spacePhraseNew()
 	m := &space{
 		SID: make([]byte, spaceSaltLen), Epoch: 1, OSalt: make([]byte, spaceSaltLen),
 		PSalt: bytes.Clone(psalt), PHash: bytes.Clone(phash), TOTP: totpSecret,
+		LGen: 1, LPrev: make([]byte, sha256.Size), LMerge: make([]byte, sha256.Size),
 		Members: []spaceMember{{ID: id, Pub: bytes.Clone(pub)}},
 	}
 	rand.Read(m.SID)
 	for rand.Read(m.OSalt); bytes.Equal(m.OSalt, m.PSalt); rand.Read(m.OSalt) {
 	}
-	key := spaceOwnerKey(password, m.OSalt)
+	key := spaceOwnerKey(phrase, m.OSalt)
 	defer clear(key)
 	m.OPub = bytes.Clone(key.Public().(ed25519.PublicKey))
 	if err := m.seal(key); err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return m, nil
+	return m, phrase, nil
 }
 
-// spaceAdd — состав следующей эпохи с новым ПК. Только с паролем владельца; m не меняется.
-func spaceAdd(m *space, password, id string, pub ed25519.PublicKey) (*space, error) {
+// loginHash — хэш входа (lgen, psalt, phash, totp) для lprev/lmerge.
+func (m *space) loginHash() []byte {
+	b := binary.BigEndian.AppendUint32([]byte(spaceLoginDomain), m.LGen)
+	b = append(append(append(b, m.PSalt...), m.PHash...), byte(len(m.TOTP)))
+	h := sha256.Sum256(append(b, m.TOTP...))
+	return h[:]
+}
+
+// loginEq — тот же вход и та же его история.
+func (m *space) loginEq(o *space) bool {
+	return m.LGen == o.LGen && bytes.Equal(m.loginHash(), o.loginHash()) && bytes.Equal(m.LPrev, o.LPrev) && bytes.Equal(m.LMerge, o.LMerge)
+}
+
+// loginFrom — вход m — прямое продолжение входа o (o — его lprev или lmerge).
+func (m *space) loginFrom(o *space) bool {
+	h := o.loginHash()
+	return m.LGen > o.LGen && (bytes.Equal(m.LPrev, h) || bytes.Equal(m.LMerge, h))
+}
+
+// setLogin — новый пароль входа (открытым текстом; "" — прежний; соль новая) и секрет TOTP ("" — прежний) в
+// неподписанной правке; вход сменился — lgen+1, lprev — прежний вход. Пароль, равный фразе, — отказ (С1).
+func (m *space) setLogin(phrase, password, totpSecret string) error {
+	prev := m.loginHash()
+	if password != "" {
+		if err := spacePhraseLoginOK(phrase, password); err != nil {
+			return err
+		}
+		psalt := make([]byte, spaceSaltLen)
+		for rand.Read(psalt); bytes.Equal(psalt, m.OSalt); rand.Read(psalt) {
+		}
+		m.PSalt, m.PHash = psalt, pake.KDF(password, psalt)
+	}
+	if totpSecret != "" {
+		m.TOTP = totpSecret
+	}
+	if password == "" && totpSecret == "" || bytes.Equal(prev, m.loginHash()) {
+		return nil
+	}
+	if m.LGen == math.MaxUint32 {
+		return fmt.Errorf("%w: номер входа", errSpaceLimit)
+	}
+	m.LGen++
+	m.LPrev, m.LMerge = prev, make([]byte, sha256.Size)
+	return nil
+}
+
+// spaceAdd — состав следующей эпохи с новым ПК. Только с фразой пространства; m не меняется.
+func spaceAdd(m *space, phrase, id string, pub ed25519.PublicKey) (*space, error) {
 	n, err := m.next()
 	if err != nil {
 		return nil, err
@@ -198,15 +338,38 @@ func spaceAdd(m *space, password, id string, pub ed25519.PublicKey) (*space, err
 	}
 	n.Members = append(n.Members, spaceMember{ID: id, Pub: bytes.Clone(pub)})
 	slices.SortFunc(n.Members, func(a, b spaceMember) int { return bytes.Compare(a.Pub, b.Pub) })
-	if err := n.sign(password); err != nil {
+	if err := n.sign(phrase); err != nil {
+		return nil, err
+	}
+	return n, nil
+}
+
+// spaceSetLogin — состав следующей эпохи с новым паролем входа записи владельца (открытым текстом, "" — прежний)
+// и/или новым секретом TOTP ("" — прежний). Только с фразой; ключ владельца тот же, члены принимают правку по
+// закреплённому opub (spaceAccept) без фразы у них. Новые соль и хэш — в результате (для записи по умолчанию).
+func spaceSetLogin(m *space, phrase, password, totpSecret string) (*space, error) {
+	n, err := m.next()
+	if err != nil {
+		return nil, err
+	}
+	if password == "" && (totpSecret == "" || totpSecret == n.TOTP) {
+		return nil, errSpaceNoChange
+	}
+	if err := n.signLogin(phrase, password, totpSecret); err != nil {
 		return nil, err
 	}
 	return n, nil
 }
 
 // spaceRemove — состав следующей эпохи без ПК pub: ключ уходит в исключённые навсегда, секрет TOTP новый
-// (исключённый ПК знал старый). Только с паролем владельца; m не меняется.
-func spaceRemove(m *space, password string, pub ed25519.PublicKey) (*space, error) {
+// (исключённый ПК знал старый). Только с фразой; m не меняется.
+func spaceRemove(m *space, phrase string, pub ed25519.PublicKey) (*space, error) {
+	return spaceRemoveLogin(m, phrase, pub, "")
+}
+
+// spaceRemoveLogin — исключение ПК pub и смена пароля входа ("" — прежний) одной правкой, одной эпохой: исключённый
+// знал и хэш пароля, и секрет TOTP (решение 5 владельца: окно просит сменить пароль).
+func spaceRemoveLogin(m *space, phrase string, pub ed25519.PublicKey, password string) (*space, error) {
 	n, err := m.next()
 	if err != nil {
 		return nil, err
@@ -223,8 +386,7 @@ func spaceRemove(m *space, password string, pub ed25519.PublicKey) (*space, erro
 	n.Members = slices.Delete(n.Members, i, i+1)
 	n.Gone = append(n.Gone, bytes.Clone(pub))
 	slices.SortFunc(n.Gone, bytes.Compare)
-	n.TOTP = totp.NewSecret()
-	if err := n.sign(password); err != nil {
+	if err := n.signLogin(phrase, password, totp.NewSecret()); err != nil {
 		return nil, err
 	}
 	return n, nil
@@ -235,8 +397,8 @@ func spaceRemove(m *space, password string, pub ed25519.PublicKey) (*space, erro
 //   - errSpaceStale — эпоха меньше (откат: украденный ПК вернул бы старый список);
 //   - errSpaceSame — тот же состав, менять нечего;
 //   - errSpaceFork — две правки от одной эпохи (равная эпоха с другими байтами; большая эпоха, где пропал
-//     исключённый или член, не попавший в исключённые). Честная история так не идёт: исключение — это перенос
-//     в gone, а не удаление. Лечится слиянием spaceMerge с паролем владельца;
+//     исключённый или член, не попавший в исключённые, или вход — не тот же и не прямое продолжение текущего). Честная история так не идёт: исключение — это перенос
+//     в gone, а не удаление. Лечится слиянием spaceMerge с фразой;
 //   - errSpaceJump — скачок эпохи больше spaceMaxJump.
 func spaceAccept(cur, in *space) error {
 	if cur == nil || in == nil {
@@ -271,14 +433,19 @@ func spaceAccept(cur, in *space) error {
 			return fmt.Errorf("%w: пропал член", errSpaceFork)
 		}
 	}
+	if !in.loginEq(cur) && !in.loginFrom(cur) { // С2: смена пароля или TOTP не теряется молча
+		return fmt.Errorf("%w: вход (пароль или код) разошёлся", errSpaceFork)
+	}
 	return nil
 }
 
 // spaceMerge — слияние двух ветвей одного пространства (раскол, errSpaceFork): эпоха max+1, исключённые —
 // объединение, члены — объединение без исключённых. Секрет TOTP новый, если хоть одна ветвь не знала о каком-то
-// исключении (исключённый знает её секрет) или ветви разошлись в секрете. Только с паролем владельца.
-// Результат принимает каждая ветвь (spaceAccept).
-func spaceMerge(a, b *space, password string) (*space, error) {
+// исключении (исключённый знает её секрет). Вход: равный или прямое продолжение входа другой ветви — берётся
+// новейший; разошлись (смены входа в обеих ветвях) — молча не сливаются, окно задаёт пароль входа заново (password;
+// "" — не задан, тогда errSpaceFork), секрет TOTP тогда тоже новый, если ветви в нём разошлись. Новый вход: lgen =
+// max+1, lprev и lmerge — входы обеих ветвей. Только с фразой. Результат принимает каждая ветвь (spaceAccept).
+func spaceMerge(a, b *space, phrase, password string) (*space, error) {
 	if a == nil || b == nil {
 		return nil, errSpaceFormat
 	}
@@ -290,9 +457,6 @@ func spaceMerge(a, b *space, password string) (*space, error) {
 	}
 	if !a.sameSpace(b) {
 		return nil, errSpaceForeign
-	}
-	if !bytes.Equal(a.PSalt, b.PSalt) || !bytes.Equal(a.PHash, b.PHash) {
-		return nil, fmt.Errorf("%w: ветви разошлись в пароле записи", errSpaceFork) // смена пароля — не Э1
 	}
 	top := a
 	if b.Epoch > a.Epoch {
@@ -329,11 +493,39 @@ func spaceMerge(a, b *space, password string) (*space, error) {
 		return nil, fmt.Errorf("%w: не больше %d ПК", errSpaceLimit, spaceMaxMembers)
 	}
 	slices.SortFunc(n.Members, func(x, y spaceMember) int { return bytes.Compare(x.Pub, y.Pub) })
-	n.TOTP = a.TOTP
-	if len(n.Gone) > len(a.Gone) || len(n.Gone) > len(b.Gone) || a.TOTP != b.TOTP {
-		n.TOTP = totp.NewSecret()
+	base := a // ветвь с новейшим входом
+	switch {
+	case a.loginEq(b), a.loginFrom(b):
+	case b.loginFrom(a):
+		base = b
+	case password == "":
+		return nil, fmt.Errorf("%w: ветви разошлись во входе (пароль или код) — задайте пароль заново", errSpaceFork)
 	}
-	if err := n.sign(password); err != nil {
+	n.PSalt, n.PHash, n.TOTP = bytes.Clone(base.PSalt), bytes.Clone(base.PHash), base.TOTP
+	n.LGen, n.LPrev, n.LMerge = base.LGen, bytes.Clone(base.LPrev), bytes.Clone(base.LMerge)
+	sec := ""
+	if len(n.Gone) > len(a.Gone) || len(n.Gone) > len(b.Gone) || password != "" && a.TOTP != b.TOTP {
+		sec = totp.NewSecret()
+	}
+	key, err := n.ownerKey(phrase)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(key)
+	if err := n.setLogin(phrase, password, sec); err != nil {
+		return nil, err
+	}
+	if n.LGen != base.LGen { // новый вход — продолжение обеих ветвей
+		if max(a.LGen, b.LGen) == math.MaxUint32 {
+			return nil, fmt.Errorf("%w: номер входа", errSpaceLimit)
+		}
+		n.LGen = max(a.LGen, b.LGen) + 1
+		n.LPrev, n.LMerge = a.loginHash(), b.loginHash()
+		if bytes.Equal(n.LPrev, n.LMerge) {
+			n.LMerge = make([]byte, sha256.Size)
+		}
+	}
+	if err := n.seal(key); err != nil {
 		return nil, err
 	}
 	return n, nil
@@ -353,7 +545,7 @@ func (m *space) member(pub []byte) bool {
 	return slices.ContainsFunc(m.Members, func(x spaceMember) bool { return bytes.Equal(x.Pub, pub) })
 }
 
-// verify — состав цел (check) и подписан ключом OPub. Чей это OPub — решает spaceAccept или тот, кто вводил пароль.
+// verify — состав цел (check) и подписан ключом OPub. Чей это OPub — решает spaceAccept или тот, кто вводил фразу.
 func (m *space) verify() error {
 	if m == nil {
 		return errSpaceFormat
@@ -367,21 +559,43 @@ func (m *space) verify() error {
 	return nil
 }
 
-// sign — подписать паролем владельца: ключ из пароля обязан совпасть с OPub, иначе errSpacePassword. При ошибке
-// m не годен (без подписи) — вызывающий его выбрасывает.
-func (m *space) sign(password string) error {
-	if len(m.OSalt) != spaceSaltLen {
-		return errSpaceFormat
+// sign — подписать фразой: ключ из фразы обязан совпасть с OPub, иначе errSpacePhrase. При ошибке m не годен (без
+// подписи) — вызывающий его выбрасывает.
+func (m *space) sign(phrase string) error { return m.signLogin(phrase, "", "") }
+
+// ownerKey — ключ владельца из фразы (правило spacePhraseOK — до Argon2), равный OPub, иначе errSpacePhrase.
+func (m *space) ownerKey(phrase string) (ed25519.PrivateKey, error) {
+	if err := spacePhraseOK(phrase); err != nil {
+		return nil, err
 	}
-	key := spaceOwnerKey(password, m.OSalt)
+	if len(m.OSalt) != spaceSaltLen {
+		return nil, errSpaceFormat
+	}
+	key := spaceOwnerKey(phrase, m.OSalt)
+	if subtle.ConstantTimeCompare(key.Public().(ed25519.PublicKey), m.OPub) != 1 {
+		clear(key)
+		return nil, errSpacePhrase
+	}
+	return key, nil
+}
+
+// signLogin — sign с правкой входа (setLogin): сперва фраза (errSpacePhrase), потом правка и подпись.
+func (m *space) signLogin(phrase, password, totpSecret string) error {
+	key, err := m.ownerKey(phrase)
+	if err != nil {
+		return err
+	}
 	defer clear(key)
+	if err := m.setLogin(phrase, password, totpSecret); err != nil {
+		return err
+	}
 	return m.seal(key)
 }
 
 // seal — подпись готовым ключом владельца (он же — сверка ключа с OPub).
 func (m *space) seal(key ed25519.PrivateKey) error {
 	if subtle.ConstantTimeCompare(key.Public().(ed25519.PublicKey), m.OPub) != 1 {
-		return errSpacePassword
+		return errSpacePhrase
 	}
 	if err := m.check(); err != nil {
 		return err
@@ -401,6 +615,7 @@ func (m *space) next() (*space, error) {
 	n := &space{
 		SID: bytes.Clone(m.SID), Epoch: m.Epoch + 1, OSalt: bytes.Clone(m.OSalt), OPub: bytes.Clone(m.OPub),
 		PSalt: bytes.Clone(m.PSalt), PHash: bytes.Clone(m.PHash), TOTP: m.TOTP,
+		LGen: m.LGen, LPrev: bytes.Clone(m.LPrev), LMerge: bytes.Clone(m.LMerge),
 	}
 	for _, x := range m.Members {
 		n.Members = append(n.Members, spaceMember{ID: x.ID, Pub: bytes.Clone(x.Pub)})
@@ -441,6 +656,11 @@ func (m *space) check() error {
 		return bad("соль ключа владельца равна соли пароля")
 	case !spaceTOTPOK(m.TOTP):
 		return bad("секрет TOTP")
+	case len(m.LPrev) != sha256.Size || len(m.LMerge) != sha256.Size || m.LGen == 0:
+		return bad("номер или история входа")
+	case (m.LGen == 1) != bytes.Equal(m.LPrev, make([]byte, sha256.Size)),
+		m.LGen == 1 && !bytes.Equal(m.LMerge, make([]byte, sha256.Size)), m.LGen > 1 && bytes.Equal(m.LPrev, m.LMerge):
+		return bad("история входа")
 	case len(m.Members) == 0:
 		return bad("нет ни одного ПК")
 	}
@@ -480,6 +700,9 @@ func (m *space) signBytes() []byte {
 	b = append(b, m.PHash...)
 	b = append(b, byte(len(m.TOTP)))
 	b = append(b, m.TOTP...)
+	b = binary.BigEndian.AppendUint32(b, m.LGen)
+	b = append(b, m.LPrev...)
+	b = append(b, m.LMerge...)
 	b = append(b, byte(len(m.Members)))
 	for _, x := range m.Members {
 		b = append(b, x.ID...)
@@ -533,6 +756,8 @@ func spaceParse(b []byte) (*space, error) {
 		return nil, errSpaceLimit
 	}
 	m.TOTP = string(take(n))
+	m.LGen = binary.BigEndian.Uint32(take(4))
+	m.LPrev, m.LMerge = take(sha256.Size), take(sha256.Size)
 	if n = int(take(1)[0]); n > spaceMaxMembers {
 		return nil, errSpaceLimit
 	}

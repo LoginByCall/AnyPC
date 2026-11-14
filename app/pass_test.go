@@ -18,26 +18,24 @@ import (
 )
 
 // passSpace — мастер в пространстве (пароль spacePass, секрет sec) с ещё тремя членами ids; ключи членов — keys.
-func passSpace(t *testing.T, sec string, ids ...string) (*config, map[string]ed25519.PublicKey) {
+func passSpace(t *testing.T, sec string, ids ...string) (*config, map[string]ed25519.PublicKey, string) {
 	t.Helper()
 	c := spaceCfg(t, spacePass, sec)
-	if err := c.spaceCreate(spacePass); err != nil {
-		t.Fatal(err)
-	}
+	ph := spaceMake(t, c)
 	c.mu.Lock()
 	m := c.spaceLocked()
 	c.mu.Unlock()
 	keys := map[string]ed25519.PublicKey{}
 	for _, id := range ids {
 		pub, _, _ := ed25519.GenerateKey(nil)
-		n, err := spaceAdd(m, spacePass, id, pub)
+		n, err := spaceAdd(m, ph, id, pub)
 		if err != nil {
 			t.Fatal(err)
 		}
 		m, keys[id] = n, pub
 	}
 	setSpace(t, c, m)
-	return c, keys
+	return c, keys, ph
 }
 
 func setSpace(t *testing.T, c *config, m *space) {
@@ -74,7 +72,7 @@ func TestPassWorkHere(t *testing.T) {
 	log.SetOutput(&logs)
 	defer log.SetOutput(os.Stderr)
 	sec := totp.NewSecret()
-	c, keys := passSpace(t, sec, "200000001", "200000002", "200000003", "200000004")
+	c, keys, ph := passSpace(t, sec, "200000001", "200000002", "200000003", "200000004")
 	var mu sync.Mutex
 	var opens, offs []passCall
 	oldOpen, oldOff := passOpenFn, passOffFn
@@ -109,7 +107,7 @@ func TestPassWorkHere(t *testing.T) {
 	for _, x := range []struct {
 		pw, code string
 		want     error
-	}{{"wrong-pass-1", code, errSpacePassword}, {spacePass, bad, errPassCode}} {
+	}{{"wrong-pass-1", code, errSpacePassword}, {ph, code, errSpacePassword}, {spacePass, bad, errPassCode}} {
 		if _, err := p.workHere(context.Background(), x.pw, x.code); !errors.Is(err, x.want) {
 			t.Errorf("%s/%s: %v, ждали %v", x.pw, x.code, err, x.want)
 		}
@@ -189,7 +187,7 @@ func TestPassWorkHere(t *testing.T) {
 // TestPassHoldWipe — пароль и код на мастере затираются по сроку passHoldFor, даже если цель не ответила.
 func TestPassHoldWipe(t *testing.T) {
 	sec := totp.NewSecret()
-	c, _ := passSpace(t, sec, "200000001")
+	c, _, _ := passSpace(t, sec, "200000001")
 	old, oldFor := passOpenFn, passHoldFor
 	defer func() { passOpenFn, passHoldFor = old, oldFor }()
 	passHoldFor = 300 * time.Millisecond
@@ -224,7 +222,7 @@ func TestPassHoldWipe(t *testing.T) {
 // «Спрашивать» — нет.
 func TestPassMember(t *testing.T) {
 	sec := totp.NewSecret()
-	c, keys := passSpace(t, sec, "200000001", "200000002")
+	c, keys, ph := passSpace(t, sec, "200000001", "200000002")
 	salt, _, _ := c.secret("")
 	other, _, _ := ed25519.GenerateKey(nil)
 	for _, x := range []struct {
@@ -245,7 +243,7 @@ func TestPassMember(t *testing.T) {
 	c.mu.Lock()
 	m := c.spaceLocked()
 	c.mu.Unlock()
-	n, err := spaceRemove(m, spacePass, keys["200000002"])
+	n, err := spaceRemove(m, ph, keys["200000002"])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +263,7 @@ func TestPassMember(t *testing.T) {
 // отказывает до сети.
 func TestPassNoDetector(t *testing.T) {
 	sec := totp.NewSecret()
-	c, _ := passSpace(t, sec, "200000001")
+	c, _, _ := passSpace(t, sec, "200000001")
 	old := passOpenFn
 	defer func() { passOpenFn = old }()
 	passOpenFn = func(context.Context, agent.PassDial) error { t.Error("вход без детектора"); return nil }
@@ -284,7 +282,7 @@ func TestPassNoDetector(t *testing.T) {
 // неё снимается в конце workHere.
 func TestPassLockDuringWorkHere(t *testing.T) {
 	sec := totp.NewSecret()
-	c, _ := passSpace(t, sec, "200000001")
+	c, _, _ := passSpace(t, sec, "200000001")
 	oldOpen, oldOff := passOpenFn, passOffFn
 	defer func() { passOpenFn, passOffFn = oldOpen, oldOff }()
 	in, release := make(chan struct{}), make(chan struct{})
@@ -311,7 +309,7 @@ func TestPassLockDuringWorkHere(t *testing.T) {
 // «Работаю тут» на ту же цель повторы прекращает.
 func TestPassOffRetry(t *testing.T) {
 	sec := totp.NewSecret()
-	c, _ := passSpace(t, sec, "200000001")
+	c, _, _ := passSpace(t, sec, "200000001")
 	oldOpen, oldOff, oldRetry := passOpenFn, passOffFn, passOffRetry
 	defer func() { passOpenFn, passOffFn, passOffRetry = oldOpen, oldOff, oldRetry }()
 	passOffRetry = 20 * time.Millisecond
@@ -358,7 +356,7 @@ func TestPassOffRetry(t *testing.T) {
 // SIGTERM: ctx программы отменён, затем offAll выхода — цель из повторов в него попадает.
 func TestPassQuitTakesRetry(t *testing.T) {
 	sec := totp.NewSecret()
-	c, _ := passSpace(t, sec, "200000001")
+	c, _, _ := passSpace(t, sec, "200000001")
 	oldOpen, oldOff, oldRetry := passOpenFn, passOffFn, passOffRetry
 	defer func() { passOpenFn, passOffFn, passOffRetry = oldOpen, oldOff, oldRetry }()
 	passOffRetry = time.Hour // повтор спит (в бою — до 5 мин)
