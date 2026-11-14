@@ -28,7 +28,7 @@ import (
 )
 
 // cdpConn — соединение CDP по паре pipe: запрос {id, method, params, sessionId} и ответ {id, result|error};
-// события (без id) пропускаются.
+// события (без id) — в ev, если задан; конец канала — событие cdpGone.
 type cdpConn struct {
 	w    io.WriteCloser
 	wmu  sync.Mutex // запись сообщения целиком
@@ -39,7 +39,13 @@ type cdpConn struct {
 	err  error  // причина закрытия; задаётся до close(done)
 	kill func() // убить Chrome (запись в pipe не прошла в срок); nil — нечего
 	bctx string // свой контекст браузера (Target.createBrowserContext): история и кэш — в памяти, не в профиле
+	ev   cdpEvents
 }
+
+// cdpEvents — обработчик событий; зовётся из читающей горутины: вызывать c.call в нём нельзя (ответ читает она же).
+type cdpEvents func(c *cdpConn, method string, params json.RawMessage)
+
+const cdpGone = "AnyPC.gone" // канал от Chrome закрыт: Chrome вышел или упал
 
 type cdpReply struct {
 	ID     int             `json:"id"`
@@ -49,8 +55,8 @@ type cdpReply struct {
 	} `json:"error"`
 }
 
-func newCDP(r io.Reader, w io.WriteCloser) *cdpConn {
-	c := &cdpConn{w: w, wait: map[int]chan cdpReply{}, done: make(chan struct{})}
+func newCDP(r io.Reader, w io.WriteCloser, ev cdpEvents) *cdpConn {
+	c := &cdpConn{w: w, wait: map[int]chan cdpReply{}, done: make(chan struct{}), ev: ev}
 	go c.read(bufio.NewReaderSize(r, 64<<10))
 	return c
 }
@@ -60,10 +66,23 @@ func (c *cdpConn) read(r *bufio.Reader) {
 		b, err := r.ReadBytes(0)
 		if err != nil {
 			c.close(fmt.Errorf("cdp: канал закрыт (%v)", err))
+			if c.ev != nil {
+				c.ev(c, cdpGone, nil)
+			}
 			return
 		}
-		var m cdpReply
-		if json.Unmarshal(b[:len(b)-1], &m) != nil || m.ID == 0 {
+		var m struct {
+			cdpReply
+			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
+		}
+		if json.Unmarshal(b[:len(b)-1], &m) != nil {
+			continue
+		}
+		if m.ID == 0 {
+			if m.Method != "" && c.ev != nil {
+				c.ev(c, m.Method, m.Params)
+			}
 			continue
 		}
 		c.mu.Lock()
@@ -71,7 +90,7 @@ func (c *cdpConn) read(r *bufio.Reader) {
 		delete(c.wait, m.ID)
 		c.mu.Unlock()
 		if ch != nil {
-			ch <- m // буфер 1: читатель не ждёт ушедшего по ctx
+			ch <- m.cdpReply // буфер 1: читатель не ждёт ушедшего по ctx
 		}
 	}
 }
@@ -204,15 +223,18 @@ func (c *cdpConn) until(ctx context.Context, session, expr string) error {
 	}
 }
 
-// chromeWin — свой процесс Chrome для окон ПК: запускается при первом окне, после выхода Chrome — заново.
+// chromeWin — свой процесс Chrome для окна AnyPC (Linux) и окон ПК: запускается при первом окне, после выхода Chrome — заново.
 type chromeWin struct {
-	base  string        // http://127.0.0.1:порт — источник страницы
-	issue func() string // одноразовый код окна (?n=), уходит по pipe, не в argv
-	dir   string        // профиль Chrome AnyPC
-	look  func(string) (string, error)
-	mu    sync.Mutex
-	c     *cdpConn
-	bad   map[string]time.Time // браузеры, не ответившие по pipe (snap за обёрткой-скриптом и т. п.): мимо до указанного времени
+	base    string        // http://127.0.0.1:порт — источник страницы
+	issue   func() string // одноразовый код окна (?n=), уходит по pipe, не в argv
+	dir     string        // профиль Chrome AnyPC
+	look    func(string) (string, error)
+	onClose func() // главное окно закрыто пользователем или Chrome вышел при открытом главном окне; nil — ничего
+	mu      sync.Mutex
+	c       *cdpConn
+	main    string               // цель главного окна AnyPC в c; "" — его нет (или закрываем сами)
+	mainMu  sync.Mutex           // одно открытие главного окна за раз (двойной щелчок в трее — не два окна)
+	bad     map[string]time.Time // браузеры, не ответившие по pipe (snap за обёрткой-скриптом и т. п.): мимо до указанного времени
 }
 
 var cdpStartWait = 10 * time.Second // сколько ждать ответа Chrome по pipe при запуске
@@ -258,17 +280,34 @@ func cdpBrowser(look func(string) (string, error), real func(string) (string, er
 }
 
 // chromeArgs — аргументы Chrome: в них нет ни кода окна, ни токена (/proc/*/cmdline читают все пользователи ПК).
-func chromeArgs(dir string) []string {
-	return []string{"--remote-debugging-pipe", "--user-data-dir=" + dir, "--no-first-run", "--no-default-browser-check", "--no-startup-window"}
+// app — Chrome запускается ради главного окна: оно — окном приложения (--app, без вкладок и адресной строки) на
+// заглушке; адрес с кодом приходит потом по pipe (Page.navigate). Измерено (Chrome 157, Wayland): рамка окна та же,
+// что у --app=http://…, полосы адреса после перехода на 127.0.0.1 нет; без окон (окна ПК) — --no-startup-window.
+func chromeArgs(dir string, app bool) []string {
+	first := "--no-startup-window"
+	if app {
+		first = "--app=" + appStub
+	}
+	return append([]string{"--remote-debugging-pipe", "--user-data-dir=" + dir, "--no-first-run", "--no-default-browser-check", first}, chromeTestArgs...)
 }
 
+const appStub = "data:text/html,<title>AnyPC</title>"
+
+var chromeTestArgs []string // тесты: --headless=new
+
 func (w *chromeWin) conn(ctx context.Context) (*cdpConn, error) {
+	c, _, err := w.start(ctx, false)
+	return c, err
+}
+
+// start — соединение с Chrome AnyPC; запущен ли он этим вызовом (с app — сразу с окном приложения, см. chromeArgs).
+func (w *chromeWin) start(ctx context.Context, app bool) (*cdpConn, bool, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.c != nil && w.c.alive() {
-		return w.c, nil
+		return w.c, false, nil
 	}
-	w.c = nil
+	w.c, w.main = nil, ""
 	bin := cdpBrowser(func(n string) (string, error) {
 		p, err := w.look(n)
 		if err == nil && time.Now().Before(w.bad[p]) {
@@ -277,23 +316,23 @@ func (w *chromeWin) conn(ctx context.Context) (*cdpConn, error) {
 		return p, err
 	}, filepath.EvalSymlinks)
 	if bin == "" {
-		return nil, errors.New("нет Chrome, Chromium или Edge (не snap), ответившего по pipe")
+		return nil, false, errors.New("нет Chrome, Chromium или Edge (не snap), ответившего по pipe")
 	}
 	if err := profileDir(w.dir); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	inR, inW, err := os.Pipe()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	outR, outW, err := os.Pipe()
 	if err != nil {
 		inR.Close()
 		inW.Close()
-		return nil, err
+		return nil, false, err
 	}
 	// Без systemd-run --scope (ср. launch): Chrome всё равно выходит вместе с pipe, то есть с AnyPC
-	cmd := exec.Command(bin, chromeArgs(w.dir)...)
+	cmd := exec.Command(bin, chromeArgs(w.dir, app)...)
 	cmd.ExtraFiles = []*os.File{inR, outW} // fd 3 и fd 4 Chrome
 	err = cmd.Start()
 	inR.Close()
@@ -302,9 +341,9 @@ func (w *chromeWin) conn(ctx context.Context) (*cdpConn, error) {
 		inW.Close()
 		outR.Close()
 		w.markBad(bin)
-		return nil, err
+		return nil, false, err
 	}
-	c := newCDP(outR, inW)
+	c := newCDP(outR, inW, w.event)
 	c.kill = func() { cmd.Process.Kill() }
 	go func() { err := cmd.Wait(); c.close(fmt.Errorf("Chrome вышел (%v)", err)); outR.Close() }()
 	var v struct {
@@ -323,12 +362,135 @@ func (w *chromeWin) conn(ctx context.Context) (*cdpConn, error) {
 		c.close(err)
 		cmd.Process.Kill()
 		w.markBad(bin)
-		return nil, fmt.Errorf("%s по pipe: %w", filepath.Base(bin), err)
+		return nil, false, fmt.Errorf("%s по pipe: %w", filepath.Base(bin), err)
 	}
 	c.bctx = b.ID
-	log.Printf("окно ПК: %s по pipe, профиль %s", v.Product, w.dir)
+	log.Printf("окна AnyPC: %s по pipe, профиль %s", v.Product, w.dir)
 	w.c = c
-	return c, nil
+	return c, true, nil
+}
+
+// event — события Chrome AnyPC: закрылась цель главного окна (крестик, Alt+F4) или Chrome вышел при открытом
+// главном окне → onClose. Перезагрузка и переходы внутри окна цель не меняют (измерено, Chrome 157); окна ПК — другие цели.
+func (w *chromeWin) event(c *cdpConn, method string, params json.RawMessage) {
+	var p struct {
+		TargetID string `json:"targetId"`
+	}
+	switch method {
+	case "Target.detachedFromTarget", "Target.targetDestroyed":
+		if json.Unmarshal(params, &p) != nil || p.TargetID == "" {
+			return
+		}
+	case cdpGone:
+	default:
+		return
+	}
+	w.mu.Lock()
+	fire := w.c == c && w.main != "" && (method == cdpGone || p.TargetID == w.main)
+	if fire {
+		w.main = ""
+	}
+	w.mu.Unlock()
+	if fire && w.onClose != nil {
+		log.Printf("окно AnyPC закрыто (%s)", map[bool]string{true: "Chrome вышел", false: "окно"}[method == cdpGone])
+		go w.onClose()
+	}
+}
+
+// openMain — главное окно AnyPC в Chrome AnyPC: открыто — поднять; Chrome не запущен — запустить с окном приложения
+// (--app); запущен ради окон ПК, а главного нет — обычное окно Chrome (окно приложения по pipe не открыть).
+// Ошибка с errNoWindow — окна нет, можно открыть прежним способом.
+func (w *chromeWin) openMain(ctx context.Context) error {
+	w.mainMu.Lock()
+	defer w.mainMu.Unlock()
+	w.mu.Lock()
+	c, tid := w.c, w.main
+	w.mu.Unlock()
+	if c != nil && c.alive() && tid != "" {
+		return c.call(ctx, "", "Target.activateTarget", map[string]any{"targetId": tid}, nil)
+	}
+	c, started, err := w.start(ctx, true)
+	if err != nil {
+		return fmt.Errorf("%w: %v", errNoWindow, err)
+	}
+	if started {
+		tid, err = firstPage(ctx, c)
+	} else {
+		var t struct {
+			TargetID string `json:"targetId"`
+		}
+		err = c.call(ctx, "", "Target.createTarget", map[string]any{"url": "about:blank", "newWindow": true}, &t)
+		tid = t.TargetID
+	}
+	if err != nil {
+		return fmt.Errorf("%w: %v", errNoWindow, err)
+	}
+	var s struct {
+		SessionID string `json:"sessionId"`
+	}
+	err = c.call(ctx, "", "Target.attachToTarget", map[string]any{"targetId": tid, "flatten": true}, &s)
+	if err == nil {
+		w.mu.Lock()
+		if w.c == c {
+			w.main = tid
+		}
+		w.mu.Unlock()
+		err = c.call(ctx, s.SessionID, "Page.navigate", map[string]any{"url": w.base + "/?n=" + w.issue()}, nil)
+	}
+	if err == nil { // страница с токеном и привязками: код принят (живой, свой uid — peer_linux.go)
+		err = c.until(ctx, s.SessionID, "typeof hostInfo === 'function'")
+	}
+	if err != nil {
+		w.mu.Lock()
+		if w.main == tid {
+			w.main = "" // своё закрытие — не выход
+		}
+		w.mu.Unlock()
+		closeTarget(c, tid)
+		return fmt.Errorf("%w: %v", errNoWindow, err)
+	}
+	return nil
+}
+
+// firstPage — цель окна, с которым Chrome запустился (--app); появляется не сразу.
+func firstPage(ctx context.Context, c *cdpConn) (string, error) {
+	for {
+		var tg struct {
+			TargetInfos []struct{ TargetID, Type string }
+		}
+		if err := c.call(ctx, "", "Target.getTargets", nil, &tg); err != nil {
+			return "", err
+		}
+		for _, x := range tg.TargetInfos {
+			if x.Type == "page" {
+				return x.TargetID, nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("нет окна приложения: %w", ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+// shut — закрыть Chrome AnyPC со всеми окнами (выход программы): это не «пользователь закрыл окно».
+func (w *chromeWin) shut() {
+	w.mu.Lock()
+	c := w.c
+	w.main = ""
+	w.mu.Unlock()
+	if c == nil || !c.alive() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	c.call(ctx, "", "Browser.close", nil, nil) // ответа может не быть: Chrome выходит, канал закрывается
+	select {
+	case <-c.done:
+	case <-ctx.Done():
+		c.close(errors.New("закрываю Chrome")) // pipe закрыт — Chrome выходит и так
+	}
 }
 
 func (w *chromeWin) markBad(bin string) {

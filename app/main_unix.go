@@ -151,9 +151,11 @@ func hostMain() {
 	run := &runner{a: a, ctx: ctx}
 	// «ПК как монитор»: окна ПК — в своём Chrome по pipe (cdp_unix.go); без него (и на Маке) — окно AnyPC прежним способом
 	pcFallback = func() { openWindow("http://" + addr + "/?n=" + once.issue()) }
-	if cdpWindows {
-		pcWin = &chromeWin{base: "http://" + addr, issue: once.issue, dir: filepath.Join(cfgDir, "AnyPC", "chrome"), look: exec.LookPath}
+	if cdpWindows { // Linux: и главное окно — в нём же (закрыть окно = выйти, «Выйти» закрывает окно — как в Windows)
+		pcWin = &chromeWin{base: "http://" + addr, issue: once.issue, dir: filepath.Join(cfgDir, "AnyPC", "chrome"), look: exec.LookPath,
+			onClose: func() { mainClosed(a) }}
 	}
+	openMain := func() { mainWindow(pcFallback) }
 	pcNative = nativeWins("http://"+addr, once.issue) // Мак: свои NSWindow
 	h := handler(addr, token, page, cfg, a, run, info, newFiles(downloads()), once)
 	go http.Serve(l, h)
@@ -165,8 +167,8 @@ func hostMain() {
 	if st, err := os.Stderr.Stat(); err == nil && st.Mode()&os.ModeCharDevice != 0 {
 		fmt.Fprintln(os.Stderr, "Окно:", url)
 	}
-	if !*noBrowser { // аргументы браузера видны всем пользователям ПК (/proc/*/cmdline) — в них одноразовый код, не токен
-		openWindow("http://" + addr + "/?n=" + once.issue())
+	if !*noBrowser { // аргументы браузера видны всем пользователям ПК (/proc/*/cmdline): Chrome AnyPC — без адреса (код по pipe), прежний способ — одноразовый код, не токен
+		go openMain()
 	}
 	passes.cfg = cfg
 	startSpaceSync(ctx, cfg, a)
@@ -174,7 +176,7 @@ func hostMain() {
 		go startLock(ctx, func() { go passes.offAll(ctx) }, passes.lockAlive)
 	}
 	if startTray != nil { // значок в трее (Linux) или строке меню (Мак): окно — повторно, каждый раз новым одноразовым кодом
-		go startTray(ctx, cfg.ID, func() { openWindow("http://" + addr + "/?n=" + once.issue()) }, func() { quitNow(a) })
+		go startTray(ctx, cfg.ID, func() { go openMain() }, func() { quitNow(a) })
 	}
 	srv := cfg.Server
 	code := cfg.code()
@@ -194,13 +196,60 @@ func hostMain() {
 // open — окно, quit — выход.
 var startTray func(ctx context.Context, id string, open, quit func())
 
-// quitNow — выход по кнопке окна или пункту трея: сессию закрыть, ответу на запрос дать уйти.
+// quitNow — выход по кнопке окна, пункту трея или закрытию главного окна: сессию закрыть, ответу на запрос дать уйти,
+// окна AnyPC закрыть (Chrome AnyPC; окно прежним способом — в браузере пользователя, его не закрыть).
 func quitNow(a *agent.Agent) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	passes.offAll(ctx) // Э3: выход мастера снимает его пропуска (нет выданных — сразу)
-	cancel()
-	a.Disconnect()
-	go func() { time.Sleep(300 * time.Millisecond); os.Exit(0) }()
+	quitOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		passes.offAll(ctx) // Э3: выход мастера снимает его пропуска (нет выданных — сразу)
+		cancel()
+		a.Disconnect()
+		go func() {
+			time.Sleep(300 * time.Millisecond)
+			if pcWin != nil {
+				pcWin.shut()
+			}
+			exit(0)
+		}()
+	})
+}
+
+var (
+	quitOnce sync.Once // окно закрывается и само после «Выйти» — второго выхода нет
+	exit     = os.Exit // тесты
+)
+
+// mainWindow — открыть главное окно (при запуске и из трея): в Chrome AnyPC (pcWin, Linux), иначе — fallback (прежний
+// способ: браузер пользователя, закрытие окна программа не видит).
+func mainWindow(fallback func()) {
+	if pcWin != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		err := pcWin.openMain(ctx)
+		cancel()
+		if err == nil {
+			return
+		}
+		if !errors.Is(err, errNoWindow) { // окно есть, но не поднялось — второе не открывать
+			log.Printf("окно AnyPC: не поднялось (%s)", scrub(err.Error()))
+			return
+		}
+		log.Printf("окно AnyPC: %s — прежним способом", scrub(err.Error()))
+	}
+	fallback()
+}
+
+// mainClosed — пользователь закрыл главное окно (или Chrome AnyPC вышел). Обычный запуск — выход, как «Выйти».
+// Служба systemd (INVOCATION_ID) — нет: она для доступа к ПК без окна (--no-browser), закрыть окно ≠ остановить
+// доступ; значок трея остаётся, окна ПК закрываются вместе с Chrome — следующее «Открыть» запустит его с окном приложения.
+func mainClosed(a *agent.Agent) {
+	if os.Getenv("INVOCATION_ID") != "" {
+		log.Printf("окно AnyPC закрыто; служба продолжает работать (значок в трее, «Выйти» — остановить)")
+		if pcWin != nil {
+			pcWin.shut()
+		}
+		return
+	}
+	quitNow(a)
 }
 
 // onceCode — коды открытия окна (при запуске и из трея). Токен в аргументах xdg-open/open читал бы любой пользователь ПК;
