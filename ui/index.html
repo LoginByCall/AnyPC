@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="ru">
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-/o4gT19ayk3GlVUYeNjy1jFJN41HFFmKuor869sXOd8=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-dhADX29DAghkZVvHOg1nRlob37I/qrO14oYFDfSxBN0=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AnyPC</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26'><style>.a{stroke:%2317181c}.b{fill:%23d2452d}@media(prefers-color-scheme:dark){.a{stroke:%23eceae4}.b{fill:%23ef6a52}}</style><rect class='a' x='1.5' y='3' width='15' height='11' rx='2' fill='none' stroke-width='2.6'/><rect class='b' x='10' y='12' width='15' height='11' rx='2'/></svg>">
@@ -948,7 +948,8 @@ async function onAuth(ch, e, mine) {
     if ($('remember').checked && again.pw) { saved.set(host, again.pw).catch(() => {}); savedUser.set(host, pc.user); }
     show(true); v.focus(); $('pw').value = ''; pwAuto(false);
     emit('ok'); // фрейм «Мои ПК»: соединение установлено — убрать метку «нужен код»/«разорвано»
-    store.edit('recent', [], r => [target, ...r.filter(x => x !== target)].slice(0, 8), renderRecent);
+    const tg = target; // правка повторяется позже на свежем значении — цель на момент входа, не глобальная
+    store.edit('recent', [], r => [tg, ...r.filter(x => x !== tg)].slice(0, 8), renderRecent);
   } else if (m.t === 'ask') { askNoOtp = !!m.nootp; $('msg').textContent = t('asking') + (askNoOtp ? ' — ' + t('ask_nootp') : ''); }
   else if (m.t === 'denied') end(t('err') + (otpStep ? t('e_otp_late') : t('e_denied') + (askNoOtp ? ' — ' + t('ask_nootp') : ''))); // на шаге кода — срок вышел
   else if (m.t === 'fail') end(t('err') + t(pc?.user ? 'e_auth_u' : 'e_auth')); // по ответу хоста не узнать, есть ли имя (REQ-S-21)
