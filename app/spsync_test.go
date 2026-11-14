@@ -45,7 +45,7 @@ func syncNode(t *testing.T, url string, c *config, old bool) *syncPC {
 	syn := &spaceSyncer{cfg: c, ctx: ctx}
 	c.syn = syn
 	a := &agent.Agent{Server: url, ID: c.id(), Secret: c.secret, Key: c.key(), OTP: c.otp,
-		Unattended: func() bool { return !c.confirm() }, SpaceGet: c.spaceGet, SpaceJoin: c.spaceJoin, SpaceMember: c.spaceMember,
+		Unattended: func() bool { return !c.confirm() }, SpaceGet: c.spaceGet, SpaceJoin: c.spaceJoin, SpaceMember: c.spaceMember, LoginShut: c.loginShut,
 		Capture: func(context.Context, agent.Cap) (*exec.Cmd, error) {
 			return nil, errors.New("тест: без захвата")
 		}}
@@ -140,7 +140,7 @@ func spaceLogin(url string, c *config, pw string) error {
 	code, _ := totp.Code(m.TOTP, time.Now())
 	_, key, _ := ed25519.GenerateKey(nil)
 	_, err := agent.SpaceJoin(context.Background(), agent.SpaceDial{Server: url, ID: c.id(), Key: key, Password: pw, Code: code,
-		Sign: func(b []byte, _ ed25519.PublicKey) ([]byte, error) { return b, nil }})
+		Sign: func(b []byte, _ ed25519.PublicKey, _ ...[]byte) ([]byte, error) { return b, nil }})
 	return err
 }
 

@@ -18,6 +18,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"anypc/hub"
@@ -27,16 +28,17 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-// spMsg — канал "ctl", состав пространства (Э2). Клиент → {"t":"sp"} — запрос состава; хост → {"t":"sp","m":…}
-// (запись M, base64) | {"t":"sp","err":"rights"|"none"}. Клиент → {"t":"sp","m":…} — M следующей эпохи с ним самим;
+// spMsg — канал "ctl", состав пространства (Э2). Клиент → {"t":"sp"} — запрос состава; хост → {"t":"sp","m":…,"h":[…]}
+// (главная верхушка M и остальные, base64; h — только добавление, решение 12 A) | {"t":"sp","err":"rights"|"none"}. Клиент → {"t":"sp","m":…} — M следующей эпохи с ним самим;
 // хост → {"t":"sp","ok":true} | {"t":"sp","err":"rights"|"key"|"again"|"bad"}.
 // err: rights — сессия вошла не паролем и кодом записи по умолчанию; none — пространства нет (или пароль записи
 // не его); key — клиент не доказал свой ключ в "b"; again — второе вступление в сессии; bad — состав не принят.
 type spMsg struct {
-	T   string `json:"t"`
-	M   []byte `json:"m,omitempty"`
-	OK  bool   `json:"ok,omitempty"`
-	Err string `json:"err,omitempty"`
+	T   string   `json:"t"`
+	M   []byte   `json:"m,omitempty"`
+	OK  bool     `json:"ok,omitempty"`
+	Err string   `json:"err,omitempty"`
+	H   [][]byte `json:"h,omitempty"` // в ответе на запрос состава: остальные верхушки
 	// Э4, сверка (spsync.go): sync — шаг обмена M; r — ещё одна верхушка M; pub, sig — ключ хоста и подпись (как в "ok")
 	Sync bool   `json:"sync,omitempty"`
 	R    []byte `json:"r,omitempty"`
@@ -59,8 +61,11 @@ func (a *Agent) spaceCtl(s *session, data []byte, reply func(spMsg)) {
 	salt, cpub := s.salt, s.cpub
 	s.mu.Unlock()
 	if len(m.M) == 0 { // запрос состава
-		if b := a.SpaceGet(salt); b != nil {
-			reply(spMsg{T: "sp", M: b})
+		if b := a.SpaceGet(salt); len(b) > 0 {
+			reply(spMsg{T: "sp", M: b[0], H: b[1:]})
+			if spaceDupM.Load() {
+				reply(spMsg{T: "sp", M: b[0], H: b[1:]})
+			}
 		} else {
 			reply(spMsg{T: "sp", Err: "none"})
 		}
@@ -97,10 +102,13 @@ type SpaceDial struct {
 	// Known — отпечаток ключа P (pake.KeyFingerprint), если этот ПК уже входил на P (config.Known): другой ключ —
 	// отказ до отправки кода. "" — первое знакомство (TOFU). TODO(Э4): сверка ключей P по составам других членов.
 	Known string
-	// Sign — по M от P (проверенный подписью хоста P и CPace) вернуть новый M, подписанный фразой пространства на этом
-	// ПК (сначала сверка opub из фразы); ошибка — отказ, P ничего не получит.
+	// Sign — по M от P (главная верхушка; heads — остальные; проверены подписью хоста P и CPace) вернуть новый M,
+	// подписанный фразой пространства на этом ПК (сначала сверка opub из фразы); ошибка — отказ, P ничего не получит.
 	// Вернул тот же M — этот ПК в нём уже есть (P сохранил прошлое вступление, а ответ не дошёл): P ничего не шлём.
-	Sign func(m []byte, hostPub ed25519.PublicKey) ([]byte, error)
+	// Sign зовётся в своей горутине и может ждать человека (окно «Это все ваши ПК?»): ctx SpaceJoin — до конца обмена.
+	Sign func(m []byte, hostPub ed25519.PublicKey, heads ...[]byte) ([]byte, error)
+	// Confirm — сколько Sign может ждать подтверждения состава человеком: прибавляется к spaceWait (решение 12 A).
+	Confirm time.Duration
 }
 
 // Ошибки SpaceJoin (для окна в следующих этапах).
@@ -114,13 +122,16 @@ var (
 	errSpaceProtocol = errors.New("пространство: нарушение протокола")
 )
 
+// spaceDupM — испытательная подмена: хост шлёт состав дважды (agent/space_test.go); в рабочем пути — нет.
+var spaceDupM atomic.Bool
+
 // spaceWait — весь обмен вступления (вход с Argon2 на обеих сторонах, ICE через TURN).
 var spaceWait = 60 * time.Second
 
 // SpaceJoin — вступить через ПК d.ID: вернуть новый M, который P принял. Ошибка — P его не сохранил (или ответа
 // не было: тогда состояние P неизвестно, повтор безопасен — второй раз P ответит "bad" на дубль ПК).
 func SpaceJoin(ctx context.Context, d SpaceDial) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, spaceWait)
+	ctx, cancel := context.WithTimeout(ctx, spaceWait+d.Confirm)
 	defer cancel()
 	var err error
 	for _, u := range strings.Split(d.Server, ",") {
@@ -225,6 +236,7 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 					}
 				})
 			case "ctl":
+				signing := false // только в OnMessage этого канала (pion зовёт его по очереди)
 				dc.OnOpen(func() { mu.Lock(); ctl = dc; askM(); mu.Unlock() })
 				dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 					var sm spMsg
@@ -241,21 +253,26 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 						finish(fmt.Errorf("%w: %s", ErrSpaceRefused, sm.Err))
 					case sm.OK && mine != nil:
 						done(mine)
-					case len(sm.M) > 0 && mine == nil:
-						m, err := d.Sign(sm.M, hp)
-						if err != nil {
-							finish(err)
-							return
-						}
-						if bytes.Equal(m, sm.M) { // уже в составе P (полу-вступление): принять как есть
-							done(m)
-							return
-						}
-						mu.Lock()
-						newM = m
-						mu.Unlock()
-						b, _ := json.Marshal(spMsg{T: "sp", M: m})
-						dc.SendText(string(b))
+					case len(sm.M) > 0 && mine == nil && !signing:
+						// второй M во время Sign — нарушение протокола (default); Sign ждёт подтверждения человеком —
+						// в своей горутине, не в потоке SCTP (решение 12 A)
+						signing = true
+						go func() {
+							m, err := d.Sign(sm.M, hp, sm.H...)
+							if err != nil {
+								finish(err)
+								return
+							}
+							if bytes.Equal(m, sm.M) { // уже в составе P (полу-вступление): принять как есть
+								done(m)
+								return
+							}
+							mu.Lock()
+							newM = m
+							mu.Unlock()
+							b, _ := json.Marshal(spMsg{T: "sp", M: m})
+							dc.SendText(string(b))
+						}()
 					default:
 						finish(errSpaceProtocol)
 					}
@@ -379,7 +396,7 @@ func hostDial(ctx context.Context, server, id string, req connectReq, setup func
 		return err
 	case <-ctx.Done():
 		if ctx.Err() == context.DeadlineExceeded {
-			return fmt.Errorf("пространство: нет ответа за %v", spaceWait)
+			return errors.New("пространство: нет ответа вовремя")
 		}
 		return ctx.Err()
 	}

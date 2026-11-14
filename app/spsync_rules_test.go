@@ -542,7 +542,7 @@ func TestSpaceLeaveSelf(t *testing.T) {
 		t.Errorf("чужой код: %v", err)
 	}
 	cb.mu.Lock()
-	cb.SpaceHeads, cb.SpaceWait, cb.SpaceClock = [][]byte{{1}}, "x", []string{"x"}
+	cb.SpaceHeads, cb.SpaceClock = [][]byte{{1}}, []string{"x"} // SpaceWait — пароль и код стираются (TestSpaceLeaveWait)
 	cb.save()
 	cb.mu.Unlock()
 	c := code()

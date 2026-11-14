@@ -66,11 +66,14 @@ func TestKeyLogin(t *testing.T) {
 	var ag *Agent
 	var asked, okKey, otpConf, okConf, nokey atomic.Bool
 	var asks atomic.Int32
+	var shut atomic.Bool // решение 12 A: LoginShut закрывает только вход паролем — ключом входят
+	var why atomic.Value // why последнего "nokey": "none" — ключа нет в списке записи (отзывать на хосте нечего)
 	unattended, hostLocked := true, false
 	e2eAgent = func(a *Agent) {
 		ag = a
 		hosts(a)
 		a.KeyLogin, a.KeyTrust = ks.login, ks.add
+		a.LoginShut = func(string) bool { return shut.Load() }
 		a.Unattended = func() bool { return unattended }
 		a.Confirm = func(string, string) Answer { asked.Store(true); return Allow }
 		if hostLocked { // хост заперт чужим перебором: ключ своей записи блокировку паролей не смотрит (У3)
@@ -87,6 +90,7 @@ func TestKeyLogin(t *testing.T) {
 			otpConf.Store(len(m.Conf) > 0)
 		case "nokey":
 			nokey.Store(true)
+			why.Store(m.Why)
 		}
 	}
 	reset := func() {
@@ -105,8 +109,8 @@ func TestKeyLogin(t *testing.T) {
 	// до «Доверять» ключа нет в списке: "nokey", неудача засчитана записи
 	e2eByKey, e2eFail = true, true
 	e2e(t, local(t), "123456789", false, ff, "ivan-pass1")
-	if f, _ := nlock(ag, "ivan"); f != 1 || !nokey.Load() || asks.Load() != 0 {
-		t.Fatalf("ключа нет в списке: неудач записи %d, nokey %v, запросов кода %d", f, nokey.Load(), asks.Load())
+	if f, _ := nlock(ag, "ivan"); f != 1 || !nokey.Load() || asks.Load() != 0 || why.Load() != "none" {
+		t.Fatalf("ключа нет в списке: неудач записи %d, nokey %v (%v), запросов кода %d", f, nokey.Load(), why.Load(), asks.Load())
 	}
 
 	// пароль + «Доверять» + код — ключ во входе без пароля записи ivan, "ok" с key
@@ -117,10 +121,12 @@ func TestKeyLogin(t *testing.T) {
 		t.Fatalf("после «Доверять»: у ivan %v, у записи по умолчанию %v, key в ok %v, conf %v", ks.in(pub, "ivan"), ks.in(pub, ""), okKey.Load(), okConf.Load())
 	}
 
-	// ключ без пароля + верный код — сессия; CPace не было: ни в "otp", ни в "ok" conf нет
+	// ключ без пароля + верный код — сессия; CPace не было: ни в "otp", ни в "ok" conf нет; вход паролем закрыт
 	e2eTrust, e2eByKey, hostLocked = false, true, true
 	reset()
+	shut.Store(true)
 	e2e(t, local(t), "123456789", false, ff, "ivan-pass1")
+	shut.Store(false)
 	if asks.Load() != 1 || otpConf.Load() || okConf.Load() || !okKey.Load() {
 		t.Fatalf("по ключу: запросов кода %d, conf в otp %v, conf в ok %v, key в ok %v", asks.Load(), otpConf.Load(), okConf.Load(), okKey.Load())
 	}
@@ -163,8 +169,8 @@ func TestKeyLogin(t *testing.T) {
 		reset()
 		e2e(t, local(t), "123456789", false, ff, "ivan-pass1")
 		f, _ := nlock(ag, c.user)
-		if !nokey.Load() || asks.Load() != 0 || asked.Load() || (f == 1) != c.counted {
-			t.Fatalf("%s: nokey %v, запросов кода %d, окно %v, неудач %d", c.name, nokey.Load(), asks.Load(), asked.Load(), f)
+		if !nokey.Load() || asks.Load() != 0 || asked.Load() || (f == 1) != c.counted || (why.Load() == "none") != c.counted {
+			t.Fatalf("%s: nokey %v (%v), запросов кода %d, окно %v, неудач %d", c.name, nokey.Load(), why.Load(), asks.Load(), asked.Load(), f)
 		}
 	}
 

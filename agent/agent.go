@@ -89,11 +89,12 @@ type Agent struct {
 	// управление; nil — смены режима нет (клиент кнопки не покажет).
 	ConfirmControl func(cid, peer string) bool
 	// «Моё пространство», Э2 (space.go, UI-REDESIGN.md): состав M для сессии записи по умолчанию, вошедшей паролем и
-	// кодом TOTP. SpaceGet(salt) — запись M (salt — соль записи при входе; nil — пространства нет или пароль не его);
+	// кодом TOTP. SpaceGet(salt) — записи M: главная верхушка, затем остальные (состав — их объединение, решение 10 A;
+	// salt — соль записи при входе; nil — пространства нет или пароль не его);
 	// SpaceJoin(salt, m, pub) — принять M следующей эпохи, где добавлен ровно ПК с ключом pub (ключ клиента,
 	// доказанный подписью в "b"), для той же записи, что и SpaceGet(salt). SpaceGet == nil — хост пространства не
 	// знает (ctl "sp" пропускается, как у старой версии). «Только показ экрана» — "sp" отвечает rights.
-	SpaceGet  func(salt []byte) []byte
+	SpaceGet  func(salt []byte) [][]byte
 	SpaceJoin func(salt, m []byte, pub ed25519.PublicKey) error
 	// Э3, пропуск 12 ч (pass.go): ключ pub — член состава M этого ПК, а запись по умолчанию с солью salt — запись
 	// владельца из M (как SpaceGet). Зовётся при выдаче и при каждом входе по пропуску. nil — пропусков нет.
@@ -108,6 +109,10 @@ type Agent struct {
 	// KeyGone — ключ pub исключён из пространства этого ПК (решение владельца A, 2026-11-14): сессия с таким
 	// доказанным ключом рвётся в любом режиме и для любой записи (revoked). nil — не сверять.
 	KeyGone func(pub []byte) bool
+	// LoginShut — вход паролем в запись user закрыт (решение владельца 12 A: ПК вступил в пространство, а сверки с
+	// членом ≠ поручитель ещё не было): "b" паролем — "denied" с why "wait" без счёта неудач. Сверка, вход ключом и
+	// по пропуску — мимо. nil — не закрывать.
+	LoginShut func(user string) bool
 
 	mu          sync.Mutex
 	ice         []webrtc.ICEServer
@@ -291,6 +296,9 @@ type authMsg struct {
 	// Э4в (spseal.go): в первом "a" хоста — статус сверки под ключом из sx connect или случайные байты (sxALen).
 	// {"t":"who"} от клиента до "b" — хост отвечает {"t":"who",pub,sig}: ключ и подпись над отпечатками, как в "ok".
 	SX []byte `json:"sx,omitempty"`
+	// Why — причина отказа: в "nokey" — "none" (ключа нет в списке входа без пароля этой записи: на хосте его
+	// отзывать незачем; старый хост поле не шлёт); в "denied" — "wait" (LoginShut).
+	Why string `json:"why,omitempty"`
 }
 
 // ctlMsg — канал "ctl": {"t":"clip","text":"…"} — буфер обмена в обе стороны (REQ-F-11);
@@ -1414,11 +1422,15 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		passIn := m.Key && m.Pass && keyOK && user == "" && otpSet && a.passValid(m.CPub, salt) // и не «Только показ экрана»
 		keyLogin := keyOn && otpSet && !passIn                                                  // otpSet — только без подтверждения
 		trusted := keyOK && a.Trusted != nil && a.Trusted(m.CPub, user) || keyLogin || passIn   // ключ закреплён за этой записью: права другой записи он не перебирает
-		reject := func(t string) {
-			send(authMsg{T: t})
+		reject := func(t string, why ...string) {
+			send(authMsg{T: t, Why: strings.Join(why, "")})
 			a.release(s) // освободить сразу: повтор не должен получить «занят»
 
 			time.AfterFunc(500*time.Millisecond, func() { s.pc.Close() }) // дать дойти ответу
+		}
+		if !m.Key && a.LoginShut != nil && a.LoginShut(user) { // решение 12 A: до сверки — ни входа паролем, ни счёта
+			reject("denied", "wait")
+			return
 		}
 		// блокировка (REQ-S-04, по имени и по хосту — REQ-S-22) — только для чужих; проверка и счёт под одним a.mu:
 		// параллельные входы не проскочат блокировку все сразу (HostFinish дешёвый — KDF посчитан заранее)
@@ -1441,7 +1453,11 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 			}
 			if !keyLogin { // ключ записи, но режим «Спрашивать» или нет TOTP — отказ без неудачи
 				a.mu.Unlock()
-				reject("nokey")
+				if !keyIn {
+					reject("nokey", "none") // ключа здесь нет (отозван, сброшен вступлением в пространство)
+				} else {
+					reject("nokey")
+				}
 				return
 			}
 		} else if !m.Key { // вход по пропуску (passIn) — ни пароля, ни счёта
