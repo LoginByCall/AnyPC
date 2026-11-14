@@ -87,8 +87,8 @@ func nativeOpen(u, title string, monitor int, main bool, seed string) int {
 
 // openWindow — главное окно AnyPC: по умолчанию браузер, как раньше; своё (WKWebView) — с ANYPC_MACWIN=1
 // (не создалось — тоже браузер). Окна ПК и значок в строке меню — свои всегда.
-// ponytail: своё главное окно по умолчанию — до переноса mine/users/stats в config.json (FINDINGS): localStorage
-// браузера в WKWebView не переходит, у пользователей пропали бы «Мои ПК».
+// mine/users/stats и пр. теперь в config.json (uiGet/uiSet): окно браузера новой версии отдаёт их в Go при первой
+// загрузке. Своё окно по умолчанию — решение владельца: включать версией ПОСЛЕ той, что хотя бы раз открыла браузер (FINDINGS).
 func openWindow(u string) {
 	if !mainNative(os.Getenv) || nativeOpen(u, "AnyPC", -1, true, "") == 0 {
 		openBrowser(u)

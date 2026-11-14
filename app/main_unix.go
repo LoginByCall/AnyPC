@@ -331,7 +331,7 @@ func handler(addr, token string, page []byte, cfg *config, a *agent.Agent, run *
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Header().Set("Cache-Control", "no-store")
-			w.Write(page)
+			w.Write(withUI(page, cfg.uiGet()))
 		default:
 			files.ServeHTTP(w, r)
 		}
@@ -352,7 +352,7 @@ window.ANYPC = {ws: %s, clipPoll: %t};
   const T = %s;
   const api = (n, ...a) => fetch('/api/' + n, {method: 'POST', headers: {'X-Token': T, 'Content-Type': 'application/json'}, body: JSON.stringify(a)})
     .then(async r => { const j = await r.json(); if (!r.ok) throw j.error; return j.result; });
-  for (const n of ['hostInfo', 'setPassword', 'setConfirm', 'setNode', 'quit', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'hostVerify', 'knownGet', 'knownSet', 'savedGet', 'savedSet', 'otpNew', 'otpEnable', 'otpOff', 'newCode', 'userSet', 'userDel', 'keyDel', 'clientSign', 'ckeyGet', 'ckeySet', 'setViewOnly', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort', 'audioAnswer', 'audioMic', 'pcWindow', 'pcScreens']) window[n] = (...a) => api(n, ...a);
+  for (const n of ['hostInfo', 'setPassword', 'setConfirm', 'setNode', 'quit', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'hostVerify', 'knownGet', 'knownSet', 'savedGet', 'savedSet', 'otpNew', 'otpEnable', 'otpOff', 'newCode', 'userSet', 'userDel', 'keyDel', 'clientSign', 'ckeyGet', 'ckeySet', 'setViewOnly', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort', 'audioAnswer', 'audioMic', 'pcWindow', 'pcScreens', 'uiGet', 'uiSet']) window[n] = (...a) => api(n, ...a);
   window.fullscreen = on => on ? document.documentElement.requestFullscreen(window.anypcScreen ? {screen: window.anypcScreen} : undefined).then(() => navigator.keyboard?.lock()).catch(() => {})
                                : document.fullscreenElement && document.exitFullscreen();
 })();
@@ -361,6 +361,17 @@ window.ANYPC = {ws: %s, clipPoll: %t};
 	sum := sha256.Sum256([]byte(js))
 	page := strings.Replace(string(b), "script-src 'self'", "script-src 'self' 'sha256-"+base64.StdEncoding.EncodeToString(sum[:])+"'", 1)
 	return []byte(strings.Replace(page, "<script>", "<script>"+js+"</script>\n<script>", 1)), nil
+}
+
+// withUI — страница с настройками окна из config.json (window.ANYPC_UI) до основного скрипта: она читает их сразу,
+// синхронно, как localStorage. Скрипт свой на каждый запрос — его хэш в CSP тоже. json.Marshal экранирует <, >, &:
+// имя ПК «</script>» из скрипта не выйдет.
+func withUI(page []byte, ui map[string]string) []byte {
+	j, _ := json.Marshal(ui)
+	js := "window.ANYPC_UI = " + string(j) + ";"
+	sum := sha256.Sum256([]byte(js))
+	s := strings.Replace(string(page), "script-src 'self'", "script-src 'self' 'sha256-"+base64.StdEncoding.EncodeToString(sum[:])+"'", 1)
+	return []byte(strings.Replace(s, "<script>", "<script>"+js+"</script>\n<script>", 1))
 }
 
 func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *agent.Agent, run *runner, info func() map[string]any, fl *files) {
@@ -408,6 +419,10 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 		res, err = openPCWindow(str(0), int(num(1)), seed)
 	case "pcScreens":
 		res, err = pcScreens()
+	case "uiGet":
+		res = cfg.uiGet()
+	case "uiSet":
+		err = cfg.uiSet(str(0), str(1))
 	case "audioAnswer":
 		err = a.AudioAnswer(str(0), str(1))
 	case "audioMic":
