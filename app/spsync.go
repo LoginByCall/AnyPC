@@ -135,7 +135,17 @@ func (c *config) spaceAddLocked(in ...*space) (changed, drop bool, err error) {
 	if bytes.Equal(before, c.spaceSnapLocked()) {
 		return false, false, nil
 	}
+	c.spaceWaitLocked()
 	return true, c.spaceFollowLocked(), nil
+}
+
+// spaceWaitLocked — правило вступления (решение 12 A) на каждом изменении объединения: членов, кроме себя и
+// поручителя, нет (остальных исключили) — сверять не с кем, SpaceWait снимается. Дефолт A вопроса владельцу.
+func (c *config) spaceWaitLocked() {
+	if m := c.spaceLocked(); c.SpaceWait != "" && m != nil &&
+		!slices.ContainsFunc(m.Members, func(x spaceMember) bool { return x.ID != c.ID && x.ID != c.SpaceWait }) {
+		c.SpaceWait = ""
+	}
 }
 
 // spaceFollowLocked — вход состава (объединения) повторяется в записи по умолчанию (под c.mu): сменился — true.
