@@ -583,7 +583,7 @@ func (c *config) SyncKey(pub ed25519.PublicKey) bool {
 
 // spaceLeave — выйти из пространства на этом ПК без фразы (С6: иначе пароль и код записи по умолчанию не сменить):
 // пароль записи по умолчанию и верный код TOTP. Удаляются верхушки и флаги; запись по умолчанию остаётся с теми же
-// паролем и кодом; пропуска, выданные здесь, гаснут (DropRevoked), выданные этому ПК как мастеру — снимаются.
+// паролем и кодом (у записи без TOTP — только паролем); пропуска, выданные здесь, гаснут (DropRevoked), выданные этому ПК как мастеру — снимаются.
 func (c *config) spaceLeave(password, code string) error {
 	c.mu.Lock()
 	c.reload()
@@ -602,12 +602,14 @@ func (c *config) spaceLeave(password, code string) error {
 		c.mu.Unlock()
 		return errSpaceChange
 	}
-	step, ok := totp.Check(u.TOTP, code, time.Now(), u.TOTPStep)
-	if !ok {
-		c.mu.Unlock()
-		return errPassCode
+	if u.TOTP != "" { // кода нет (правка файла, откат на v0.2.0 + «Спрашивать») — хватает пароля: без кода он и так входит (FINDINGS Э5)
+		step, ok := totp.Check(u.TOTP, code, time.Now(), u.TOTPStep)
+		if !ok {
+			c.mu.Unlock()
+			return errPassCode
+		}
+		u.TOTPStep = step
 	}
-	u.TOTPStep = step
 	c.Space, c.SpaceHeads, c.SpaceWait, c.SpaceClock, c.SpaceOver, c.SpacePend = nil, nil, "", nil, "", nil
 	err := c.save()
 	c.mu.Unlock()
