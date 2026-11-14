@@ -292,7 +292,7 @@ func (a *Agent) offConnect(ctx context.Context, c *websocket.Conn, cid string, r
 		a.send(ctx, c, "error", cid, "busy")
 		return
 	}
-	s, err := a.newSession(ctx, c, cid, ice, offerMsg{TURN: turn}, false, true, true)
+	s, err := a.newSession(ctx, c, cid, ice, offerMsg{TURN: turn}, false, true, true, nil)
 	a.mu.Lock()
 	a.offStarting--
 	if err == nil && !s.gone.Load() {

@@ -123,7 +123,13 @@ type Agent struct {
 	offRejAt    time.Time
 	noOffMsg    bool // тест: хост старой версии — «снять» сообщением не объявляет
 
-	syncs map[string]*session // Э4: ключ члена → его соединение сверки (одно; nil — пока шлётся offer), spsync.go
+	syncs  map[string]*session  // Э4: ключ члена → его соединение сверки (одно; nil — пока шлётся offer), spsync.go
+	sxSeen map[string]time.Time // Э4в: соли открытых sx → до какого времени помнить (повтор хабом, spseal.go)
+	// Э4в (spseal.go, sxPeers): ключ члена → статичный общий секрет X25519 с этим хостом (sxHost). ТРЕБУЕТ РЕВЬЮ
+	// ЧЕЛОВЕКОМ: по чувствительности равен закрытому ключу — только в памяти.
+	sxMu    sync.Mutex
+	sxHost  ed25519.PublicKey
+	sxCache map[string][]byte
 }
 
 type session struct {
@@ -181,7 +187,8 @@ type session struct {
 	stateAt   time.Time             // когда state последний раз уходил клиенту (повтор — repeatState)
 	twcc      atomic.Bool           // от клиента пришёл первый отчёт TWCC (в журнал — один раз)
 
-	sy atomic.Pointer[spSync] // Э4: соединение сверки (syncConnect, spsync.go); nil — нет
+	sy   atomic.Pointer[spSync] // Э4: соединение сверки (syncConnect, spsync.go); nil — нет
+	seal *sxSeal                // Э4в: ответ в "sx" первого "a" (spseal.go); nil — случайные байты
 }
 
 // monitor — выбранный монитор для пересчёта координат мыши (nil — мониторов не знаем).
@@ -270,6 +277,9 @@ type authMsg struct {
 	PID   []byte `json:"pid,omitempty"`   // Э3: в "ok" с pass — id пропуска (им мастер снимает пропуск через хаб, pass.go)
 
 	Sync bool `json:"sync,omitempty"` // Э4 (spsync.go): в первом "a" — хост понимает сверку; в "b" с key — сверка
+	// Э4в (spseal.go): в первом "a" хоста — статус сверки под ключом из sx connect или случайные байты (sxALen).
+	// {"t":"who"} от клиента до "b" — хост отвечает {"t":"who",pub,sig}: ключ и подпись над отпечатками, как в "ok".
+	SX []byte `json:"sx,omitempty"`
 }
 
 // ctlMsg — канал "ctl": {"t":"clip","text":"…"} — буфер обмена в обе стороны (REQ-F-11);
@@ -789,8 +799,10 @@ func (a *Agent) onConnect(ctx context.Context, c *websocket.Conn, m hub.Msg) {
 		a.offConnect(ctx, c, m.From, req)
 		return
 	}
-	if req.Sync && a.SpaceSync != nil { // Э4: сверка состава — вне места сессии и блокировки (spsync.go)
-		a.syncConnect(ctx, c, m.From, req)
+	// Э4в: сверка состава — запечатанное доказательство члена в sx (spseal.go); вне maxPending и блокировки, при
+	// идущей сессии — тот же отказ, что обычному (spsync.go). Не открылось или не годно — обычный connect, статус сверки уйдёт клиенту в "a".
+	pub, seal := a.sxCheck(req.SX)
+	if seal != nil && seal.status == sxOK && a.syncConnect(ctx, c, m.From, req, pub, seal) {
 		return
 	}
 	trusted := a.Trusted != nil && len(req.CPub) == ed25519.PublicKeySize && a.Trusted(req.CPub, AnyUser) // имя ещё не известно
@@ -833,7 +845,7 @@ func (a *Agent) onConnect(ctx context.Context, c *websocket.Conn, m hub.Msg) {
 	if turn != "" {
 		log.Printf("сессия %s: TURN %s (выбор клиента %q; клиент %v, хост %v мс)", m.From, turn, req.TURN, req.RTT, rtt)
 	}
-	s, err := a.newSession(ctx, c, m.From, ice, offerMsg{TURN: turn, RTT: rtt}, req.VP9 && VP9Built, req.View, false)
+	s, err := a.newSession(ctx, c, m.From, ice, offerMsg{TURN: turn, RTT: rtt}, req.VP9 && VP9Built, req.View, false, seal)
 	a.mu.Lock()
 	a.starting--
 	var dup *session                  // два connect одного клиента, пока первый ещё слал offer: оставить последний
@@ -1027,7 +1039,7 @@ func newAPI(se webrtc.SettingEngine, kbps int) (*webrtc.API, chan cc.BandwidthEs
 }
 
 // vp9 — кодер VP9 в процессе (по запросу клиента и если собран), иначе H.264 через ffmpeg.
-func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, ice []webrtc.ICEServer, om offerMsg, vp9, view, off bool) (*session, error) {
+func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, ice []webrtc.ICEServer, om offerMsg, vp9, view, off bool, seal *sxSeal) (*session, error) {
 	kbps := 0
 	if a.Capture != nil {
 		kbps = a.Bitrate
@@ -1061,7 +1073,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 	if err != nil {
 		return fail(err)
 	}
-	s := &session{cid: cid, conn: c, pc: pc, mons: listMonitors(), vp9: vp9, pace: pace, offOnly: off}
+	s := &session{cid: cid, conn: c, pc: pc, mons: listMonitors(), vp9: vp9, pace: pace, offOnly: off, seal: seal}
 	s.view.Store(view)
 	if kbps > 0 {
 		s.rate = rate{max: kbps, cur: kbps, fpsMax: a.FPS}
@@ -1250,7 +1262,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 	}
 	var st *cpace.State
 	var fpClient, fpHost string
-	named, view := false, false                                                 // клиент уже назвал имя записи (одно на сессию); права записи «просмотр»
+	named, view, whoDone := false, false, false                                 // клиент уже назвал имя записи (одно на сессию); права записи «просмотр»; "who" был
 	var otpWait func(code string)                                               // ждём код TOTP (под s.mu); nil — не ждём
 	otpN := 0                                                                   // номер запроса кода: таймер закрывает сессию, только если на этот запрос не ответили
 	send := func(m authMsg) { b, _ := json.Marshal(m); ch.SendText(string(b)) } // JSON — текстом: браузер парсит строку
@@ -1267,7 +1279,8 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		s.mu.Lock()
 		st, view, s.salt = state, v, salt
 		s.mu.Unlock()
-		send(authMsg{T: "a", Salt: salt, Msg: msgA, Users: true, Keys: a.KeyLogin != nil, Space: a.SpaceGet != nil, Pass: a.SpaceMember != nil, Sync: a.SpaceSync != nil})
+		send(authMsg{T: "a", Salt: salt, Msg: msgA, Users: true, Keys: a.KeyLogin != nil, Space: a.SpaceGet != nil, Pass: a.SpaceMember != nil, Sync: a.SpaceSync != nil,
+			SX: s.seal.answer(fpClient, fpHost)}) // Э4в: у каждой сессии, у сверки — статус (spseal.go)
 	})
 	ch.OnMessage(func(msg webrtc.DataChannelMessage) {
 		var m authMsg
@@ -1302,6 +1315,16 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 			s.mu.Unlock()
 			if f != nil {
 				f(m.Code)
+			}
+			return
+		}
+		if !bad && m.T == "who" { // Э4в: ключ хоста до входа, один раз (клиент сверки, чей sx не открылся, spseal.go)
+			s.mu.Lock()
+			fpc, fph, again := fpClient, fpHost, whoDone
+			whoDone = true
+			s.mu.Unlock()
+			if !again && fpc != "" {
+				send(authMsg{T: "who", Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph)})
 			}
 			return
 		}
