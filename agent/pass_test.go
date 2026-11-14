@@ -96,11 +96,13 @@ func TestPassIssue(t *testing.T) {
 	defer log.SetOutput(os.Stderr)
 	url := local(t)
 	_, mkey, _ := ed25519.GenerateKey(nil)
-	p := passTarget(t, url, nil, mkey.Public().(ed25519.PublicKey))
+	var shut atomic.Bool // решение 12 A: закрытый вход паролем (LoginShut) пропуск не закрывает
+	p := passTarget(t, url, nil, mkey.Public().(ed25519.PublicKey), func(p *passRig) { p.a.LoginShut = func(string) bool { return shut.Load() } })
 	d := passDial(url, p, mkey)
 	if err := PassOpen(context.Background(), d); err != nil {
 		t.Fatal(err)
 	}
+	shut.Store(true)
 	p.owner.mu.Lock()
 	step := p.owner.last
 	p.owner.mu.Unlock()

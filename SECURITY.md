@@ -95,6 +95,9 @@ and the target's reply; it can drop "off" selectively — the master then repeat
 сверку — состав тогда не обновится, пока она не пройдёт. Остаточный риск: ПК, вступающий через ПК, у которого старый
 подлинный состав, где других членов нет, проверить свежесть не может — такой ПК сверять не с кем. Выйти из
 пространства на одном ПК (без фразы) можно паролем и кодом этого ПК: состав с него удаляется, пароль и код остаются.
+Новый ПК после вступления не пускает вход паролем в запись по умолчанию, пока не сверится с членом, кроме поручителя
+(решение 12 A; «Спрашивать» с одноразовым кодом с экрана и гости открыты); выход из пространства до такой сверки
+стирает пароль и код записи по умолчанию — они из непроверенного состава поручителя.
 "My space", member list sync: member PCs reconcile the member list (members, login password, code secret) over a
 separate connection without video or login — outside the login slots (three) and the password brute-force lockout; it
 does not take the session slot, but while the target is in a session a sync gets the same "busy" as an ordinary
@@ -135,7 +138,10 @@ handled as an ordinary connect; the answers to replays reveal neither the status
 the target restarts a replay can hold that member's slot for up to 20 seconds. The hub can drop syncs — the list then
 stays old until a sync passes. Residual risk: a PC joining through a PC that holds an old genuine list with no other
 members cannot check freshness — there is no one else to ask. A PC can leave the space locally (without the phrase)
-with its password and code: the list is removed from it, the password and code stay.
+with its password and code: the list is removed from it, the password and code stay. A newly joined PC refuses
+password login to the default account until it has synced with a member other than the one it joined through (owner
+decision 12 A; "Ask" with the one-time code from its screen and guests stay open); leaving the space before that sync
+erases the default account's password and code, since they came from the guarantor's unverified list.
 
 «Моё пространство», объединение составов: каждый подписанный фразой состав — подлинная правка владельца, поэтому ПК
 не выбирает «правильную ветвь», а объединяет все известные составы: исключённые — объединение, члены — объединение

@@ -25,7 +25,8 @@ import (
 var spaceNames = []string{"spaceCreate", "spaceCreateOK", "spaceCreateNo", "spaceEnter", "spaceOp", "spaceConfirm",
 	"spaceOpClear", "workHere", "passOff", "spaceExclude", "spaceLogin", "spaceLeave", "spaceSync"}
 
-// spaceCodes — ошибка ядра → код окна (первое совпадение по errors.Is).
+// spaceCodes — ошибка ядра → код окна (первое совпадение по errors.Is). change — настройки или показанное в превью
+// сменились до применения: повторить.
 var spaceCodes = []struct {
 	err  error
 	code string
@@ -232,6 +233,7 @@ func previewJSON(p spacePreview) map[string]any {
 		pcs = append(pcs, map[string]string{"id": x.ID, "fp": x.FP})
 	}
 	m["members"] = pcs
+	m["gone"] = append([]string{}, p.Gone...) // отпечатки исключённых
 	delete(m, "fresh") // до сверки — всегда false
 	return m
 }
