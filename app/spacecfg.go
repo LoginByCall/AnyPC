@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"sync"
 	"time"
 
 	"anypc/agent"
@@ -28,6 +29,10 @@ var (
 	errSpaceIn     = errors.New("пространство: этот ПК уже в пространстве")
 	errSpaceNotIn  = errors.New("пространство: этот ПК не в пространстве")
 	errSpaceChange = errors.New("пространство: настройки изменились во время операции — повторите")
+	errSpaceLogin  = errors.New("пространство: сначала пароль этого ПК и TOTP (вход без подтверждения)")
+	errSpaceDraft  = errors.New("пространство: создание не начато или отменено — начните заново")
+	errSpaceNo     = errors.New("пространство: вступление отменено")
+	errSpaceSlow   = errors.New("пространство: состав не подтверждён вовремя — вступите заново")
 )
 
 // spaceLocked — объединение сохранённых верхушек (под c.mu, spaceView); nil — пространства нет или записи
@@ -58,11 +63,24 @@ func (c *config) spaceLocked() *space {
 	return m
 }
 
-// spaceCreate — новое пространство с этим ПК (Э2, п. 2; решение 8 B): пароль входа записи по умолчанию (сверяется с
-// её хэшем: создать пространство за незаблокированным чужим ПК без пароля нельзя), её секрет TOTP и ключ хоста.
-// Фразу выдаёт генератор (С3) — она возвращается один раз: окно показывает её для записи. Нужен режим «пароль +
-// TOTP» (не «Спрашивать»).
+// spaceCreate — создать пространство в один шаг (тесты, CLI): черновик и сразу сохранение той же фразой.
 func (c *config) spaceCreate(password string) (string, error) {
+	phrase, err := c.spaceDraft(password)
+	if err == nil {
+		err = c.spaceCreateOK(phrase)
+	}
+	if err != nil {
+		return "", err
+	}
+	return phrase, nil
+}
+
+// spaceDraft — шаг 1 создания (Э2, п. 2; решения 8 B, 12): новое пространство с этим ПК — пароль входа записи по
+// умолчанию (сверяется с её хэшем: создать пространство за незаблокированным чужим ПК без пароля нельзя), её секрет
+// TOTP и ключ хоста. Фразу выдаёт генератор (С3) — она возвращается один раз: окно показывает её для записи и
+// просит ввести снова (spaceCreateOK). Состав до того — черновик в памяти (фраза не хранится), Space пуст. Нужен
+// режим «пароль + TOTP» (не «Спрашивать»). Новый черновик заменяет прежний.
+func (c *config) spaceDraft(password string) (string, error) {
 	c.mu.Lock()
 	c.reload()
 	if len(c.Space) > 0 {
@@ -75,7 +93,7 @@ func (c *config) spaceCreate(password string) (string, error) {
 	}
 	if c.codeModeLocked() || len(c.Users[0].Hash) == 0 {
 		c.mu.Unlock()
-		return "", errors.New("пространство: сначала пароль этого ПК и TOTP (вход без подтверждения)")
+		return "", errSpaceLogin
 	}
 	u := c.Users[0]
 	salt, hash, sec, id, key := bytes.Clone(u.Salt), bytes.Clone(u.Hash), u.TOTP, c.ID, bytes.Clone(c.Key)
@@ -95,21 +113,58 @@ func (c *config) spaceCreate(password string) (string, error) {
 		return "", err
 	}
 	c.mu.Lock()
+	c.spNew = b
+	c.mu.Unlock()
+	return phrase, nil
+}
+
+// spaceCreateNo — отменить черновик создания (Space остаётся пуст).
+func (c *config) spaceCreateNo() {
+	c.mu.Lock()
+	c.spNew = nil
+	c.mu.Unlock()
+}
+
+// spaceCreateOK — шаг 2 создания: владелец ввёл фразу снова — ключ из неё сверяется с opub черновика (Argon2, без
+// c.mu), затем черновик сохраняется. Неверная фраза — ошибка, черновик остаётся (повторить ввод), Space пуст.
+func (c *config) spaceCreateOK(phrase string) error {
+	c.mu.Lock()
+	b := c.spNew
+	c.mu.Unlock()
+	if b == nil {
+		return errSpaceDraft
+	}
+	m, err := spaceParse(b)
+	if err != nil {
+		return err
+	}
+	if err := spaceOwnerCheck(m, phrase); err != nil {
+		return err
+	}
+	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
-	if len(c.Space) > 0 || !bytes.Equal(c.Users[0].Salt, salt) || c.Users[0].TOTP != sec || c.ID != id || !bytes.Equal(c.Key, key) {
-		return "", errSpaceChange
+	if !bytes.Equal(c.spNew, b) {
+		return errSpaceDraft // отменён или заменён новым, пока шла сверка
 	}
-	c.Space = b
+	u := c.Users[0]
+	key := ed25519.PrivateKey(c.Key)
+	if len(c.Space) > 0 || c.codeModeLocked() || !bytes.Equal(u.Salt, m.PSalt) || !bytes.Equal(u.Hash, m.PHash) || u.TOTP != m.TOTP ||
+		len(c.Key) != ed25519.PrivateKeySize || m.Members[0].ID != c.ID || !bytes.Equal(m.Members[0].Pub, key.Public().(ed25519.PublicKey)) {
+		c.spNew = nil
+		return errSpaceChange
+	}
+	c.Space, c.spNew = b, nil
 	if err := c.save(); err != nil {
-		return "", err
+		c.Space = nil
+		return err
 	}
 	if spaceChanged != nil { // метка входа (agent.LoginTag) — уже с пространством; без c.mu: DropRevoked читает настройки
 		c.mu.Unlock()
 		spaceChanged()
 		c.mu.Lock()
 	}
-	return phrase, nil
+	return nil
 }
 
 // spaceGet — agent.Agent.SpaceGet (на ПК P): запись M для сессии, вошедшей записью по умолчанию с солью salt. Только
@@ -234,6 +289,35 @@ func spaceLoginCheck(m *space, password string) error {
 	return nil
 }
 
+// spaceAsk — показать состав m (half — этот ПК в нём уже есть) и ждать ответа владельца (решение 12 A).
+func (c *config) spaceAsk(ctx context.Context, m *space, half bool, preview func(spacePreview), ok <-chan bool) error {
+	if preview != nil {
+		var p spacePreview
+		for _, x := range m.Members {
+			p.Members = append(p.Members, spacePC{ID: x.ID, FP: pake.KeyFingerprint(x.Pub)})
+		}
+		c.mu.Lock()
+		c.reload()
+		p.spaceChanges = c.spaceChangesLocked(m)
+		c.mu.Unlock()
+		p.Already = half
+		preview(p)
+	}
+	t := time.NewTimer(spaceConfirmWait)
+	defer t.Stop()
+	select {
+	case yes := <-ok:
+		if !yes {
+			return errSpaceNo
+		}
+		return nil
+	case <-t.C:
+		return errSpaceSlow
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // spaceGetSync — сколько spaceGet сверяется с остальными (вступающий ждёт весь обмен spaceWait = 60 с).
 var spaceGetSync = 20 * time.Second
 
@@ -256,13 +340,46 @@ func (s spaceChanges) String() string {
 		s.Password, s.TOTP, s.Trusted, s.KeyLogin, s.Ask, s.Already, s.Fresh)
 }
 
-// spaceEnter — вступить этим ПК в пространство через его ПК hostID (Э2, п. 3–4; решение 8 B): владелец ввёл здесь
-// ID, пароль входа, код и фразу пространства. Пароль и код — вход в сессию на P (пароль в сеть не уходит: CPace);
-// фраза — только здесь: ключ из неё сверяется с opub пришедшего M до доверия ему и подписывает вступление. После
-// успеха запись по умолчанию этого ПК — запись владельца из M (тот же пароль и код). Режим подтверждения и записи
-// гостей не меняются (С3 приёмки Э2: иначе ожили бы спящие гостевые записи режима «Спрашивать»).
+// spacePC — член состава для окна вступления: ID и отпечаток ключа (pake.KeyFingerprint).
+type spacePC struct{ ID, FP string }
+
+// spacePreview — окно «Это все ваши ПК?» до подписи (решение 12 A): состав, который отдал P, и что вступление
+// поменяет на этом ПК (Fresh — всегда false: сверка — после). Секретов нет.
+type spacePreview struct {
+	Members []spacePC
+	spaceChanges
+}
+
+// spaceChangesLocked — что поменяет вступление в m на этом ПК (под c.mu): то же, что spaceEnter сделает с записью
+// по умолчанию. «Спрашивать» после вступления — только явный режим подтверждения (TOTP будет из m).
+func (c *config) spaceChangesLocked(m *space) spaceChanges {
+	u := c.Users[0]
+	return spaceChanges{Password: !bytes.Equal(u.Salt, m.PSalt) || !bytes.Equal(u.Hash, m.PHash), TOTP: u.TOTP != m.TOTP,
+		Trusted: len(u.Trusted), KeyLogin: len(u.KeyLogin), Ask: c.Confirm == nil || *c.Confirm}
+}
+
+// spaceConfirmWait — сколько вступление ждёт подтверждения состава (решение 12 A, план этапа: 2 мин).
+var spaceConfirmWait = 2 * time.Minute
+
+// spaceEnter — вступить без окна (тесты, CLI): состав подтверждается сам.
 func (c *config) spaceEnter(ctx context.Context, hostID, password, code, phrase string) (spaceChanges, error) {
+	yes := make(chan bool, 1)
+	yes <- true
+	return c.spaceEnterAsk(ctx, hostID, password, code, phrase, nil, yes)
+}
+
+// spaceEnterAsk — вступить этим ПК в пространство через его ПК hostID (Э2, п. 3–4; решения 8 B, 12 A): владелец ввёл
+// здесь ID, пароль входа, код и фразу пространства. Пароль и код — вход в сессию на P (пароль в сеть не уходит:
+// CPace); фраза — только здесь: ключ из неё сверяется с opub пришедшего M до доверия ему. Затем preview (если не
+// nil; зовётся в горутине обмена) получает состав и изменения, и вступление ждёт ответа из ok не дольше
+// spaceConfirmWait: true — подписать и отдать P, false или срок — отказ (errSpaceNo, errSpaceSlow), P нового M не
+// получает. После успеха запись по умолчанию этого ПК — запись владельца из M (тот же пароль и код). Режим
+// подтверждения и записи гостей не меняются (С3 приёмки Э2: иначе ожили бы спящие гостевые записи «Спрашивать»).
+// ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ (A13: подпись состава фразой).
+func (c *config) spaceEnterAsk(ctx context.Context, hostID, password, code, phrase string, preview func(spacePreview), ok <-chan bool) (spaceChanges, error) {
 	var ch spaceChanges
+	ctx, cancel := context.WithCancel(ctx) // Sign ждёт в горутине обмена: конец вступления его отпускает
+	defer cancel()
 	c.mu.Lock()
 	c.reload()
 	in, bad := len(c.Space) > 0, c.spaceDamagedLocked()
@@ -280,8 +397,12 @@ func (c *config) spaceEnter(ctx context.Context, hostID, password, code, phrase 
 		return ch, err
 	}
 	pub := ed25519.PrivateKey(key).Public().(ed25519.PublicKey)
-	var joined *space
-	out, err := spaceDial(ctx, agent.SpaceDial{Server: server, ID: hostID, Key: key, Password: password, Code: code, Known: known,
+	var (
+		jmu     sync.Mutex // Sign — в горутине обмена, она может пережить ошибку spaceDial
+		joined  *space
+		already bool
+	)
+	out, err := spaceDial(ctx, agent.SpaceDial{Server: server, ID: hostID, Key: key, Password: password, Code: code, Known: known, Confirm: spaceConfirmWait,
 		Sign: func(b []byte, hostPub ed25519.PublicKey) ([]byte, error) {
 			m, err := spaceParse(b)
 			if err != nil {
@@ -297,20 +418,31 @@ func (c *config) spaceEnter(ctx context.Context, hostID, password, code, phrase 
 				return nil, errors.New("пространство: ПК, отдавший состав, в нём не числится")
 			}
 			// свежесть первого M (исключённый P может отдать старый подлинный M) — сверка с остальными после (spaceFresh)
-			if slices.ContainsFunc(m.Members, func(x spaceMember) bool { return x.ID == id && bytes.Equal(x.Pub, pub) }) {
-				joined, ch.Already = m, true // полу-вступление (С1): P уже сохранил нас — принять его M как есть
+			half := slices.ContainsFunc(m.Members, func(x spaceMember) bool { return x.ID == id && bytes.Equal(x.Pub, pub) })
+			if err := c.spaceAsk(ctx, m, half, preview, ok); err != nil {
+				return nil, err
+			}
+			if half {
+				jmu.Lock()
+				joined, already = m, true // полу-вступление (С1): P уже сохранил нас — принять его M как есть
+				jmu.Unlock()
 				return b, nil
 			}
 			n, err := spaceAdd(m, phrase, id, pub)
 			if err != nil {
 				return nil, err
 			}
+			jmu.Lock()
 			joined = n
+			jmu.Unlock()
 			return n.marshal()
 		}})
 	if err != nil {
 		return ch, err
 	}
+	jmu.Lock()
+	joined, half := joined, already
+	jmu.Unlock()
 	if joined == nil {
 		return ch, errors.New("пространство: нет подписанного состава") // SpaceJoin без Sign — не бывает
 	}
@@ -326,13 +458,11 @@ func (c *config) spaceEnter(ctx context.Context, hostID, password, code, phrase 
 	}
 	c.Space, c.SpaceHeads, c.SpaceClock, c.SpaceOver, c.SpacePend = out, nil, nil, "", nil
 	u := &c.Users[0]
-	ch.Password = !bytes.Equal(u.Salt, joined.PSalt) || !bytes.Equal(u.Hash, joined.PHash)
-	ch.TOTP = u.TOTP != joined.TOTP
-	ch.Trusted, ch.KeyLogin = len(u.Trusted), len(u.KeyLogin)
+	ch = c.spaceChangesLocked(joined)
+	ch.Already = half
 	u.Salt, u.Hash, u.TOTP, u.TOTPStep = bytes.Clone(joined.PSalt), bytes.Clone(joined.PHash), joined.TOTP, step
 	u.Trusted, u.KeyLogin = nil, nil // новый пароль — доверие ключам заново (как setAccount); гостей не трогаем
-	ch.Ask = c.codeModeLocked()
-	c.SpaceWait = hostID // пропусков нет до сверки с другим членом (spaceSyncer.one)
+	c.SpaceWait = hostID             // пропусков нет до сверки с другим членом (spaceSyncer.one)
 	if !slices.ContainsFunc(joined.Members, func(x spaceMember) bool { return x.ID != id && x.ID != hostID }) {
 		c.SpaceWait = "" // других членов нет — сверять не с кем
 	}

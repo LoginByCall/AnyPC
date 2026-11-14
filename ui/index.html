@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="ru">
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-QFSiMiXsT0e6Y5RfUYiCp/30QkWYsI6f2ZwbjPmNj9E=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-r5Xy1Xwk5KrfDegVL2WhYDcTPd8YMrrjBRmbtXF5sgE=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AnyPC</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26'><style>.a{stroke:%2317181c}.b{fill:%23d2452d}@media(prefers-color-scheme:dark){.a{stroke:%23eceae4}.b{fill:%23ef6a52}}</style><rect class='a' x='1.5' y='3' width='15' height='11' rx='2' fill='none' stroke-width='2.6'/><rect class='b' x='10' y='12' width='15' height='11' rx='2'/></svg>">
@@ -970,7 +970,8 @@ async function onAuth(ch, e, mine) {
     const k = await ckey.get(host), fp = k?.pub ? await keyFp(k.pub) : '';
     // из «Моих ПК» не убираем (удаление — только явное): вкладка попросит пароль, а сообщение объясняет причину
     await ckey.set(host, null).catch(() => {}); keyShow(null); needPw(true);
-    end(t('err') + t('e_nokey_why') + (fp ? '. ' + t('k_forgot').replace('%s', fp) : ''));
+    // why:"none" — ключа на хосте нет (отозван там или сброшен вступлением в пространство): отзывать нечего
+    end(t('err') + t('e_nokey_why') + (fp && m.why !== 'none' ? '. ' + t('k_forgot').replace('%s', fp) : ''));
   }
 }
 

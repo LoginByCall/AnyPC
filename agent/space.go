@@ -100,7 +100,10 @@ type SpaceDial struct {
 	// Sign — по M от P (проверенный подписью хоста P и CPace) вернуть новый M, подписанный фразой пространства на этом
 	// ПК (сначала сверка opub из фразы); ошибка — отказ, P ничего не получит.
 	// Вернул тот же M — этот ПК в нём уже есть (P сохранил прошлое вступление, а ответ не дошёл): P ничего не шлём.
+	// Sign зовётся в своей горутине и может ждать человека (окно «Это все ваши ПК?»): ctx SpaceJoin — до конца обмена.
 	Sign func(m []byte, hostPub ed25519.PublicKey) ([]byte, error)
+	// Confirm — сколько Sign может ждать подтверждения состава человеком: прибавляется к spaceWait (решение 12 A).
+	Confirm time.Duration
 }
 
 // Ошибки SpaceJoin (для окна в следующих этапах).
@@ -120,7 +123,7 @@ var spaceWait = 60 * time.Second
 // SpaceJoin — вступить через ПК d.ID: вернуть новый M, который P принял. Ошибка — P его не сохранил (или ответа
 // не было: тогда состояние P неизвестно, повтор безопасен — второй раз P ответит "bad" на дубль ПК).
 func SpaceJoin(ctx context.Context, d SpaceDial) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, spaceWait)
+	ctx, cancel := context.WithTimeout(ctx, spaceWait+d.Confirm)
 	defer cancel()
 	var err error
 	for _, u := range strings.Split(d.Server, ",") {
@@ -225,6 +228,7 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 					}
 				})
 			case "ctl":
+				signing := false // только в OnMessage этого канала (pion зовёт его по очереди)
 				dc.OnOpen(func() { mu.Lock(); ctl = dc; askM(); mu.Unlock() })
 				dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 					var sm spMsg
@@ -241,21 +245,26 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 						finish(fmt.Errorf("%w: %s", ErrSpaceRefused, sm.Err))
 					case sm.OK && mine != nil:
 						done(mine)
-					case len(sm.M) > 0 && mine == nil:
-						m, err := d.Sign(sm.M, hp)
-						if err != nil {
-							finish(err)
-							return
-						}
-						if bytes.Equal(m, sm.M) { // уже в составе P (полу-вступление): принять как есть
-							done(m)
-							return
-						}
-						mu.Lock()
-						newM = m
-						mu.Unlock()
-						b, _ := json.Marshal(spMsg{T: "sp", M: m})
-						dc.SendText(string(b))
+					case len(sm.M) > 0 && mine == nil && !signing:
+						// второй M во время Sign — нарушение протокола (default); Sign ждёт подтверждения человеком —
+						// в своей горутине, не в потоке SCTP (решение 12 A)
+						signing = true
+						go func() {
+							m, err := d.Sign(sm.M, hp)
+							if err != nil {
+								finish(err)
+								return
+							}
+							if bytes.Equal(m, sm.M) { // уже в составе P (полу-вступление): принять как есть
+								done(m)
+								return
+							}
+							mu.Lock()
+							newM = m
+							mu.Unlock()
+							b, _ := json.Marshal(spMsg{T: "sp", M: m})
+							dc.SendText(string(b))
+						}()
 					default:
 						finish(errSpaceProtocol)
 					}
@@ -379,7 +388,7 @@ func hostDial(ctx context.Context, server, id string, req connectReq, setup func
 		return err
 	case <-ctx.Done():
 		if ctx.Err() == context.DeadlineExceeded {
-			return fmt.Errorf("пространство: нет ответа за %v", spaceWait)
+			return errors.New("пространство: нет ответа вовремя")
 		}
 		return ctx.Err()
 	}

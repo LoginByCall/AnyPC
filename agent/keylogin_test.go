@@ -66,6 +66,7 @@ func TestKeyLogin(t *testing.T) {
 	var ag *Agent
 	var asked, okKey, otpConf, okConf, nokey atomic.Bool
 	var asks atomic.Int32
+	var why atomic.Value // why последнего "nokey": "none" — ключа нет в списке записи (отзывать на хосте нечего)
 	unattended, hostLocked := true, false
 	e2eAgent = func(a *Agent) {
 		ag = a
@@ -87,6 +88,7 @@ func TestKeyLogin(t *testing.T) {
 			otpConf.Store(len(m.Conf) > 0)
 		case "nokey":
 			nokey.Store(true)
+			why.Store(m.Why)
 		}
 	}
 	reset := func() {
@@ -105,8 +107,8 @@ func TestKeyLogin(t *testing.T) {
 	// до «Доверять» ключа нет в списке: "nokey", неудача засчитана записи
 	e2eByKey, e2eFail = true, true
 	e2e(t, local(t), "123456789", false, ff, "ivan-pass1")
-	if f, _ := nlock(ag, "ivan"); f != 1 || !nokey.Load() || asks.Load() != 0 {
-		t.Fatalf("ключа нет в списке: неудач записи %d, nokey %v, запросов кода %d", f, nokey.Load(), asks.Load())
+	if f, _ := nlock(ag, "ivan"); f != 1 || !nokey.Load() || asks.Load() != 0 || why.Load() != "none" {
+		t.Fatalf("ключа нет в списке: неудач записи %d, nokey %v (%v), запросов кода %d", f, nokey.Load(), why.Load(), asks.Load())
 	}
 
 	// пароль + «Доверять» + код — ключ во входе без пароля записи ivan, "ok" с key
@@ -163,8 +165,8 @@ func TestKeyLogin(t *testing.T) {
 		reset()
 		e2e(t, local(t), "123456789", false, ff, "ivan-pass1")
 		f, _ := nlock(ag, c.user)
-		if !nokey.Load() || asks.Load() != 0 || asked.Load() || (f == 1) != c.counted {
-			t.Fatalf("%s: nokey %v, запросов кода %d, окно %v, неудач %d", c.name, nokey.Load(), asks.Load(), asked.Load(), f)
+		if !nokey.Load() || asks.Load() != 0 || asked.Load() || (f == 1) != c.counted || (why.Load() == "none") != c.counted {
+			t.Fatalf("%s: nokey %v (%v), запросов кода %d, окно %v, неудач %d", c.name, nokey.Load(), why.Load(), asks.Load(), asked.Load(), f)
 		}
 	}
 
