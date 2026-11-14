@@ -60,7 +60,7 @@ and the target's reply; it can drop "off" selectively — the master then repeat
 кода) отдельным соединением без видео и входа — вне места сессии и вне блокировки перебора паролей. Запрос
 подключения сверки для хаба выглядит как обычный: каждый новый клиент (браузер, вступление, пропуск) шлёт поле той же
 длины со случайными байтами, а у сверки в нём — доказательство члена (время), зашифрованное общим ключом пары «член —
-цель» (X25519 из ключей ПК, HKDF, AES-GCM; ключ X25519 выводится из ключа ПК Ed25519 — требует ревью). Открыть его
+цель» (X25519 из ключей ПК, HKDF, AES-GCM; ключ X25519 выводится из ключа ПК Ed25519 — ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ: криптография). Открыть его
 может только цель и только ключом члена своего состава: постороннему цель не выделяет ничего (его запрос — обычное
 подключение), члену — одно место на ключ. Ответ цели («сверка принята», «часы расходятся», «занято») идёт внутри
 зашифрованного канала и привязан к нему; для обычных подключений там те же по длине случайные байты. Состав уходит
@@ -72,7 +72,7 @@ IP клиента и ID цели — а ПК-член подключается �
 отличается от браузерного заголовками и значениями полей (замеры TURN); время: при запуске программа сверяется со
 всеми членами сразу, потом раз в 5–15 мин (случайно) — с одним случайным, повторы — со случайной паузой. Пока на цели
 идёт сессия, сверке отвечают тем же «занято», что и обычному подключению (сверка ждёт); а когда цель заперта
-блокировкой перебора или все места входа заняты, сверка всё же получает соединение — в эти минуты хаб, сравнив с
+блокировкой перебора или все места входа заняты, сверка всё же получает соединение (решение владельца 2026-11-14) — в эти минуты хаб, сравнив с
 отказами обычным подключениям, может её узнать. Хаб, подменивший шифрование канала собой (он пересылает его описание),
 ключа члена не получит: клиент проверяет ответ цели, привязанный к каналу, до того как назвать себя, — и кончает;
 по такому обрыву хаб может догадаться о служебном соединении. Повтор хабом перехваченного запроса цель узнаёт и ведёт
@@ -85,7 +85,7 @@ IP клиента и ID цели — а ПК-член подключается �
 separate connection without video or login — outside the session slot and the password brute-force lockout. To the hub
 the sync connect request looks ordinary: every new client (browser, join, pass) sends a field of the same length with
 random bytes, and for a sync it carries the member's proof (the time) encrypted with the pair key "member — target"
-(X25519 from the PC keys, HKDF, AES-GCM; the X25519 key is derived from the PC's Ed25519 key — needs review). Only the
+(X25519 from the PC keys, HKDF, AES-GCM; the X25519 key is derived from the PC's Ed25519 key — NEEDS HUMAN REVIEW: cryptography). Only the
 target can open it, and only with the key of a member in its list: a stranger gets nothing (its request is an ordinary
 connect), a member gets one slot per key. The target's answer ("sync accepted", "clocks differ", "busy") goes inside
 the encrypted channel and is bound to it; ordinary connections get random bytes of the same length there. The list goes
@@ -97,7 +97,7 @@ makes a service connection to the target" (not whether it is a sync, a join or a
 differs from a browser one by headers and field values (TURN measurements); timing: at start the program syncs with all
 members at once, then every 5–15 min (random) with one random member, retries with random pauses. While the target is
 in a session, a sync gets the same "busy" as an ordinary connect (the sync waits); while the target is locked by the
-brute-force lockout or all login slots are taken, a sync still gets a connection — during those minutes the hub can
+brute-force lockout or all login slots are taken, a sync still gets a connection (owner decision 2026-11-14) — during those minutes the hub can
 spot it by comparing with refusals to ordinary connects. A hub that puts itself into the channel encryption (it relays
 the channel description) does not get the member key: the client checks the target's answer bound to the channel before
 identifying itself, and stops — from that abort the hub may guess a service connection. A replay of a captured request

@@ -304,4 +304,32 @@ func TestSpaceSyncConnect(t *testing.T) {
 	r.a.mu.Lock()
 	r.a.sess = nil
 	r.a.mu.Unlock()
+
+	// Решение владельца 2026-11-14 (A, TZ.md §16): под блокировкой перебора и при занятых местах входа сверка проходит
+	// (посторонний не мешает сверке), обычный connect получает отказ.
+	drop()
+	r.a.mu.Lock()
+	r.a.lockUntil = time.Now().Add(time.Minute)
+	r.a.mu.Unlock()
+	if a := connect(req(sxRand(sxLen))); a != "error locked" {
+		t.Errorf("блокировка: обычный %q", a)
+	}
+	if _, err := SpaceSync(ctx, d2); err != nil {
+		t.Errorf("сверка под блокировкой: %v", err)
+	}
+	r.a.mu.Lock()
+	r.a.lockUntil = time.Time{}
+	r.a.mu.Unlock()
+	for i := 0; i < maxPending; i++ {
+		if a := connect(req(sxRand(sxLen))); a != "offer " {
+			t.Fatalf("место входа %d: %s", i, a)
+		}
+	}
+	if a := connect(req(sxRand(sxLen))); a != "error busy" {
+		t.Errorf("места входа заняты: обычный %q", a)
+	}
+	if _, err := SpaceSync(ctx, d2); err != nil {
+		t.Errorf("сверка при занятых местах входа: %v", err)
+	}
+	drop()
 }
