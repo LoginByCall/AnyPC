@@ -57,27 +57,85 @@ sees when "off" is sent, the target ID, the "I'm here" PC key (already known to 
 and the target's reply; it can drop "off" selectively — the master then repeats until the pass expires.
 
 «Моё пространство», сверка состава: ПК пространства сами сверяют состав (кто в пространстве, пароль входа, секрет
-кода) отдельным соединением без видео и входа — вне места сессии и вне блокировки перебора паролей. Соединение
-открывается, только если в запросе подключения есть подпись ключом ПК-члена над ID цели и временем (±10 мин от часов
-цели): постороннему цель не выделяет ничего, члену — одно место на его ключ. Состав уходит только члену, и только после
-того, как обе стороны доказали свои ключи в зашифрованном канале; ПК, исключённый из состава, его больше не получает.
-Хаб видит запрос открыто: ключ ПК-члена, ID цели, ключ, которого член ждёт от цели, и время — то есть какие ПК входят в
-одно пространство и когда сверяются (сам состав, пароль и секрет кода хабу не видны). Хаб может в течение 10 минут
-повторить перехваченный запрос и занять место этого члена до 20 с или не пропускать сверку — состав тогда не
-обновится, пока она не пройдёт. Остаточный риск: ПК, вступающий через ПК, у которого старый подлинный состав, где
-других членов нет, проверить свежесть не может — такой ПК сверять не с кем. Выйти из пространства на одном ПК (без
-фразы) можно паролем и кодом этого ПК: состав с него удаляется, пароль и код остаются.
+кода) отдельным соединением без видео и входа — вне мест входа (их три) и вне блокировки перебора паролей; места
+сессии оно не занимает, но пока на цели идёт сессия, сверке отвечают тем же «занято», что обычному подключению. Запрос
+подключения сверки для хаба выглядит как обычный: каждый новый клиент (браузер, вступление, пропуск) шлёт поле той же
+длины со случайными байтами, а у сверки в нём — доказательство члена (время), зашифрованное общим ключом пары «член —
+цель» (X25519 из ключей ПК, HKDF, AES-GCM; ключ X25519 выводится из ключа ПК Ed25519 — ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ:
+криптография). Открыть его может только цель и только ключом члена своего состава: постороннему цель не выделяет
+ничего (его запрос — обычное подключение), члену — одно место на ключ. Ответ цели («сверка принята», «часы
+расходятся», «занято») идёт внутри зашифрованного канала, привязан к нему и шифруется каждый раз со случайным nonce;
+для обычных подключений там те же по длине случайные байты. Состав уходит только члену, и только после того, как обе
+стороны доказали свои ключи; ПК, исключённый из состава, его больше не получает. Хаб больше не видит ключ ПК-члена и
+ключ, которого член ждёт от цели. Неотличимость сверки от вступления и входа по пропуску (по полям, длине, кодам
+ошибок) — только против пассивного хаба, который лишь смотрит. Активный хаб сверку опознаёт пробой мест: после чужого
+подключения он шлёт к цели три своих — «занято» на третьем значит, что чужое заняло место входа (обычное), offer на
+всех трёх — что это была сверка; так же — подключением во время блокировки перебора, когда обычным отвечают «заперто»,
+а сверка получает соединение. Это следствие решения владельца 2026-11-14 (A: сверка проходит при блокировке и занятых
+местах входа, чтобы посторонний не мешал сверке) — решение владельца 2026-11-14: A, окончательно. Что хаб видит и
+пассивно (остаточные утечки): адрес IP клиента и ID цели — а ПК-член подключается к хабу как хост с того же адреса,
+так что пару «ПК с этого адреса ходит служебным соединением к цели» хаб связать может (сверка это, вступление или
+пропуск — не знает); соединение программы отличается от браузерного заголовками и значениями полей (замеры TURN);
+время: при запуске программа сверяется со всеми членами сразу, потом раз в 5–15 мин (случайно) — с одним случайным,
+повторы — со случайной паузой; в минуты блокировки перебора или занятых мест входа — сравнение с отказами обычным
+подключениям; время ответа цели: перебор ключей состава одинаков у сверки и обычного подключения (общие секреты пар
+считаются один раз и держатся только в памяти, перебор всегда полный и не короче 64 ключей), так что сверку от
+обычного подключения по нему не отличить — остаются единицы микросекунд (замер на ПК разработки: около 2 мкс из 75) на
+фоне миллисекунд сети. Размер состава грубо оценим: первое подключение после перезапуска цели (его хаб видит по
+регистрации) или смены состава дольше на 80–170 мкс за каждый новый ключ (около +3,5 мс при 32 ключах, +6 мс при 64) —
+у любого подключения, сверка это или нет. Остаточный канал, ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ: кэш повтора сверки (соли за 10
+минут) чистится линейным проходом только при сверке — её время растёт с числом недавних сверок на цели. Хаб, вставший
+посредником в шифрование канала (он пересылает его описание), ключа члена не получит: ответ цели зашифрован ключом,
+который знают только член и цель, и привязан к отпечаткам канала, а nonce каждого ответа случаен, так что подделать
+«сверка принята» хаб не может и после повторов перехваченного запроса; клиент проверяет ответ до того, как назвать
+себя, затем спрашивает ключ цели («who», подпись над отпечатками канала) — у посредника подпись не сходится, и клиент
+кончает; по такому обрыву и по самому «who» хаб может догадаться о служебном соединении. Повтор хабом перехваченного
+запроса цель узнаёт и ведёт как обычное подключение; по ответам на повторы хаб не узнаёт ни статус, ни ключ; после
+перезапуска цели в пределах 10 минут повтор может занять место этого члена до 20 секунд. Хаб может не пропускать
+сверку — состав тогда не обновится, пока она не пройдёт. Остаточный риск: ПК, вступающий через ПК, у которого старый
+подлинный состав, где других членов нет, проверить свежесть не может — такой ПК сверять не с кем. Выйти из
+пространства на одном ПК (без фразы) можно паролем и кодом этого ПК: состав с него удаляется, пароль и код остаются.
 "My space", member list sync: member PCs reconcile the member list (members, login password, code secret) over a
-separate connection without video or login — outside the session slot and the password brute-force lockout. The
-target opens it only if the connect request carries a signature by a member PC key over the target ID and the time
-(±10 min of the target's clock): a stranger gets nothing, a member gets one slot per key. The list goes only to a member
-and only after both sides proved their keys inside the encrypted channel; a PC removed from the list no longer gets it.
-The hub sees the request in clear: the member key, the target ID, the key the member expects from the target and the
-time — i.e. which PCs share a space and when they sync (not the list, password or code secret). Within 10 minutes the
-hub can replay a captured request to hold that member's slot for up to 20 s, or drop syncs — the list then stays old
-until a sync passes. Residual risk: a PC joining through a PC that holds an old genuine list with no other members
-cannot check freshness — there is no one else to ask. A PC can leave the space locally (without the phrase) with its
-password and code: the list is removed from it, the password and code stay.
+separate connection without video or login — outside the login slots (three) and the password brute-force lockout; it
+does not take the session slot, but while the target is in a session a sync gets the same "busy" as an ordinary
+connect. To the hub the sync connect request looks ordinary: every new client (browser, join, pass) sends a field of
+the same length with random bytes, and for a sync it carries the member's proof (the time) encrypted with the pair key
+"member — target" (X25519 from the PC keys, HKDF, AES-GCM; the X25519 key is derived from the PC's Ed25519 key — NEEDS
+HUMAN REVIEW: cryptography). Only the target can open it, and only with the key of a member in its list: a stranger
+gets nothing (its request is an ordinary connect), a member gets one slot per key. The target's answer ("sync
+accepted", "clocks differ", "busy") goes inside the encrypted channel, is bound to it and is encrypted with a fresh
+random nonce each time; ordinary connections get random bytes of the same length there. The list goes only to a member
+and only after both sides proved their keys; a PC removed from the list no longer gets it. The hub no longer sees the
+member key or the key the member expects from the target. A sync is indistinguishable from a join or a pass login (by
+fields, length, error codes) only to a passive hub that just watches. An active hub identifies a sync by probing the
+slots: after someone else's connect it sends three of its own to the target — "busy" on the third means that connect
+took a login slot (ordinary), an offer on all three means it was a sync; likewise with a connect during the
+brute-force lockout, when ordinary connects get "locked" and a sync gets a connection. This follows from the owner
+decision of 2026-11-14 (A: a sync passes the lockout and full login slots, so a stranger cannot block syncs) — owner
+decision 2026-11-14: A, final. What even a passive hub sees (residual leaks): the client IP and the target ID — and a
+member PC is also connected to the hub as a host from the same address, so the hub can link "the PC at this address
+makes a service connection to the target" (not whether it is a sync, a join or a pass); a connection from the program
+differs from a browser one by headers and field values (TURN measurements); timing: at start the program syncs with
+all members at once, then every 5–15 min (random) with one random member, retries with random pauses; during a
+brute-force lockout or with full login slots — comparison with refusals to ordinary connects; the target's response
+time: scanning the member keys costs the same for a sync and an ordinary connect (the pair secrets are computed once
+and kept in memory only, the scan is always full and at least 64 keys long), so it does not tell a sync from an
+ordinary connect — what remains is a few microseconds (measured on the dev PC: about 2 µs of 75) against milliseconds
+of network. The list size can be roughly estimated: the first connect after the target restarts (which the hub sees by
+the registration) or after a list change is slower by 80–170 µs per new key (about +3.5 ms with 32 keys, +6 ms with
+64) — for any connect, sync or not. Residual channel, NEEDS HUMAN REVIEW: the sync replay cache (salts of the last 10
+minutes) is cleaned by a linear pass on syncs only — its time grows with the number of recent syncs at the target. A
+hub that puts itself into the channel encryption (it relays the channel description) does not get the member key: the
+target's answer is encrypted with a key only the member and the target know and is bound to the channel fingerprints,
+and every answer has a random nonce, so the hub cannot forge "sync accepted" even after replaying a captured request;
+the client checks the answer before identifying itself, then asks for the target key ("who", signed over the channel
+fingerprints) — the man in the middle's signature does not match and the client stops; from that abort and from the
+"who" itself the hub may guess a service connection. A replay of a captured request is recognised by the target and
+handled as an ordinary connect; the answers to replays reveal neither the status nor the key; within 10 minutes after
+the target restarts a replay can hold that member's slot for up to 20 seconds. The hub can drop syncs — the list then
+stays old until a sync passes. Residual risk: a PC joining through a PC that holds an old genuine list with no other
+members cannot check freshness — there is no one else to ask. A PC can leave the space locally (without the phrase)
+with its password and code: the list is removed from it, the password and code stay.
 
 «Моё пространство», объединение составов: каждый подписанный фразой состав — подлинная правка владельца, поэтому ПК
 не выбирает «правильную ветвь», а объединяет все известные составы: исключённые — объединение, члены — объединение
@@ -89,9 +147,9 @@ password and code: the list is removed from it, the password and code stay.
 среди исключённых, когда задавали победивший вход (встречные исключения: он мог получить секрет кода сверкой), вход
 «скомпрометирован»: пропусков «Работаю тут» и вступлений нет, пока правка фразой не задаст новый код. Смена входа и
 новое исключение рвут сессии, вошедшие паролем и кодом. Испорченная запись состава в настройках или больше 16
-параллельных правок — пропусков нет до правки фразой на этом ПК. Ответы «под этим ID другой ПК» и «часы расходятся» не подписаны (их может
-подставить хаб): они показываются в окне, но ни на что не влияют. Повтор сверки с недоступным ПК — не дольше часа,
-дальше сверка раз в 10 минут и при запуске.
+параллельных правок — пропусков нет до правки фразой на этом ПК. Ответы «под этим ID другой ПК» и «часы расходятся»
+только показываются в окне и на решения не влияют. Повтор сверки с недоступным ПК — не дольше часа, дальше сверка
+периодически и при запуске.
 "My space", merging member lists: every list signed with the phrase is a genuine owner edit, so a PC does not pick a
 "right branch" but merges all lists it knows: removed PCs — the union, members — the union minus removed. A removed
 PC never comes back, replaying old lists changes nothing, edits made on different PCs without contact are not lost,
@@ -102,7 +160,5 @@ working there. If the union has a removed PC that was not removed yet when the w
 removals: it could have got the code secret by sync), the login is "compromised": no "Work here" passes and no joins
 until an edit with the phrase sets a new code. A login change and a new removal drop sessions opened with password
 and code. A damaged list in the settings or more than 16 concurrent edits — no passes until an edit with the phrase on
-this PC. The
-replies "another PC under this ID" and "clocks differ" are unsigned (the hub can fake them): they are shown in the
-window but change nothing. Retrying sync with an unreachable PC lasts at most an hour, then sync runs every 10 minutes
-and at start.
+this PC. The replies "another PC under this ID" and "clocks differ" are only shown in the window and change no
+decision. Retrying sync with an unreachable PC lasts at most an hour, then sync runs periodically and at start.

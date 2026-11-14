@@ -190,11 +190,15 @@ func pickFile(ctx context.Context) (string, bool) {
 	return p, err == nil && p != ""
 }
 
+// clipGetLimit — чтение буфера через timeout(1): wl-paste в GNOME без фокуса висит вечно, а таймаут контекста
+// убивает его, только пока жив AnyPC (упавший процесс или тест оставлял сирот — тысячи, 2026-11-14).
+const clipGetLimit = "2"
+
 func clipCmds() (get, set []string) {
 	if Wayland {
-		return []string{"wl-paste", "--no-newline", "--type", "text/plain"}, []string{"wl-copy", "--type", "text/plain"}
+		return []string{"timeout", "-s", "KILL", clipGetLimit, "wl-paste", "--no-newline", "--type", "text/plain"}, []string{"wl-copy", "--type", "text/plain"}
 	}
-	return []string{"xclip", "-selection", "clipboard", "-o"}, []string{"xclip", "-selection", "clipboard", "-i"}
+	return []string{"timeout", "-s", "KILL", clipGetLimit, "xclip", "-selection", "clipboard", "-o"}, []string{"xclip", "-selection", "clipboard", "-i"}
 }
 
 // ClipText — текст буфера обмена ("" — нет текста или нет утилиты).
