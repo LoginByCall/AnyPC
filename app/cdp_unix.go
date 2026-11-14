@@ -120,6 +120,9 @@ func (c *cdpConn) call(ctx context.Context, session, method string, params, out 
 	if err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil { // срок вызывающего уже истёк — не писать: просроченная запись убила бы Chrome со всеми окнами
+		return err
+	}
 	c.wmu.Lock()
 	if d, ok := c.w.(interface{ SetWriteDeadline(time.Time) error }); ok { // Chrome завис и не читает — не ждать вечно
 		dl, has := ctx.Deadline()
@@ -209,7 +212,7 @@ type chromeWin struct {
 	look  func(string) (string, error)
 	mu    sync.Mutex
 	c     *cdpConn
-	bad   map[string]bool // браузеры, не ответившие по pipe (snap за обёрткой-скриптом и т. п.): до перезапуска AnyPC — мимо
+	bad   map[string]time.Time // браузеры, не ответившие по pipe (snap за обёрткой-скриптом и т. п.): мимо до указанного времени
 }
 
 var cdpStartWait = 10 * time.Second // сколько ждать ответа Chrome по pipe при запуске
@@ -251,7 +254,7 @@ func (w *chromeWin) conn(ctx context.Context) (*cdpConn, error) {
 	w.c = nil
 	bin := cdpBrowser(func(n string) (string, error) {
 		p, err := w.look(n)
-		if err == nil && w.bad[p] {
+		if err == nil && time.Now().Before(w.bad[p]) {
 			return "", errors.New("не ответил по pipe")
 		}
 		return p, err
@@ -313,9 +316,9 @@ func (w *chromeWin) conn(ctx context.Context) (*cdpConn, error) {
 
 func (w *chromeWin) markBad(bin string) {
 	if w.bad == nil {
-		w.bad = map[string]bool{}
+		w.bad = map[string]time.Time{}
 	}
-	w.bad[bin] = true
+	w.bad[bin] = time.Now().Add(5 * time.Minute) // ponytail: разовая неудача (холодный старт) не выключает браузер на недели службы
 }
 
 // profileDir — каталог профиля: абсолютный, свой (uid), не ссылка, 0700.
