@@ -72,19 +72,23 @@ and the target's reply; it can drop "off" selectively — the master then repeat
 подключения он шлёт к цели три своих — «занято» на третьем значит, что чужое заняло место входа (обычное), offer на
 всех трёх — что это была сверка; так же — подключением во время блокировки перебора, когда обычным отвечают «заперто»,
 а сверка получает соединение. Это следствие решения владельца 2026-11-14 (A: сверка проходит при блокировке и занятых
-местах входа, чтобы посторонний не мешал сверке); вопрос владельцу о компромиссе задан, пока действует A. Что хаб
-видит и пассивно (остаточные утечки): адрес IP клиента и ID цели — а ПК-член подключается к хабу как хост с того же
-адреса, так что пару «ПК с этого адреса ходит служебным соединением к цели» хаб связать может (сверка это, вступление
-или пропуск — не знает); соединение программы отличается от браузерного заголовками и значениями полей (замеры TURN);
+местах входа, чтобы посторонний не мешал сверке) — решение владельца 2026-11-14: A, окончательно. Что хаб видит и
+пассивно (остаточные утечки): адрес IP клиента и ID цели — а ПК-член подключается к хабу как хост с того же адреса,
+так что пару «ПК с этого адреса ходит служебным соединением к цели» хаб связать может (сверка это, вступление или
+пропуск — не знает); соединение программы отличается от браузерного заголовками и значениями полей (замеры TURN);
 время: при запуске программа сверяется со всеми членами сразу, потом раз в 5–15 мин (случайно) — с одним случайным,
 повторы — со случайной паузой; в минуты блокировки перебора или занятых мест входа — сравнение с отказами обычным
-подключениям. Хаб, вставший посредником в шифрование канала (он пересылает его описание), ключа члена не получит:
-ответ цели зашифрован ключом, который знают только член и цель, и привязан к отпечаткам канала, а nonce каждого ответа
+подключениям; время ответа цели: перебор ключей состава одинаков у сверки и обычного подключения (общие секреты пар
+считаются один раз и держатся только в памяти, перебор всегда полный и не короче 64 ключей), так что ни сверку, ни
+размер состава по нему не узнать — остаются единицы микросекунд (замер на ПК разработки: около 2 мкс из 75) на фоне
+миллисекунд сети и то, что первое подключение после смены состава у всех дольше (хаб может заметить, что состав
+сменился). Хаб, вставший посредником в шифрование канала (он пересылает его описание), ключа члена не получит: ответ
+цели зашифрован ключом, который знают только член и цель, и привязан к отпечаткам канала, а nonce каждого ответа
 случаен, так что подделать «сверка принята» хаб не может и после повторов перехваченного запроса; клиент проверяет
 ответ до того, как назвать себя, затем спрашивает ключ цели («who», подпись над отпечатками канала) — у посредника
 подпись не сходится, и клиент кончает; по такому обрыву и по самому «who» хаб может догадаться о служебном соединении.
 Повтор хабом перехваченного запроса цель узнаёт и ведёт как обычное подключение; по ответам на повторы хаб не узнаёт
-ни статус, ни ключ; после перезапуска цели в пределах 10 минут повтор может занять место этого члена до 20 с. Хаб
+ни статус, ни ключ; после перезапуска цели в пределах 10 минут повтор может занять место этого члена до 20 секунд. Хаб
 может не пропускать сверку — состав тогда не обновится, пока она не пройдёт. Остаточный риск: ПК, вступающий через ПК,
 у которого старый подлинный состав, где других членов нет, проверить свежесть не может — такой ПК сверять не с кем.
 Выйти из пространства на одном ПК (без фразы) можно паролем и кодом этого ПК: состав с него удаляется, пароль и код
@@ -105,21 +109,25 @@ fields, length, error codes) only to a passive hub that just watches. An active 
 slots: after someone else's connect it sends three of its own to the target — "busy" on the third means that connect
 took a login slot (ordinary), an offer on all three means it was a sync; likewise with a connect during the
 brute-force lockout, when ordinary connects get "locked" and a sync gets a connection. This follows from the owner
-decision of 2026-11-14 (A: a sync passes the lockout and full login slots, so a stranger cannot block syncs); the
-trade-off question to the owner is open, A applies meanwhile. What even a passive hub sees (residual leaks): the
-client IP and the target ID — and a member PC is also connected to the hub as a host from the same address, so the hub
-can link "the PC at this address makes a service connection to the target" (not whether it is a sync, a join or a
-pass); a connection from the program differs from a browser one by headers and field values (TURN measurements);
-timing: at start the program syncs with all members at once, then every 5–15 min (random) with one random member,
-retries with random pauses; during a brute-force lockout or with full login slots — comparison with refusals to
-ordinary connects. A hub that puts itself into the channel encryption (it relays the channel description) does not get
-the member key: the target's answer is encrypted with a key only the member and the target know and is bound to the
-channel fingerprints, and every answer has a random nonce, so the hub cannot forge "sync accepted" even after
-replaying a captured request; the client checks the answer before identifying itself, then asks for the target key
-("who", signed over the channel fingerprints) — the man in the middle's signature does not match and the client stops;
-from that abort and from the "who" itself the hub may guess a service connection. A replay of a captured request is
-recognised by the target and handled as an ordinary connect; the answers to replays reveal neither the status nor the
-key; within 10 minutes after the target restarts a replay can hold that member's slot for up to 20 s. The hub can drop
-syncs — the list then stays old until a sync passes. Residual risk: a PC joining through a PC that holds an old
-genuine list with no other members cannot check freshness — there is no one else to ask. A PC can leave the space
-locally (without the phrase) with its password and code: the list is removed from it, the password and code stay.
+decision of 2026-11-14 (A: a sync passes the lockout and full login slots, so a stranger cannot block syncs) — owner
+decision 2026-11-14: A, final. What even a passive hub sees (residual leaks): the client IP and the target ID — and a
+member PC is also connected to the hub as a host from the same address, so the hub can link "the PC at this address
+makes a service connection to the target" (not whether it is a sync, a join or a pass); a connection from the program
+differs from a browser one by headers and field values (TURN measurements); timing: at start the program syncs with
+all members at once, then every 5–15 min (random) with one random member, retries with random pauses; during a
+brute-force lockout or with full login slots — comparison with refusals to ordinary connects; the target's response
+time: scanning the member keys costs the same for a sync and an ordinary connect (the pair secrets are computed once
+and kept in memory only, the scan is always full and at least 64 keys long), so it reveals neither a sync nor the list
+size — what remains is a few microseconds (measured on the dev PC: about 2 µs of 75) against milliseconds of network
+and the first connect after a list change being slower for everyone (the hub may notice that the list changed). A hub
+that puts itself into the channel encryption (it relays the channel description) does not get the member key: the
+target's answer is encrypted with a key only the member and the target know and is bound to the channel fingerprints,
+and every answer has a random nonce, so the hub cannot forge "sync accepted" even after replaying a captured request;
+the client checks the answer before identifying itself, then asks for the target key ("who", signed over the channel
+fingerprints) — the man in the middle's signature does not match and the client stops; from that abort and from the
+"who" itself the hub may guess a service connection. A replay of a captured request is recognised by the target and
+handled as an ordinary connect; the answers to replays reveal neither the status nor the key; within 10 minutes after
+the target restarts a replay can hold that member's slot for up to 20 seconds. The hub can drop syncs — the list then
+stays old until a sync passes. Residual risk: a PC joining through a PC that holds an old genuine list with no other
+members cannot check freshness — there is no one else to ask. A PC can leave the space locally (without the phrase)
+with its password and code: the list is removed from it, the password and code stay.

@@ -20,7 +20,8 @@ package agent
 //
 // Почему не эфемерный X25519: открытый ключ X25519 на проводе отличим от случайных байт (старший бит всегда 0, точка
 // всегда на кривой, а не на кручении — символ Лежандра), а Elligator2 в stdlib нет. Статический секрет пары и случайная
-// соль дают поле, неотличимое от случайного. Хост ищет члена перебором ключей своего M (SyncKeys) — доли миллисекунды.
+// соль дают поле, неотличимое от случайного. Хост ищет члена перебором ключей своего M (SyncKeys): общие секреты X25519
+// в кэше (sxPeers), перебор — всегда полный, не короче sxPad (sxOpenPeers, Б2: время не выдаёт ни сверку, ни размер).
 //
 // Хост открыл sx и время в пределах syncSkew, соли ещё не видел, место ключа свободно — сверка: своё место (вне места
 // сессии, maxPending и блокировки перебора), offer как обычному. Иначе — обычный connect (обычные ответы "busy",
@@ -40,13 +41,16 @@ package agent
 // connect с "busy" в "a". После перезапуска цели кэш пуст: повтор в окне ±10 мин занимает место члена до authWait, как и до Э4в.
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/hkdf"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
+	"sync/atomic"
 	"time"
 
 	"anypc/pake"
@@ -88,25 +92,54 @@ func sxGCM(k []byte) cipher.AEAD {
 // Ответ h2c — со случайным nonce (answer): хост шифрует им столько раз, сколько хаб повторит sx.
 var sxNonce = make([]byte, 12)
 
+// sxInfo — info HKDF: ключи привязаны к ID цели.
+const sxInfo = "anypc-space-sync-seal-v1\x00"
+
+// sxPad — перебор в sxOpenPeers не короче стольких ключей: столько бывает в M с ветвью раскола (app: spaceMaxMembers
+// 32 × 2). Добивка пустышками — время перебора не выдаёт размер состава (Б2).
+const sxPad = 64
+
+// sxPeer — ключ члена и статичный общий секрет X25519 пары «член — этот хост». ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ (A13): по
+// чувствительности s равен закрытому ключу (им открываются доказательства этого члена) — только в памяти, на диск не
+// пишется, в журнал не попадает. pub nil — пустышка добивки.
+type sxPeer struct {
+	pub ed25519.PublicKey
+	s   []byte
+}
+
+var sxDummy = sxPeer{s: sxRand(32)} // секрет пустышки случаен: подобрать к нему sx нельзя, да и pub nil — не член
+
+// Тест (Б2): число X25519 и Open — работа хоста не зависит ни от исхода, ни от позиции члена в составе.
+var sxECDHs, sxOpens atomic.Int64
+
+// sxShared — статичный общий секрет X25519 закрытого x и ключа Ed25519 peer.
+func sxShared(x *ecdh.PrivateKey, peer ed25519.PublicKey) ([]byte, error) {
+	sxECDHs.Add(1)
+	u, err := pake.XPub(peer)
+	if err != nil {
+		return nil, err
+	}
+	return x.ECDH(u) // нулевой общий секрет (точка малого порядка) — ошибка
+}
+
+// sxDerive — c2h, h2c из общего секрета s для цели hostID и соли salt.
+func sxDerive(s []byte, hostID string, salt []byte) (c2h, h2c []byte) {
+	k, _ := hkdf.Key(sha256.New, s, salt, sxInfo+hostID, 64) // ошибка только при длине > 255·32
+	return k[:32], k[32:]
+}
+
 // sxKeys — c2h, h2c пары (own, peer) для цели hostID и соли salt.
 func sxKeys(own ed25519.PrivateKey, peer ed25519.PublicKey, hostID string, salt []byte) (c2h, h2c []byte, err error) {
 	x, err := pake.XPriv(own)
 	if err != nil {
 		return nil, nil, err
 	}
-	u, err := pake.XPub(peer)
+	s, err := sxShared(x, peer)
 	if err != nil {
 		return nil, nil, err
 	}
-	s, err := x.ECDH(u)
-	if err != nil {
-		return nil, nil, err
-	}
-	k, err := hkdf.Key(sha256.New, s, salt, "anypc-space-sync-seal-v1\x00"+hostID, 64)
-	if err != nil {
-		return nil, nil, err
-	}
-	return k[:32], k[32:], nil
+	c2h, h2c = sxDerive(s, hostID, salt)
+	return c2h, h2c, nil
 }
 
 // sxMake — клиент (член own) → цель hostID с ключом host: поле sx connect и ключ ответа h2c.
@@ -119,22 +152,82 @@ func sxMake(own ed25519.PrivateKey, host ed25519.PublicKey, hostID string, now i
 	return sxGCM(c2h).Seal(salt, sxNonce, binary.BigEndian.AppendUint64(nil, uint64(now)), nil), h2c, nil
 }
 
+// sxPeersOf — общие секреты хоста own с keys без кэша; негодные ключи пропускаются.
+func sxPeersOf(own ed25519.PrivateKey, keys []ed25519.PublicKey) []sxPeer {
+	x, err := pake.XPriv(own)
+	if err != nil {
+		return nil
+	}
+	var out []sxPeer
+	for _, k := range keys {
+		if s, err := sxShared(x, k); err == nil {
+			out = append(out, sxPeer{pub: k, s: s})
+		}
+	}
+	return out
+}
+
 // sxOpen — хост own: чей из keys этот sx; t — время клиента. ok=false — случайные байты или не член.
 func sxOpen(own ed25519.PrivateKey, keys []ed25519.PublicKey, hostID string, sx []byte) (pub ed25519.PublicKey, t int64, h2c []byte, ok bool) {
+	return sxOpenPeers(sxPeersOf(own, keys), hostID, sx)
+}
+
+// sxOpenPeers — перебор без раннего выхода: HKDF и Open для каждого ключа и пустышек до sxPad — одна и та же работа,
+// открылся sx или нет и на каком ключе (Б2: иначе хаб по времени connect→offer отличал сверку от обычного connect и
+// узнавал размер состава). Остаётся разница в единицы микросекунд: расшифровка 8 байт при совпадении тега и кэш
+// повтора (sxSeen) у сверки — на фоне миллисекунд сети.
+func sxOpenPeers(peers []sxPeer, hostID string, sx []byte) (pub ed25519.PublicKey, t int64, h2c []byte, ok bool) {
 	if len(sx) != sxLen {
 		return nil, 0, nil, false
 	}
 	salt := sx[:sxSaltLen]
-	for _, k := range keys {
-		c2h, h, err := sxKeys(own, k, hostID, salt)
-		if err != nil {
-			continue
+	for i := range max(len(peers), sxPad) {
+		p := sxDummy
+		if i < len(peers) {
+			p = peers[i]
 		}
-		if pt, err := sxGCM(c2h).Open(nil, sxNonce, sx[sxSaltLen:], nil); err == nil {
-			return k, int64(binary.BigEndian.Uint64(pt)), h, true
+		c2h, h := sxDerive(p.s, hostID, salt)
+		sxOpens.Add(1)
+		pt, err := sxGCM(c2h).Open(nil, sxNonce, sx[sxSaltLen:], nil)
+		if err == nil && p.pub != nil && !ok {
+			pub, t, h2c, ok = p.pub, int64(binary.BigEndian.Uint64(pt)), h, true
 		}
 	}
-	return nil, 0, nil, false
+	return pub, t, h2c, ok
+}
+
+// sxPeers — общие секреты этого хоста с keys из кэша (sxCache): X25519 считается только для новых ключей; ключи,
+// которых в составе больше нет, из кэша уходят; смена ключа хоста — кэш заново. Под sxMu, не под a.mu: первый
+// пересчёт после смены состава — до 64 X25519.
+func (a *Agent) sxPeers(keys []ed25519.PublicKey) []sxPeer {
+	a.sxMu.Lock()
+	defer a.sxMu.Unlock()
+	me := a.Key.Public().(ed25519.PublicKey)
+	if !bytes.Equal(a.sxHost, me) {
+		a.sxHost, a.sxCache = bytes.Clone(me), nil
+	}
+	var x *ecdh.PrivateKey
+	next := make(map[string][]byte, len(keys))
+	out := make([]sxPeer, 0, len(keys))
+	for _, k := range keys {
+		s, hit := a.sxCache[string(k)]
+		if !hit {
+			if x == nil {
+				var err error
+				if x, err = pake.XPriv(a.Key); err != nil {
+					return nil
+				}
+			}
+			var err error
+			if s, err = sxShared(x, k); err != nil {
+				continue
+			}
+		}
+		next[string(k)] = s
+		out = append(out, sxPeer{pub: k, s: s})
+	}
+	a.sxCache = next
+	return out
 }
 
 // sxAAD — отпечатки DTLS (клиента, хоста): статус не перенести в другое соединение (посредник в DTLS его не откроет).
@@ -167,7 +260,7 @@ func (a *Agent) sxCheck(sx []byte) (ed25519.PublicKey, *sxSeal) {
 	if a.SpaceSync == nil || len(sx) != sxLen {
 		return nil, nil
 	}
-	pub, t, h2c, ok := sxOpen(a.Key, a.SpaceSync.SyncKeys(), a.ID, sx)
+	pub, t, h2c, ok := sxOpenPeers(a.sxPeers(a.SpaceSync.SyncKeys()), a.ID, sx)
 	if !ok {
 		return nil, nil
 	}

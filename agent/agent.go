@@ -125,6 +125,11 @@ type Agent struct {
 
 	syncs  map[string]*session  // Э4: ключ члена → его соединение сверки (одно; nil — пока шлётся offer), spsync.go
 	sxSeen map[string]time.Time // Э4в: соли открытых sx → до какого времени помнить (повтор хабом, spseal.go)
+	// Э4в (spseal.go, sxPeers): ключ члена → статичный общий секрет X25519 с этим хостом (sxHost). ТРЕБУЕТ РЕВЬЮ
+	// ЧЕЛОВЕКОМ: по чувствительности равен закрытому ключу — только в памяти.
+	sxMu    sync.Mutex
+	sxHost  ed25519.PublicKey
+	sxCache map[string][]byte
 }
 
 type session struct {
@@ -1319,9 +1324,6 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 			whoDone = true
 			s.mu.Unlock()
 			if !again && fpc != "" {
-				if syncFake("whosig") { // тест: подпись не над этими отпечатками (посредник в DTLS)
-					fph += "x"
-				}
 				send(authMsg{T: "who", Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph)})
 			}
 			return

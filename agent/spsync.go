@@ -76,8 +76,8 @@ const (
 )
 
 // syncTamper — тест: подделка на одной стороне, проверка — на другой: "host"/"client" — ID в подписи; "hostkey" —
-// хост подписывает чужим ключом; "whosig" — sx клиента сбит, хост подписывает "who" не над теми отпечатками; "cpub" —
-// клиент в "b" доказывает не тот ключ, что в connect; "early" — клиент шлёт M до "b".
+// хост подписывает чужим ключом; "sx" — sx клиента сбит; "old" — время в sx за окном; "cpub" — клиент в "b"
+// доказывает не тот ключ, что в connect; "early" — клиент шлёт M до "b".
 var syncTamper atomic.Value
 
 func syncFake(side string) bool { s, _ := syncTamper.Load().(string); return s == side }
@@ -98,6 +98,20 @@ type spSync struct {
 	phase int               // 1 — ждём "b"; 2 — ждём M клиента; 3 — ждём записи и итог; 4 — кончено
 	pub   ed25519.PublicKey // ключ члена, доказанный в connect
 	recs  [][]byte
+}
+
+// whoResult — клиент сверки, чей sx не открылся: ответ хоста на "who" (am) в соединении с отпечатками fc, fh. Подпись
+// не над этими отпечатками — ErrSpaceHostKey (посредник в DTLS или подделка); ключ тот, что в M клиента (want), — цель
+// не считает этот ПК членом (ErrSpaceRefused); другой — под ID члена другой ПК (ErrSpaceIDKey, С4). Всегда ошибка.
+func whoResult(am authMsg, id string, want ed25519.PublicKey, fc, fh string) error {
+	switch {
+	case pake.HostVerify(am.Pub, am.Sig, id, fc, fh) != nil:
+		return ErrSpaceHostKey
+	case bytes.Equal(am.Pub, want):
+		return fmt.Errorf("%w: rights", ErrSpaceRefused) // тот ПК, но этот ПК там не член
+	default:
+		return ErrSpaceIDKey
+	}
 }
 
 // syncConnect — connect, чей sx открылся ключом члена pub (spseal.go, sxCheck): доказательство до того, как выделить
@@ -259,7 +273,7 @@ func syncVia(ctx context.Context, server string, d SyncDial) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if syncFake("sx") || syncFake("whosig") { // whosig: sx не откроется — клиент спросит "who"
+	if syncFake("sx") {
 		sx[len(sx)-1] ^= 1
 	}
 	req := connectReq{View: true, SX: sx} // как у вступления и пропуска (hostDial): хаб сверку не отличит
@@ -319,14 +333,7 @@ func syncVia(ctx context.Context, server string, d SyncDial) ([]byte, error) {
 				case t == "who" && who:
 					who = false
 					fc, fh := fps()
-					switch {
-					case pake.HostVerify(am.Pub, am.Sig, d.ID, fc, fh) != nil:
-						finish(ErrSpaceHostKey)
-					case bytes.Equal(am.Pub, d.HostPub):
-						finish(fmt.Errorf("%w: rights", ErrSpaceRefused)) // тот ПК, но этот ПК там не член
-					default:
-						finish(ErrSpaceIDKey)
-					}
+					finish(whoResult(am, d.ID, d.HostPub, fc, fh))
 				case t == "sp" && sm.Err == "notme":
 					finish(ErrSpaceIDKey)
 				case t == "sp" && sm.Err != "":
