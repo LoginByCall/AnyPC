@@ -122,6 +122,7 @@ func hostMain() {
 		CodeUsed: cfg.codeUsed,                           // «Спрашивать»: код сменить после сессии и блокировки (REQ-S-23)
 		SpaceGet: cfg.spaceGet, SpaceJoin: cfg.spaceJoin, // «Моё пространство», Э2: отдать состав и принять вступление
 		SpaceMember: cfg.spaceMember, // Э3: пропуск 12 ч на ключ мастера (agent/pass.go)
+		SpaceSync:   cfg,             // Э4: сверка состава между членами (spsync.go)
 		Capture:     hostCapture(cfg.Enc), Locked: hostLocked, FileDir: downloads(), Stderr: logw}
 	var mu sync.Mutex
 	online, session, update := false, "", ""
@@ -168,6 +169,7 @@ func hostMain() {
 		openWindow("http://" + addr + "/?n=" + once.issue())
 	}
 	passes.cfg = cfg
+	startSpaceSync(ctx, cfg, a)
 	if startLock != nil { // Э3: блокировка экрана этого ПК снимает пропуска, выданные ему как мастеру
 		go startLock(ctx, func() { go passes.offAll(ctx) }, passes.lockAlive)
 	}

@@ -107,6 +107,7 @@ func main() {
 		CodeUsed: cfg.codeUsed,                           // «Спрашивать»: код сменить после сессии и блокировки (REQ-S-23)
 		SpaceGet: cfg.spaceGet, SpaceJoin: cfg.spaceJoin, // «Моё пространство», Э2: отдать состав и принять вступление
 		SpaceMember: cfg.spaceMember, // Э3: пропуск 12 ч на ключ мастера (agent/pass.go); детектора блокировки нет (startLock)
+		SpaceSync:   cfg,             // Э4: сверка состава между членами (spsync.go)
 		Capture: func(ctx context.Context, c agent.Cap) (*exec.Cmd, error) { // выход DXGI c.Mon
 			ffMu.Lock()
 			ff := ff
@@ -182,6 +183,7 @@ func main() {
 		defer close(trayDone)
 		runTray(ctx, cfg.ID, func() { w.Dispatch(func() { showMain(uintptr(w.Window())) }) }, w.Destroy)
 	}()
+	startSpaceSync(ctx, cfg, a)
 	run.start(cfg.Server)
 	w.Run()
 	cancel()
