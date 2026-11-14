@@ -8,7 +8,7 @@ import "time"
 // winuser.h, wtsapi32.h
 const (
 	wmTimer, wmWTSSessionChange, wmPowerBroadcast = 0x113, 0x2b1, 0x218
-	wmEndSession                                  = 0x16
+	wmEndSession, wmDestroyLock                   = 0x16, 0x2
 	pbtAPMSuspend                                 = 0x4
 	wtsConsoleDisconnect, wtsRemoteDisconnect     = 0x2, 0x4
 	wtsSessionLock                                = 0x7
@@ -63,3 +63,58 @@ func regPolicy(ok bool, wait time.Duration) (alive bool, timer, next time.Durati
 // sessionOK — процесс в сеансе пользователя: ProcessIdToSessionId (r ≠ 0 — успех) дал не 0. Сеанс 0 (служба)
 // рабочего стола пользователя не видит; узнать не вышло — пробуем (регистрация скажет сама).
 func sessionOK(r uintptr, sid uint32) bool { return r == 0 || sid != 0 }
+
+// wtsDetector — склейка окна детектора Windows без вызовов API (они — функции из lock_windows.go): регистрация с
+// повтором, alive только по итогу регистрации, синхронное снятие при конце сеанса. Трогается только из потока окна.
+type wtsDetector struct {
+	register   func() (bool, error) // WTSRegisterSessionNotification
+	setTimer   func(time.Duration)  // SetTimer(lockTimerID)
+	killTimer  func()
+	unregister func() // WTSUnRegisterSessionNotification
+	on, end    func() // блокировка (снятие в фоне); конец сеанса (снятие синхронно, до возврата)
+	alive      func(string, bool)
+	logf       func(string, ...any)
+	reg        bool
+	wait       time.Duration
+}
+
+// tryReg — попытка регистрации: alive(итог) — после ответа системы; отказ — таймер повтора.
+func (d *wtsDetector) tryReg() {
+	r, err := d.register()
+	ok, timer, next := regPolicy(r, d.wait)
+	d.reg, d.wait = ok, next
+	if timer > 0 {
+		d.logf("блокировка экрана: WTSRegisterSessionNotification: %v — повтор через %v", err, timer)
+		d.setTimer(timer)
+	} else {
+		d.killTimer()
+		d.logf("блокировка экрана: отслеживается (WTS)")
+	}
+	d.alive("wts", ok)
+}
+
+// handle — сообщение окна; true — обработано (окно вернёт 0), false — DefWindowProc. Конец сеанса — end() до
+// возврата: после него процесс убивают.
+func (d *wtsDetector) handle(msg, wp uintptr) bool {
+	switch lockAct(msg, wp, d.reg) {
+	case actLock:
+		d.logf("блокировка экрана (сообщение %#x, %d)", msg, wp)
+		d.on()
+		return false // WM_POWERBROADCAST: DefWindowProc вернёт TRUE
+	case actEnd:
+		d.logf("блокировка экрана: сеанс кончается (WM_ENDSESSION) — снимаю пропуска")
+		d.end()
+		return true
+	case actRetry:
+		d.tryReg()
+		return true
+	}
+	if msg == wmDestroyLock {
+		if d.reg {
+			d.unregister()
+			d.reg = false
+		}
+		return true
+	}
+	return false
+}

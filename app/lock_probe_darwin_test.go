@@ -1,8 +1,9 @@
+//go:build lockprobe
+
 package main
 
 import (
 	"context"
-	"os"
 	"os/exec"
 	"testing"
 	"time"
@@ -23,27 +24,14 @@ func postDist(t *testing.T, name string, imm bool) {
 	}
 }
 
-// TestMacLockNames — таблица наблюдателей (lock_darwin.m): все три источника, распределённый — с DeliverImmediately,
-// имена NSWorkspace совпадают с системными константами.
-func TestMacLockNames(t *testing.T) {
-	want := "dist com.apple.screenIsLocked immediate\n" +
-		"ws NSWorkspaceWillSleepNotification -\n" +
-		"ws NSWorkspaceSessionDidResignActiveNotification -\n"
-	if got := lockNames(); got != want {
-		t.Errorf("наблюдатели:\n%s\nждали:\n%s", got, want)
-	}
-}
-
-// TestMacLockLive — детектор на настоящем сеансе без своего окна (как «окно в браузере»): alive после подписки;
-// чужое уведомление — не блокировка; com.apple.screenIsLocked из другого процесса — блокировка, и при приостановке
-// уведомлений процессу (как у неактивного приложения) без deliverImmediately у отправителя; сон и уход сеанса
-// (центр NSWorkspace этого процесса) — блокировка; второй одновременный детектор — alive(false); конец ctx —
-// alive(false), наблюдатели сняты. Шлёт в сеанс пользователя настоящее com.apple.screenIsLocked (экран не
-// блокируется, но его видят все наблюдатели сеанса) — только по запросу: ANYPC_LOCK_LIVE=1 go test ./app -run MacLock -v
+// TestMacLockLive — детектор на настоящем сеансе без своего окна (как «окно в браузере»): после alive(true) стоят все
+// наблюдатели таблицы, распределённый — с DeliverImmediately (из вызова подписки); чужое уведомление — не блокировка;
+// com.apple.screenIsLocked из другого процесса — блокировка, и при приостановке уведомлений процессу (как у
+// неактивного приложения) без deliverImmediately у отправителя; сон и уход сеанса (центр NSWorkspace этого процесса) —
+// блокировка; второй одновременный детектор — alive(false); конец ctx — alive(false), наблюдатели сняты (счётчик
+// срабатываний не растёт). Шлёт в сеанс пользователя настоящее com.apple.screenIsLocked (экран не блокируется, но его
+// видят все наблюдатели сеанса) — потому только с тегом: go test -tags lockprobe ./app -run MacLock -v
 func TestMacLockLive(t *testing.T) {
-	if os.Getenv("ANYPC_LOCK_LIVE") == "" {
-		t.Skip("ANYPC_LOCK_LIVE не задан")
-	}
 	if !uiStart() {
 		t.Skip("нет графического сеанса")
 	}
@@ -62,6 +50,12 @@ func TestMacLockLive(t *testing.T) {
 	}()
 	if !<-alive {
 		t.Fatal("alive(false) при графическом сеансе")
+	}
+	want := "dist com.apple.screenIsLocked immediate\n" +
+		"ws NSWorkspaceWillSleepNotification -\n" +
+		"ws NSWorkspaceSessionDidResignActiveNotification -\n"
+	if got := lockNames(); got != want {
+		t.Errorf("наблюдатели:\n%s\nждали:\n%s", got, want)
 	}
 	got := func(d time.Duration) bool {
 		select {
@@ -104,9 +98,17 @@ func TestMacLockLive(t *testing.T) {
 	if <-alive {
 		t.Error("конец ctx без alive(false)")
 	}
+	hits := lockHits()
 	lockPostLocal("NSWorkspaceWillSleepNotification")
+	lockPostLocal("NSWorkspaceSessionDidResignActiveNotification")
 	postDist(t, "com.apple.screenIsLocked", true)
-	if got(2 * time.Second) {
-		t.Error("после конца ctx наблюдатели не сняты")
+	time.Sleep(2 * time.Second)
+	if n := lockHits(); n != hits {
+		t.Errorf("после конца ctx наблюдатель сработал %d раз — не снят", n-hits)
+	}
+	select {
+	case <-locked:
+		t.Error("после конца ctx — блокировка")
+	default:
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -87,6 +88,7 @@ type passMaster struct {
 	alive  map[string]bool        // источники детектора блокировки, подписанные сейчас
 	bg     sync.WaitGroup         // повторы «снять»
 	retry  map[string]*passIssued // ID цели → «снять» в повторе (запись — метка своего повтора); offAll забирает и их
+	flying []chan struct{}        // offAll, чьи «снять» ещё в пути (закрывается, когда неудачные уже в retry)
 }
 
 // lockAlive — alive для startLock.
@@ -236,9 +238,20 @@ func passSummary(rs []passResult) string {
 // «Снять» — одно подписанное сообщение через хабы по очереди, пока цель не ответит подписью своего ключа; без id
 // пропуска и целям старых версий — отдельным соединением (agent.PassOff). Без ответа цели «снять» повторяется в фоне с нарастающей паузой, пока не дойдёт, пропуск на цели не истечёт или новый
 // «Работаю тут» его не заменит; кончился ctx — цель остаётся в повторе, и следующий offAll (выход) её возьмёт.
+// Синхронный offAll (выход, WM_ENDSESSION) сначала ждёт в пределах своего ctx «снять», уже летящие от прежних
+// offAll (фоновый по блокировке забрал список раньше): дошло — готово, нет — цель уже в retry, и он её берёт.
 func (p *passMaster) offAll(ctx context.Context) {
 	p.mu.Lock()
 	p.locks++
+	prev := slices.Clone(p.flying)
+	p.mu.Unlock()
+	for _, f := range prev {
+		select {
+		case <-f:
+		case <-ctx.Done():
+		}
+	}
+	p.mu.Lock()
 	list := p.issued
 	p.issued = nil
 	for id, t := range p.retry { // повтор, который сейчас ждёт, увидит, что запись не его, и кончится
@@ -250,10 +263,19 @@ func (p *passMaster) offAll(ctx context.Context) {
 		}
 	}
 	p.retry = nil
-	p.mu.Unlock()
 	if len(list) == 0 {
+		p.mu.Unlock()
 		return
 	}
+	fly := make(chan struct{})
+	p.flying = append(p.flying, fly)
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		p.flying = slices.DeleteFunc(p.flying, func(c chan struct{}) bool { return c == fly })
+		p.mu.Unlock()
+		close(fly)
+	}()
 	key, server := p.cfg.key(), p.cfg.server()
 	off := func(id string, t passIssued) bool {
 		err := passOffFn(ctx, agent.PassDial{Server: server, ID: id, HostPub: t.pub, Key: key, PID: t.pid})
