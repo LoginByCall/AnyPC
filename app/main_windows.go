@@ -108,7 +108,7 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	passes.cfg = cfg
-	go startLock(ctx, func() { go passes.offAll(ctx) }, passes.lockAlive) // Э3: блокировка экрана снимает пропуска мастера (lock_windows.go)
+	go startLock(ctx, func() { go passes.offAll(context.WithoutCancel(ctx)) }, passes.lockAlive) // Э3: блокировка экрана снимает пропуска мастера (lock_windows.go)
 	a := &agent.Agent{Audio: true, Pause: true,
 		Version: version, Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, Key: cfg.key(), FPS: 30, Stderr: logf, Trusted: cfg.trusted, Trust: cfg.trust, KeyLogin: cfg.keyLogin, KeyTrust: cfg.keyTrust,
 		Bitrate: agent.Kbps(cfg.Bitrate),
@@ -199,10 +199,10 @@ func main() {
 	startSpaceSync(ctx, cfg, a)
 	run.start(cfg.Server)
 	w.Run()
-	cancel()
-	quit, qcancel := context.WithTimeout(context.Background(), 3*time.Second) // Э3: выход мастера снимает его пропуска
-	passes.offAll(quit)
+	quit, qcancel := context.WithTimeout(context.Background(), 3*time.Second) // Э3: выход мастера снимает его пропуска —
+	passes.offAll(quit)                                                       // до cancel(): летящие «снять» дождаться
 	qcancel()
+	cancel()
 	select { // значок снять до выхода, иначе он висит у часов до наведения мыши
 	case <-trayDone:
 	case <-time.After(2 * time.Second):

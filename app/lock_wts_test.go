@@ -1,6 +1,9 @@
 package main
 
 import (
+	"errors"
+	"fmt"
+	"slices"
 	"testing"
 	"time"
 )
@@ -74,5 +77,71 @@ func TestLockSession(t *testing.T) {
 	}
 	if !sessionOK(1, 2) || !sessionOK(0, 0) {
 		t.Error("сеанс пользователя или неизвестный отвергнут")
+	}
+}
+
+// fakeWTS — wtsDetector с записью вызовов системы; регистрация удаётся с попытки okAt (1 — сразу).
+func fakeWTS(okAt int) (*wtsDetector, *[]string) {
+	var ev []string
+	n := 0
+	return &wtsDetector{
+		register: func() (bool, error) {
+			n++
+			ev = append(ev, fmt.Sprintf("reg %v", n >= okAt))
+			if n >= okAt {
+				return true, nil
+			}
+			return false, errors.New("RPC_S_INVALID_BINDING")
+		},
+		setTimer:   func(d time.Duration) { ev = append(ev, "timer "+d.String()) },
+		killTimer:  func() { ev = append(ev, "kill") },
+		unregister: func() { ev = append(ev, "unreg") },
+		on:         func() { ev = append(ev, "on") },
+		end:        func() { time.Sleep(20 * time.Millisecond); ev = append(ev, "end") },
+		alive:      func(src string, ok bool) { ev = append(ev, fmt.Sprintf("alive %s %v", src, ok)) },
+		logf:       func(string, ...any) {},
+		wait:       lockRetry,
+	}, &ev
+}
+
+// TestWTSDetector — склейка окна (lock_wts.go): alive(true) — только после удачной регистрации, отказ — alive(false)
+// и таймер с растущей паузой, таймер после регистрации не регистрирует снова; WM_ENDSESSION(TRUE) — снятие
+// синхронно, до возврата обработчика; блокировка — on() и DefWindowProc; WM_DESTROY — отписка, если была.
+func TestWTSDetector(t *testing.T) {
+	d, ev := fakeWTS(3)
+	d.tryReg()
+	for i := range 3 {
+		if d.handle(0x113, 1) != (i < 2) { // WM_TIMER повтора; третий — после регистрации, в DefWindowProc
+			t.Fatalf("таймер %d: обработан %v", i, !(i < 2))
+		}
+	}
+	want := []string{"reg false", "timer 2s", "alive wts false", "reg false", "timer 4s", "alive wts false",
+		"reg true", "kill", "alive wts true"} // третий таймер после регистрации — мимо
+	if !slices.Equal(*ev, want) {
+		t.Fatalf("регистрация:\n%v\nждали\n%v", *ev, want)
+	}
+	*ev = nil
+	if d.handle(0x2b1, 0x7) || !slices.Equal(*ev, []string{"on"}) {
+		t.Errorf("WTS_SESSION_LOCK: %v", *ev)
+	}
+	*ev = nil
+	if d.handle(0x16, 0) || len(*ev) != 0 {
+		t.Errorf("WM_ENDSESSION(FALSE): %v", *ev)
+	}
+	if !d.handle(0x16, 1) || !slices.Equal(*ev, []string{"end"}) {
+		t.Errorf("WM_ENDSESSION(TRUE): снятие не до возврата обработчика: %v", *ev)
+	}
+	*ev = nil
+	if !d.handle(0x2, 0) || !d.handle(0x2, 0) || !slices.Equal(*ev, []string{"unreg"}) {
+		t.Errorf("WM_DESTROY дважды: %v, ждали одну отписку", *ev)
+	}
+	if d.handle(0x1a, 0) {
+		t.Error("WM_SETTINGCHANGE обработан детектором")
+	}
+
+	d, ev = fakeWTS(1)
+	d.tryReg()
+	if !slices.Equal(*ev, []string{"reg true", "kill", "alive wts true"}) {
+		t.Errorf("регистрация сразу: %v", *ev)
 	}
 }

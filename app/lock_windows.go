@@ -51,13 +51,8 @@ var lockEnd = func() {
 
 func init() { startLock = runLock }
 
-// lockWin — состояние детектора; трогается только из потока его окна. Один детектор на процесс (winLockGuard).
-var lockWin struct {
-	on    func()
-	alive func(string, bool)
-	reg   bool
-	wait  time.Duration
-}
+// lockDet — детектор этого процесса (склейка — wtsDetector, lock_wts.go); трогается только из потока его окна.
+var lockDet *wtsDetector
 
 // runLock — startLock на Windows: до конца ctx; alive("wts", …) — подписка на события сеанса есть или нет.
 func runLock(ctx context.Context, on func(), alive func(string, bool)) {
@@ -74,17 +69,26 @@ func runLock(ctx context.Context, on func(), alive func(string, bool)) {
 		return
 	}
 	runtime.LockOSThread() // окно принадлежит потоку (поток умрёт с горутиной)
-	lockWin.on, lockWin.alive, lockWin.reg, lockWin.wait = on, alive, false, lockRetry
-	defer func() { lockWin.on = nil }()
 	h, err := createLockWin()
 	if err != nil {
 		log.Printf("блокировка экрана: %v — не отслеживается", err)
 		alive("wts", false)
 		return
 	}
+	lockDet = &wtsDetector{
+		register: func() (bool, error) {
+			r, _, e := pWTSReg.Call(h, 0) // NOTIFY_FOR_THIS_SESSION
+			return r != 0, e
+		},
+		setTimer:   func(d time.Duration) { pSetTimer.Call(h, lockTimerID, uintptr(d/time.Millisecond), 0) },
+		killTimer:  func() { pKillTimer.Call(h, lockTimerID) },
+		unregister: func() { pWTSUnreg.Call(h) },
+		on:         on, end: lockEnd, alive: alive, logf: log.Printf, wait: lockRetry,
+	}
+	defer func() { lockDet = nil }()
 	stop := context.AfterFunc(ctx, func() { pPostMsg.Call(h, wmClose, 0, 0) })
 	defer stop()
-	lockReg(h)
+	lockDet.tryReg()
 	msgLoop()
 	alive("wts", false)
 	if ctx.Err() == nil { // окно пропало само — снять, как при потере шины на Linux
@@ -113,41 +117,14 @@ func createLockWin() (uintptr, error) {
 	return h, nil
 }
 
-// lockReg — подписаться на события сеанса; не вышло — alive(false) и повтор таймером (regPolicy).
-func lockReg(h uintptr) {
-	r, _, e := pWTSReg.Call(h, 0) // NOTIFY_FOR_THIS_SESSION
-	ok, timer, next := regPolicy(r != 0, lockWin.wait)
-	lockWin.reg, lockWin.wait = ok, next
-	if timer > 0 {
-		log.Printf("блокировка экрана: WTSRegisterSessionNotification: %v — повтор через %v", e, timer)
-		pSetTimer.Call(h, lockTimerID, uintptr(timer/time.Millisecond), 0)
-	} else {
-		pKillTimer.Call(h, lockTimerID)
-		log.Print("блокировка экрана: отслеживается (WTS)")
-	}
-	lockWin.alive("wts", ok)
-}
-
 func lockProc(h, msg, wp, lp uintptr) uintptr {
-	if lockWin.on != nil {
-		switch lockAct(msg, wp, lockWin.reg) {
-		case actLock:
-			log.Printf("блокировка экрана (сообщение %#x, %d)", msg, wp)
-			lockWin.on()
-		case actEnd:
-			log.Printf("блокировка экрана: сеанс кончается (WM_ENDSESSION, %#x) — снимаю пропуска", lp)
-			lockEnd()
-			return 0
-		case actRetry:
-			lockReg(h)
-			return 0
+	if d := lockDet; d != nil && d.handle(msg, wp) {
+		if msg == wmDestroy {
+			pPostQuit.Call(0)
 		}
+		return 0
 	}
-	if msg == wmDestroy {
-		if lockWin.reg {
-			pWTSUnreg.Call(h)
-			lockWin.reg = false
-		}
+	if msg == wmDestroy { // детектора уже нет — цикл всё равно кончить
 		pPostQuit.Call(0)
 		return 0
 	}
