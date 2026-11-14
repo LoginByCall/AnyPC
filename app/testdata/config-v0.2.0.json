@@ -1,0 +1,55 @@
+{
+  "id": "361935072",
+  "server": "wss://hk.anypc.org/ws,wss://ru.anypc.org/ws",
+  "enc": "libx264",
+  "bitrate": "4M",
+  "users": [
+    {
+      "salt": "8ELFCxshC9nPx2a/pChLWw==",
+      "hash": "MNyq0XHqqb1tHS7hfgkbdvhuQn5NGWsrvSbzXvr6hZ0=",
+      "totp": "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP",
+      "totp_step": 59822731,
+      "trusted": [
+        "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
+      ],
+      "key_login": [
+        {
+          "pub": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+          "added": "2026-11-14T13:45:41.485793097-05:00",
+          "last": "2026-11-14T13:45:41.485793097-05:00"
+        }
+      ]
+    },
+    {
+      "name": "ivan",
+      "salt": "pPlKdvHa4K/ofBW5raCvAA==",
+      "hash": "1DTOTeAk1gyWFZtOtwyMCrznihXAICnPLlAH6EfiJEM=",
+      "view": true,
+      "totp": "KRSXG5CTMVRXEZLUKRSXG5CTMVRXEZLU",
+      "totp_step": 59822731,
+      "trusted": [
+        "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM="
+      ]
+    }
+  ],
+  "key": "wZwkulmcdK9FL3evp9OxHC8cqPfYiKZDP+Wdb8JQFn4ko+GengiX/bRWcyT2KXRyloqFvoA6znx+wb0KAc9uDw==",
+  "known": {
+    "987654321": "AA:BB"
+  },
+  "confirm": false,
+  "saved": {
+    "987654321": "сохранённый"
+  },
+  "ckeys": {
+    "987654321": "{\"seed\":\"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=\",\"pub\":\"6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iw=\",\"login\":true,\"lu\":\"ivan\"}"
+  },
+  "view_only": true,
+  "ui": {
+    "mine": "[{\"id\":\"987654321\",\"name\":\"Дача\"}]",
+    "stats": "true",
+    "turbo": "1",
+    "users": "{\"987654321\":\"ivan\"}"
+  },
+  "code": "714556",
+  "code_salt": "V8wBgz7a0vgggVEDEYgDHA=="
+}
