@@ -478,3 +478,23 @@ func TestCDPLive(t *testing.T) {
 		return nil
 	})
 }
+
+// TestCDPExpiredCtx: вызов с уже истёкшим сроком не пишет в pipe и не убивает Chrome (приёмка, круг 2).
+func TestCDPExpiredCtx(t *testing.T) {
+	var f fakeChrome
+	c := f.start(t, func(string, map[string]any) any { return map[string]any{} })
+	killed := false
+	c.kill = func() { killed = true }
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	time.Sleep(time.Millisecond)
+	if err := c.call(ctx, "", "Browser.getVersion", nil, nil); err == nil {
+		t.Fatal("истёкший срок: ждали ошибку")
+	}
+	if killed || !c.alive() {
+		t.Fatalf("истёкший срок убил Chrome: killed=%v alive=%v", killed, c.alive())
+	}
+	if err := c.call(context.Background(), "", "Browser.getVersion", nil, nil); err != nil {
+		t.Fatalf("после истёкшего срока соединение должно жить: %v", err)
+	}
+}
