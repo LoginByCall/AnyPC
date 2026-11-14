@@ -489,6 +489,7 @@ func jsStr(s string) string { b, _ := json.Marshal(s); return string(b) }
 
 // seedKeys — что страница окна ПК берёт из localStorage окна AnyPC (другой профиль — своё хранилище): имена своих ПК,
 // имя записи для входа, Турбо, выбор TURN, статистика. Секретов в localStorage программы нет (пароли и ключи — config.json).
+// Запасной путь: страница берёт эти ключи из config.json (withUI, uiKeys) и при загрузке перекрывает ими seed.
 var seedKeys = []string{"mine", "users", "turbo", "turn", "stats"}
 
 // seedScript — скрипт до скриптов страницы: перенести seed в localStorage профиля окна; подсказки тура — показаны.

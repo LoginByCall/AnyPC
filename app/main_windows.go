@@ -162,6 +162,8 @@ func main() {
 	w.Bind("ckeySet", cfg.ckeySet)
 	w.Bind("savedGet", cfg.savedGet)
 	w.Bind("savedSet", cfg.savedSet)
+	w.Bind("uiGet", cfg.uiGet) // настройки окна (mine, users…) — в config.json, как на unix (страница: uiSync)
+	w.Bind("uiSet", cfg.uiSet)
 	fl := newFiles(agent.DownloadsDir()) // и клиент, и хост — в настоящие «Загрузки» (могут быть перенесены)
 	w.Bind("fileOpen", fl.Open)
 	w.Bind("fileWrite", fl.Write)
