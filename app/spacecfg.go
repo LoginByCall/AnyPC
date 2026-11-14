@@ -515,9 +515,7 @@ func (c *config) spaceEnterAsk(ctx context.Context, hostID, password, code, phra
 	u.Salt, u.Hash, u.TOTP, u.TOTPStep = bytes.Clone(joined.PSalt), bytes.Clone(joined.PHash), joined.TOTP, step
 	u.Trusted, u.KeyLogin = nil, nil // новый пароль — доверие ключам заново (как setAccount); гостей не трогаем
 	c.SpaceWait = hostID             // пропусков нет до сверки с другим членом (spaceSyncer.one)
-	if !slices.ContainsFunc(joined.Members, func(x spaceMember) bool { return x.ID != id && x.ID != hostID }) {
-		c.SpaceWait = "" // других членов нет — сверять не с кем
-	}
+	c.spaceWaitLocked()              // других членов нет — сверять не с кем
 	if err := c.save(); err != nil {
 		return ch, err
 	}

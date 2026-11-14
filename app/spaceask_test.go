@@ -102,8 +102,8 @@ func TestSpaceEnterAsk(t *testing.T) {
 	if got.spaceChanges != want || !got.Password || !got.TOTP || got.Trusted != 2 || got.KeyLogin != 1 || !got.Ask || got.Already {
 		t.Errorf("превью %v, итог %v", got.spaceChanges, r.ch)
 	}
-	if spaceEpoch(p) != 2 {
-		t.Error("после подтверждения P не принял M")
+	if spaceEpoch(p) != 2 || !r.ch.Fresh { // других членов, кроме P, нет — сверять не с кем
+		t.Errorf("после подтверждения: эпоха P %d, сверен %v", spaceEpoch(p), r.ch.Fresh)
 	}
 }
 
@@ -652,5 +652,31 @@ func TestSpaceEnterCancelYes(t *testing.T) {
 		if !errors.Is(err, context.Canceled) || spaceEpoch(p) != 1 || spaceOf(n) != nil {
 			t.Fatalf("попытка %d: %v, эпоха P %d", i, err, spaceEpoch(p))
 		}
+	}
+}
+
+// TestSpaceWaitGone — N ждёт сверки с Q (не в сети); Q исключили фразой, исключение дошло до N: кроме поручителя
+// членов нет — SpaceWait снят, вход открыт (правило вступления; дефолт A вопроса владельцу). Пока Q — член, закрыт.
+func TestSpaceWaitGone(t *testing.T) {
+	sec := totp.NewSecret()
+	p := spaceCfg(t, spacePass, sec)
+	ph, keys := syncSpace(t, 1, p)
+	withSpaceNet(t, spaceNet(p, nil))
+	n := spaceCfg(t, "n-local-pass", totp.NewSecret())
+	if _, err := n.spaceEnter(context.Background(), p.id(), spacePass, spaceCode(p, sec), ph); err != nil {
+		t.Fatal(err)
+	}
+	if !n.loginShut("") {
+		t.Fatal("вход не закрыт")
+	}
+	ex, err := spaceRemove(topOf(t, n), ph, keys[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := n.spaceEdit(spSnap(n), ex); err != nil {
+		t.Fatal(err)
+	}
+	if n.loginShut("") || !n.spaceFreshNow() {
+		t.Error("сверять не с кем, а вход закрыт")
 	}
 }
