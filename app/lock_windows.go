@@ -1,13 +1,15 @@
 // Блокировка экрана мастера на Windows (Э3, UI-REDESIGN.md, решение владельца 5): по ней мастер снимает выданные
 // пропуска. Без cgo, как значок (tray_windows.go): скрытое окно верхнего уровня со своим циклом сообщений на
-// закреплённом потоке, WTSRegisterSessionNotification(NOTIFY_FOR_THIS_SESSION). Блокировка — любое из:
+// закреплённом потоке, WTSRegisterSessionNotification(NOTIFY_FOR_THIS_SESSION). Решения — чистые функции lock_wts.go.
+// Блокировка (снятие в фоне, on()) — любое из:
 //   - WM_WTSSESSION_CHANGE / WTS_SESSION_LOCK — Win+L, по таймауту, перед сном с паролем при пробуждении;
 //   - WTS_CONSOLE_DISCONNECT — сеанс ушёл с консоли (быстрая смена пользователя, вход в этот сеанс по RDP): к экрану
 //     его вернёт только пароль Windows, перед ПК мастера владельца больше нет;
 //   - WTS_REMOTE_DISCONNECT — мастер сам сеанс RDP и клиент отключился: сеанс живёт без зрителя, вернуться — с паролем;
-//   - WTS_SESSION_LOGOFF — выход из сеанса (процесс и так закончится — снять заранее);
 //   - WM_POWERBROADCAST / PBT_APMSUSPEND — сон (как PrepareForSleep на Linux; сообщение — только окнам верхнего уровня).
 //
+// Выключение, перезагрузка, выход из сеанса — WM_ENDSESSION(TRUE): после возврата из обработчика процесс убивают,
+// w.Run() в main не вернётся — снимаем синхронно здесь (lockEnd, ≤ lockEndWait).
 // Ложное снятие лишь просит ввести код снова. Сеанс 0 (служба) рабочего стола пользователя не видит — alive(false),
 // «Работаю тут» честно отказывает (errNoLockDetector). Регистрация не удалась (службы удалённых рабочих столов ещё не
 // запущены — RPC_S_INVALID_BINDING, документация WTSRegisterSessionNotification) — alive(false) и повтор по таймеру.
@@ -34,14 +36,22 @@ var (
 	lockClass, _  = syscall.UTF16PtrFromString("AnyPCLock")
 	lockClassOnce sync.Once
 	lockClassErr  error
+	winLockGuard  lockGuard
 )
 
-// lockRetry, lockRetryMax — пауза повтора регистрации (растёт вдвое).
-var lockRetry, lockRetryMax = 2 * time.Second, 5 * time.Minute
+// lockEndWait — сколько WM_ENDSESSION ждёт снятия пропусков (система убивает «висящее» приложение через ~5 с).
+var lockEndWait = 3 * time.Second
+
+// lockEnd — снять пропуска мастера синхронно, пока сеанс кончается (тест подменяет).
+var lockEnd = func() {
+	ctx, cancel := context.WithTimeout(context.Background(), lockEndWait)
+	passes.offAll(ctx)
+	cancel()
+}
 
 func init() { startLock = runLock }
 
-// lockWin — состояние детектора; трогается только из потока его окна. Один детектор на процесс.
+// lockWin — состояние детектора; трогается только из потока его окна. Один детектор на процесс (winLockGuard).
 var lockWin struct {
 	on    func()
 	alive func(string, bool)
@@ -51,14 +61,21 @@ var lockWin struct {
 
 // runLock — startLock на Windows: до конца ctx; alive("wts", …) — подписка на события сеанса есть или нет.
 func runLock(ctx context.Context, on func(), alive func(string, bool)) {
+	if !winLockGuard.take() {
+		log.Print("блокировка экрана (wts): детектор уже запущен — второй не нужен")
+		alive("wts", false)
+		return
+	}
+	defer winLockGuard.drop()
 	var sid uint32
-	if r, _, _ := pSessionID.Call(uintptr(syscall.Getpid()), uintptr(unsafe.Pointer(&sid))); r != 0 && sid == 0 {
+	if r, _, _ := pSessionID.Call(uintptr(syscall.Getpid()), uintptr(unsafe.Pointer(&sid))); !sessionOK(r, sid) {
 		log.Print("блокировка экрана: сеанс 0 (служба) — рабочего стола пользователя не видно, не отслеживается")
 		alive("wts", false)
 		return
 	}
 	runtime.LockOSThread() // окно принадлежит потоку (поток умрёт с горутиной)
 	lockWin.on, lockWin.alive, lockWin.reg, lockWin.wait = on, alive, false, lockRetry
+	defer func() { lockWin.on = nil }()
 	h, err := createLockWin()
 	if err != nil {
 		log.Printf("блокировка экрана: %v — не отслеживается", err)
@@ -88,7 +105,7 @@ func createLockWin() (uintptr, error) {
 	if lockClassErr != nil {
 		return 0, lockClassErr
 	}
-	// скрытое окно верхнего уровня, не HWND_MESSAGE: WM_POWERBROADCAST рассылается только таким
+	// скрытое окно верхнего уровня, не HWND_MESSAGE: WM_POWERBROADCAST и WM_ENDSESSION рассылаются только таким
 	h, _, e := pCreateWindow.Call(0, uintptr(unsafe.Pointer(lockClass)), uintptr(unsafe.Pointer(lockClass)), 0, 0, 0, 0, 0, 0, 0, inst, 0)
 	if h == 0 {
 		return 0, fmt.Errorf("CreateWindowEx: %v", e)
@@ -96,31 +113,37 @@ func createLockWin() (uintptr, error) {
 	return h, nil
 }
 
-// lockReg — подписаться на события сеанса; не вышло — alive(false) и повтор таймером 1 окна.
+// lockReg — подписаться на события сеанса; не вышло — alive(false) и повтор таймером (regPolicy).
 func lockReg(h uintptr) {
-	if r, _, e := pWTSReg.Call(h, 0); r == 0 { // NOTIFY_FOR_THIS_SESSION
-		lockWin.alive("wts", false)
-		log.Printf("блокировка экрана: WTSRegisterSessionNotification: %v — повтор через %v", e, lockWin.wait)
-		pSetTimer.Call(h, 1, uintptr(lockWin.wait/time.Millisecond), 0)
-		lockWin.wait = min(2*lockWin.wait, lockRetryMax)
-		return
+	r, _, e := pWTSReg.Call(h, 0) // NOTIFY_FOR_THIS_SESSION
+	ok, timer, next := regPolicy(r != 0, lockWin.wait)
+	lockWin.reg, lockWin.wait = ok, next
+	if timer > 0 {
+		log.Printf("блокировка экрана: WTSRegisterSessionNotification: %v — повтор через %v", e, timer)
+		pSetTimer.Call(h, lockTimerID, uintptr(timer/time.Millisecond), 0)
+	} else {
+		pKillTimer.Call(h, lockTimerID)
+		log.Print("блокировка экрана: отслеживается (WTS)")
 	}
-	pKillTimer.Call(h, 1)
-	lockWin.reg = true
-	lockWin.alive("wts", true)
-	log.Print("блокировка экрана: отслеживается (WTS)")
+	lockWin.alive("wts", ok)
 }
 
 func lockProc(h, msg, wp, lp uintptr) uintptr {
-	switch {
-	case lockWin.on == nil:
-	case lockMsg(msg, wp):
-		log.Printf("блокировка экрана (сообщение %#x, %d)", msg, wp)
-		lockWin.on()
-	case msg == wmTimer && wp == 1 && !lockWin.reg:
-		lockReg(h)
-		return 0
-	case msg == wmDestroy:
+	if lockWin.on != nil {
+		switch lockAct(msg, wp, lockWin.reg) {
+		case actLock:
+			log.Printf("блокировка экрана (сообщение %#x, %d)", msg, wp)
+			lockWin.on()
+		case actEnd:
+			log.Printf("блокировка экрана: сеанс кончается (WM_ENDSESSION, %#x) — снимаю пропуска", lp)
+			lockEnd()
+			return 0
+		case actRetry:
+			lockReg(h)
+			return 0
+		}
+	}
+	if msg == wmDestroy {
 		if lockWin.reg {
 			pWTSUnreg.Call(h)
 			lockWin.reg = false
