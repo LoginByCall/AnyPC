@@ -273,6 +273,8 @@ func (a *Agent) sxCheck(sx []byte) (ed25519.PublicKey, *sxSeal) {
 	salt := string(sx[:sxSaltLen])
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	// ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ: линейная чистка только у сверки — её время растёт с числом недавних сверок (остаточный
+	// канал по времени, SECURITY.md).
 	for k, until := range a.sxSeen {
 		if now.After(until) {
 			delete(a.sxSeen, k)

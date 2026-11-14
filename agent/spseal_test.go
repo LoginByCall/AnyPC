@@ -132,8 +132,15 @@ func TestSpaceSealCheck(t *testing.T) {
 	if pub, s := a.sxCheck(sx); s == nil || s.status != sxOK || pub == nil {
 		t.Fatalf("свежее: %v", s)
 	}
+	e := sxECDHs.Load()
 	if _, s := a.sxCheck(sx); s == nil || s.status != sxBusy {
 		t.Errorf("повтор: %v", s)
+	}
+	if _, s := a.sxCheck(sxRand(sxLen)); s != nil {
+		t.Error("случайные байты открылись")
+	}
+	if d := sxECDHs.Load() - e; d != 0 { // Б2: sxCheck идёт через кэш общих секретов (sxPeers)
+		t.Errorf("sxCheck на том же составе: X25519 %d, нужно 0", d)
 	}
 	old, _, _ := sxMake(member, hpub, a.ID, time.Now().Add(-syncSkew-time.Minute).Unix())
 	if _, s := a.sxCheck(old); s == nil || s.status != sxSkew {
