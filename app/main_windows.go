@@ -176,9 +176,19 @@ func main() {
 	w.Navigate("http://" + l.Addr().String() + "/")
 
 	log.Printf("AnyPC запущен, ID %s", cfg.ID)
+	// значок у часов (tray_windows.go): окно — наверх; «Выйти» — как закрыть окно крестиком
+	trayDone := make(chan struct{})
+	go func() {
+		defer close(trayDone)
+		runTray(ctx, cfg.ID, func() { w.Dispatch(func() { showMain(uintptr(w.Window())) }) }, w.Destroy)
+	}()
 	run.start(cfg.Server)
 	w.Run()
 	cancel()
+	select { // значок снять до выхода, иначе он висит у часов до наведения мыши
+	case <-trayDone:
+	case <-time.After(2 * time.Second):
+	}
 	run.wait()
 }
 

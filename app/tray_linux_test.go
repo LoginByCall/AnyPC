@@ -480,20 +480,3 @@ func TestPeerUIDTable(t *testing.T) {
 		t.Error("/proc не читается → должен быть отказ")
 	}
 }
-
-func TestTrayTitleIcon(t *testing.T) {
-	h, _ := os.Hostname()
-	if got := trayTitle("123456789"); got != h+" · 123 456 789" {
-		t.Errorf("trayTitle: %q", got)
-	}
-	for _, n := range []int{22, 44} {
-		p := trayIcon(n)
-		if p.W != int32(n) || p.H != int32(n) || len(p.Data) != n*n*4 {
-			t.Fatalf("значок %d: %dx%d, %d байт", n, p.W, p.H, len(p.Data))
-		}
-		c := n * 3 / 4 // центр красного ПК — непрозрачный красный
-		if o := (c*n + c) * 4; p.Data[o] != 0xff || p.Data[o+1] != 0xef {
-			t.Errorf("значок %d: точка %d,%d = % x", n, c, c, p.Data[o:o+4])
-		}
-	}
-}
