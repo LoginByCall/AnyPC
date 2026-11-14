@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"errors"
+	"log"
 	"sync"
 	"time"
 )
@@ -53,26 +54,58 @@ func (r *spaceOpRun) liveLocked() *spaceOpState {
 	return nil
 }
 
-// busy — операция идёт.
-func (r *spaceOpRun) busy() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+// busyLocked — операция идёт (под r.mu).
+func (r *spaceOpRun) busyLocked() bool {
 	o := r.liveLocked()
 	return o != nil && o.end.IsZero()
+}
+
+// hold — синхронный вызов окна (создание, выход) как операция kind: пока f идёт, остальные — errSpaceBusy; после —
+// прежний итог на месте, своего следа нет.
+func (r *spaceOpRun) hold(kind string, f func() error) error {
+	r.mu.Lock()
+	if r.busyLocked() {
+		r.mu.Unlock()
+		return errSpaceBusy
+	}
+	prev, o := r.cur, &spaceOpState{kind: kind, state: "run"}
+	r.cur = o
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		if r.cur == o {
+			r.cur = prev
+		}
+		r.mu.Unlock()
+	}()
+	return f()
+}
+
+// clear — стереть итог (окно: «Готово» после QR); идёт операция — errSpaceBusy.
+func (r *spaceOpRun) clear() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.busyLocked() {
+		return errSpaceBusy
+	}
+	r.cur = nil
+	return nil
 }
 
 // start — запустить операцию kind в фоне; идёт другая — errSpaceBusy. Кончившаяся заменяется.
 func (r *spaceOpRun) start(kind string, f spaceOpFn) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if o := r.liveLocked(); o != nil && o.end.IsZero() {
+	if r.busyLocked() {
 		return errSpaceBusy
 	}
 	o := &spaceOpState{kind: kind, state: "run", ok: make(chan bool, 1)}
 	r.cur = o
 	preview := func(p spacePreview) {
 		r.mu.Lock()
-		o.preview, o.state = &p, "confirm"
+		if o.end.IsZero() { // превью после конца (обмен оборвался, пока Sign шёл к нему) — не воскрешать операцию
+			o.preview, o.state = &p, "confirm"
+		}
 		r.mu.Unlock()
 	}
 	r.wg.Go(func() {
@@ -82,6 +115,9 @@ func (r *spaceOpRun) start(kind string, f spaceOpFn) error {
 		o.result, o.err, o.preview, o.end, o.state = res, err, nil, spaceOpNow(), "done"
 		if err != nil {
 			o.result, o.state = nil, "err"
+			if spaceErrCode(err) == "other" { // окну — код, текст — в журнал (ошибки ядра секретов не содержат)
+				log.Printf("пространство: %s: %v", kind, err)
+			}
 		}
 	})
 	return nil
@@ -92,7 +128,7 @@ func (r *spaceOpRun) confirm(yes bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	o := r.liveLocked()
-	if o == nil || o.state != "confirm" {
+	if o == nil || o.state != "confirm" || !o.end.IsZero() {
 		return errSpaceNoOp
 	}
 	o.ok <- yes // буфер 1, ответ на превью — один: preview зовётся один раз

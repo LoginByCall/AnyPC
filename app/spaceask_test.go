@@ -4,13 +4,16 @@ package main
 // паролем на новом ПК закрыт до сверки с членом ≠ поручитель.
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"slices"
 	"testing"
 	"time"
 
 	"anypc/agent"
+	"anypc/hub"
 	"anypc/pake"
 	"anypc/totp"
 )
@@ -249,15 +252,11 @@ func TestSpaceEnterShut(t *testing.T) {
 	}
 }
 
-// TestSpaceLeaveNoTOTP — тупик FINDINGS Э5 («испорчено» + у записи по умолчанию нет TOTP): выход без кода, хватает
-// пароля; чужой пароль — нет. С TOTP код по-прежнему нужен.
+// TestSpaceLeaveNoTOTP — тупик FINDINGS Э5 («испорчено» + у записи по умолчанию нет TOTP), решение владельца B:
+// особого пути нет — выход без кода отклоняется; лечение — в тексте errSpaceDamaged.
 func TestSpaceLeaveNoTOTP(t *testing.T) {
-	sec := totp.NewSecret()
-	c := spaceCfg(t, spacePass, sec)
+	c := spaceCfg(t, spacePass, totp.NewSecret())
 	spaceMake(t, c)
-	if err := c.spaceLeave(spacePass, ""); !errors.Is(err, errPassCode) || spaceOf(c) == nil {
-		t.Fatalf("с TOTP без кода: %v", err)
-	}
 	c.mu.Lock() // правка файла: секрет кода стёрт, запись состава испорчена
 	c.Users[0].TOTP = ""
 	c.Space[len(c.Space)-1] ^= 1
@@ -266,16 +265,297 @@ func TestSpaceLeaveNoTOTP(t *testing.T) {
 	if !c.spaceDamaged() {
 		t.Fatal("не «испорчено»")
 	}
-	if err := c.spaceLeave("wrong-pass-1", ""); !errors.Is(err, errSpacePassword) {
-		t.Errorf("чужой пароль: %v", err)
+	if err := c.spaceLeave(spacePass, ""); !errors.Is(err, errPassCode) || !c.spaceDamaged() {
+		t.Errorf("без TOTP без кода: %v", err)
 	}
-	if err := c.spaceLeave(spacePass, ""); err != nil {
-		t.Fatalf("без TOTP: %v", err)
+}
+
+// headsOn — добавить на p параллельные верхушки hs (как после вступлений через разных поручителей).
+func headsOn(t *testing.T, p *config, hs ...*space) {
+	t.Helper()
+	p.mu.Lock()
+	_, _, err := p.spaceAddLocked(hs...)
+	p.save()
+	p.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
 	}
-	c.mu.Lock()
-	left := len(c.Space) == 0
-	c.mu.Unlock()
-	if !left || c.spaceDamaged() {
-		t.Error("пространство осталось")
+}
+
+func topOf(t *testing.T, p *config) *space {
+	t.Helper()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	m, err := spaceParse(p.Space)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func newPC(t *testing.T) (string, ed25519.PublicKey) {
+	pub, _, _ := ed25519.GenerateKey(nil)
+	return "9" + hub.RandDigits(8), pub
+}
+
+// TestSpaceEnterHeads — B1 приёмки Ч1: у P две параллельные верхушки; превью — объединение (все ПК), N подписывает
+// M от объединения — она перекрывает обе верхушки: у N и P одна верхушка со всеми ПК.
+func TestSpaceEnterHeads(t *testing.T) {
+	sec := totp.NewSecret()
+	p := spaceCfg(t, spacePass, sec)
+	ph := spaceMake(t, p)
+	top := topOf(t, p)
+	var hs []*space
+	for range 2 {
+		id, pub := newPC(t)
+		h, err := spaceAdd(top, ph, id, pub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hs = append(hs, h)
+	}
+	headsOn(t, p, hs...)
+	union := spaceOf(p)
+	if len(spaceHeadsOf(p)) != 2 || len(union.Members) != 3 {
+		t.Fatalf("верхушек %d, членов %d", len(spaceHeadsOf(p)), len(union.Members))
+	}
+	n := spaceCfg(t, "n-local-pass", totp.NewSecret())
+	withSpaceNet(t, spaceNet(p, nil))
+	pv, ok, res := enterAsk(n, p, spaceCode(p, sec), ph)
+	got := within(t, "превью", pv)
+	var want []spacePC
+	for _, x := range union.Members {
+		want = append(want, spacePC{ID: x.ID, FP: pake.KeyFingerprint(x.Pub)})
+	}
+	if !slices.Equal(got.Members, want) || len(got.Gone) != 0 {
+		t.Errorf("превью %v, состав P %v", got.Members, want)
+	}
+	say(t, ok, true)
+	if r := within(t, "итог", res); r.err != nil {
+		t.Fatal(r.err)
+	}
+	for _, c := range []*config{p, n} {
+		if h := spaceHeadsOf(c); len(h) != 1 || len(h[0].Members) != 4 || !h[0].member(cfgPub(n)) {
+			t.Errorf("после вступления: верхушек %d", len(h))
+		}
+	}
+	if !sameSpaceBytes(p, n) {
+		t.Error("у P и N разные составы")
+	}
+}
+
+// TestSpaceEnterGone — B1: X исключён в одной верхушке, а в другой (вступление N1, не видевшее исключения) — член;
+// превью — объединение: X нет среди членов, он среди исключённых; у N X исключён.
+func TestSpaceEnterGone(t *testing.T) {
+	sec := totp.NewSecret()
+	p := spaceCfg(t, spacePass, sec)
+	ph := spaceMake(t, p)
+	xid, xpub := newPC(t)
+	m1, err := spaceAdd(topOf(t, p), ph, xid, xpub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id1, pub1 := newPC(t)
+	hj, err := spaceAdd(m1, ph, id1, pub1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hex, err := spaceRemove(m1, ph, xpub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	headsOn(t, p, m1, hj, hex)
+	union := spaceOf(p)
+	n := spaceCfg(t, "n-local-pass", totp.NewSecret())
+	withSpaceNet(t, spaceNet(p, nil))
+	pv, ok, res := enterAsk(n, p, spaceCode(p, union.TOTP), ph)
+	got := within(t, "превью", pv)
+	if slices.ContainsFunc(got.Members, func(x spacePC) bool { return x.ID == xid }) || len(got.Members) != len(union.Members) ||
+		!slices.Equal(got.Gone, []string{pake.KeyFingerprint(xpub)}) {
+		t.Errorf("превью: члены %v, исключённые %v", got.Members, got.Gone)
+	}
+	say(t, ok, true)
+	if r := within(t, "итог", res); r.err != nil {
+		t.Fatal(r.err)
+	}
+	if m := spaceOf(n); m == nil || !m.gone(xpub) || m.member(xpub) || !m.member(pub1) {
+		t.Errorf("у N: %v", m)
+	}
+}
+
+// TestSpaceEnterBadHeads — в пачке P поддельная или чужая верхушка, или верхушек больше spaceMaxHeads: отказ до
+// превью, P нового M не получил, N вне пространства.
+func TestSpaceEnterBadHeads(t *testing.T) {
+	sec := totp.NewSecret()
+	p := spaceCfg(t, spacePass, sec)
+	ph := spaceMake(t, p)
+	top := topOf(t, p)
+	main, _ := top.marshal()
+	forged := bytes.Clone(main)
+	forged[len(forged)-1] ^= 1
+	foreign, _ := topOf(t, func() *config { q := spaceCfg(t, spacePass, sec); spaceMake(t, q); return q }()).marshal()
+	var many [][]byte
+	for range spaceMaxHeads + 1 { // главная (только P) перекрыта каждой — верхушек 17
+		id, pub := newPC(t)
+		h, err := spaceAdd(top, ph, id, pub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hb, _ := h.marshal()
+		many = append(many, hb)
+	}
+	for name, rest := range map[string][][]byte{"поддельная": {forged}, "чужая": {foreign}, "больше 16": many} {
+		n := spaceCfg(t, "n-local-pass", totp.NewSecret())
+		previewed := false
+		withSpaceNet(t, func(_ context.Context, d agent.SpaceDial) ([]byte, error) { return d.Sign(main, cfgPub(p), rest...) })
+		yes := make(chan bool, 1)
+		yes <- true
+		_, err := n.spaceEnterAsk(context.Background(), p.id(), spacePass, "000000", ph, func(spacePreview) { previewed = true }, yes)
+		if err == nil || previewed || spaceOf(n) != nil || spaceEpoch(p) != 1 {
+			t.Errorf("%s: %v (превью %v)", name, err, previewed)
+		}
+	}
+}
+
+// TestSpaceEnterLate — M1: обмен оборвался раньше, чем Sign дошёл до окна: превью нет, Sign не подписывает.
+func TestSpaceEnterLate(t *testing.T) {
+	sec := totp.NewSecret()
+	p := spaceCfg(t, spacePass, sec)
+	ph := spaceMake(t, p)
+	n := spaceCfg(t, "n-local-pass", totp.NewSecret())
+	m, _ := topOf(t, p).marshal()
+	signed := make(chan error, 1)
+	start := make(chan struct{})
+	withSpaceNet(t, func(_ context.Context, d agent.SpaceDial) ([]byte, error) {
+		go func() { <-start; _, err := d.Sign(m, cfgPub(p)); signed <- err }() // как agent: Sign в своей горутине
+		return nil, agent.ErrSpaceRefused                                      // P оборвал обмен (bye)
+	})
+	pv := make(chan spacePreview, 1)
+	ok := make(chan bool, 1)
+	ok <- true
+	if _, err := n.spaceEnterAsk(context.Background(), p.id(), spacePass, "000000", ph, func(x spacePreview) { pv <- x }, ok); err == nil {
+		t.Fatal("обрыв — без ошибки")
+	}
+	close(start)
+	if err := within(t, "Sign", signed); !errors.Is(err, context.Canceled) {
+		t.Errorf("Sign после конца: %v", err)
+	}
+	select {
+	case <-pv:
+		t.Error("превью после конца вступления")
+	default:
+	}
+}
+
+// TestSpaceEnterCancel — вступление отменено (окно закрыто), пока превью ждёт ответа: Sign выходит сразу, P пуст.
+func TestSpaceEnterCancel(t *testing.T) {
+	sec := totp.NewSecret()
+	p := spaceCfg(t, spacePass, sec)
+	ph := spaceMake(t, p)
+	n := spaceCfg(t, "n-local-pass", totp.NewSecret())
+	withSpaceNet(t, spaceNet(p, nil))
+	ctx, cancel := context.WithCancel(context.Background())
+	pv, res := make(chan spacePreview, 1), make(chan enterRes, 1)
+	go func() {
+		ch, err := n.spaceEnterAsk(ctx, p.id(), spacePass, spaceCode(p, sec), ph, func(x spacePreview) { pv <- x }, make(chan bool))
+		res <- enterRes{ch, err}
+	}()
+	within(t, "превью", pv)
+	cancel()
+	if r := within(t, "итог", res); !errors.Is(r.err, context.Canceled) || spaceEpoch(p) != 1 {
+		t.Errorf("отмена: %v, эпоха P %d", r.err, spaceEpoch(p))
+	}
+}
+
+// TestSpaceEnterDrift — M2: пока владелец смотрит превью, у записи по умолчанию появились ключи: «да» — отказ
+// errSpaceChange, P нового M не получил.
+func TestSpaceEnterDrift(t *testing.T) {
+	sec := totp.NewSecret()
+	p := spaceCfg(t, spacePass, sec)
+	ph := spaceMake(t, p)
+	n := spaceCfg(t, spacePass, sec)
+	withSpaceNet(t, spaceNet(p, nil))
+	pv, ok, res := enterAsk(n, p, spaceCode(p, sec), ph)
+	within(t, "превью", pv)
+	n.mu.Lock()
+	n.reload()
+	n.Users[0].Trusted = [][]byte{[]byte("k1")}
+	n.save()
+	n.mu.Unlock()
+	say(t, ok, true)
+	if r := within(t, "итог", res); !errors.Is(r.err, errSpaceChange) || spaceEpoch(p) != 1 || spaceOf(n) != nil {
+		t.Errorf("смена после превью: %v, эпоха P %d", r.err, spaceEpoch(p))
+	}
+}
+
+// TestSpaceEnterDriftLate — запись по умолчанию сменилась уже после подписи (P принял M): применения нет
+// (errSpaceChange); повтор — «уже в составе» по верхушкам P, без нового M.
+func TestSpaceEnterDriftLate(t *testing.T) {
+	sec := totp.NewSecret()
+	p := spaceCfg(t, spacePass, sec)
+	ph := spaceMake(t, p)
+	n := spaceCfg(t, spacePass, sec)
+	inner := spaceNet(p, nil)
+	drift := true
+	withSpaceNet(t, func(ctx context.Context, d agent.SpaceDial) ([]byte, error) {
+		out, err := inner(ctx, d)
+		if drift {
+			n.mu.Lock()
+			n.Users[0].Trusted = [][]byte{[]byte("k1")}
+			n.save()
+			n.mu.Unlock()
+		}
+		return out, err
+	})
+	if _, err := n.spaceEnter(context.Background(), p.id(), spacePass, spaceCode(p, sec), ph); !errors.Is(err, errSpaceChange) || spaceOf(n) != nil {
+		t.Fatalf("смена после подписи: %v", err)
+	}
+	drift = false
+	ch, err := n.spaceEnter(context.Background(), p.id(), spacePass, spaceCode(p, sec), ph)
+	if err != nil || !ch.Already || ch.Trusted != 1 || spaceEpoch(p) != 2 || !sameSpaceBytes(p, n) {
+		t.Errorf("повтор: %v %v, эпоха P %d", ch, err, spaceEpoch(p))
+	}
+}
+
+// TestSpaceLeaveWait — M3: выход до сверки после вступления — пароль и код записи по умолчанию (из M поручителя)
+// стёрты: вход — одноразовым кодом с экрана («Спрашивать»), закрытия входа больше нет.
+func TestSpaceLeaveWait(t *testing.T) {
+	sec := totp.NewSecret()
+	p := spaceCfg(t, spacePass, sec)
+	ph, _ := syncSpace(t, 1, p)
+	withSpaceNet(t, spaceNet(p, nil))
+	n := spaceCfg(t, "n-local-pass", totp.NewSecret())
+	if _, err := n.spaceEnter(context.Background(), p.id(), spacePass, spaceCode(p, sec), ph); err != nil {
+		t.Fatal(err)
+	}
+	if !n.loginShut("") {
+		t.Fatal("вход не закрыт")
+	}
+	if err := n.spaceLeave(spacePass, spaceCode(n, sec)); err != nil {
+		t.Fatal(err)
+	}
+	n.mu.Lock()
+	u := n.Users[0]
+	n.mu.Unlock()
+	if len(u.Hash) != 0 || u.TOTP != "" || !n.codeMode() || n.loginShut("") || spaceOf(n) != nil {
+		t.Errorf("после выхода при SpaceWait: хэш %d байт, TOTP %v, «Спрашивать» %v", len(u.Hash), u.TOTP != "", n.codeMode())
+	}
+}
+
+// TestSpaceDraftRace — черновик отменён или заменён новым, пока шла сверка фразы: Space пуст.
+func TestSpaceDraftRace(t *testing.T) {
+	p := spaceCfg(t, spacePass, totp.NewSecret())
+	for name, during := range map[string]func(){"отмена": p.spaceCreateNo, "новый черновик": func() { p.spaceDraft(spacePass) }} {
+		ph, err := p.spaceDraft(spacePass)
+		if err != nil {
+			t.Fatal(err)
+		}
+		old := spaceCreateCheck
+		spaceCreateCheck = func(m *space, phrase string) error { during(); return old(m, phrase) }
+		err = p.spaceCreateOK(ph)
+		spaceCreateCheck = old
+		if !errors.Is(err, errSpaceDraft) || spaceOf(p) != nil {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 }

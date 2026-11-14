@@ -66,12 +66,14 @@ func TestKeyLogin(t *testing.T) {
 	var ag *Agent
 	var asked, okKey, otpConf, okConf, nokey atomic.Bool
 	var asks atomic.Int32
+	var shut atomic.Bool // решение 12 A: LoginShut закрывает только вход паролем — ключом входят
 	var why atomic.Value // why последнего "nokey": "none" — ключа нет в списке записи (отзывать на хосте нечего)
 	unattended, hostLocked := true, false
 	e2eAgent = func(a *Agent) {
 		ag = a
 		hosts(a)
 		a.KeyLogin, a.KeyTrust = ks.login, ks.add
+		a.LoginShut = func(string) bool { return shut.Load() }
 		a.Unattended = func() bool { return unattended }
 		a.Confirm = func(string, string) Answer { asked.Store(true); return Allow }
 		if hostLocked { // хост заперт чужим перебором: ключ своей записи блокировку паролей не смотрит (У3)
@@ -119,10 +121,12 @@ func TestKeyLogin(t *testing.T) {
 		t.Fatalf("после «Доверять»: у ivan %v, у записи по умолчанию %v, key в ok %v, conf %v", ks.in(pub, "ivan"), ks.in(pub, ""), okKey.Load(), okConf.Load())
 	}
 
-	// ключ без пароля + верный код — сессия; CPace не было: ни в "otp", ни в "ok" conf нет
+	// ключ без пароля + верный код — сессия; CPace не было: ни в "otp", ни в "ok" conf нет; вход паролем закрыт
 	e2eTrust, e2eByKey, hostLocked = false, true, true
 	reset()
+	shut.Store(true)
 	e2e(t, local(t), "123456789", false, ff, "ivan-pass1")
+	shut.Store(false)
 	if asks.Load() != 1 || otpConf.Load() || okConf.Load() || !okKey.Load() {
 		t.Fatalf("по ключу: запросов кода %d, conf в otp %v, conf в ok %v, key в ok %v", asks.Load(), otpConf.Load(), okConf.Load(), okKey.Load())
 	}

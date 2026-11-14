@@ -68,7 +68,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
       return null;
     };
     window.spaceLogin = async (ph, pw, code) => { calls.push('login:' + ph + ':' + pw + ':' + code); setOp({ kind: 'login', state: 'err', err: 'phrase_word:3', result: null }); return null; };
-    window.spaceLeave = async (pw, code) => { calls.push('leave:' + pw + ':' + code); if (code !== '123456') throw 'space:code'; st.space = empty(); };
+    window.spaceLeave = async (pw, code) => { calls.push('leave:' + pw + ':' + code); if (code !== '123456') throw 'space:code'; if (st.space.wait) { st.hasPass = false; st.confirm = true; } st.space = empty(); };
+    window.setPassword = async pw => { calls.push('setpw:' + pw); st.hasPass = true; };
     window.spaceOpClear = async () => { calls.push('clear'); setOp(null); };
     window.setConfirm = async on => { calls.push('setconfirm:' + on); st.confirm = on; };
     window.spaceSync = async () => { calls.push('sync'); setOp({ kind: 'sync', state: 'run', result: null }); return null; };
@@ -119,11 +120,15 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await click('spcode'); await ev(val('spfph', 'able baker zzz')); await click('spfgo'); await sleep(300);
   console.log('login=' + await calls() + '|' + await ev(txt('spop') + " + '|' + " + vis('spform')));
   // выход: пароль и код этого ПК
-  await ev("st.otp = false; 1"); await sleep(1200); // выход — с кодом и без TOTP (владелец 2026-11-14)
+  await ev("st.otp = false; st.space.wait = '444555666'; 1"); await sleep(1200); // выход — с кодом и без TOTP (владелец 2026-11-14); до сверки
   await click('spleave'); await ev(val('spfpw', 'owner-pass') + val('spfcd', '000000')); await click('spfgo');
   console.log('leavebad=' + await ev(txt('spmsg') + " + '|' + " + vis('spfcd')) + '|' + await calls());
   await ev(val('spfcd', '123456')); await click('spfgo'); await sleep(300);
-  console.log('left=' + await calls() + '|' + await ev("[" + vis('spform') + ", " + vis('spout') + ", " + vis('spin') + ", " + vis('pwrow') + "].join('|')"));
+  console.log('left=' + await calls() + '|' + await ev("[" + vis('spform') + ", " + vis('spout') + ", " + vis('spin') + ", " + vis('pwrow') + ", " + vis('spleft') + "].join('|')"));
+  await click('spleftb'); await sleep(1200); // поле пароля открыто и после опроса hostInfo, хотя «Спрашивать» включено
+  console.log('setpw=' + await ev("[" + vis('pwrow') + ", " + vis('spleft') + ", document.activeElement.id].join('|')"));
+  await ev(val('newpw', 'new-pass1')); await click('setpw'); await sleep(300);
+  console.log('pwset=' + await calls() + '|' + await ev(vis('pwrow')));
   // вступление в два шага: превью → отказ → снова → подтверждение
   await click('spjoin');
   await ev(val('speid', '444 555 666') + val('spepw', 'owner-pass') + val('specd', '654321') + val('speph', 'able baker cable delta eagle fable gable habit ideal jewel')); await click('spego'); await sleep(300);
@@ -182,7 +187,9 @@ func TestBrowserSpace(t *testing.T) {
 		"pwshort=Password must be at least 8 characters.|\n",
 		"login=login:able baker zzz::true|Word 3 of the phrase is not in the dictionary|true\n",
 		"leavebad=Wrong code|true|leave:owner-pass:000000\n",
-		"left=leave:owner-pass:123456|false|true|false|false\n", // TOTP пуст — пароль под «Спрашивать», как прежде
+		"left=leave:owner-pass:123456|false|true|false|false|true\n", // до сверки: пароль и TOTP стёрты — подсказка
+		"setpw=true|false|newpw\n",
+		"pwset=setpw:new-pass1|false\n", // задан — снова «как прежде»: под «Спрашивать» поле скрыто
 		"preview=enter:444555666:owner-pass:654321:" + ph + "|Are these all your PCs?;444 555 666 · OFFICE-FP;123 456 789 · SELF-FP;" +
 			"The password of this PC will be replaced with the space password.;The authenticator code of this PC will be replaced with the space code.;" +
 			"Will be reset: trusted keys — 2, sign-in by key — 1.;" +
