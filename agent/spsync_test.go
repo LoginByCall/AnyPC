@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,6 +15,38 @@ import (
 
 	"github.com/coder/websocket/wsjson"
 )
+
+// syncTamper — подделка на одной стороне, проверка — на другой: "host"/"client" — ID в подписи; "hostkey" — хост
+// подписывает чужим ключом; "cpub" — клиент в "b" доказывает не тот ключ, что в connect; "early" — клиент шлёт M до
+// "b". Подмены рабочего пути (syncHostKey и др.) ставятся здесь: в рабочем коде подделок нет.
+var syncTamper atomic.Value
+
+// syncOther — постоянный посторонний ключ для syncTamper.
+var syncOther = ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+
+func syncFake(side string) bool { s, _ := syncTamper.Load().(string); return s == side }
+
+func init() {
+	syncHostKey = func(k ed25519.PrivateKey) ed25519.PrivateKey {
+		if syncFake("hostkey") {
+			return syncOther
+		}
+		return k
+	}
+	syncCliKey = func(k ed25519.PrivateKey) ed25519.PrivateKey {
+		if syncFake("cpub") {
+			return syncOther
+		}
+		return k
+	}
+	syncSignID = func(side, id string) string {
+		if syncFake(side) {
+			return id + "x"
+		}
+		return id
+	}
+	syncEarly = func() bool { return syncFake("early") }
+}
 
 // fakeSync — SpaceSyncer без формата: M — непрозрачные байты; gate — пускать ли; members — ключи членов (nil — любой);
 // got — что пришло в SyncApply.

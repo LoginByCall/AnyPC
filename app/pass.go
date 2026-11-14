@@ -148,6 +148,9 @@ func (p *passMaster) workHere(ctx context.Context, password, code string) ([]pas
 	if m == nil || !m.member(self) {
 		return nil, errSpaceNotIn
 	}
+	if m.Compromised { // цели пропуск не выдадут (spaceOwnerLocked) — не тратить пароль и код
+		return nil, errSpaceCompromised
+	}
 	if err := spaceLoginCheck(m, password); err != nil {
 		return nil, err
 	}

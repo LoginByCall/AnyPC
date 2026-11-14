@@ -78,3 +78,26 @@ hub can replay a captured request to hold that member's slot for up to 20 s, or 
 until a sync passes. Residual risk: a PC joining through a PC that holds an old genuine list with no other members
 cannot check freshness — there is no one else to ask. A PC can leave the space locally (without the phrase) with its
 password and code: the list is removed from it, the password and code stay.
+
+«Моё пространство», объединение составов: каждый подписанный фразой состав — подлинная правка владельца, поэтому ПК
+не выбирает «правильную ветвь», а объединяет все известные составы: исключённые — объединение, члены — объединение
+без исключённых. Исключённый ПК не возвращается никогда, повтор старых составов ничего не меняет, правки, сделанные
+на разных ПК без связи, не теряются, расколов нет. Пароль входа и код — один на пространство: из встречных смен
+побеждает та, где больше исключений, затем более поздняя, затем по хэшу — одинаково на всех ПК; проигравшая смена
+пароля пропадает (её нужно повторить). ПК, пропустивший смены пароля, сразу переходит на новый, как только получил
+любой свежий состав, — старый пароль на нём перестаёт действовать. Если секрет кода победившего входа видел ПК,
+исключённый в другой правке (встречные исключения), вход «скомпрометирован»: пропусков «Работаю тут» и вступлений
+нет, пока правка фразой не задаст новый код. Ответы «под этим ID другой ПК» и «часы расходятся» не подписаны (их может
+подставить хаб): они показываются в окне, но ни на что не влияют. Повтор сверки с недоступным ПК — не дольше часа,
+дальше сверка раз в 10 минут и при запуске.
+"My space", merging member lists: every list signed with the phrase is a genuine owner edit, so a PC does not pick a
+"right branch" but merges all lists it knows: removed PCs — the union, members — the union minus removed. A removed
+PC never comes back, replaying old lists changes nothing, edits made on different PCs without contact are not lost,
+there are no forks. The login password and code are one per space: of concurrent changes the one with more removals
+wins, then the later one, then by hash — the same on every PC; the losing password change is dropped (repeat it). A PC
+that missed password changes switches to the new one as soon as it gets any fresh list — the old password stops
+working there. If the code secret of the winning login was seen by a PC removed in another edit (concurrent removals),
+the login is "compromised": no "Work here" passes and no joins until an edit with the phrase sets a new code. The
+replies "another PC under this ID" and "clocks differ" are unsigned (the hub can fake them): they are shown in the
+window but change nothing. Retrying sync with an unreachable PC lasts at most an hour, then sync runs every 10 minutes
+and at start.
