@@ -287,7 +287,7 @@ func (c *config) setAccount(name, p, rights string) error {
 		return errors.New("права: full или view")
 	}
 	if len([]rune(p)) < 8 {
-		return errors.New("пароль короче 8 символов")
+		return errPassShort
 	}
 	salt := make([]byte, 16)
 	rand.Read(salt)
