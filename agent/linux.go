@@ -27,6 +27,10 @@ var Wayland = os.Getenv("XDG_SESSION_TYPE") == "wayland" || (os.Getenv("WAYLAND_
 // буфер обмена и не открывать окна у человека, на чьей машине идут тесты.
 var fakeDesktop bool
 
+// FakeDesktop — то же для тестов других пакетов (app собирает настоящего агента: без этого его сессии в тестах
+// открывали плашку zenity и wl-paste, которые переживали тестовый процесс — тысячи зависших wl-paste, 2026-11-14).
+func FakeDesktop() { fakeDesktop = true }
+
 type desktop interface {
 	capture(ctx context.Context, c Cap, enc string, m *Monitor) (*exec.Cmd, error)
 	input(e event, m *Monitor) error

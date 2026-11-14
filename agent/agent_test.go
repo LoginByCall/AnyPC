@@ -1069,6 +1069,7 @@ func TestClipBeforeAuth(t *testing.T) {
 	case <-time.After(1200 * time.Millisecond):
 	}
 	s.authed.Store(true)
+	time.Sleep(700 * time.Millisecond) // отсчёт буфера — на первом такте после входа
 	seq.Add(1)
 	select {
 	case m := <-sent:
@@ -1077,6 +1078,37 @@ func TestClipBeforeAuth(t *testing.T) {
 		}
 	case <-time.After(1500 * time.Millisecond):
 		t.Fatal("после входа изменение буфера не ушло")
+	}
+}
+
+// TestClipNoReadBeforeAuth — регрессия 2026-11-14: первый clipSeq шёл при каждом подключении (до входа, в просмотре,
+// в сверке) — на Wayland это wl-paste с окном на каждое подключение, а в тестах app — тысячи зависших wl-paste.
+func TestClipNoReadBeforeAuth(t *testing.T) {
+	var calls atomic.Uint32
+	defer func(a func() uint32, c bool) { clipSeq = a; clipOnCopy.Store(c) }(clipSeq, clipOnCopy.Load())
+	clipSeq = func() uint32 { calls.Add(1); return 0 }
+	clipOnCopy.Store(false)
+	ctx, cancel := context.WithCancel(context.Background())
+	s := &session{}
+	s.authed.Store(true)
+	s.view.Store(true)
+	done := make(chan struct{})
+	go func() { s.watchClip(ctx, func([]byte) {}); close(done) }()
+	time.Sleep(1200 * time.Millisecond)
+	cancel()
+	<-done
+	if n := calls.Load(); n != 0 {
+		t.Fatalf("в просмотре буфер читался %d раз", n)
+	}
+	s2 := &session{}
+	ctx, cancel = context.WithCancel(context.Background())
+	done = make(chan struct{})
+	go func() { s2.watchClip(ctx, func([]byte) {}); close(done) }()
+	time.Sleep(1200 * time.Millisecond)
+	cancel()
+	<-done
+	if n := calls.Load(); n != 0 {
+		t.Fatalf("до входа буфер читался %d раз", n)
 	}
 }
 
@@ -1096,7 +1128,7 @@ func TestClipOnCopy(t *testing.T) {
 	done := make(chan struct{})
 	go func() { s.watchClip(ctx, func(b []byte) { sent <- string(b) }); close(done) }()
 	defer func() { cancel(); <-done }() // глобалы восстанавливаются только после выхода watchClip (гонка под -race)
-	time.Sleep(100 * time.Millisecond)  // начальное значение прочитано
+	time.Sleep(700 * time.Millisecond)  // начальное значение прочитано (первый такт)
 	seq.Add(1)
 	select {
 	case m := <-sent:
