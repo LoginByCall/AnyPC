@@ -57,6 +57,8 @@ type config struct {
 	kkey  string
 	mine  string // последний код, заданный этим процессом (setCode, под mu; reload его не трогает)
 	khash []byte
+	sp    *space // разобранный Space (spaceLocked, под mu); только по указателю: печать значения выдала бы секреты
+	spRaw []byte // байты, из которых разобран sp
 }
 
 // settings — то, что лежит в файле.
@@ -73,6 +75,9 @@ type settings struct {
 	CKeys   map[string]string `json:"ckeys,omitempty"`     // ID удалённого ПК → ключ этого ПК для него (У3, REQ-S-24): JSON {seed,pub,login,lu}
 	View    bool              `json:"view_only,omitempty"` // «Только показ экрана»: каждая входящая сессия — только просмотр (REQ-F-20)
 	UIPort  int               `json:"ui_port,omitempty"`   // порт окна на 127.0.0.1 (listenUI)
+	// Space — состав «Моего пространства» M (app/space.go, Э2): только запись marshal(), base64 в JSON. Содержит хэш
+	// пароля и секрет TOTP записи владельца — как Users[0] (файл 0600, SECURITY.md). Разбор — spaceLocked.
+	Space []byte `json:"space,omitempty"`
 	// Одноразовый код (REQ-S-23): в режиме «Спрашивать» — пароль записи по умолчанию; меняется после каждой сессии,
 	// блокировки и по ↻. В файле (0600, как запомненные пароли): окно, ключи CLI и запущенная программа видят один код.
 	Code     string `json:"code,omitempty"`
@@ -138,6 +143,8 @@ func loadConfig(path string) (*config, error) {
 	if c.migrate() {
 		changed = true
 	}
+	// состав пространства (Э2): испорченная запись — в журнал сразу при запуске
+	c.spaceLocked()
 	if c.codeModeLocked() && c.Code == "" { // режим «Спрашивать» без кода (новая установка, обновление) — завести
 		c.setCode(randCode())
 		changed = true
