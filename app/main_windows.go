@@ -58,6 +58,14 @@ func main() {
 	if err != nil {
 		fatal("Настройки: " + err.Error())
 	}
+	// одна копия на пользователя (single.go): до кода «Спрашивать», FFmpeg, порта окна и WebView2; вторая — окно первой
+	// наверх и выход 0
+	title := "AnyPC — ID " + cfg.ID
+	unlock, running := singleInstance(filepath.Join(os.Getenv("APPDATA"), "AnyPC"), func() error { return showRunning(title) })
+	if running {
+		return
+	}
+	defer unlock()
 	cfg.codeUsed() // режим «Спрашивать»: новый код при запуске — программа могла кончиться посреди сессии (REQ-S-23)
 	// FFmpeg — в фоне: окно и сигнализация работают сразу, захват — когда загрузится (повтор раз в 30 с без сети).
 	var ffMu sync.Mutex
@@ -91,7 +99,7 @@ func main() {
 	w := webview2.NewWithOptions(webview2.WebViewOptions{
 		AutoFocus:     true,
 		DataPath:      filepath.Join(dir, "webview"),
-		WindowOptions: webview2.WindowOptions{Title: "AnyPC — ID " + cfg.ID, Width: 1100, Height: 720, Center: true},
+		WindowOptions: webview2.WindowOptions{Title: title, Width: 1100, Height: 720, Center: true},
 	})
 	if w == nil {
 		fatal("Не найден Microsoft Edge WebView2 Runtime. Установите его с сайта Microsoft и запустите AnyPC снова.")
