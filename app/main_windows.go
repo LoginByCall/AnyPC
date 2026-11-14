@@ -58,6 +58,14 @@ func main() {
 	if err != nil {
 		fatal("Настройки: " + err.Error())
 	}
+	// одна копия на пользователя (single.go): до кода «Спрашивать», FFmpeg, порта окна и WebView2; вторая — окно первой
+	// наверх и выход 0
+	title := "AnyPC — ID " + cfg.ID
+	unlock, running := singleInstance(filepath.Join(os.Getenv("APPDATA"), "AnyPC"), func() error { return showRunning(title) })
+	if running {
+		return
+	}
+	defer unlock()
 	cfg.codeUsed() // режим «Спрашивать»: новый код при запуске — программа могла кончиться посреди сессии (REQ-S-23)
 	// FFmpeg — в фоне: окно и сигнализация работают сразу, захват — когда загрузится (повтор раз в 30 с без сети).
 	var ffMu sync.Mutex
@@ -91,7 +99,7 @@ func main() {
 	w := webview2.NewWithOptions(webview2.WebViewOptions{
 		AutoFocus:     true,
 		DataPath:      filepath.Join(dir, "webview"),
-		WindowOptions: webview2.WindowOptions{Title: "AnyPC — ID " + cfg.ID, Width: 1100, Height: 720, Center: true},
+		WindowOptions: webview2.WindowOptions{Title: title, Width: 1100, Height: 720, Center: true},
 	})
 	if w == nil {
 		fatal("Не найден Microsoft Edge WebView2 Runtime. Установите его с сайта Microsoft и запустите AnyPC снова.")
@@ -121,10 +129,12 @@ func main() {
 	var mu sync.Mutex
 	online, session, update := false, "", ""
 	info := func() map[string]any {
-		node, pub := cfg.node()
 		mu.Lock()
-		defer mu.Unlock()
-		return map[string]any{"id": cfg.id(), "fp": cfg.fingerprint(), "online": online, "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "otp": cfg.otpSet(), "users": cfg.users(), "keys": cfg.keyList(), "code": cfg.code(), "viewOnly": cfg.viewOnly(), "version": version, "ffmpeg": ffSnap(&ffMu, &ffState), "update": update, "node": node, "nodePub": pub, "server": cfg.server(), "audio": audioInfo(a)}
+		on, s, u := online, session, update
+		mu.Unlock()
+		m := hostInfo(cfg, a, on, s, u)
+		m["ffmpeg"] = ffSnap(&ffMu, &ffState)
+		return m
 	}
 	go watchUpdates(func(v string) { mu.Lock(); update = v; mu.Unlock() }) // окно опрашивает hostInfo
 	a.OnState = func(on bool, s string) {
