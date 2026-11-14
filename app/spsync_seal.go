@@ -10,8 +10,9 @@ import (
 	"time"
 )
 
-// SyncKeys — agent.SpaceSyncer: все ключи, для которых SyncKey — true (члены M и ветви раскола, кроме своего и
-// исключённых); ими цель открывает запечатанное доказательство в connect.
+// SyncKeys — agent.SpaceSyncer: все ключи, для которых SyncKey — true (члены объединения верхушек, кроме своего;
+// исключённые в любой верхушке членами объединения не бывают); ими цель открывает запечатанное доказательство в
+// connect.
 func (c *config) SyncKeys() []ed25519.PublicKey {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -20,27 +21,13 @@ func (c *config) SyncKeys() []ed25519.PublicKey {
 	if cur == nil {
 		return nil
 	}
-	ms := cur.Members
-	if f, _ := spaceParse(c.SpaceFork); f != nil && cur.sameSpace(f) {
-		ms = append(ms[:len(ms):len(ms)], f.Members...)
-	}
-	me := ed25519.PrivateKey(c.Key).Public().(ed25519.PublicKey)
 	var out []ed25519.PublicKey
-	for _, x := range ms {
-		if !cur.gone(x.Pub) && !bytes.Equal(x.Pub, me) && !containsKey(out, x.Pub) {
+	for _, x := range cur.Members {
+		if c.syncMemberLocked(x.Pub) {
 			out = append(out, bytes.Clone(x.Pub))
 		}
 	}
 	return out
-}
-
-func containsKey(l []ed25519.PublicKey, k []byte) bool {
-	for _, x := range l {
-		if bytes.Equal(x, k) {
-			return true
-		}
-	}
-	return false
 }
 
 // syncJitter — d ± 50 %: хаб не узнаёт сверку по ровным паузам (раз в 10 мин, повторы 1, 2, 4… с).

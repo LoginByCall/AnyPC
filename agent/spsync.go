@@ -22,12 +22,12 @@ package agent
 //	хост → {"t":"sp","sync":true,pub,sig}               это он (pub = P): подпись хоста, как в "ok"
 //	       | {"t":"sp","err":"notme"}                   P — не его ключ (не бывает: sx открылся его ключом)
 //	клиент → {"t":"sp","sync":true,"m":Mc}              свой M (только хосту с ключом P)
-//	хост → {"t":"sp","r":R}… {"t":"sp","sync":true,"m":Mh}  записи цепочки, которых нет у клиента, и свой M
+//	хост → {"t":"sp","r":R}… {"t":"sp","sync":true,"m":Mh}  остальные свои верхушки (кроме Mc) и главную M
 //	                                                    | {"t":"sp","err":"rights"}
-//	клиент → {"t":"sp","r":R}… {"t":"sp","ok":true,"m":Mc'} записи для хоста и свой M после приёма
+//	клиент → {"t":"sp","r":R}… {"t":"sp","ok":true,"m":Mc'} свои верхушки для хоста и главную M после приёма
 //	хост → {"t":"sp","ok":true,"m":Mh'}                 свой M после приёма (подтверждение сверяет app по подписи)
 //
-// M и записи — байты marshal() (base64 в JSON); подпись владельца и правила приёма проверяет SpaceSyncer.
+// M и верхушки — байты marshal() (base64 в JSON); подпись владельца и правила приёма проверяет SpaceSyncer.
 
 import (
 	"bytes"
@@ -39,7 +39,6 @@ import (
 	"maps"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"anypc/pake"
@@ -50,16 +49,16 @@ import (
 
 // SpaceSyncer — состав этого ПК для сверки (app/spsync.go).
 type SpaceSyncer interface {
-	// SyncKey — pub — ключ члена этого ПК (или ветви раскола, известной здесь), не исключённый и не свой.
+	// SyncKey — pub — ключ члена объединения верхушек этого ПК, не исключённый ни в одной из них и не свой.
 	SyncKey(pub ed25519.PublicKey) bool
 	// SyncKeys — все ключи, для которых SyncKey — true: ими хост открывает sx connect (spseal.go).
 	SyncKeys() []ed25519.PublicKey
-	// SyncGate — текущий M этого ПК, если ключ pub — член (или член в составе peer того же пространства и не
-	// исключён здесь); peer nil — только по своему M. nil — отказ.
+	// SyncGate — главная M этого ПК, если ключ pub — член его объединения (не исключён, не свой), а peer — подлинный
+	// M того же пространства (nil — без проверки peer). nil — отказ.
 	SyncGate(pub ed25519.PublicKey, peer []byte) []byte
-	// SyncRecs — записи цепочки (смены входа), которых нет у peer, по порядку; без текущего M.
+	// SyncRecs — остальные верхушки этого ПК (кроме главной, она идёт в "m", и кроме peer).
 	SyncRecs(peer []byte) [][]byte
-	// SyncApply — принять recs и затем peer (или отметить раскол); вернуть текущий M после.
+	// SyncApply — принять верхушки другого члена (recs и peer) в объединение; вернуть свою главную M после.
 	SyncApply(peer []byte, recs [][]byte) []byte
 }
 
@@ -75,22 +74,16 @@ const (
 	maxSyncRecs = 32 // записей за один обмен
 )
 
-// syncTamper — тест: подделка на одной стороне, проверка — на другой: "host"/"client" — ID в подписи; "hostkey" —
-// хост подписывает чужим ключом; "sx" — sx клиента сбит; "old" — время в sx за окном; "cpub" — клиент в "b"
-// доказывает не тот ключ, что в connect; "early" — клиент шлёт M до "b".
-var syncTamper atomic.Value
-
-func syncFake(side string) bool { s, _ := syncTamper.Load().(string); return s == side }
-
-// syncOther — постоянный посторонний ключ для syncTamper.
-var syncOther = ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
-
-func syncID(side, id string) string {
-	if s, _ := syncTamper.Load().(string); s == side {
-		return id + "x"
-	}
-	return id
-}
+// Испытательные подмены сверки: в рабочем пути — тождество; подделки (syncTamper, syncOther) — только в
+// agent/spsync_test.go.
+var (
+	syncHostKey = func(k ed25519.PrivateKey) ed25519.PrivateKey { return k } // ключ подписи хоста в "sp"
+	syncCliKey  = func(k ed25519.PrivateKey) ed25519.PrivateKey { return k } // ключ клиента в "b"
+	syncSignID  = func(side, id string) string { return id }                 // ID в подписи стороны side
+	syncEarly   = func() bool { return false }                               // клиент шлёт M до "b"
+	syncNow     = time.Now                                                   // время в sx клиента
+	syncSX      = func(sx []byte) []byte { return sx }                       // sx клиента в connect
+)
 
 // spSync — состояние сверки на хосте (под mu).
 type spSync struct {
@@ -189,11 +182,8 @@ func (a *Agent) syncB(s *session, m authMsg, keyOK bool, fpc, fph string, send f
 		send(spMsg{T: "sp", Err: "notme"})
 	default:
 		st.phase = 2
-		key := a.Key
-		if syncFake("hostkey") {
-			key = syncOther
-		}
-		send(spMsg{T: "sp", Sync: true, Pub: key.Public().(ed25519.PublicKey), Sig: pake.HostSign(key, syncID("host", a.ID), fpc, fph)})
+		key := syncHostKey(a.Key)
+		send(spMsg{T: "sp", Sync: true, Pub: key.Public().(ed25519.PublicKey), Sig: pake.HostSign(key, syncSignID("host", a.ID), fpc, fph)})
 		return
 	}
 	st.phase = 4
@@ -265,17 +255,11 @@ func syncVia(ctx context.Context, server string, d SyncDial) ([]byte, error) {
 		mine  []byte // свой M после приёма (отправлен хосту)
 		hostM []byte
 	)
-	now := time.Now()
-	if syncFake("old") {
-		now = now.Add(-syncSkew - time.Minute)
-	}
-	sx, h2c, err := sxMake(d.Key, d.HostPub, d.ID, now.Unix())
+	sx, h2c, err := sxMake(d.Key, d.HostPub, d.ID, syncNow().Unix())
 	if err != nil {
 		return nil, err
 	}
-	if syncFake("sx") {
-		sx[len(sx)-1] ^= 1
-	}
+	sx = syncSX(sx)
 	req := connectReq{View: true, SX: sx} // как у вступления и пропуска (hostDial): хаб сверку не отличит
 	err = hostDial(ctx, server, d.ID, req, func(pc *webrtc.PeerConnection, finish func(error)) {
 		pc.OnDataChannel(func(dc *webrtc.DataChannel) {
@@ -317,14 +301,11 @@ func syncVia(ctx context.Context, server string, d SyncDial) ([]byte, error) {
 						finish(fmt.Errorf("%w: busy", ErrSpaceRefused))
 						return
 					}
-					key := d.Key
-					if syncFake("cpub") {
-						key = syncOther
-					}
-					if syncFake("early") {
+					key := syncCliKey(d.Key)
+					if syncEarly() {
 						send(spMsg{T: "sp", Sync: true, M: d.S.SyncGate(d.HostPub, nil)})
 					}
-					cpub, csig, err := signB(key, syncID("client", d.ID), pc)
+					cpub, csig, err := signB(key, syncSignID("client", d.ID), pc)
 					if err != nil {
 						finish(err)
 						return

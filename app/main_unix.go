@@ -131,6 +131,8 @@ func hostMain() {
 		CodeUsed: cfg.codeUsed,                           // «Спрашивать»: код сменить после сессии и блокировки (REQ-S-23)
 		SpaceGet: cfg.spaceGet, SpaceJoin: cfg.spaceJoin, // «Моё пространство», Э2: отдать состав и принять вступление
 		SpaceMember: cfg.spaceMember, // Э3: пропуск 12 ч на ключ мастера (agent/pass.go)
+		LoginTag:    cfg.loginTag,    // Э4: смена входа пространства и исключение рвут сессии (revoked)
+		KeyGone:     cfg.keyGone,     // решение A: ключ исключённого ПК рвёт сессию в любом режиме
 		SpaceSync:   cfg,             // Э4: сверка состава между членами (spsync.go)
 		Capture:     hostCapture(cfg.Enc), Locked: hostLocked, FileDir: downloads(), Stderr: logw}
 	var mu sync.Mutex

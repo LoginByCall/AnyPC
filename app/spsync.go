@@ -1,21 +1,25 @@
 package main
 
-// «Моё пространство», этап Э4: члены держат одинаковый M (UI-REDESIGN.md, «Сверка», «Исключение»). Сеть —
-// agent/spsync.go; здесь цепочка, приём, раскол, рассылка и правки состава для окна. ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ
-// (CLAUDE.md A13: ключевой материал).
+// «Моё пространство», этап Э4 + решение 10 A (2P-Set): члены сходятся к одному объединению M (UI-REDESIGN.md,
+// «Сверка», «Исключение»). Сеть — agent/spsync.go; здесь хранение верхушек, приём, рассылка и правки состава для
+// окна. ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ (CLAUDE.md A13: ключевой материал).
 //
-// Цепочка (settings.SpaceLog) — записи M, на которых менялся вход (lgen), последние spaceLogMax: ПК, пропустивший
-// несколько смен входа, принимает их по порядку (spaceAccept требует прямого продолжения входа), а не раскол.
-// Приём (SyncApply) — только через spaceAccept по закреплённому opub; раскол (две правки от одной эпохи) — флаг
-// SpaceFork с M другой ветви, без запроса фразы: пропуска на этом ПК не выдаются, правки состава — отказ, пока
-// слияние (окно, фраза) не даст M, продолжающий обе ветви.
+// Хранение: settings.Space — главная верхушка (spaceHeads, первая), settings.SpaceHeads — остальные; всё — байты
+// marshal(). Состав для решений — объединение (spaceLocked → spaceView). Приём (SyncApply) — любые подлинные M того же
+// пространства (закреплённые sid, opub, osalt): они добавляются к верхушкам, перекрытые забываются. Расколов, флагов
+// раскола и слияния нет: объединение одинаково на всех ПК, которые видели одни и те же M. Догоняние (SyncOffer) — в
+// обмене сверки обе стороны отдают все свои верхушки: каждая M — полный состав, предки ничего не добавляют к
+// объединению (потомок перекрывает предка, spaceUnder).
 
 import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"log"
 	"math/rand/v2"
 	"slices"
@@ -27,90 +31,132 @@ import (
 	"anypc/totp"
 )
 
-const spaceLogMax = 16
-
 var (
-	errSpaceVia    = errors.New("пространство: пароль, код и «Спрашивать» этого ПК меняются через пространство (фраза)")
-	errSpaceForked = errors.New("пространство: раскол состава — сначала слияние")
-	errSpaceGap    = errors.New("пространство: в цепочке входа пропуск — нужна запись от другого члена")
-	errSpaceSelf   = errors.New("пространство: этот ПК исключается с другого ПК пространства")
+	errSpaceVia  = errors.New("пространство: пароль, код и «Спрашивать» этого ПК меняются через пространство (фраза)")
+	errSpaceSelf = errors.New("пространство: этот ПК исключается с другого ПК пространства")
 )
 
-// spaceChanged — вход записи по умолчанию сменился правкой M: сессии со старым паролем рвать (agent.DropRevoked).
+// spaceChanged — вход записи по умолчанию сменился (правка или приём M): сессии со старым паролем рвать
+// (agent.DropRevoked).
 var spaceChanged func()
 
-// spaceSetLocked — сделать проверенный n текущим составом (под c.mu, без save): смена входа — в цепочку и в запись
-// по умолчанию (её Trusted/KeyLogin сбрасываются: пароль сменился; гостей не трогаем); раскол, который n продолжает,
-// снят. drop — вход записи по умолчанию сменился.
-func (c *config) spaceSetLocked(n *space) (drop bool, err error) {
-	b, err := n.marshal()
+// spaceStoredLocked — сохранённые верхушки (под c.mu): главная, затем остальные. Хоть одна не читается — ошибка
+// (закрыто: пропустив испорченную верхушку, забыли бы её исключения — исключённый снова член).
+func (c *config) spaceStoredLocked() ([]*space, error) {
+	var out []*space
+	for i, b := range slices.Concat([][]byte{c.Space}, c.SpaceHeads) {
+		m, err := spaceParse(b)
+		if err != nil {
+			return nil, fmt.Errorf("верхушка %d: %w", i, err)
+		}
+		out = append(out, m)
+	}
+	return out, nil
+}
+
+// spacePendLocked — непринятые M (под c.mu); не читается хоть одна — ошибка (закрыто, как spaceStoredLocked).
+func (c *config) spacePendLocked() ([]*space, error) {
+	var out []*space
+	for i, b := range c.SpacePend {
+		m, err := spaceParse(b)
+		if err != nil {
+			return nil, fmt.Errorf("непринятая правка %d: %w", i, err)
+		}
+		out = append(out, m)
+	}
+	return out, nil
+}
+
+// spaceSnapLocked — байты состояния (верхушки и непринятые M): правка сверяет, что оно не сменилось.
+func (c *config) spaceSnapLocked() []byte {
+	var b []byte
+	for _, x := range slices.Concat([][]byte{c.Space}, c.SpaceHeads, [][]byte{nil}, c.SpacePend) {
+		b = append(append(b, byte(len(x)>>8), byte(len(x))), x...)
+	}
+	return b
+}
+
+// spaceAddLocked — добавить подлинные M к верхушкам (под c.mu, без save): чужое пространство — errSpaceForeign
+// (ничего не принято). Вход объединения повторяется в записи по умолчанию (её Trusted/KeyLogin сбрасываются: пароль
+// сменился; гостей не трогаем). changed — верхушки сменились; drop — вход записи по умолчанию сменился. Верхушек
+// больше spaceMaxHeads и после поглощения перекрытых — errSpaceHeads: в верхушки ничего не принято, пришедшие M — в
+// SpacePend (в составе для решений: исключения действуют сразу), SpaceOver закрывает ПК (spaceOwnerLocked), пока
+// SpacePend не принят вместе с верхушками — правкой фразой здесь или сводящей правкой, пришедшей сверкой.
+func (c *config) spaceAddLocked(in ...*space) (changed, drop bool, err error) {
+	if len(c.Space) == 0 {
+		return false, false, errSpaceNotIn
+	}
+	cur, err := c.spaceStoredLocked()
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
-	if prev := c.spaceLocked(); prev != nil && prev.LGen != n.LGen {
-		c.SpaceLog = append(c.SpaceLog, b)
-		c.SpaceLog = c.SpaceLog[max(0, len(c.SpaceLog)-spaceLogMax):]
+	for _, m := range in {
+		if m == nil || !cur[0].sameSpace(m) {
+			return false, false, errSpaceForeign
+		}
 	}
-	c.Space = b
+	pend, err := c.spacePendLocked()
+	if err != nil {
+		return false, false, err
+	}
+	heads, err := spaceHeads(slices.Concat(cur, in, pend))
+	if errors.Is(err, errSpaceHeads) {
+		for _, m := range in { // только новое: M, равные своим верхушкам и непринятым или перекрытые ими, — мимо
+			known := func(h *space) bool { return spaceUnder(m, h) }
+			if slices.ContainsFunc(cur, known) || slices.ContainsFunc(pend, known) || len(c.SpacePend) >= spaceMaxPend {
+				continue
+			}
+			if b, merr := m.marshal(); merr == nil {
+				c.SpacePend, pend = append(c.SpacePend, b), append(pend, m)
+			}
+		}
+		if c.SpaceOver == "" {
+			c.SpaceOver = time.Now().UTC().Format(time.RFC3339) + " " + err.Error()
+			log.Printf("%v — правка не принята в верхушки, пропусков нет до правки фразой на этом ПК или сводящей правки", err)
+		}
+		return false, c.spaceFollowLocked(), err
+	}
+	if err != nil {
+		return false, false, err
+	}
+	var bs [][]byte
+	for _, h := range heads {
+		b, err := h.marshal()
+		if err != nil {
+			return false, false, err
+		}
+		bs = append(bs, b)
+	}
+	before := c.spaceSnapLocked()
+	c.Space, c.SpaceHeads, c.SpacePend, c.SpaceOver = bs[0], bs[1:], nil, "" // непринятые приняты (или перекрыты)
+	if len(c.SpaceHeads) == 0 {
+		c.SpaceHeads = nil
+	}
+	if bytes.Equal(before, c.spaceSnapLocked()) {
+		return false, false, nil
+	}
+	return true, c.spaceFollowLocked(), nil
+}
+
+// spaceFollowLocked — вход состава (объединения) повторяется в записи по умолчанию (под c.mu): сменился — true.
+func (c *config) spaceFollowLocked() bool {
+	v := c.spaceLocked()
+	if v == nil {
+		return false
+	}
 	u := &c.Users[0]
-	if drop = !bytes.Equal(u.Salt, n.PSalt) || !bytes.Equal(u.Hash, n.PHash) || u.TOTP != n.TOTP; drop {
-		if u.TOTP != n.TOTP {
+	drop := !bytes.Equal(u.Salt, v.PSalt) || !bytes.Equal(u.Hash, v.PHash) || u.TOTP != v.TOTP
+	if drop {
+		if u.TOTP != v.TOTP {
 			u.TOTPStep = 0
 		}
-		u.Salt, u.Hash, u.TOTP, u.Trusted, u.KeyLogin = bytes.Clone(n.PSalt), bytes.Clone(n.PHash), n.TOTP, nil, nil
+		u.Salt, u.Hash, u.TOTP, u.Trusted, u.KeyLogin = bytes.Clone(v.PSalt), bytes.Clone(v.PHash), v.TOTP, nil, nil
 	}
-	if f, err := spaceParse(c.SpaceFork); err != nil || spaceCovers(f, n) {
-		c.SpaceFork = nil
-	}
-	if n.Epoch >= c.SpaceBehind {
-		c.SpaceBehind = 0
-	}
-	return drop, nil
+	return drop
 }
 
-// spaceCovers — n продолжает ветвь f (или это она же).
-func spaceCovers(f, n *space) bool {
-	err := spaceAccept(f, n)
-	return err == nil || errors.Is(err, errSpaceSame)
-}
-
-// spaceWalk — принять recs по порядку от from, как spaceAccept на каждом шаге: старые и те же — мимо. Решает только
-// последняя запись (M собеседника): промежуточная, которая не продолжает принятое (ветвь, уже слитая последней), —
-// мимо, не раскол. Последняя через смену входа, которой нет (r.LGen > x.LGen+1 и не продолжение x), — errSpaceGap
-// (отстал), иначе ошибка spaceAccept (errSpaceFork — раскол). Итог — принятые по порядку.
-func spaceWalk(from *space, recs []*space) ([]*space, error) {
-	x := from
-	var ok []*space
-	for i, r := range recs {
-		err := spaceAccept(x, r)
-		if err != nil && uint64(r.LGen) > uint64(x.LGen)+1 && !r.loginFrom(x) && r.Epoch > x.Epoch {
-			err = errSpaceGap
-		}
-		switch {
-		case err == nil:
-			x, ok = r, append(ok, r)
-		case errors.Is(err, errSpaceStale), errors.Is(err, errSpaceSame):
-		case i == len(recs)-1:
-			return ok, err
-		}
-	}
-	return ok, nil
-}
-
-// spaceRecsLocked — записи цепочки, которых нет у p (вход и эпоха новее), по порядку, без текущего M (под c.mu).
-func (c *config) spaceRecsLocked(p *space) []*space {
-	cur := c.spaceLocked()
-	var out []*space
-	for _, b := range c.SpaceLog {
-		if r, err := spaceParse(b); err == nil && cur != nil && r.sameSpace(p) && r.Epoch > p.Epoch && r.LGen > p.LGen && r.Epoch < cur.Epoch {
-			out = append(out, r)
-		}
-	}
-	return out
-}
-
-// SyncGate — agent.SpaceSyncer: M этого ПК ключу pub члена (или члена ветви peer того же пространства, если здесь
-// он не исключён — ПК, вступивший через отставший P, иначе свой раскол не увидит).
+// SyncGate — agent.SpaceSyncer: главная верхушка этого ПК ключу pub члена (объединения), если peer — подлинный M
+// того же пространства (peer nil — без него).
 func (c *config) SyncGate(pub ed25519.PublicKey, peer []byte) []byte {
 	var p *space
 	if peer != nil {
@@ -122,34 +168,38 @@ func (c *config) SyncGate(pub ed25519.PublicKey, peer []byte) []byte {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
-	cur := c.spaceLocked()
-	if cur == nil || bytes.Equal(pub, ed25519.PrivateKey(c.Key).Public().(ed25519.PublicKey)) || cur.gone(pub) ||
-		!cur.member(pub) && (p == nil || !cur.sameSpace(p) || !p.member(pub)) {
+	if cur := c.spaceLocked(); cur == nil || p != nil && !cur.sameSpace(p) {
+		return nil
+	}
+	if !c.syncMemberLocked(pub) {
 		return nil
 	}
 	return bytes.Clone(c.Space)
 }
 
-// SyncRecs — agent.SpaceSyncer: записи цепочки для peer.
+// syncMemberLocked — pub — член объединения (значит, не исключён ни в одной известной M) и не этот ПК.
+func (c *config) syncMemberLocked(pub ed25519.PublicKey) bool {
+	cur := c.spaceLocked()
+	return cur != nil && !cur.gone(pub) && cur.member(pub) && !bytes.Equal(pub, ed25519.PrivateKey(c.Key).Public().(ed25519.PublicKey))
+}
+
+// SyncRecs — agent.SpaceSyncer: остальные верхушки этого ПК (кроме главной, она идёт в "m", и кроме peer).
 func (c *config) SyncRecs(peer []byte) [][]byte {
-	p, err := spaceParse(peer)
-	if err != nil {
-		return nil
-	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
 	var out [][]byte
-	for _, r := range c.spaceRecsLocked(p) {
-		b, _ := r.marshal()
-		out = append(out, b)
+	for _, b := range c.SpaceHeads {
+		if !bytes.Equal(b, peer) {
+			out = append(out, bytes.Clone(b))
+		}
 	}
 	return out
 }
 
-// SyncApply — agent.SpaceSyncer: приём M другого члена (и записей перед ним); вернуть текущий M.
+// SyncApply — agent.SpaceSyncer: принять верхушки другого члена (recs и peer); вернуть свою главную после.
 func (c *config) SyncApply(peer []byte, recs [][]byte) []byte {
-	if err := c.spaceSync(peer, recs); err != nil && !errors.Is(err, errSpaceSame) {
+	if err := c.spaceSync(peer, recs); err != nil {
 		log.Printf("пространство: сверка: %v", err)
 	}
 	c.mu.Lock()
@@ -157,85 +207,49 @@ func (c *config) SyncApply(peer []byte, recs [][]byte) []byte {
 	return bytes.Clone(c.Space)
 }
 
-// spaceSync — p новее — принять записи и p по порядку; старее — проверить, что он предок текущего (иначе раскол);
-// равная эпоха с другими байтами — раскол.
+// spaceSync — добавить подлинные M (pb и rb) к верхушкам; новое — дальше остальным членам.
 func (c *config) spaceSync(pb []byte, rb [][]byte) error {
-	p, err := spaceParse(pb)
-	if err != nil {
-		return err
-	}
-	var recs []*space
-	for _, b := range rb {
-		r, err := spaceParse(b)
+	var in []*space
+	for _, b := range append([][]byte{pb}, rb...) {
+		m, err := spaceParse(b)
 		if err != nil {
 			return err
 		}
-		recs = append(recs, r)
+		in = append(in, m)
 	}
 	c.mu.Lock()
 	c.reload()
-	cur, changed := c.spaceLocked(), false
-	switch {
-	case cur == nil:
-		err = errSpaceNotIn
-	case !cur.sameSpace(p):
-		err = errSpaceForeign
-	case p.Epoch > cur.Epoch:
-		var ok []*space
-		ok, err = spaceWalk(cur, append(recs, p))
-		drop := false
-		for _, x := range ok { // по шагу: каждая смена входа — в цепочку (отдавать следующему отставшему)
-			d, serr := c.spaceSetLocked(x)
-			if serr != nil {
-				err = serr
-				break
-			}
-			changed, drop = true, drop || d
-		}
-		if drop && spaceChanged != nil {
-			defer spaceChanged() // после c.mu
-		}
-	case p.Epoch < cur.Epoch:
-		if _, err = spaceWalk(p, append(c.spaceRecsLocked(p), cur)); errors.Is(err, errSpaceGap) {
-			err = nil // так его примет отставший; пропуск в своей цепочке — не наш раскол
-		}
-	case !bytes.Equal(p.signBytes(), cur.signBytes()):
-		err = errSpaceFork
-	default:
-		err = errSpaceSame
-	}
-	behind := errors.Is(err, errSpaceGap)
-	switch {
-	case errors.Is(err, errSpaceFork):
-		c.SpaceFork = bytes.Clone(pb)
-		log.Printf("пространство: раскол состава (%v) — пропуска не выдаются до слияния", err)
-	case behind && p.Epoch > c.SpaceBehind:
-		c.SpaceBehind = p.Epoch // есть подписанный состав новее, а дойти до него нечем: пропусков нет, сверка со всеми
-		log.Printf("пространство: этот ПК отстал (эпоха %d) — пропуска не выдаются до сверки", p.Epoch)
-	default:
-		behind = false
-	}
-	if changed || behind || errors.Is(err, errSpaceFork) {
+	snap := c.spaceSnapLocked()
+	changed, drop, err := c.spaceAddLocked(in...)
+	if changed || drop || !bytes.Equal(snap, c.spaceSnapLocked()) {
 		if serr := c.save(); serr != nil && err == nil {
 			err = serr
 		}
+		if v := c.spaceLocked(); v != nil && v.Compromised {
+			log.Print("пространство: секрет кода видел исключённый ПК — пропусков нет до нового кода (фраза)")
+		}
 	}
 	c.mu.Unlock()
-	if s := c.syn; s != nil && (changed || behind) { // принятое — дальше остальным; отставший — сверка со всеми
+	if (drop || changed) && spaceChanged != nil { // и без смены входа: новое исключение меняет loginTag
+		spaceChanged()
+	}
+	if s := c.syn; s != nil && changed { // принятое — дальше остальным
 		s.bg.Go(func() { s.spread(s.bgCtx(), true) })
 	}
 	return err
 }
 
-// spaceResult — итог сверки с одним членом: State — "ok" (составы сошлись) | "differs" (раскол или неполная
-// цепочка) | "offline" | "old" (версия без сверки) | "badid" (под ID ответил чужой ключ, С4) | "refused".
+// spaceResult — итог сверки с одним членом: State — "ok" (главные верхушки сошлись) | "differs" | "offline" |
+// "old" (версия без сверки) | "badid" (под ID ответил чужой ключ, С4; ответ не подписан — только для окна) |
+// "clock" (часы расходятся больше 10 мин; тоже не подписано) | "refused".
 type spaceResult struct {
 	ID    string
 	State string
 	Err   error
 }
 
-// spaceSyncer — рассылка состава этого ПК членам с повтором (как offRetry: пауза растёт до spaceSyncRetryMax).
+// spaceSyncer — рассылка состава этого ПК членам с повтором (как offRetry: пауза растёт до spaceSyncRetryMax, всего
+// не дольше spaceSyncRetryFor; дальше — периодическая сверка).
 type spaceSyncer struct {
 	cfg   *config
 	ctx   context.Context // фоновые повторы — до его конца
@@ -248,6 +262,7 @@ type spaceSyncer struct {
 var (
 	spaceSyncFn                       = agent.SpaceSync
 	spaceSyncRetry, spaceSyncRetryMax = time.Second, 5 * time.Minute
+	spaceSyncRetryFor                 = time.Hour
 )
 
 func (s *spaceSyncer) bgCtx() context.Context {
@@ -257,7 +272,9 @@ func (s *spaceSyncer) bgCtx() context.Context {
 	return s.ctx
 }
 
-// one — сверка с членом x; флаги С4 и «вступление не сверено» — по итогу.
+// one — сверка с членом x. Состояние меняют только подписанные итоги: "ok" (подписанный M хоста равен своему)
+// снимает SpaceWait, если x — не поручитель. "badid" и "clock" приходят без подписи (их может подставить хаб) — на
+// решения не влияют; "clock" — в SpaceClock для окна.
 func (s *spaceSyncer) one(ctx context.Context, x spaceMember) spaceResult {
 	c := s.cfg
 	hostM, err := spaceSyncFn(ctx, agent.SyncDial{Server: c.server(), ID: x.ID, HostPub: x.Pub, Key: c.key(), S: c})
@@ -276,16 +293,16 @@ func (s *spaceSyncer) one(ctx context.Context, x spaceMember) spaceResult {
 		r.State = "old"
 	case errors.Is(err, agent.ErrSpaceIDKey):
 		r.State = "badid"
+		log.Printf("пространство: под ID %s ответил не тот ПК (ответ не подписан — возможно, подмена хабом)", x.ID)
 	case errors.Is(err, agent.ErrSpaceSkew):
 		r.State = "clock"
 	}
-	bad, ch := slices.Contains(c.SpaceBadID, x.ID), false
+	clock, ch := slices.Contains(c.SpaceClock, x.ID), false
 	switch {
-	case r.State == "badid" && !bad:
-		c.SpaceBadID, ch = append(c.SpaceBadID, x.ID), true
-		log.Printf("пространство: под ID %s ответил не тот ПК — ему не доверяем", x.ID)
-	case (r.State == "ok" || r.State == "differs") && bad: // ключ под этим ID доказан
-		c.SpaceBadID, ch = slices.DeleteFunc(c.SpaceBadID, func(id string) bool { return id == x.ID }), true
+	case r.State == "clock" && !clock:
+		c.SpaceClock, ch = append(c.SpaceClock, x.ID), true
+	case (r.State == "ok" || r.State == "differs") && clock: // обмен прошёл — часы сошлись
+		c.SpaceClock, ch = slices.DeleteFunc(c.SpaceClock, func(id string) bool { return id == x.ID }), true
 	}
 	if r.State == "ok" && c.SpaceWait != "" && c.SpaceWait != x.ID {
 		c.SpaceWait, ch = "", true
@@ -296,36 +313,35 @@ func (s *spaceSyncer) one(ctx context.Context, x spaceMember) spaceResult {
 	return r
 }
 
-// spread — сверка со всеми членами M, кроме себя, параллельно; retry — не дошедшее (не в сети, отказ) повторять в
-// фоне до подтверждения, исключения цели или конца s.ctx.
+// spread — сверка со всеми членами объединения, кроме себя, параллельно; retry — не дошедшее повторять в фоне до
+// подтверждения, исключения цели, ответа старой версии, spaceSyncRetryFor или конца s.ctx.
 func (s *spaceSyncer) spread(ctx context.Context, retry bool) []spaceResult {
-	c := s.cfg
-	c.mu.Lock()
-	c.reload()
-	m := c.spaceLocked()
-	self := ed25519.PrivateKey(c.Key).Public().(ed25519.PublicKey)
-	c.mu.Unlock()
-	if m == nil {
-		return nil
-	}
-	var targets []spaceMember
-	for _, x := range m.Members {
-		if !bytes.Equal(x.Pub, self) {
-			targets = append(targets, x)
-		}
-	}
+	targets := s.cfg.spaceOthers()
 	out := make([]spaceResult, len(targets))
 	var wg sync.WaitGroup
 	for i, x := range targets {
 		wg.Go(func() {
 			out[i] = s.one(ctx, x)
-			if retry && out[i].State != "ok" {
+			if retry && out[i].State != "ok" && out[i].State != "old" {
 				s.later(x)
 			}
 		})
 	}
 	wg.Wait()
 	return out
+}
+
+// spaceOthers — члены объединения, кроме этого ПК.
+func (c *config) spaceOthers() []spaceMember {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reload()
+	m := c.spaceLocked()
+	if m == nil {
+		return nil
+	}
+	self := ed25519.PrivateKey(c.Key).Public().(ed25519.PublicKey)
+	return slices.DeleteFunc(slices.Clone(m.Members), func(x spaceMember) bool { return bytes.Equal(x.Pub, self) })
 }
 
 func (s *spaceSyncer) later(x spaceMember) {
@@ -337,6 +353,7 @@ func (s *spaceSyncer) later(x spaceMember) {
 	s.retry[x.ID] = tok
 	s.mu.Unlock()
 	ctx := s.bgCtx()
+	end := time.Now().Add(spaceSyncRetryFor)
 	s.bg.Go(func() {
 		defer func() {
 			s.mu.Lock()
@@ -346,6 +363,9 @@ func (s *spaceSyncer) later(x spaceMember) {
 			s.mu.Unlock()
 		}()
 		for wait := spaceSyncRetry; ; wait = min(2*wait, spaceSyncRetryMax) {
+			if time.Now().Add(wait).After(end) {
+				return // дальше — периодическая сверка (spaceEvery) и сверка при запуске
+			}
 			select {
 			case <-ctx.Done():
 				return
@@ -357,7 +377,7 @@ func (s *spaceSyncer) later(x spaceMember) {
 			if c := s.cfg; !mine || c.SyncGate(x.Pub, nil) == nil { // заменён новой рассылкой или больше не член
 				return
 			}
-			if r := s.one(ctx, x); r.State == "ok" {
+			if r := s.one(ctx, x); r.State == "ok" || r.State == "old" {
 				return
 			}
 		}
@@ -365,8 +385,7 @@ func (s *spaceSyncer) later(x spaceMember) {
 }
 
 // spaceFresh — сразу после вступления (п. 5 Э4): сверка с остальными членами; fresh — пропуска выдаются (сверен с
-// членом, кроме P, или других нет). P сверяется с остальными до выдачи M (spaceGet) и до ответа (spaceJoin); раскол,
-// если P всё же отдал старую ветвь, — флаг и слияние окном.
+// членом, кроме P, или других нет). P сверяется с остальными до выдачи M (spaceGet) и до ответа (spaceJoin).
 func (c *config) spaceFresh(ctx context.Context) bool {
 	if c.syn != nil {
 		c.syn.spread(ctx, true)
@@ -377,18 +396,23 @@ func (c *config) spaceFresh(ctx context.Context) bool {
 func (c *config) spaceFreshNow() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.SpaceWait == "" && len(c.SpaceFork) == 0
+	return c.SpaceWait == ""
 }
 
-// spaceEdit — сохранить правку n состава raw (если он не сменился за время правки).
-func (c *config) spaceEdit(raw []byte, n *space) (bool, error) {
+// spaceEdit — сохранить правку n объединения со снимком snap (если состояние не сменилось за время правки). Правка
+// объединения со скомпрометированным входом без нового секрета кода — отказ.
+func (c *config) spaceEdit(snap []byte, n *space) (bool, error) {
 	c.mu.Lock()
 	c.reload()
-	if !bytes.Equal(c.Space, raw) {
+	if !bytes.Equal(c.spaceSnapLocked(), snap) {
 		c.mu.Unlock()
 		return false, errSpaceChange
 	}
-	drop, err := c.spaceSetLocked(n)
+	if v := c.spaceLocked(); v != nil && v.Compromised && n.TOTP == v.TOTP {
+		c.mu.Unlock()
+		return false, errSpaceCompromised
+	}
+	_, drop, err := c.spaceAddLocked(n)
 	if err == nil {
 		err = c.save()
 	}
@@ -399,26 +423,26 @@ func (c *config) spaceEdit(raw []byte, n *space) (bool, error) {
 	return drop, err
 }
 
-// edit — правка состава фразой (f — правило ядра) с рассылкой: сперва сверка со всеми доступными (правка — от
-// свежего M, а не от ветви, которую потом сливать), раскол — отказ.
-func (s *spaceSyncer) edit(ctx context.Context, exclude bool, f func(m *space) (*space, error)) ([]spaceResult, error) {
+// edit — правка состава фразой (f — правило ядра) от объединения, с рассылкой: сперва сверка со всеми доступными
+// (правка — от свежего объединения), затем f над ним.
+func (s *spaceSyncer) edit(ctx context.Context, f func(m *space) (*space, error)) ([]spaceResult, error) {
 	c := s.cfg
 	s.spread(ctx, false)
 	c.mu.Lock()
 	c.reload()
-	m, raw, fork := c.spaceLocked(), bytes.Clone(c.Space), len(c.SpaceFork) > 0
+	m, snap, bad := c.spaceLocked(), c.spaceSnapLocked(), c.spaceDamagedLocked()
 	c.mu.Unlock()
-	switch {
-	case m == nil:
+	if bad {
+		return nil, errSpaceDamaged
+	}
+	if m == nil {
 		return nil, errSpaceNotIn
-	case fork && !exclude: // исключение — и при расколе: украденный член не заблокирует его повтором своей ветви
-		return nil, errSpaceForked
 	}
 	n, err := f(m) // Argon2 фразы — без c.mu
 	if err != nil {
 		return nil, err
 	}
-	if _, err := c.spaceEdit(raw, n); err != nil {
+	if _, err := c.spaceEdit(snap, n); err != nil {
 		return nil, err
 	}
 	return s.spread(ctx, true), nil
@@ -433,15 +457,22 @@ func (s *spaceSyncer) spaceExclude(ctx context.Context, phrase string, pub ed255
 	if newPassword != "" && len([]rune(newPassword)) < 8 {
 		return nil, errors.New("пароль короче 8 символов")
 	}
-	return s.edit(ctx, true, func(m *space) (*space, error) { return spaceRemoveLogin(m, phrase, pub, newPassword) })
+	return s.edit(ctx, func(m *space) (*space, error) { return spaceRemoveLogin(m, phrase, pub, newPassword) })
 }
 
-// spaceChangeLogin — новый пароль входа пространства (запись по умолчанию на всех членах).
-func (s *spaceSyncer) spaceChangeLogin(ctx context.Context, phrase, newPassword string) ([]spaceResult, error) {
-	if len([]rune(newPassword)) < 8 {
+// spaceChangeLogin — новый вход пространства (запись по умолчанию на всех членах): новый пароль (newPassword; ""
+// — прежний) и, если newCode или вход скомпрометирован, новый секрет кода (окно покажет новый QR).
+func (s *spaceSyncer) spaceChangeLogin(ctx context.Context, phrase, newPassword string, newCode bool) ([]spaceResult, error) {
+	if newPassword != "" && len([]rune(newPassword)) < 8 {
 		return nil, errors.New("пароль короче 8 символов")
 	}
-	return s.edit(ctx, false, func(m *space) (*space, error) { return spaceSetLogin(m, phrase, newPassword, "") })
+	return s.edit(ctx, func(m *space) (*space, error) {
+		sec := ""
+		if newCode || m.Compromised {
+			sec = totp.NewSecret()
+		}
+		return spaceSetLogin(m, phrase, newPassword, sec)
+	})
 }
 
 // startSpaceSync — при запуске: рассылка правок с этого ПК, сверка со всеми членами (ПК мог пропустить правки, пока
@@ -467,17 +498,7 @@ var spaceEvery = 10 * time.Minute
 
 // random — сверка с одним случайным членом, кроме себя.
 func (s *spaceSyncer) random(ctx context.Context) {
-	c := s.cfg
-	c.mu.Lock()
-	c.reload()
-	m := c.spaceLocked()
-	self := ed25519.PrivateKey(c.Key).Public().(ed25519.PublicKey)
-	c.mu.Unlock()
-	if m == nil {
-		return
-	}
-	l := slices.DeleteFunc(slices.Clone(m.Members), func(x spaceMember) bool { return bytes.Equal(x.Pub, self) })
-	if len(l) > 0 {
+	if l := s.cfg.spaceOthers(); len(l) > 0 {
 		s.one(ctx, l[rand.IntN(len(l))])
 	}
 }
@@ -485,21 +506,73 @@ func (s *spaceSyncer) random(ctx context.Context) {
 // spaceSigned — b — целая запись M с верной подписью (кем подписан — сверяет вызывающий сравнением со своим).
 func spaceSigned(b []byte) bool { _, err := spaceParse(b); return err == nil }
 
-// SyncKey — agent.SpaceSyncer: pub — член этого ПК (или ветви раскола, известной здесь), не исключён и не свой.
+// loginTag — agent.Agent.LoginTag: метка входа записи по умолчанию — хэш её соли, хэша пароля и секрета TOTP (в
+// пространстве это вход объединения, spaceFollowLocked): смена пароля или кода — новая метка, и при выходе из
+// пространства и повторном вступлении с другим кодом тоже. Клиенту — член объединения с доказанным ключом — только
+// она; клиенту без ключа или не члену (может быть любым ПК) — ещё число исключённых, если они есть: новое
+// исключение рвёт такую сессию. Записи состава не читаются — метка от их
+// байт (одна на испорченное состояние: сессии рвутся один раз, не циклом опроса). Гости и режим «Спрашивать» (вход
+// одноразовым кодом) — nil. Ключ исключённого ПК рвёт сессию отдельно (keyGone, любой режим и запись).
+func (c *config) loginTag(user string, cpub []byte) []byte {
+	if user != "" {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reload()
+	if c.codeModeLocked() {
+		return nil
+	}
+	u := c.Users[0]
+	b := []byte("anypc-login-tag\x00")
+	for _, x := range [][]byte{u.Salt, u.Hash, []byte(u.TOTP)} {
+		b = append(binary.BigEndian.AppendUint16(b, uint16(len(x))), x...)
+	}
+	base := sha256.Sum256(b)
+	if len(c.Space) == 0 {
+		return base[:]
+	}
+	m := c.spaceLocked()
+	switch {
+	case m == nil:
+		h := sha256.Sum256(append([]byte("anypc-space-damaged\x00"), c.spaceSnapLocked()...))
+		return h[:]
+	case cpub != nil && m.member(cpub), len(m.Gone) == 0:
+		return base[:]
+	}
+	h := sha256.Sum256(binary.BigEndian.AppendUint16(base[:], uint16(len(m.Gone))))
+	return h[:]
+}
+
+// keyGone — agent.Agent.KeyGone: ключ pub исключён в объединении этого ПК (решение владельца A).
+func (c *config) keyGone(pub []byte) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reload()
+	m := c.spaceLocked()
+	return m != nil && m.gone(pub)
+}
+
+// spaceDamaged — записи состава есть, но не читаются (для окна: «выйти и вступить снова»).
+func (c *config) spaceDamaged() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reload()
+	return c.spaceDamagedLocked()
+}
+
+func (c *config) spaceDamagedLocked() bool { return len(c.Space) > 0 && c.spaceLocked() == nil }
+
+// SyncKey — agent.SpaceSyncer: pub — член объединения этого ПК (не исключён ни в одной известной M) и не свой.
 func (c *config) SyncKey(pub ed25519.PublicKey) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
-	cur := c.spaceLocked()
-	if cur == nil || cur.gone(pub) || bytes.Equal(pub, ed25519.PrivateKey(c.Key).Public().(ed25519.PublicKey)) {
-		return false
-	}
-	f, _ := spaceParse(c.SpaceFork)
-	return cur.member(pub) || f != nil && cur.sameSpace(f) && f.member(pub)
+	return c.syncMemberLocked(pub)
 }
 
 // spaceLeave — выйти из пространства на этом ПК без фразы (С6: иначе пароль и код записи по умолчанию не сменить):
-// пароль записи по умолчанию и верный код TOTP. Удаляются M, цепочка и флаги; запись по умолчанию остаётся с теми же
+// пароль записи по умолчанию и верный код TOTP. Удаляются верхушки и флаги; запись по умолчанию остаётся с теми же
 // паролем и кодом; пропуска, выданные здесь, гаснут (DropRevoked), выданные этому ПК как мастеру — снимаются.
 func (c *config) spaceLeave(password, code string) error {
 	c.mu.Lock()
@@ -525,7 +598,7 @@ func (c *config) spaceLeave(password, code string) error {
 		return errPassCode
 	}
 	u.TOTPStep = step
-	c.Space, c.SpaceLog, c.SpaceFork, c.SpaceBadID, c.SpaceWait, c.SpaceBehind = nil, nil, nil, nil, "", 0
+	c.Space, c.SpaceHeads, c.SpaceWait, c.SpaceClock, c.SpaceOver, c.SpacePend = nil, nil, "", nil, "", nil
 	err := c.save()
 	c.mu.Unlock()
 	if err != nil {

@@ -94,11 +94,7 @@ func syncSpace(t *testing.T, extra int, cs ...*config) (string, []ed25519.Public
 		keys = append(keys, pub)
 	}
 	for _, c := range cs {
-		c.mu.Lock()
-		c.Space = nil
-		c.spaceSetLocked(m)
-		c.save()
-		c.mu.Unlock()
+		spaceReset(t, c, m)
 	}
 	return ph, keys
 }
@@ -149,7 +145,8 @@ func spaceLogin(url string, c *config, pw string) error {
 }
 
 // TestSpaceSyncChain — три ПК: исключение и смена пароля на A доходят до B сразу; C был выключен и при запуске
-// получает цепочку из двух смен входа по порядку (без раскола); вход на C новым паролем работает, старым — нет.
+// догоняет две смены входа одной последней M (цепочка не нужна: побеждает сильнейший вход); вход на C новым паролем
+// работает, старым — нет.
 func TestSpaceSyncChain(t *testing.T) {
 	url := syncHub(t)
 	sec := totp.NewSecret()
@@ -166,7 +163,7 @@ func TestSpaceSyncChain(t *testing.T) {
 	if st := states(rs); st[cb.id()] != "ok" || st[cc.id()] != "offline" || len(st) != 2 {
 		t.Fatalf("рассылка исключения: %v", st)
 	}
-	if _, err := a.c.syn.spaceChangeLogin(ctx, ph, "new-pass-22"); err != nil { // смена входа 2
+	if _, err := a.c.syn.spaceChangeLogin(ctx, ph, "new-pass-22", false); err != nil { // смена входа 2
 		t.Fatal(err)
 	}
 	ma := spaceOf(ca)
@@ -190,11 +187,11 @@ func TestSpaceSyncChain(t *testing.T) {
 	}
 	eventually(t, "C не догнал A", func() bool { return sameSpaceBytes(ca, cc) })
 	cc.mu.Lock()
-	fork, chain := cc.SpaceFork, len(cc.SpaceLog)
+	heads := len(cc.SpaceHeads)
 	u := cc.Users[0]
 	cc.mu.Unlock()
-	if fork != nil || chain != 2 {
-		t.Errorf("C: раскол %v, цепочка %d (нужно 2 записи)", fork != nil, chain)
+	if heads != 0 {
+		t.Errorf("C: лишних верхушек %d", heads)
 	}
 	if !bytes.Equal(pake.KDF("new-pass-22", u.Salt), u.Hash) || u.TOTP != ma.TOTP || u.TOTP == sec {
 		t.Error("C: вход записи по умолчанию — не из M")
@@ -211,9 +208,10 @@ func TestSpaceSyncChain(t *testing.T) {
 	}
 }
 
-// TestSpaceSyncFork — две правки от одной эпохи (на A и на B без сети): после сверки раскол на обеих, пропусков нет,
-// правки состава — отказ.
-func TestSpaceSyncFork(t *testing.T) {
+// TestSpaceSyncConcurrent — две правки от одной эпохи (на A смена пароля, на B исключение, без сети): после сверки
+// у обоих одно объединение (исключённый не член, вход — исключения по развилке), расколов и флагов нет, пропуска
+// выдаются, правки фразой — можно и сводят верхушки к одной.
+func TestSpaceSyncConcurrent(t *testing.T) {
 	url := syncHub(t)
 	sec := totp.NewSecret()
 	ca, cb := spaceCfg(t, spacePass, sec), spaceCfg(t, spacePass, sec)
@@ -227,52 +225,41 @@ func TestSpaceSyncFork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, _ := m.marshal()
-	if _, err := ca.spaceEdit(raw, na); err != nil {
+	if _, err := ca.spaceEdit(spSnap(ca), na); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cb.spaceEdit(raw, nb); err != nil {
+	if _, err := cb.spaceEdit(spSnap(cb), nb); err != nil {
 		t.Fatal(err)
 	}
 	a, b := syncNode(t, url, ca, false), syncNode(t, url, cb, false)
-	if st := states(b.c.syn.spread(context.Background(), false)); st[ca.id()] != "differs" {
+	if st := states(b.c.syn.spread(context.Background(), false)); st[ca.id()] != "ok" {
 		t.Fatalf("сверка: %v", st)
 	}
+	if !bytes.Equal(spSnap(ca), spSnap(cb)) {
+		t.Fatal("верхушки разошлись")
+	}
 	for _, p := range []*syncPC{a, b} {
-		p.c.mu.Lock()
-		fork := p.c.SpaceFork
-		p.c.mu.Unlock()
-		if fork == nil {
-			t.Fatal("нет флага раскола")
+		v := spaceOf(p.c)
+		if v.member(keys[0]) || !v.gone(keys[0]) || !sameLogin(v, nb) || v.Compromised {
+			t.Fatalf("объединение: %v", v)
 		}
 		salt, _, _ := p.c.secret("")
 		other := cfgPub(ca)
 		if p == a {
 			other = cfgPub(cb)
 		}
-		if p.c.spaceMember(salt, other) {
-			t.Error("пропуск при расколе")
-		}
-		if _, err := p.c.syn.spaceChangeLogin(context.Background(), ph, "pass-again-1"); !errors.Is(err, errSpaceForked) {
-			t.Errorf("правка при расколе: %v", err)
+		if !p.c.spaceMember(salt, other) {
+			t.Error("пропуска нет после сверки")
 		}
 	}
-	// слияние (окно, фраза) снимает раскол на обеих
-	mg, err := spaceMerge(spaceOf(ca), spaceOf(cb), ph, "merged-pass-1") // вход разошёлся в обеих — пароль заново
-	if err != nil {
-		t.Fatal(err)
+	if err := spaceLogin(url, ca, spacePass); err != nil { // смена пароля на A проиграла исключению (правило развилки)
+		t.Errorf("пароль победившего входа на A: %v", err)
 	}
-	rawA, _ := spaceOf(ca).marshal()
-	if _, err := ca.spaceEdit(rawA, mg); err != nil {
-		t.Fatal(err)
+	if _, err := a.c.syn.spaceChangeLogin(context.Background(), ph, "pass-again-1", false); err != nil {
+		t.Fatalf("правка после встречных правок: %v", err)
 	}
-	a.c.syn.spread(context.Background(), false)
-	eventually(t, "раскол не снят слиянием", func() bool {
-		cb.mu.Lock()
-		defer cb.mu.Unlock()
-		ca.mu.Lock()
-		defer ca.mu.Unlock()
-		return cb.SpaceFork == nil && ca.SpaceFork == nil
+	eventually(t, "правка не свела верхушки", func() bool {
+		return bytes.Equal(spSnap(ca), spSnap(cb)) && len(spaceHeadsOf(ca)) == 1
 	})
 }
 
@@ -312,7 +299,7 @@ func TestSpaceJoinStale(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, _ := spaceOf(ca).marshal()
+	raw := spSnap(ca)
 	if _, err := ca.spaceEdit(raw, m1); err != nil {
 		t.Fatal(err)
 	}
@@ -331,13 +318,10 @@ func TestSpaceJoinStale(t *testing.T) {
 	if mn.TOTP != m1.TOTP || !mn.member(cfgPub(cn)) || len(mn.Members) != 3 {
 		t.Errorf("состав N не текущий: %v", mn)
 	}
-	eventually(t, "A и P не получили слитый состав", func() bool { return sameSpaceBytes(cn, ca) && sameSpaceBytes(cn, cp) })
+	eventually(t, "A и P не получили состав с N", func() bool { return sameSpaceBytes(cn, ca) && sameSpaceBytes(cn, cp) })
 	for _, c := range []*config{ca, cp, n.c} {
-		c.mu.Lock()
-		fork := c.SpaceFork
-		c.mu.Unlock()
-		if fork != nil {
-			t.Error("раскол остался")
+		if h := spaceHeadsOf(c); len(h) != 1 {
+			t.Errorf("верхушек %d", len(h))
 		}
 	}
 	salt, _, _ := cn.secret("")
@@ -346,8 +330,9 @@ func TestSpaceJoinStale(t *testing.T) {
 	}
 }
 
-// TestSpaceSyncBadID — С4: новый член заявил в M ID чужого ПК; рассылка P видит под этим ID другой ключ — флаг,
-// пропуск ключу нового члена не выдаётся. Старый хост (без сверки) — итог "old", без ошибок и повторов.
+// TestSpaceSyncBadID — С4: новый член заявил в M ID чужого ПК; рассылка P видит под этим ID другой ключ — итог
+// "badid" для окна, но состояние не меняется (ответ "notme" не подписан, его может подставить хаб): ни флагов в
+// настройках, ни отказа в пропуске. Старый хост (без сверки) — итог "old", без повторов.
 func TestSpaceSyncBadID(t *testing.T) {
 	url := syncHub(t)
 	sec := totp.NewSecret()
@@ -366,16 +351,21 @@ func TestSpaceSyncBadID(t *testing.T) {
 	if err := cp.spaceJoin(salt, b, npub); err != nil {
 		t.Fatal(err)
 	}
-	if st := states(p.c.syn.spread(context.Background(), false)); st[cx.id()] != "badid" || st[cold.id()] != "old" {
+	before := spConf(cp)
+	if st := states(p.c.syn.spread(context.Background(), true)); st[cx.id()] != "badid" || st[cold.id()] != "old" {
 		t.Fatalf("рассылка: %v", st)
 	}
-	cp.mu.Lock()
-	bad := cp.SpaceBadID
-	cp.mu.Unlock()
-	if len(bad) != 1 || bad[0] != cx.id() {
-		t.Errorf("флаг С4: %v", bad)
+	if spConf(cp) != before {
+		t.Error("неподписанный notme изменил настройки")
 	}
-	if cp.spaceMember(salt, npub) || !cp.spaceMember(salt, cfgPub(cold)) {
-		t.Error("пропуск ключу под чужим ID выдаётся (или члену — нет)")
+	if !cp.spaceMember(salt, npub) || !cp.spaceMember(salt, cfgPub(cold)) {
+		t.Error("пропуск члену не выдаётся")
+	}
+	p.c.syn.mu.Lock()
+	_, oldRetry := p.c.syn.retry[cold.id()]
+	_, badRetry := p.c.syn.retry[cx.id()]
+	p.c.syn.mu.Unlock()
+	if oldRetry || !badRetry {
+		t.Errorf("повтор: старому хосту %v (нужно нет), badid %v (нужно да)", oldRetry, badRetry)
 	}
 }

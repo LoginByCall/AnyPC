@@ -136,3 +136,38 @@ the target restarts a replay can hold that member's slot for up to 20 seconds. T
 stays old until a sync passes. Residual risk: a PC joining through a PC that holds an old genuine list with no other
 members cannot check freshness — there is no one else to ask. A PC can leave the space locally (without the phrase)
 with its password and code: the list is removed from it, the password and code stay.
+
+«Моё пространство», объединение составов: каждый подписанный фразой состав — подлинная правка владельца, поэтому ПК
+не выбирает «правильную ветвь», а объединяет все известные составы: исключённые — объединение, члены — объединение
+без исключённых. Исключённый ПК не возвращается никогда, повтор старых составов ничего не меняет, правки, сделанные
+на разных ПК без связи, не теряются, расколов нет. Пароль входа и код — один на пространство: из встречных смен
+побеждает та, где больше исключений, затем более поздняя, затем по хэшу — одинаково на всех ПК; проигравшая смена
+пароля пропадает (её нужно повторить). ПК, пропустивший смены пароля, сразу переходит на новый, как только получил
+любой свежий состав, — старый пароль на нём перестаёт действовать. Если в объединении исключён ПК, которого не было
+среди исключённых, когда задавали победивший вход (встречные исключения: он мог получить секрет кода сверкой), вход
+«скомпрометирован»: пропусков «Работаю тут» и вступлений нет, пока правка фразой не задаст новый код. Смена входа
+(пароля или кода, в том числе при повторном вступлении) рвёт сессии записи по умолчанию — и на ПК без пространства:
+новый секрет кода записи по умолчанию рвёт её сессии всегда; исключение ПК рвёт его
+сессии, а при входе без ключа члена (браузер, чужой ключ) — любую такую сессию. Сессия с доказанным ключом
+исключённого ПК рвётся в любом режиме (и «Спрашивать») и для любой записи. Больше 16 параллельных правок —
+непринятые правки хранятся и уже действуют (исключённые не члены), но пропусков нет, пока на этом ПК не будет правки
+фразой или не придёт правка, сводящая их. Испорченная запись состава в настройках — пространства на этом ПК нет (пропусков и сверки нет): выйти
+из пространства паролем и кодом и вступить снова. Ответы «под этим ID другой ПК» и «часы расходятся»
+только показываются в окне и на решения не влияют. Повтор сверки с недоступным ПК — не дольше часа, дальше сверка
+периодически и при запуске.
+"My space", merging member lists: every list signed with the phrase is a genuine owner edit, so a PC does not pick a
+"right branch" but merges all lists it knows: removed PCs — the union, members — the union minus removed. A removed
+PC never comes back, replaying old lists changes nothing, edits made on different PCs without contact are not lost,
+there are no forks. The login password and code are one per space: of concurrent changes the one with more removals
+wins, then the later one, then by hash — the same on every PC; the losing password change is dropped (repeat it). A PC
+that missed password changes switches to the new one as soon as it gets any fresh list — the old password stops
+working there. If the union has a removed PC that was not removed yet when the winning login was set (concurrent
+removals: it could have got the code secret by sync), the login is "compromised": no "Work here" passes and no joins
+until an edit with the phrase sets a new code. A login change (password or code, also on joining again) drops
+sessions of the default account — also on a PC without a space: a new code secret of the default account always
+drops its sessions; removing a PC drops its sessions, and for a login without a member key (browser,
+foreign key) any such session. A session with the proven key of a removed PC is dropped in any mode ("Ask" too)
+and for any account. More than 16 concurrent edits — the refused edits are kept and already apply (removed
+PCs are not members), but no passes until an edit with the phrase on this PC or an incoming edit that merges them. A damaged list in the settings
+— no space on this PC (no passes, no sync): leave the space with the password and code and join again. The replies "another PC under this ID" and "clocks differ" are only shown in the window and change no
+decision. Retrying sync with an unreachable PC lasts at most an hour, then sync runs periodically and at start.

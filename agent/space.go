@@ -37,7 +37,7 @@ type spMsg struct {
 	M   []byte `json:"m,omitempty"`
 	OK  bool   `json:"ok,omitempty"`
 	Err string `json:"err,omitempty"`
-	// Э4, сверка (spsync.go): sync — шаг обмена M; r — запись цепочки; pub, sig — ключ хоста и подпись (как в "ok")
+	// Э4, сверка (spsync.go): sync — шаг обмена M; r — ещё одна верхушка M; pub, sig — ключ хоста и подпись (как в "ok")
 	Sync bool   `json:"sync,omitempty"`
 	R    []byte `json:"r,omitempty"`
 	Pub  []byte `json:"pub,omitempty"`

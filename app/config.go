@@ -58,8 +58,8 @@ type config struct {
 	kkey  string
 	mine  string // последний код, заданный этим процессом (setCode, под mu; reload его не трогает)
 	khash []byte
-	sp    *space       // разобранный Space (spaceLocked, под mu); только по указателю: печать значения выдала бы секреты
-	spRaw []byte       // байты, из которых разобран sp
+	sp    *space       // объединение Space и SpaceHeads (spaceLocked, под mu); только по указателю: печать выдала бы секреты
+	spRaw []byte       // снимок (spaceSnapLocked), из которого получен sp
 	syn   *spaceSyncer // Э4: рассылка правок состава (spsync.go); nil — нет (CLI, тесты без сети)
 }
 
@@ -83,15 +83,17 @@ type settings struct {
 	// Space — состав «Моего пространства» M (app/space.go, Э2): только запись marshal(), base64 в JSON. Содержит хэш
 	// пароля и секрет TOTP записи владельца — как Users[0] (файл 0600, SECURITY.md). Разбор — spaceLocked.
 	Space []byte `json:"space,omitempty"`
-	// Э4 (spsync.go): цепочка M по сменам входа (байты marshal, последние spaceLogMax) — отдавать отставшему по
-	// порядку; M другой ветви при расколе (флаг: пропуска не выдаются); ID членов, под которыми ответил чужой ключ
-	// (С4); ID ПК вступления, пока нет сверки с другим членом (пропуска не выдаются).
-	SpaceLog   [][]byte `json:"space_log,omitempty"`
-	SpaceFork  []byte   `json:"space_fork,omitempty"`
-	SpaceBadID []string `json:"space_bad_id,omitempty"`
+	// Решение 10 A (spsync.go): остальные верхушки — неперекрытые подлинные M (байты marshal), состав — объединение
+	// с Space (spaceView); ID ПК вступления, пока нет сверки с другим членом (пропуска не выдаются); ID членов, с
+	// которыми не сверились из-за часов (> 10 мин; только для окна — ответ не подписан).
+	SpaceHeads [][]byte `json:"space_heads,omitempty"`
 	SpaceWait  string   `json:"space_wait,omitempty"`
-	// SpaceBehind — эпоха подписанного состава, до которого этот ПК не дошёл (нет записей цепочки): пропусков нет.
-	SpaceBehind uint64 `json:"space_behind,omitempty"`
+	SpaceClock []string `json:"space_clock,omitempty"`
+	// SpaceOver — когда и почему не принята правка сверх spaceMaxHeads верхушек; SpacePend — непринятые подлинные M
+	// (байты marshal, не больше spaceMaxPend): они входят в состав для решений (spaceLocked), но не в обмен; пока
+	// SpacePend не пуст — пропусков нет. Пусто — когда они приняты (правка фразой здесь или сводящая правка сверкой).
+	SpaceOver string   `json:"space_over,omitempty"`
+	SpacePend [][]byte `json:"space_pend,omitempty"`
 	// Одноразовый код (REQ-S-23): в режиме «Спрашивать» — пароль записи по умолчанию; меняется после каждой сессии,
 	// блокировки и по ↻. В файле (0600, как запомненные пароли): окно, ключи CLI и запущенная программа видят один код.
 	Code     string `json:"code,omitempty"`

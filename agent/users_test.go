@@ -326,3 +326,96 @@ func TestDropRevoked(t *testing.T) {
 		}
 	}
 }
+
+// TestSpaceLoginTagDrop — неблокирующее 6 приёмки 2P-Set: метка входа (LoginTag) берётся при "b" и сверяется в
+// revoked — сменилась (смена кода без смены пароля, исключение) — сессия паролем рвётся; та же — нет; переход nil ↔
+// метка (пространство создали или вышли из него удалённо, тот же пароль) — нет; метка гостя (nil) — тоже нет.
+func TestSpaceLoginTagDrop(t *testing.T) {
+	var cur atomic.Int32 // метка сейчас: -1 — nil, иначе {cur}
+	var gone, asked atomic.Bool
+	var to, mid atomic.Int32 // mid ≠ -2 — промежуточная метка (с опросом) до to: цепочка nil → метка → другая
+	hosts := usersHost(accounts)
+	e2eAgent = func(a *Agent) {
+		hosts(a)
+		a.LoginTag = func(user string, _ []byte) []byte {
+			asked.Store(true)
+			if v := cur.Load(); user != "olga" && v >= 0 {
+				return []byte{byte(v)}
+			}
+			return nil
+		}
+	}
+	e2eInput = func(t *testing.T, a *Agent) {
+		if m := mid.Load(); m != -2 {
+			cur.Store(m)
+			a.DropRevoked()
+		}
+		cur.Store(to.Load())
+		a.DropRevoked()
+		for range 20 {
+			a.mu.Lock()
+			s := a.sess
+			a.mu.Unlock()
+			if s == nil {
+				gone.Store(true)
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		gone.Store(false)
+	}
+	defer e2eReset()
+	ff := FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000})
+	for _, c := range []struct {
+		user, pass    string
+		from, mid, to int32
+		gone          bool
+	}{{"ivan", "ivan-pass1", 0, -2, 0, false}, {"ivan", "ivan-pass1", 0, -2, 1, true}, {"ivan", "ivan-pass1", 0, -2, -1, false},
+		{"ivan", "ivan-pass1", -1, -2, 0, false}, {"ivan", "ivan-pass1", -1, 0, 1, true}, {"olga", "olga-pass1", 0, -2, 1, false}} {
+		cur.Store(c.from)
+		mid.Store(c.mid)
+		to.Store(c.to)
+		e2eUser, e2eGood = c.user, c.pass
+		e2e(t, local(t), "123456789", false, ff, c.pass)
+		if gone.Load() != c.gone || !asked.Load() {
+			t.Fatalf("%s, метка %d → %d: разорвана %v (метку спрашивали %v)", c.user, c.from, c.to, gone.Load(), asked.Load())
+		}
+	}
+}
+
+// TestSpaceKeyGoneRevoked — решение владельца A: сессия с доказанным ключом исключённого ПК рвётся в любом режиме
+// (вход одноразовым кодом «Спрашивать», паролем, ключом) и для любой записи; исключение другого ПК, сессия без ключа и
+// ключ вне пространства — нет.
+func TestSpaceKeyGoneRevoked(t *testing.T) {
+	a := newAgent("", "123456789", nil)
+	codeSalt := []byte("code-salt-123456")
+	a.Secret = func(user string) ([]byte, []byte, bool) {
+		if user == "" {
+			return codeSalt, []byte{1}, false // «Спрашивать»: запись по умолчанию — одноразовый код
+		}
+		return salt, []byte{2}, false
+	}
+	_, k1, _ := ed25519.GenerateKey(nil)
+	gone := map[string]bool{}
+	a.KeyGone = func(pub []byte) bool { return gone[string(pub)] }
+	mine, other := k1.Public().(ed25519.PublicKey), ed25519.PublicKey(bytes.Repeat([]byte{7}, 32))
+	for _, c := range []struct {
+		name string
+		s    *session
+	}{{"«Спрашивать»", &session{salt: codeSalt, cpub: mine}}, {"именная паролем", &session{user: "ivan", salt: salt, cpub: mine}},
+		{"именная ключом", &session{user: "ivan", salt: salt, cpub: mine, byKey: mine}}} {
+		a.KeyLogin = func([]byte, string) (bool, bool) { return true, true }
+		clear(gone)
+		gone[string(other)] = true
+		if g, _ := a.revoked(c.s); g {
+			t.Errorf("%s: исключение другого ПК рвёт", c.name)
+		}
+		gone[string(mine)] = true
+		if g, _ := a.revoked(c.s); !g {
+			t.Errorf("%s: ключ исключённого ПК не рвёт", c.name)
+		}
+	}
+	if g, _ := a.revoked(&session{user: "ivan", salt: salt}); g { // без ключа — как раньше
+		t.Error("сессия без ключа рвётся")
+	}
+}
