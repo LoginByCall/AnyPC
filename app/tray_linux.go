@@ -9,7 +9,6 @@ import (
 	"log"
 	"os"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -43,31 +42,13 @@ func runTray(ctx context.Context, id string, open, quit func()) {
 
 func trayMenu(title string, open, quit func()) *trayItem {
 	return &trayItem{children: []*trayItem{
-		{id: 1, label: title, act: open},
+		{id: trayOpen, label: title, act: open},
 		// TODO(space): «я тут», «Рядом со мной», «Отправить ›» — когда будет ядро пространства (UI-REDESIGN.md, «Модель»).
 		// TODO(ui): в ui/index.html нет адреса экрана подключения к другому ПК — пока открывается главное окно.
-		{id: 2, label: "Помочь кому-то…", act: open},
+		{id: trayHelp, label: "Помочь кому-то…", act: open},
 		{id: 3, sep: true},
 		{id: trayQuit, label: "Выйти", act: quit},
 	}}
-}
-
-// trayOpenGap — окно открывается не чаще; лишние щелчки (или поток вызовов от любого клиента шины) — мимо.
-var trayOpenGap = time.Second
-
-// trayGate — true не чаще раза в gap.
-func trayGate(gap time.Duration) func() bool {
-	var mu sync.Mutex
-	var last time.Time
-	return func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		if now := time.Now(); last.IsZero() || now.Sub(last) >= gap {
-			last = now
-			return true
-		}
-		return false
-	}
 }
 
 type vmap = map[string]dbus.Variant
@@ -209,34 +190,6 @@ func (s traySNI) Activate(x, y int32) *dbus.Error {
 func (traySNI) SecondaryActivate(x, y int32) *dbus.Error { return nil }
 func (traySNI) ContextMenu(x, y int32) *dbus.Error       { return nil }
 func (traySNI) Scroll(d int32, o string) *dbus.Error     { return nil }
-
-type trayPixmap struct {
-	W, H int32
-	Data []byte
-}
-
-// trayIcon — значок программы (favicon ui/index.html: контур ПК и красный ПК поверх, viewBox 26×26) n×n точек
-// выборкой по центрам пикселей; цвета тёмной темы — панель Ubuntu тёмная. ARGB32, байты A,R,G,B (как требует SNI).
-// Скруглённые углы (rx=2) не рисуются — на 22 точках их не видно.
-func trayIcon(n int) trayPixmap {
-	in := func(x, y, x0, y0, x1, y1 float64) bool { return x >= x0 && x < x1 && y >= y0 && y < y1 }
-	b := make([]byte, 0, n*n*4)
-	s := 26 / float64(n)
-	for py := 0; py < n; py++ {
-		for px := 0; px < n; px++ {
-			x, y := (float64(px)+.5)*s, (float64(py)+.5)*s
-			switch {
-			case in(x, y, 10, 12, 25, 23): // <rect class='b' x='10' y='12' width='15' height='11'/>
-				b = append(b, 0xff, 0xef, 0x6a, 0x52)
-			case in(x, y, 0.2, 1.7, 17.8, 15.3) && !in(x, y, 2.8, 4.3, 15.2, 12.7): // контур x=1.5 y=3 15×11, штрих 2.6
-				b = append(b, 0xff, 0xec, 0xea, 0xe4)
-			default:
-				b = append(b, 0, 0, 0, 0)
-			}
-		}
-	}
-	return trayPixmap{int32(n), int32(n), b}
-}
 
 var trayN atomic.Int32 // номер значка в имени на шине (уникальность в пределах процесса)
 

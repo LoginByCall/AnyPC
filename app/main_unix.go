@@ -192,24 +192,6 @@ func hostMain() {
 // open — окно, quit — выход.
 var startTray func(ctx context.Context, id string, open, quit func())
 
-const trayQuit = 4 // id пункта «Выйти»: единственный, кто не открывает окно
-
-// trayTitle — первая строка меню: имя этого ПК и его ID группами по 3 цифры, как в окне.
-func trayTitle(id string) string {
-	h, _ := os.Hostname()
-	var b strings.Builder
-	for i, r := range id {
-		if i > 0 && i%3 == 0 {
-			b.WriteByte(' ')
-		}
-		b.WriteRune(r)
-	}
-	if h == "" {
-		return b.String()
-	}
-	return h + " · " + b.String()
-}
-
 // quitNow — выход по кнопке окна или пункту трея: сессию закрыть, ответу на запрос дать уйти.
 func quitNow(a *agent.Agent) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
