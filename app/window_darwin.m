@@ -6,9 +6,11 @@
 #include "_cgo_export.h"
 
 // Родное поверх привязок страницы: полный экран — окна (отдельный Space), сайт — в браузере по умолчанию (адреса в Go).
-static NSString *const nativeJS = @"window.fullscreen = on => webkit.messageHandlers.anypc.postMessage(['fs', !!on]);"
-	"window.openUpdate = () => webkit.messageHandlers.anypc.postMessage(['update']);"
-	"window.openSite = () => webkit.messageHandlers.anypc.postMessage(['site']);";
+// До страницы и только в главном фрейме: свойства неизменяемы, присваивание прокладки (main_unix.go, shimmed) мимо;
+// фреймы «Мои ПК» берут эти функции у родителя (ui/embed.js), сообщение уходит из главного фрейма.
+static NSString *const nativeJS = @"(() => { const p = (...a) => webkit.messageHandlers.anypc.postMessage(a);"
+	"for (const [k, f] of Object.entries({fullscreen: on => p('fs', !!on), openUpdate: () => p('update'), openSite: () => p('site')}))"
+	" Object.defineProperty(window, k, {value: f, writable: false}); })();";
 // Полный экран снят системой (зелёная кнопка, ⌃⌘F): странице и её фреймам «Мои ПК» — как после долгого Esc.
 static NSString *const fsExitJS = @"try { window.embedFsExit && embedFsExit(); document.querySelectorAll('iframe').forEach(f => "
 	"{ try { f.contentWindow.embedFsExit && f.contentWindow.embedFsExit(); } catch (e) {} }); } catch (e) {}";
@@ -27,6 +29,7 @@ static void openExternal(NSURL *u) {
 @property(assign) int wid;
 @property(retain) NSWindow *win;
 @property(retain) WKWebView *web;
+@property(retain) NSURL *own; // адрес своего сервера (http://127.0.0.1:порт): только туда окну можно
 @end
 
 static NSMutableDictionary *wins; // номер → AWin
@@ -36,11 +39,14 @@ static int nextWin = 1, mainWin;
 - (void)dealloc {
 	[_win release];
 	[_web release];
+	[_own release];
 	[super dealloc];
 }
+- (BOOL)ownURL:(NSURL *)u { return [u.scheme isEqual:@"http"] && [u.host isEqual:self.own.host] && [u.port isEqual:self.own.port]; }
+- (BOOL)ownOrigin:(WKSecurityOrigin *)o { return [o.protocol isEqual:@"http"] && [o.host isEqual:self.own.host] && o.port == self.own.port.integerValue; }
 - (void)userContentController:(WKUserContentController *)c didReceiveScriptMessage:(WKScriptMessage *)m {
 	NSArray *a = [m.body isKindOfClass:[NSArray class]] ? m.body : nil;
-	if (!a.count) return;
+	if (!a.count || !m.frameInfo.isMainFrame || ![self ownOrigin:m.frameInfo.securityOrigin]) return;
 	if ([a[0] isEqual:@"fs"]) {
 		BOOL on = a.count > 1 && [a[1] boolValue], is = (self.win.styleMask & NSWindowStyleMaskFullScreen) != 0;
 		if (on != is) [self.win toggleFullScreen:nil];
@@ -51,6 +57,7 @@ static int nextWin = 1, mainWin;
 // не вышло (экран заблокирован, приложение не активно) — страница не должна думать, что она во весь экран
 - (void)windowDidFailToEnterFullScreen:(NSWindow *)w { [self.web evaluateJavaScript:fsExitJS completionHandler:nil]; }
 - (void)windowWillClose:(NSNotification *)n {
+	if (self.win.attachedSheet) [self.win endSheet:self.win.attachedSheet]; // alert/confirm/выбор файла — ответ «нет»
 	[self.web.configuration.userContentController removeScriptMessageHandlerForName:@"anypc"]; // иначе цикл ссылок
 	[self.web loadHTMLString:@"" baseURL:nil]; // уйти со страницы: сессия WebRTC закрывается
 	if (mainWin == self.wid) mainWin = 0;
@@ -83,11 +90,15 @@ static int nextWin = 1, mainWin;
 - (void)webView:(WKWebView *)w decidePolicyForNavigationAction:(WKNavigationAction *)a decisionHandler:(void (^)(WKNavigationActionPolicy))done {
 	NSURL *u = a.request.URL;
 	if (a.shouldPerformDownload) done(WKNavigationActionPolicyDownload);
-	else if ([u.host isEqual:@"127.0.0.1"] || [@[ @"about", @"blob", @"data" ] containsObject:u.scheme ?: @""]) done(WKNavigationActionPolicyAllow);
+	else if ([self ownURL:u] || [u.absoluteString isEqual:@"about:blank"] || [u.scheme isEqual:@"blob"]) done(WKNavigationActionPolicyAllow);
 	else {
 		if (a.navigationType == WKNavigationTypeLinkActivated) openExternal(u);
 		done(WKNavigationActionPolicyCancel);
 	}
+}
+// Микрофон — только своей странице (сам getUserMedia появится лишь с NSMicrophoneUsageDescription, FINDINGS.md)
+- (void)webView:(WKWebView *)w requestMediaCapturePermissionForOrigin:(WKSecurityOrigin *)o initiatedByFrame:(WKFrameInfo *)f type:(WKMediaCaptureType)t decisionHandler:(void (^)(WKPermissionDecision))done {
+	done([self ownOrigin:o] && t == WKMediaCaptureTypeMicrophone ? WKPermissionDecisionGrant : WKPermissionDecisionDeny);
 }
 - (void)webView:(WKWebView *)w decidePolicyForNavigationResponse:(WKNavigationResponse *)r decisionHandler:(void (^)(WKNavigationResponsePolicy))done {
 	done(r.canShowMIMEType ? WKNavigationResponsePolicyAllow : WKNavigationResponsePolicyDownload);
@@ -120,7 +131,7 @@ static int openOnMain(NSString *u, NSString *title, int monitor, int main, NSStr
 	NSArray *ss = [NSScreen screens];
 	NSScreen *sc = monitor < 0 ? ([NSScreen mainScreen] ?: ss.firstObject) : (monitor < (int)ss.count ? ss[monitor] : nil);
 	NSURL *url = [NSURL URLWithString:u];
-	if (!sc || !url) return 0;
+	if (!sc || !url.host || !url.port) return 0;
 	NSRect vf = sc.visibleFrame, r = vf;
 	if (main) {
 		r.size = NSMakeSize(MIN(1100, vf.size.width), MIN(720, vf.size.height));
@@ -129,10 +140,11 @@ static int openOnMain(NSString *u, NSString *title, int monitor, int main, NSStr
 	AWin *w = [[AWin new] autorelease];
 	WKWebViewConfiguration *c = [[WKWebViewConfiguration new] autorelease];
 	c.mediaTypesRequiringUserActionForPlayback = WKAudiovisualMediaTypeNone; // звук удалённого ПК без щелчка
+	if (!main) c.websiteDataStore = [WKWebsiteDataStore nonPersistentDataStore]; // окно ПК: seed не затирает хранилище главного
 	[c.userContentController addScriptMessageHandler:w name:@"anypc"];
 	if (seed.length)
 		[c.userContentController addUserScript:[[[WKUserScript alloc] initWithSource:seed injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES] autorelease]];
-	[c.userContentController addUserScript:[[[WKUserScript alloc] initWithSource:nativeJS injectionTime:WKUserScriptInjectionTimeAtDocumentEnd forMainFrameOnly:NO] autorelease]];
+	[c.userContentController addUserScript:[[[WKUserScript alloc] initWithSource:nativeJS injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES] autorelease]];
 	NSWindowStyleMask st = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
 	w.win = [[[NSWindow alloc] initWithContentRect:r styleMask:st backing:NSBackingStoreBuffered defer:NO] autorelease];
 	if (!main) [w.win setFrame:vf display:NO];
@@ -144,6 +156,7 @@ static int openOnMain(NSString *u, NSString *title, int monitor, int main, NSStr
 	w.web.UIDelegate = w;
 	w.web.navigationDelegate = w;
 	w.win.contentView = w.web;
+	w.own = [NSURL URLWithString:@"/" relativeToURL:url].absoluteURL;
 	w.wid = nextWin++;
 	wins[@(w.wid)] = w;
 	if (main) mainWin = w.wid;
@@ -159,11 +172,22 @@ int anypcGUI(void) { // есть графический сеанс (не ssh, н
 	return d != NULL;
 }
 
+// Выход через AppKit (выход из сеанса, перезагрузка) — как «Выйти»: Go снимает пропуска и завершает процесс сам.
+@interface AApp : NSObject <NSApplicationDelegate>
+@end
+@implementation AApp
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)a {
+	goQuit();
+	return NSTerminateLater; // ответа не будет: процесс выйдет из Go (Cancel сорвал бы выход из сеанса)
+}
+@end
+
 void anypcRun(void) {
 	@autoreleasepool {
+		wins = [NSMutableDictionary new];
 		[NSApplication sharedApplication];
 		[NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory]; // без значка в Dock: вход — строка меню
-		wins = [NSMutableDictionary new];
+		NSApp.delegate = [AApp new];
 		// ⌘C/⌘V/⌘A в полях страницы идут через меню «Правка»; полосы меню у такого приложения нет, сочетания работают
 		NSMenu *bar = [[NSMenu new] autorelease], *edit = [[[NSMenu alloc] initWithTitle:@"Edit"] autorelease];
 		NSMenuItem *ei = [[NSMenuItem new] autorelease];
@@ -172,6 +196,12 @@ void anypcRun(void) {
 		struct { NSString *t; SEL s; NSString *k; } e[] = {{@"Undo", @selector(undo:), @"z"}, {@"Redo", @selector(redo:), @"Z"},
 			{@"Cut", @selector(cut:), @"x"}, {@"Copy", @selector(copy:), @"c"}, {@"Paste", @selector(paste:), @"v"}, {@"Select All", @selector(selectAll:), @"a"}};
 		for (size_t i = 0; i < sizeof e / sizeof e[0]; i++) [edit addItemWithTitle:e[i].t action:e[i].s keyEquivalent:e[i].k];
+		NSMenu *win = [[[NSMenu alloc] initWithTitle:@"Window"] autorelease]; // ⌘W — закрыть, ⌃⌘F — полный экран
+		NSMenuItem *wi = [[NSMenuItem new] autorelease];
+		wi.submenu = win;
+		[bar addItem:wi];
+		[win addItemWithTitle:@"Close" action:@selector(performClose:) keyEquivalent:@"w"];
+		[[win addItemWithTitle:@"Full Screen" action:@selector(toggleFullScreen:) keyEquivalent:@"f"] setKeyEquivalentModifierMask:NSEventModifierFlagControl | NSEventModifierFlagCommand];
 		NSApp.mainMenu = bar;
 		[NSApp run];
 	}
@@ -193,7 +223,7 @@ void anypcEval(int wid, const char *body, int seq) {
 		dispatch_async(dispatch_get_main_queue(), ^{
 			AWin *w = wins[@(wid)];
 			if (!w) {
-				goEvalDone(seq, 0, (char *)"окно закрыто");
+				goEvalDone(seq, -1, (char *)"окно закрыто");
 				return;
 			}
 			[w.web callAsyncJavaScript:b arguments:@{} inFrame:nil inContentWorld:WKContentWorld.pageWorld completionHandler:^(id r, NSError *e) {

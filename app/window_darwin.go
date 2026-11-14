@@ -95,9 +95,11 @@ func openWindow(u string) {
 func nativeClose(w int) { C.anypcClose(C.int(w)) }
 
 type evalRes struct {
-	ok bool
+	ok int // 1 — ответ, 0 — ошибка JS, -1 — окна нет
 	s  string
 }
+
+var errClosed = errors.New("окно закрыто")
 
 var evals = struct {
 	sync.Mutex
@@ -112,7 +114,7 @@ func goEvalDone(seq, ok C.int, res *C.char) {
 	delete(evals.m, int(seq))
 	evals.Unlock()
 	if ch != nil {
-		ch <- evalRes{ok != 0, C.GoString(res)}
+		ch <- evalRes{int(ok), C.GoString(res)}
 	}
 }
 
@@ -129,7 +131,10 @@ func wkEval(ctx context.Context, win int, expr string) (string, error) {
 	C.free(unsafe.Pointer(cb))
 	select {
 	case r := <-ch:
-		if !r.ok {
+		if r.ok < 0 {
+			return "", errClosed
+		}
+		if r.ok == 0 {
 			return "", errors.New(r.s)
 		}
 		return r.s, nil
@@ -145,7 +150,7 @@ func wkUntil(ctx context.Context, win int, expr string) error {
 	for {
 		if r, err := wkEval(ctx, win, "!!("+expr+")"); r == "true" {
 			return nil
-		} else if ctx.Err() != nil {
+		} else if ctx.Err() != nil || errors.Is(err, errClosed) {
 			return err
 		}
 		select {
@@ -243,6 +248,17 @@ func goTrayClick(tag C.int) {
 	if f != nil {
 		go f() // из главного потока: окно создаётся через него же (dispatch_sync), ждать здесь нельзя
 	}
+}
+
+//export goQuit
+func goQuit() {
+	tray.Lock()
+	f := tray.quit
+	tray.Unlock()
+	if f == nil {
+		f = func() { os.Exit(0) }
+	}
+	go f()
 }
 
 //export goOpenSite

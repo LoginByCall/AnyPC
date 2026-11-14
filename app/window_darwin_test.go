@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"os"
@@ -51,7 +52,7 @@ func TestMacWindowLive(t *testing.T) {
 	if err := wkUntil(ctx, main, "location.search.includes('t=toklive') && typeof hostInfo === 'function'"); err != nil {
 		t.Fatal("страница с токеном не открылась:", err)
 	}
-	probe := `(async () => { const r = {pc: typeof RTCPeerConnection, sec: isSecureContext, md: typeof navigator.mediaDevices, gum: typeof navigator.mediaDevices?.getUserMedia, fs: String(window.fullscreen).includes('webkit')};
+	probe := `(async () => { const r = {pc: typeof RTCPeerConnection, sec: isSecureContext, md: typeof navigator.mediaDevices, gum: typeof navigator.mediaDevices?.getUserMedia, fs: Object.getOwnPropertyDescriptor(window, 'fullscreen')?.writable === false};
   const a = new RTCPeerConnection(), b = new RTCPeerConnection(); a.onicecandidate = e => e.candidate && b.addIceCandidate(e.candidate); b.onicecandidate = e => e.candidate && a.addIceCandidate(e.candidate);
   const ch = a.createDataChannel('x'), got = new Promise(res => { b.ondatachannel = e => { e.channel.onmessage = m => res(m.data); }; });
   ch.onopen = () => ch.send('ping'); await a.setLocalDescription(); await b.setRemoteDescription(a.localDescription); await b.setLocalDescription(); await a.setRemoteDescription(b.localDescription);
@@ -66,6 +67,14 @@ func TestMacWindowLive(t *testing.T) {
 	}
 	pc := main + 1 // номера окон идут подряд (window_darwin.m)
 	defer nativeClose(pc)
+	if r, _ := wkEval(ctx, main, `localStorage.getItem('mine')`); r != "null" { // хранилище окна ПК — своё
+		t.Errorf("seed окна ПК попал в главное окно: %s", r)
+	}
+	wkEval(ctx, main, `(location.href = 'http://127.0.0.1:1/', 1)`) // чужой источник — мимо
+	time.Sleep(500 * time.Millisecond)
+	if r, err := wkEval(ctx, main, `location.host`); r != jsStr(addr) {
+		t.Errorf("окно ушло со своей страницы: %s %v", r, err)
+	}
 	time.Sleep(2500 * time.Millisecond) // анимация перехода в свой Space
 	r, err = wkEval(ctx, pc, `({full: innerWidth === screen.width && innerHeight === screen.height, mine: localStorage.getItem('mine'), tok: location.search.includes('t=toklive'), size: [innerWidth, innerHeight, screen.width, screen.height, screenX, screenY].join(), fsbody: [...document.querySelectorAll('#frames iframe')].map(f => f.contentDocument.body.className).join()})`)
 	t.Logf("окно ПК: %s %v", r, err)
@@ -76,5 +85,9 @@ func TestMacWindowLive(t *testing.T) {
 	if !strings.Contains(r, `"full":true`) || !strings.Contains(r, "Офис") || !strings.Contains(r, `"tok":true`) {
 		t.Error("окно ПК не во весь экран или без переноса")
 	}
-	time.Sleep(3 * time.Second) // снимок экрана (screencapture) снаружи
+	nativeClose(pc)
+	t0 := time.Now() // закрытое окно: ожидание кончается сразу, а не по ctx
+	if err := wkUntil(ctx, pc, "false"); !errors.Is(err, errClosed) || time.Since(t0) > time.Second {
+		t.Errorf("wkUntil закрытого окна: %v за %v", err, time.Since(t0))
+	}
 }
