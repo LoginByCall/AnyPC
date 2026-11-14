@@ -25,7 +25,7 @@ func openWindow(u string) {
 	launch("xdg-open", u)
 }
 
-// launch — запустить и не ждать (Wait в горутине — без зомби). Под systemd (служба: INVOCATION_ID) — в своём scope:
+// launch — запустить и не ждать (Wait в горутине — без зомби). Под службой (inService) — в своём scope:
 // иначе браузер попадёт в cgroup anypc.service, и остановка или обновление службы убьёт его окна.
 // systemd-run быстро вышел с ошибкой (нет менеджера пользователя) — браузер напрямую, как без службы.
 func launch(name string, args ...string) error {
@@ -60,7 +60,7 @@ var launchGrace = 2 * time.Second // сколько ждать отказа syst
 // launchCmd — команда запуска и признак «через systemd-run». --description: иначе scope назван командной строкой,
 // и код окна из аргументов попадает в журнал systemd (измерено).
 func launchCmd(name string, args ...string) (*exec.Cmd, bool) {
-	if os.Getenv("INVOCATION_ID") != "" {
+	if inService() {
 		if sr, err := exec.LookPath("systemd-run"); err == nil {
 			return exec.Command(sr, append([]string{"--user", "--scope", "--quiet", "--description=AnyPC window", "--", name}, args...)...), true
 		}
@@ -169,6 +169,10 @@ func uninstallService() error {
 
 // serviceHint — что сказать после --install-service.
 const serviceHint = "Журнал: journalctl --user -u anypc"
+
+func serviceRunning() bool { return serviceState() == "включён, служба active" }
+
+func serviceStart() string { return "systemctl --user start anypc" }
 
 func serviceState() string {
 	if _, err := os.Stat(unitPath()); err != nil {
