@@ -98,6 +98,8 @@ type Agent struct {
 	// Э3, пропуск 12 ч (pass.go): ключ pub — член состава M этого ПК, а запись по умолчанию с солью salt — запись
 	// владельца из M (как SpaceGet). Зовётся при выдаче и при каждом входе по пропуску. nil — пропусков нет.
 	SpaceMember func(salt, pub []byte) bool
+	// Э4, сверка состава между членами (spsync.go). nil — сверки нет: "a" без sync, connect {"sync"} — обычный.
+	SpaceSync SpaceSyncer
 
 	mu          sync.Mutex
 	ice         []webrtc.ICEServer
@@ -120,6 +122,8 @@ type Agent struct {
 	offRej      int                    // Э3: отказов «снять» через хаб с offRejAt (журнал раз в минуту, pass.go)
 	offRejAt    time.Time
 	noOffMsg    bool // тест: хост старой версии — «снять» сообщением не объявляет
+
+	syncs map[string]*session // Э4: ключ члена → его соединение сверки (одно; nil — пока шлётся offer), spsync.go
 }
 
 type session struct {
@@ -176,6 +180,8 @@ type session struct {
 	state     string                // состояние захвата для клиента (F7): "" — ещё не сообщали, "locked", "nocapture", "ok"
 	stateAt   time.Time             // когда state последний раз уходил клиенту (повтор — repeatState)
 	twcc      atomic.Bool           // от клиента пришёл первый отчёт TWCC (в журнал — один раз)
+
+	sy atomic.Pointer[spSync] // Э4: соединение сверки (syncConnect, spsync.go); nil — нет
 }
 
 // monitor — выбранный монитор для пересчёта координат мыши (nil — мониторов не знаем).
@@ -262,6 +268,8 @@ type authMsg struct {
 	Pass  bool   `json:"pass,omitempty"`  // Э3, пропуск (pass.go): в "a" — хост понимает; в "b" — просьба или вход по нему; в "ok" — выдан
 	Off   bool   `json:"off,omitempty"`   // Э3: в "b" с key — снять свой пропуск
 	PID   []byte `json:"pid,omitempty"`   // Э3: в "ok" с pass — id пропуска (им мастер снимает пропуск через хаб, pass.go)
+
+	Sync bool `json:"sync,omitempty"` // Э4 (spsync.go): в первом "a" — хост понимает сверку; в "b" с key — сверка
 }
 
 // ctlMsg — канал "ctl": {"t":"clip","text":"…"} — буфер обмена в обе стороны (REQ-F-11);
@@ -577,6 +585,7 @@ func (a *Agent) release(s *session) {
 	}
 	delete(a.pend, s)
 	delete(a.offs, s)
+	a.syncDrop(s)
 	a.mu.Unlock()
 	if used && a.CodeUsed != nil {
 		go a.codeUsed()
@@ -632,6 +641,11 @@ func (a *Agent) byCID(cid string) *session {
 	}
 	for s := range a.offs {
 		if s.cid == cid {
+			return s
+		}
+	}
+	for _, s := range a.syncs {
+		if s != nil && s.cid == cid {
 			return s
 		}
 	}
@@ -773,6 +787,10 @@ func (a *Agent) onConnect(ctx context.Context, c *websocket.Conn, m hub.Msg) {
 	json.Unmarshal(m.Data, &req)         // старый клиент шлёт {} — выбора нет, ICE получает все серверы
 	if req.Off && a.SpaceMember != nil { // Э3: «снять» пропуск — вне места сессии и блокировки (pass.go)
 		a.offConnect(ctx, c, m.From, req)
+		return
+	}
+	if req.Sync && a.SpaceSync != nil { // Э4: сверка состава — вне места сессии и блокировки (spsync.go)
+		a.syncConnect(ctx, c, m.From, req)
 		return
 	}
 	trusted := a.Trusted != nil && len(req.CPub) == ed25519.PublicKeySize && a.Trusted(req.CPub, AnyUser) // имя ещё не известно
@@ -1249,7 +1267,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		s.mu.Lock()
 		st, view, s.salt = state, v, salt
 		s.mu.Unlock()
-		send(authMsg{T: "a", Salt: salt, Msg: msgA, Users: true, Keys: a.KeyLogin != nil, Space: a.SpaceGet != nil, Pass: a.SpaceMember != nil})
+		send(authMsg{T: "a", Salt: salt, Msg: msgA, Users: true, Keys: a.KeyLogin != nil, Space: a.SpaceGet != nil, Pass: a.SpaceMember != nil, Sync: a.SpaceSync != nil})
 	})
 	ch.OnMessage(func(msg webrtc.DataChannelMessage) {
 		var m authMsg
@@ -1287,11 +1305,20 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 			}
 			return
 		}
+		if !bad && m.T == "sp" && s.sy.Load() != nil { // Э4: обмен сверки после "b" (spsync.go)
+			a.syncMsg(s, msg.Data, func(v any) { b, _ := json.Marshal(v); ch.SendText(string(b)) })
+			return
+		}
 		s.mu.Lock()
 		cur, fpc, fph, user, uview, salt := st, fpClient, fpHost, s.user, view, s.salt
 		st = nil // одна попытка на сессию
 		s.mu.Unlock()
 		if cur == nil || bad || m.T != "b" {
+			return
+		}
+		// Э4: соединение сверки — только доказательство ключей (spsync.go)
+		if s.sy.Load() != nil {
+			a.syncB(s, m, pake.ClientVerify(m.CPub, m.CSig, a.ID, fpc, fph), fpc, fph, func(v any) { b, _ := json.Marshal(v); ch.SendText(string(b)) })
 			return
 		}
 		keyOK := pake.ClientVerify(m.CPub, m.CSig, a.ID, fpc, fph) // клиент владеет ключом cpub

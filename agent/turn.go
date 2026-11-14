@@ -23,6 +23,12 @@ type connectReq struct {
 	VP9  bool           `json:"vp9"`           // клиент просит VP9 («Турбо»); хост даёт его, если собран с кодером (VP9Built), иначе H.264
 	View bool           `json:"view"`          // клиент просит «только просмотр» (REQ-F-20)
 	Off  bool           `json:"off,omitempty"` // Э3: соединение только для «снять» пропуск (pass.go, offConnect)
+
+	Sync bool   `json:"sync,omitempty"` // Э4: соединение только для сверки состава (spsync.go)
+	SPub []byte `json:"spub,omitempty"` // Э4: ключ члена, его подпись над (домен, ID хоста, ST) — до выделения места
+	ST   int64  `json:"st,omitempty"`
+	SSig []byte `json:"ssig,omitempty"`
+	HPub []byte `json:"hpub,omitempty"` // Э4: ключ хоста, которого ждёт клиент сверки (С4)
 }
 
 type offerMsg struct {
