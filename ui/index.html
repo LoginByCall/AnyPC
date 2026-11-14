@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="ru">
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-FQB/EBNXnXV8r6Np1X/n9dTU69kqov7sF6hUG0tA4s0=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-GZtoaBS+XVkekRpg4HjhkcdRRKF1iA0HC+ZPSI3UDMM=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AnyPC</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26'><style>.a{stroke:%2317181c}.b{fill:%23d2452d}@media(prefers-color-scheme:dark){.a{stroke:%23eceae4}.b{fill:%23ef6a52}}</style><rect class='a' x='1.5' y='3' width='15' height='11' rx='2' fill='none' stroke-width='2.6'/><rect class='b' x='10' y='12' width='15' height='11' rx='2'/></svg>">
@@ -333,8 +333,31 @@ document.documentElement.lang = lang;
 document.querySelectorAll('[data-t]').forEach(e => e.textContent = t(e.dataset.t));
 document.querySelectorAll('[data-tp]').forEach(e => e.placeholder = t(e.dataset.tp));
 document.querySelectorAll('[data-tt]').forEach(e => e.title = t(e.dataset.tt));
+// Настройки окна из UIK в программе живут в config.json (uiGet/uiSet): одни на все окна — браузер, WKWebView, окна ПК.
+// localStorage — кэш для синхронного чтения; запись идёт и туда, и в Go (по очереди: порядок записей сохраняется).
+const UIK = ['mine', 'users', 'recent', 'stats', 'turbo', 'turn', 'tour_home', 'tour_sess'];
+let uiQ = Promise.resolve(), uiOn = false; // uiOn — после uiSync: запись при запуске не обгоняет чтение из Go
 const store = { get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
-                set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
+                set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {}
+                  if (uiOn && UIK.includes(k)) uiQ = uiQ.then(() => uiSet(k, JSON.stringify(v))).catch(() => {}); } };
+// uiSync: в Go есть — побеждает Go (в кэш); в Go нет, в localStorage есть — отдать в Go (перенос из окна прежней версии,
+// один раз: дальше ключ в Go). true — кэш изменён. Во фрейме «Мои ПК» не нужно: localStorage общий с родителем.
+const uiSame = (a, b) => { try { return JSON.stringify(JSON.parse(a)) === JSON.stringify(JSON.parse(b)); } catch { return a === b; } };
+const uiSync = g => {
+  let changed = false;
+  for (const k of UIK) try {
+    const v = localStorage.getItem(k);
+    if (typeof g[k] === 'string') {
+      if (!uiSame(v, g[k])) { localStorage.setItem(k, g[k]); changed ||= localStorage.getItem(k) === g[k]; }
+    } else if (v !== null) uiQ = uiQ.then(() => uiSet(k, v)).catch(() => {});
+  } catch {}
+  return changed;
+};
+if (APP && typeof uiSet === 'function') {
+  if (EMBED) uiOn = true;
+  else if (window.ANYPC_UI) { uiSync(window.ANYPC_UI); uiOn = true; } // unix, Мак: Go вписал их в страницу — до чтения ниже
+  else uiGet().then(g => { if (uiSync(g || {})) location.reload(); else uiOn = true; }).catch(() => {}); // Windows: привязки асинхронны — Go победил → перечитать
+}
 
 // ---------- Это рабочее место (только в AnyPC.exe) ----------
 window.onHostState = s => {
@@ -1209,8 +1232,8 @@ function showCursor(m) {
   $('cur').style.top = r.top + (r.height - vh * s) / 2 + (m.y || 0) / 65535 * vh * s + 'px';
   $('cur').classList.remove('hidden');
 }
-try { $('turbo').checked = localStorage.getItem('turbo') !== '0'; } catch {} // по умолчанию включено; ponytail: выбор помним только в этом браузере
-$('turbo').onchange = e => { try { localStorage.setItem('turbo', e.target.checked ? '1' : '0'); } catch {} };
+$('turbo').checked = store.get('turbo', 1) !== 0; // по умолчанию включено; в программе — в config.json (UIK)
+$('turbo').onchange = e => store.set('turbo', e.target.checked ? 1 : 0);
 $('mon').onchange = () => { ctl?.readyState === 'open' && ctl.send(JSON.stringify({ t: 'monitor', i: +$('mon').value })); v.focus(); };
 
 // ---------- Полный экран ----------

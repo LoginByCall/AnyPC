@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"math/big"
 	"net"
 	"net/url"
@@ -75,6 +76,9 @@ type settings struct {
 	CKeys   map[string]string `json:"ckeys,omitempty"`     // ID удалённого ПК → ключ этого ПК для него (У3, REQ-S-24): JSON {seed,pub,login,lu}
 	View    bool              `json:"view_only,omitempty"` // «Только показ экрана»: каждая входящая сессия — только просмотр (REQ-F-20)
 	UIPort  int               `json:"ui_port,omitempty"`   // порт окна на 127.0.0.1 (listenUI)
+	// UI — несекретные настройки окна (uiKeys): одни на все окна (браузер, WKWebView, окна ПК), не в localStorage окна
+	// (ключ → текст JSON, как в localStorage)
+	UI map[string]string `json:"ui,omitempty"`
 	// Space — состав «Моего пространства» M (app/space.go, Э2): только запись marshal(), base64 в JSON. Содержит хэш
 	// пароля и секрет TOTP записи владельца — как Users[0] (файл 0600, SECURITY.md). Разбор — spaceLocked.
 	Space []byte `json:"space,omitempty"`
@@ -652,6 +656,52 @@ func (c *config) savedSet(id, pw string) error {
 		}
 		c.Saved[id] = pw
 	}
+	return c.save()
+}
+
+// uiKeys — ключи localStorage окна, которые живут в config.json: «Мои ПК» (имена), имена записей для входа по ID
+// (не пароли: пароли — Saved), «Недавние», статистика, Турбо, TURN, тур. Секретов среди них нет.
+var uiKeys = []string{"mine", "users", "recent", "stats", "turbo", "turn", "tour_home", "tour_sess"}
+
+const (
+	uiKeyMax   = 64 << 10  // значение одного ключа
+	uiTotalMax = 256 << 10 // все вместе
+)
+
+// uiGet — копия UI (окно получает её при загрузке страницы); пустая — {}, не null.
+func (c *config) uiGet() map[string]string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.UI == nil {
+		return map[string]string{}
+	}
+	return maps.Clone(c.UI)
+}
+
+// uiSet — ключ окна из uiKeys := v (текст JSON, как в localStorage).
+func (c *config) uiSet(k, v string) error {
+	if !slices.Contains(uiKeys, k) {
+		return fmt.Errorf("ключ %q не хранится", k)
+	}
+	if len(v) > uiKeyMax || !json.Valid([]byte(v)) {
+		return fmt.Errorf("%s: не JSON или больше %d КБ", k, uiKeyMax>>10)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reload()
+	n := len(v)
+	for x, y := range c.UI {
+		if x != k {
+			n += len(y)
+		}
+	}
+	if n > uiTotalMax {
+		return fmt.Errorf("настройки окна больше %d КБ", uiTotalMax>>10)
+	}
+	if c.UI == nil {
+		c.UI = map[string]string{}
+	}
+	c.UI[k] = v
 	return c.save()
 }
 
