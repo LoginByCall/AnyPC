@@ -38,7 +38,7 @@ func passTarget(t *testing.T, url string, key ed25519.PrivateKey, mpub ed25519.P
 	a.SpaceMember = func(s, pub []byte) bool {
 		p.mmu.Lock()
 		defer p.mmu.Unlock()
-		return bytes.Equal(s, salt) && p.members[string(pub)]
+		return bytes.Equal(s, salt) && p.members[string(pub)] && !p.ask.Load() // как в app: «Спрашивать» — не запись владельца
 	}
 	for _, f := range opt {
 		f(p)
@@ -196,22 +196,32 @@ func TestPassEnd(t *testing.T) {
 			t.Errorf("%s: %v, ждали %v", why, err, want)
 		}
 	}
-	p.ask.Store(true)
-	login("«Спрашивать»", ErrPassNone)
-	p.ask.Store(false)
-	login("снова «пароль + код»", nil)
-
 	defer passSkew.Store(0)
 	passSkew.Store(int64(PassTTL - time.Minute))
 	login("за минуту до срока", nil)
 	passSkew.Store(int64(PassTTL + time.Second))
 	login("истёк", ErrPassNone)
 	passSkew.Store(0)
+	login("срок по-прежнему от выдачи", nil)
 
+	// «Спрашивать» и исключение из M удаляют пропуск сразу (опрос настроек — DropRevoked): обратное его не вернёт
+	p.ask.Store(true)
+	p.a.DropRevoked()
+	if hasPass(p.a, mpub) {
+		t.Error("«Спрашивать»: пропуск остался в памяти")
+	}
+	p.ask.Store(false)
+	login("«Спрашивать» выключили", ErrPassNone)
+	p.a.passGive(mpub, salt)
 	p.member(mpub, false)
-	login("исключён из M", ErrPassNone)
+	login("исключён из M", ErrPassNone) // и при входе — удалён
+	if hasPass(p.a, mpub) {
+		t.Error("исключён: пропуск остался в памяти")
+	}
 	p.member(mpub, true)
-	login("снова в M", nil)
+	login("снова в M", ErrPassNone)
+	p.a.passGive(mpub, salt)
+	login("выдан снова", nil)
 
 	idle(t, p.a)
 	if err := PassOff(context.Background(), d); err != nil {
@@ -326,7 +336,8 @@ func TestPassOffLocked(t *testing.T) {
 	_, mkey, _ := ed25519.GenerateKey(nil)
 	p := passTarget(t, url, nil, mkey.Public().(ed25519.PublicKey))
 	d := passDial(url, p, mkey)
-	if err := PassOpen(context.Background(), d); err != nil {
+	var err error
+	if d.PID, err = PassOpenID(context.Background(), d); err != nil {
 		t.Fatal(err)
 	}
 	idle(t, p.a)
@@ -336,9 +347,13 @@ func TestPassOffLocked(t *testing.T) {
 	bad := d
 	_, other, _ := ed25519.GenerateKey(nil)
 	bad.HostPub = other.Public().(ed25519.PublicKey)
-	if err := PassOff(context.Background(), bad); !errors.Is(err, ErrSpaceHostKey) {
+	if err := passDo(context.Background(), bad, passOff); !errors.Is(err, ErrSpaceHostKey) { // запасной путь (старые цели)
 		t.Errorf("«off» с ключом не того хоста: %v", err)
 	}
+	if err := passOffHub(context.Background(), bad); !errors.Is(err, ErrSpaceHostKey) { // через хаб: ответ не тем ключом
+		t.Errorf("offack с ключом не того хоста: %v", err)
+	}
+	d.PID = p.a.passGive(d.Key.Public().(ed25519.PublicKey), salt)
 	if err := PassOff(context.Background(), d); err != nil {
 		t.Errorf("«снять» при запертом хосте: %v", err)
 	}

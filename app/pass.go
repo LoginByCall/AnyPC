@@ -28,7 +28,7 @@ import (
 var passHoldFor = 90 * time.Second
 
 // Сеть (agent/pass.go); переменные — для теста.
-var passOpenFn, passOffFn = agent.PassOpen, agent.PassOff
+var passOpenFn, passOffFn = agent.PassOpenID, agent.PassOff
 
 // startLock — до конца ctx звать on() при блокировке экрана этого ПК, alive(источник, жив) — о подписке на шину
 // (lock_linux.go). На Маке и Windows nil — «Работаю тут» там отказывает (errNoLockDetector, решение приёмки Э3):
@@ -114,6 +114,7 @@ func (p *passMaster) detector() bool {
 type passIssued struct {
 	pub ed25519.PublicKey // ключ хоста цели из M
 	at  time.Time         // когда выдан (с монотонным показанием)
+	pid []byte            // id пропуска от цели (nil — старая цель или ответ не дошёл): «снять» через хаб — по нему
 }
 
 // live — пропуск на цели ещё может жить: меньше PassTTL и по монотонным, и по настенным часам.
@@ -173,7 +174,8 @@ func (p *passMaster) workHere(ctx context.Context, password, code string) ([]pas
 				r.Err = fmt.Errorf("пространство: прошло %v", passHoldFor)
 				return
 			}
-			r.Err = passOpenFn(ctx, agent.PassDial{Server: server, ID: t.ID, HostPub: t.Pub, Key: key, Password: pw, Code: cd})
+			var pid []byte
+			pid, r.Err = passOpenFn(ctx, agent.PassDial{Server: server, ID: t.ID, HostPub: t.Pub, Key: key, Password: pw, Code: cd})
 			switch {
 			case r.Err == nil:
 				r.State = "ok"
@@ -188,7 +190,7 @@ func (p *passMaster) workHere(ctx context.Context, password, code string) ([]pas
 			if p.issued == nil {
 				p.issued = map[string]passIssued{}
 			}
-			p.issued[t.ID] = passIssued{t.Pub, time.Now()}
+			p.issued[t.ID] = passIssued{t.Pub, time.Now(), pid}
 			p.mu.Unlock()
 		})
 	}
@@ -217,7 +219,8 @@ func passSummary(rs []passResult) string {
 }
 
 // offAll — снять пропуска на всех целях, где они выданы или «снять» ещё в повторе (блокировка экрана, выход, сон).
-// Не дошедшее «снять» повторяется в фоне с нарастающей паузой, пока не дойдёт, пропуск на цели не истечёт или новый
+// «Снять» — одно подписанное сообщение через хабы по очереди, пока цель не ответит подписью своего ключа; без id
+// пропуска и целям старых версий — отдельным соединением (agent.PassOff). Без ответа цели «снять» повторяется в фоне с нарастающей паузой, пока не дойдёт, пропуск на цели не истечёт или новый
 // «Работаю тут» его не заменит; кончился ctx — цель остаётся в повторе, и следующий offAll (выход) её возьмёт.
 func (p *passMaster) offAll(ctx context.Context) {
 	p.mu.Lock()
@@ -239,7 +242,7 @@ func (p *passMaster) offAll(ctx context.Context) {
 	}
 	key, server := p.cfg.key(), p.cfg.server()
 	off := func(id string, t passIssued) bool {
-		err := passOffFn(ctx, agent.PassDial{Server: server, ID: id, HostPub: t.pub, Key: key})
+		err := passOffFn(ctx, agent.PassDial{Server: server, ID: id, HostPub: t.pub, Key: key, PID: t.pid})
 		if err != nil {
 			log.Printf("пропуск на %s не снят: %v — повтор", id, err)
 			return false
