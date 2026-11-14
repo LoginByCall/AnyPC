@@ -252,15 +252,11 @@ func TestSpaceEnterShut(t *testing.T) {
 	}
 }
 
-// TestSpaceLeaveNoTOTP — тупик FINDINGS Э5 («испорчено» + у записи по умолчанию нет TOTP): выход без кода, хватает
-// пароля; чужой пароль — нет. С TOTP код по-прежнему нужен.
+// TestSpaceLeaveNoTOTP — тупик FINDINGS Э5 («испорчено» + у записи по умолчанию нет TOTP), решение владельца B:
+// особого пути нет — выход без кода отклоняется; лечение — в тексте errSpaceDamaged.
 func TestSpaceLeaveNoTOTP(t *testing.T) {
-	sec := totp.NewSecret()
-	c := spaceCfg(t, spacePass, sec)
+	c := spaceCfg(t, spacePass, totp.NewSecret())
 	spaceMake(t, c)
-	if err := c.spaceLeave(spacePass, ""); !errors.Is(err, errPassCode) || spaceOf(c) == nil {
-		t.Fatalf("с TOTP без кода: %v", err)
-	}
 	c.mu.Lock() // правка файла: секрет кода стёрт, запись состава испорчена
 	c.Users[0].TOTP = ""
 	c.Space[len(c.Space)-1] ^= 1
@@ -269,17 +265,8 @@ func TestSpaceLeaveNoTOTP(t *testing.T) {
 	if !c.spaceDamaged() {
 		t.Fatal("не «испорчено»")
 	}
-	if err := c.spaceLeave("wrong-pass-1", ""); !errors.Is(err, errSpacePassword) {
-		t.Errorf("чужой пароль: %v", err)
-	}
-	if err := c.spaceLeave(spacePass, ""); err != nil {
-		t.Fatalf("без TOTP: %v", err)
-	}
-	c.mu.Lock()
-	left := len(c.Space) == 0
-	c.mu.Unlock()
-	if !left || c.spaceDamaged() {
-		t.Error("пространство осталось")
+	if err := c.spaceLeave(spacePass, ""); !errors.Is(err, errPassCode) || !c.spaceDamaged() {
+		t.Errorf("без TOTP без кода: %v", err)
 	}
 }
 
