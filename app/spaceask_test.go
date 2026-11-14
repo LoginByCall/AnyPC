@@ -563,6 +563,33 @@ func TestSpaceDraftRace(t *testing.T) {
 	}
 }
 
+// TestSpaceAskOff — вступил со «Спрашивать»: окно (Ч3) снимает его через setConfirm(false) без мастера TOTP — код
+// записи по умолчанию уже код пространства; включить «Спрашивать» в пространстве нельзя (errSpaceVia, С6).
+func TestSpaceAskOff(t *testing.T) {
+	sec := totp.NewSecret()
+	p := spaceCfg(t, spacePass, sec)
+	ph, _ := syncSpace(t, 1, p)
+	withSpaceNet(t, spaceNet(p, nil))
+	n := spaceCfg(t, "n-local-pass", totp.NewSecret())
+	n.mu.Lock()
+	yes := true
+	n.Confirm = &yes
+	n.save()
+	n.mu.Unlock()
+	if _, err := n.spaceEnter(context.Background(), p.id(), spacePass, spaceCode(p, sec), ph); err != nil {
+		t.Fatal(err)
+	}
+	if !n.codeMode() {
+		t.Fatal("«Спрашивать» не осталось после вступления")
+	}
+	if err := n.setConfirm(false); err != nil || n.codeMode() {
+		t.Fatalf("снять «Спрашивать» в пространстве: %v, режим кода %v", err, n.codeMode())
+	}
+	if err := n.setConfirm(true); !errors.Is(err, errSpaceVia) || n.codeMode() {
+		t.Errorf("включить «Спрашивать» в пространстве: %v, режим кода %v", err, n.codeMode())
+	}
+}
+
 // TestSpaceEnterCompromised — P отдаёт подлинные верхушки со скомпрометированным входом (два встречных исключения
 // без смены кода): отказ до превью.
 func TestSpaceEnterCompromised(t *testing.T) {
