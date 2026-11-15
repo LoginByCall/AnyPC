@@ -109,16 +109,33 @@ type SpaceDial struct {
 	Sign func(m []byte, hostPub ed25519.PublicKey, heads ...[]byte) ([]byte, error)
 	// Confirm — сколько Sign может ждать подтверждения состава человеком: прибавляется к spaceWait (решение 12 A).
 	Confirm time.Duration
+	// Stage — ход обмена для окна (Ч12): "link" — соединяюсь, "auth" — соединение есть, проверка пароля и кода,
+	// "list" — вход есть, запрос состава. nil — не сообщать. Зовётся из потоков pion — не блокировать.
+	Stage func(string)
 }
 
 // Ошибки SpaceJoin (для окна в следующих этапах).
 var (
-	ErrSpaceOffline  = errors.New("пространство: ПК не в сети")
-	ErrSpaceAuth     = errors.New("пространство: неверный пароль или код")
-	ErrSpaceOld      = errors.New("пространство: на том ПК старая версия AnyPC")
-	ErrSpaceAsk      = errors.New("пространство: тот ПК в режиме «Спрашивать» — нужен вход паролем и кодом")
-	ErrSpaceRefused  = errors.New("пространство: тот ПК отказал")
-	ErrSpaceHostKey  = errors.New("пространство: ключ того ПК не совпал с запомненным")
+	ErrSpaceOffline = errors.New("пространство: ПК не в сети")
+	ErrSpaceAuth    = errors.New("пространство: неверный пароль или код")
+	ErrSpaceOld     = errors.New("пространство: на том ПК старая версия AnyPC")
+	ErrSpaceAsk     = errors.New("пространство: тот ПК в режиме «Спрашивать» — нужен вход паролем и кодом")
+	ErrSpaceRefused = errors.New("пространство: тот ПК отказал")
+	ErrSpaceHostKey = errors.New("пространство: ключ того ПК не совпал с запомненным")
+	// Ч12: соединение (ICE/DTLS) с тем ПК не установилось за spaceLinkWait или сорвалось до установки
+	ErrSpaceNoLink = errors.New("пространство: не удалось соединиться с тем ПК")
+	// Ч12: соединения нет, и этот ПК не собрал ни одного кандидата через STUN/TURN (srflx, relay), хотя хаб их дал:
+	// исходящий UDP этого процесса закрыт — брандмауэр этого ПК (LuLu/Little Snitch на Маке пускает окно — WebKit,
+	// процесс Apple — и не пускает AnyPC). errors.Is(ErrSpaceNoLink) — тоже.
+	ErrSpaceNoUDP = errors.New("пространство: этот ПК не достучался до STUN/TURN — брандмауэр этого ПК не пускает AnyPC")
+	// Ч12, приёмка: отказы хоста с причиной, по которой человек может действовать (обёрнуты в ErrSpaceRefused, а
+	// "busy"/"locked" входа — ещё и в ErrSpaceAuth, как было): на том ПК идёт сеанс или очередь входов полна; вход там
+	// временно закрыт после неверных попыток (lockUntil); там не задан пароль
+	ErrSpaceBusyThere   = errors.New("пространство: на том ПК идёт сеанс")
+	ErrSpaceLockedThere = errors.New("пространство: тот ПК временно закрыл вход после неверных попыток")
+	ErrSpaceNoPassThere = errors.New("пространство: на том ПК не задан пароль")
+	// Ч12: тот ПК закрыл соединение (или оно оборвалось) до конца обмена
+	ErrSpaceClosed   = errors.New("пространство: тот ПК закрыл соединение")
 	errSpaceProtocol = errors.New("пространство: нарушение протокола")
 )
 
@@ -127,6 +144,21 @@ var spaceDupM atomic.Bool
 
 // spaceWait — весь обмен вступления (вход с Argon2 на обеих сторонах, ICE через TURN).
 var spaceWait = 60 * time.Second
+
+// Ч12: spaceLinkWait — от начала hostDial до установленного соединения (хаб, offer, ICE, DTLS): дольше хост и сам
+// не ждёт (authWait 20 с — и закрывает сессию молча, без "bye"); spaceDialWait — WebSocket к одному хабу. Худший
+// случай вступления с двумя хабами — spaceDialWait + spaceLinkWait ≈ 35 с, а не spaceWait + Confirm (3 мин).
+var (
+	spaceLinkWait = 25 * time.Second
+	spaceDialWait = 10 * time.Second
+)
+
+// hostDialBeforeAnswer — тест: пауза между SetLocalDescription и answer (кандидаты собираются раньше answer)
+var hostDialBeforeAnswer func()
+
+// spaceLinkClosedDelay — после закрытия SCTP подождать, пока pion отдаст обработчикам уже пришедшие сообщения
+// (отказ хоста с причиной приходит перед закрытием): причина важнее «закрыл соединение».
+const spaceLinkClosedDelay = 300 * time.Millisecond
 
 // SpaceJoin — вступить через ПК d.ID: вернуть новый M, который P принял. Ошибка — P его не сохранил (или ответа
 // не было: тогда состояние P неизвестно, повтор безопасен — второй раз P ответит "bad" на дубль ПК).
@@ -153,6 +185,12 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 		newM    []byte // M, отданный P
 		out     []byte // итог: M, который P принял
 	)
+	stage := func(s string) {
+		if d.Stage != nil {
+			d.Stage(s)
+		}
+	}
+	stage("link")
 	err := hostDial(ctx, server, d.ID, connectReq{View: true}, func(pc *webrtc.PeerConnection, finish func(error)) {
 		done := func(m []byte) { mu.Lock(); out = m; mu.Unlock(); finish(nil) }
 		fps := func() (string, string) { // свой отпечаток, отпечаток хоста
@@ -192,6 +230,7 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 							finish(ErrSpaceOld)
 							return
 						}
+						stage("auth")
 						fc, fh := fps()
 						b, conf, hc, err := pake.ClientRespond(d.Password, am.Salt, am.Msg, d.ID, fc, fh)
 						if err != nil {
@@ -225,13 +264,18 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 							finish(ErrSpaceHostKey)
 							return
 						}
+						stage("list")
 						mu.Lock()
 						hostPub, authed = bytes.Clone(am.Pub), true
 						askM()
 						mu.Unlock()
 					case "ask":
 						finish(ErrSpaceAsk)
-					case "fail", "locked", "denied", "nokey", "busy":
+					case "locked":
+						finish(fmt.Errorf("%w (%w)", ErrSpaceLockedThere, ErrSpaceAuth))
+					case "busy":
+						finish(fmt.Errorf("%w (%w)", ErrSpaceBusyThere, ErrSpaceAuth))
+					case "fail", "denied", "nokey":
 						finish(fmt.Errorf("%w: %s", ErrSpaceAuth, am.T))
 					}
 				})
@@ -303,11 +347,31 @@ func signB(key ed25519.PrivateKey, id string, pc *webrtc.PeerConnection) (cpub, 
 // "b" внутри DTLS), offer/answer, ICE. setup вешает обработчики каналов на pc до ответа; обмен кончает первый
 // finish (nil — успех), разрыв или ctx. Хост не в сети — ErrSpaceOffline (вызывающий пробует следующий хаб).
 // Э4в: sx — у сверки запечатанный (spsync.go), у остальных случайный той же длины: connect у всех одного вида.
+// Ч12: соединение не установилось за spaceLinkWait или сорвалось (ICE failed) — ErrSpaceNoLink; оборвалось или
+// хост закрыл его после установки — ErrSpaceClosed. Без этого обмен ждал ctx (у вступления — 3 мин): хост
+// закрывает невошедшую сессию молча, а ICE без связи клиенту ничего не сообщает.
 func hostDial(ctx context.Context, server, id string, req connectReq, setup func(pc *webrtc.PeerConnection, finish func(error))) error {
 	if req.SX == nil {
 		req.SX = sxRand(sxLen)
 	}
-	ws, err := dial(ctx, server)
+	lctx, lcancel := context.WithCancel(ctx) // до соединения — не дольше spaceLinkWait
+	defer lcancel()
+	var linked atomic.Bool
+	noLink := time.AfterFunc(spaceLinkWait, func() {
+		if !linked.Load() {
+			lcancel()
+		}
+	})
+	defer noLink.Stop()
+	noLinkErr := func(err error) error { // lctx кончился сроком соединения, а не ctx вызывающего
+		if ctx.Err() == nil && lctx.Err() != nil {
+			return ErrSpaceNoLink
+		}
+		return err
+	}
+	dctx, dcancel := context.WithTimeout(lctx, spaceDialWait)
+	ws, err := dial(dctx, server)
+	dcancel()
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrSpaceOffline, err)
 	}
@@ -318,17 +382,17 @@ func hostDial(ctx context.Context, server, id string, req connectReq, setup func
 		b, _ := json.Marshal(v)
 		wmu.Lock()
 		defer wmu.Unlock()
-		wsjson.Write(ctx, ws, hub.Msg{V: 1, Type: typ, To: id, Data: b})
+		wsjson.Write(lctx, ws, hub.Msg{V: 1, Type: typ, To: id, Data: b})
 	}
 	var m hub.Msg
-	if err := wsjson.Read(ctx, ws, &m); err != nil || m.Type != "hello" {
+	if err := wsjson.Read(lctx, ws, &m); err != nil || m.Type != "hello" {
 		return fmt.Errorf("%w: хаб не ответил", ErrSpaceOffline)
 	}
 	var hello struct{ ICE []webrtc.ICEServer }
 	json.Unmarshal(m.Data, &hello)
 	send("connect", req) // View: ввод служебному соединению не нужен
-	if err := wsjson.Read(ctx, ws, &m); err != nil {
-		return fmt.Errorf("%w: %v", ErrSpaceOffline, err)
+	if err := wsjson.Read(lctx, ws, &m); err != nil {
+		return noLinkErr(fmt.Errorf("%w: %v", ErrSpaceOffline, err))
 	}
 	if m.Type != "offer" {
 		var why string
@@ -336,6 +400,12 @@ func hostDial(ctx context.Context, server, id string, req connectReq, setup func
 		switch {
 		case m.Type == "error" && why == "not_found":
 			return ErrSpaceOffline
+		case m.Type == "error" && why == "busy":
+			return fmt.Errorf("%w (%w)", ErrSpaceBusyThere, ErrSpaceRefused)
+		case m.Type == "error" && why == "locked":
+			return fmt.Errorf("%w (%w)", ErrSpaceLockedThere, ErrSpaceRefused)
+		case m.Type == "error" && why == "nopass":
+			return fmt.Errorf("%w (%w)", ErrSpaceNoPassThere, ErrSpaceRefused)
 		}
 		return fmt.Errorf("%w: %s %s", ErrSpaceRefused, m.Type, why)
 	}
@@ -353,10 +423,51 @@ func hostDial(ctx context.Context, server, id string, req connectReq, setup func
 		}
 	}
 	setup(pc, finish)
-	pc.OnICECandidate(func(ci *webrtc.ICECandidate) {
-		if ci != nil {
-			send("ice", ci.ToJSON())
+	var outside atomic.Bool // собран srflx или relay: STUN/TURN этому процессу доступны
+	noLinkWhy := func() error {
+		if len(hello.ICE) > 0 && !outside.Load() {
+			return fmt.Errorf("%w (%w)", ErrSpaceNoUDP, ErrSpaceNoLink)
 		}
+		return ErrSpaceNoLink
+	}
+	pc.OnConnectionStateChange(func(st webrtc.PeerConnectionState) {
+		switch st {
+		case webrtc.PeerConnectionStateConnected:
+			linked.Store(true)
+			noLink.Stop()
+		case webrtc.PeerConnectionStateFailed:
+			if linked.Load() {
+				finish(ErrSpaceClosed)
+			} else {
+				finish(noLinkWhy())
+			}
+		}
+	})
+	pc.SCTP().OnClose(func(error) { // хост закрыл сессию (authWait, отказ) или связь оборвалась
+		time.AfterFunc(spaceLinkClosedDelay, func() { finish(ErrSpaceClosed) })
+	})
+	// кандидаты — только после answer: хост отвергает "ice" до remote description (AddICECandidate), а pion собирает
+	// host-кандидаты сразу в SetLocalDescription — до send("answer") (окно-браузер шлёт их позже, после answer)
+	var (
+		cmu      sync.Mutex
+		answered bool
+		early    []webrtc.ICECandidateInit
+	)
+	pc.OnICECandidate(func(ci *webrtc.ICECandidate) {
+		if ci == nil {
+			return
+		}
+		if ci.Typ == webrtc.ICECandidateTypeSrflx || ci.Typ == webrtc.ICECandidateTypeRelay {
+			outside.Store(true)
+		}
+		cmu.Lock()
+		if !answered {
+			early = append(early, ci.ToJSON())
+			cmu.Unlock()
+			return
+		}
+		cmu.Unlock()
+		send("ice", ci.ToJSON())
 	})
 	var offer webrtc.SessionDescription
 	if err := json.Unmarshal(m.Data, &offer); err != nil {
@@ -372,11 +483,21 @@ func hostDial(ctx context.Context, server, id string, req connectReq, setup func
 	if err != nil {
 		return err
 	}
+	if hostDialBeforeAnswer != nil {
+		hostDialBeforeAnswer()
+	}
 	send("answer", ans)
+	cmu.Lock()
+	answered = true
+	cs := early
+	cmu.Unlock()
+	for _, c := range cs {
+		send("ice", c)
+	}
 	go func() {
 		for {
 			var m hub.Msg
-			if wsjson.Read(ctx, ws, &m) != nil {
+			if wsjson.Read(lctx, ws, &m) != nil {
 				return
 			}
 			switch {
@@ -386,15 +507,18 @@ func hostDial(ctx context.Context, server, id string, req connectReq, setup func
 				if json.Unmarshal(m.Data, &ci) == nil {
 					pc.AddICECandidate(ci)
 				}
-			case m.Type == "bye":
-				finish(fmt.Errorf("%w: разрыв", ErrSpaceRefused))
+			case m.Type == "bye": // и «закрыл соединение» (окно), и отказ (сверка, пропуск: состояние "refused" как было)
+				finish(fmt.Errorf("%w: разрыв (%w)", ErrSpaceRefused, ErrSpaceClosed))
 			}
 		}
 	}()
 	select {
 	case err := <-done:
 		return err
-	case <-ctx.Done():
+	case <-lctx.Done():
+		if ctx.Err() == nil {
+			return noLinkWhy()
+		}
 		if ctx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("пространство: нет ответа вовремя (%w)", ctx.Err()) // окно: errors.Is(context.DeadlineExceeded)
 		}

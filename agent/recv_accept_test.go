@@ -247,8 +247,9 @@ func TestAccGonePrune(t *testing.T) {
 	url := local(t)
 	r := recvHost(t, url)
 	n := &r.flip
-	got := ""
+	got, done := "", make(chan struct{})
 	recvTestPC = func(pc *webrtc.PeerConnection) error {
+		defer close(done) // Ч12: отправитель видит закрытие хостом сразу (ErrSpaceClosed) — дождаться проверки
 		c, err := accFile(pc, "big.bin", 1000)
 		if err != nil {
 			return err
@@ -267,6 +268,10 @@ func TestAccGonePrune(t *testing.T) {
 	}
 	defer func() { recvTestPC = nil }()
 	sendT(t, r.own(url, nil, ""))
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+	}
 	if got != "0" {
 		t.Fatalf("сессия приёма исключённого ключа жива после DropRevoked: %s", got)
 	}

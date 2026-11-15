@@ -23,7 +23,7 @@ import (
 )
 
 var spaceNames = []string{"spaceCreate", "spaceCreateOK", "spaceCreateNo", "spaceEnter", "spaceOp", "spaceConfirm",
-	"spaceOpClear", "workHere", "passOff", "spaceExclude", "spaceLogin", "spaceLeave", "spaceSync", "spaceSign"}
+	"spaceOpClear", "spaceCancel", "workHere", "passOff", "spaceExclude", "spaceLogin", "spaceLeave", "spaceSync", "spaceSign"}
 
 // spaceCodes — ошибка ядра → код окна (первое совпадение по errors.Is). change — настройки или показанное в превью
 // сменились до применения: повторить.
@@ -34,7 +34,10 @@ var spaceCodes = []struct {
 	{errSpaceBusy, "busy"}, {errSpaceNoOp, "noop"}, {errSpaceDamaged, "damaged"}, {errSpaceCompromised, "compromised"},
 	{errSpaceHeads, "over"}, {errSpacePhraseCount, "phrase_count"}, {errSpacePhraseASCII, "phrase_ascii"},
 	{errSpacePhraseLogin, "phrase_login"}, {errSpacePhrase, "phrase"}, {errSpacePassword, "password"}, {errPassCode, "code"},
-	{errPassShort, "short"}, {agent.ErrSpaceAuth, "auth"}, {agent.ErrSpaceOffline, "offline"}, {agent.ErrSpaceOld, "old"},
+	{errPassShort, "short"},
+	{agent.ErrSpaceBusyThere, "busythere"}, {agent.ErrSpaceLockedThere, "lockedthere"}, {agent.ErrSpaceNoPassThere, "nopassthere"}, // до auth и refused
+	{agent.ErrSpaceAuth, "auth"}, {agent.ErrSpaceOffline, "offline"},
+	{agent.ErrSpaceNoUDP, "noudp"}, {agent.ErrSpaceNoLink, "nolink"}, {agent.ErrSpaceClosed, "closed"}, {agent.ErrSpaceOld, "old"},
 	{agent.ErrSpaceAsk, "ask"}, {agent.ErrSpaceHostKey, "hostkey"}, {agent.ErrSpaceIDKey, "badid"}, {agent.ErrSpaceSkew, "clock"},
 	{agent.ErrPassNone, "nopass"}, {agent.ErrSpaceRefused, "refused"}, {errNoLockDetector, "nolock"}, {errSpaceNo, "no"},
 	{errSpaceSlow, "slow"}, {errSpaceDraft, "draft"}, {errSpaceLogin, "login"}, {errSpaceVia, "via"}, {errSpaceIn, "in"},
@@ -116,6 +119,8 @@ func spaceDo(c *config, name string, str func(int) string, flag func(int) bool) 
 		return nil, spaceOps.confirm(flag(0))
 	case "spaceOpClear":
 		return nil, spaceOps.clear()
+	case "spaceCancel":
+		return nil, spaceOps.stop()
 	case "workHere":
 		if passes.cfg != c {
 			return nil, errSpaceNotIn
