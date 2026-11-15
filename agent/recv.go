@@ -136,9 +136,10 @@ type rxState struct {
 	nt    int   // принято текстов
 
 	declined atomic.Bool
-	pinning  atomic.Bool // приём разовым кодом: ключ закрепляется (RecvPin) — rxStill закрепления ещё не требует
-	texting  atomic.Bool // идёт приём текста (один за раз)
-	ask      sync.Mutex  // окно «Принять?» — одно за раз в сессии
+	asking   atomic.Int32 // открыто окно «Принять?»: ждём человека — простой и срок не считаются (rxWatch)
+	pinning  atomic.Bool  // приём разовым кодом: ключ закрепляется (RecvPin) — rxStill закрепления ещё не требует
+	texting  atomic.Bool  // идёт приём текста (один за раз)
+	ask      sync.Mutex   // окно «Принять?» — одно за раз в сессии
 	last     atomic.Int64
 	logged   sync.Once
 }
@@ -294,11 +295,15 @@ func (a *Agent) rxWatch(ctx context.Context, s *session, rx *rxState) {
 		case now := <-t.C:
 			m, why := rx.moved.Load(), ""
 			switch {
+			case rx.asking.Load() > 0: // окно «Принять?» (до AskTimeout): ждёт человек, не отправитель
+				rx.touch()
+				m = -1
 			case now.Sub(time.Unix(0, rx.last.Load())) > rx.idle:
 				why = fmt.Sprintf("нет данных %v", rx.idle)
 			case now.Sub(winAt) >= rx.win:
-				if d := m - winMoved; d > 0 && float64(d) < float64(rx.rate)*now.Sub(winAt).Seconds() {
-					why = fmt.Sprintf("медленнее %d байт/с за %v", rx.rate, rx.win)
+				// скорость — только после life: до него мелкие файлы подряд и медленный канал — честная передача
+				if d := m - winMoved; now.Sub(rx.t0) > rx.life && float64(d) < float64(rx.rate)*now.Sub(winAt).Seconds() {
+					why = fmt.Sprintf("дольше %v и медленнее %d байт/с за %v", rx.life, rx.rate, rx.win)
 				}
 				winAt, winMoved = now, m
 			case now.Sub(rx.t0) > rx.life && m == last:
@@ -460,7 +465,13 @@ func (a *Agent) rxConfirm(s *session, rx *rxState, q RecvReq) string {
 		return ""
 	}
 	q.From = rx.from
-	if a.RecvAsk == nil || s.gone.Load() || rx.declined.Load() || !a.RecvAsk(q) {
+	yes := false
+	if a.RecvAsk != nil && !s.gone.Load() && !rx.declined.Load() {
+		rx.asking.Add(1)
+		yes = a.RecvAsk(q)
+		rx.asking.Add(-1)
+	}
+	if !yes {
 		rx.declined.Store(true) // ждавшие окна — отказ без второго окна
 		rx.touch()
 		log.Printf("приём от %s: отклонён на этом ПК", rx.from)

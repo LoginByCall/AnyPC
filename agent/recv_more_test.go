@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
@@ -125,6 +126,7 @@ func TestRecvIdleLife(t *testing.T) {
 	}
 	rxIdle.Store(int64(time.Minute))
 	rxSlowWin.Store(int64(time.Second))
+	rxLife.Store(int64(500 * time.Millisecond)) // скорость — только после срока (R1)
 	recvTestPC = func(pc *webrtc.PeerConnection) error {
 		c, err := accFile(pc, "big.bin", 1<<20)
 		if err != nil {
@@ -133,9 +135,9 @@ func TestRecvIdleLife(t *testing.T) {
 		if s := c.wait(3 * time.Second); s != "resume:" {
 			return errors.New(s)
 		}
-		for range 15 { // капля каждые 200 мс — простоя нет
+		for range 60 { // капля каждые 50 мс — простоя нет, байты идут на каждом такте rxWatch
 			c.dc.Send([]byte("x"))
-			time.Sleep(200 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond)
 		}
 		life.Store(int32(r.recvCount()))
 		return nil
@@ -368,5 +370,80 @@ func TestRecvPartsFree(t *testing.T) {
 	defer r.a.mu.Unlock()
 	if r.a.rxParts != 0 || len(r.files(t)) != 2 {
 		t.Fatalf("занято частей %d, файлов %v", r.a.rxParts, r.files(t))
+	}
+}
+
+// TestRecvPinCleared — после закрепления разовым кодом флаг pinning снят: откреплённый ключ рвёт и эту сессию.
+func TestRecvPinCleared(t *testing.T) {
+	url := local(t)
+	r := recvHost(t, url)
+	_, fkey, _ := ed25519.GenerateKey(nil)
+	var alive atomic.Int32
+	recvTestPC = func(*webrtc.PeerConnection) error {
+		r.unpin(fkey.Public().(ed25519.PublicKey))
+		r.a.DropRevoked()
+		time.Sleep(time.Second)
+		alive.Store(int32(r.recvCount()))
+		return nil
+	}
+	defer func() { recvTestPC = nil }()
+	sendT(t, foreign(url, fkey, "secret123", nil, ""))
+	if alive.Load() != 0 {
+		t.Fatal("сессия кода жива после открепления: pinning не снят")
+	}
+}
+
+// TestRecvAskWait — окно «Принять?» дольше простоя и срока без байт: сессия ждёт человека, файл принят.
+func TestRecvAskWait(t *testing.T) {
+	defer func(i, l int64) { rxIdle.Store(i); rxLife.Store(l) }(rxIdle.Load(), rxLife.Load())
+	rxIdle.Store(int64(500 * time.Millisecond))
+	rxLife.Store(int64(500 * time.Millisecond))
+	url := local(t)
+	r := recvHost(t, url)
+	fkey := accPinned(t, r)
+	r.mu.Lock()
+	r.answer = func(RecvReq) bool { time.Sleep(1500 * time.Millisecond); return true }
+	r.mu.Unlock()
+	if err := sendT(t, foreign(url, fkey, "", []string{srcFile(t, "a.txt", []byte("x"))}, "")); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.files(t)) != 1 {
+		t.Fatalf("файлы: %v", r.files(t))
+	}
+}
+
+// TestRecvTextMoves — байты текста — продвижение: длинный текст после срока не рвётся, пока идёт.
+func TestRecvTextMoves(t *testing.T) {
+	defer func(l, w int64) { rxLife.Store(l); rxSlowWin.Store(w) }(rxLife.Load(), rxSlowWin.Load())
+	rxLife.Store(int64(500 * time.Millisecond))
+	rxSlowWin.Store(int64(time.Hour))
+	url := local(t)
+	r := recvHost(t, url)
+	var got atomic.Value
+	got.Store("")
+	recvTestPC = func(pc *webrtc.PeerConnection) error {
+		dc, err := pc.CreateDataChannel("text", nil)
+		if err != nil {
+			return err
+		}
+		c := &accCh{dc: dc, res: make(chan fileMsg, 8)}
+		open := make(chan struct{})
+		dc.OnOpen(func() { close(open) })
+		dc.OnMessage(func(m webrtc.DataChannelMessage) { c.res <- parseFM(m.Data) })
+		<-open
+		const chunk, n = 4 << 10, 40
+		sendJSON(dc, fileMsg{T: "text", Size: chunk * n})
+		for range n { // 2 с по 4 КБ каждые 50 мс
+			dc.Send(bytes.Repeat([]byte("a"), chunk))
+			time.Sleep(50 * time.Millisecond)
+		}
+		sendJSON(dc, fileMsg{T: "end"})
+		got.Store(c.wait(3 * time.Second))
+		return nil
+	}
+	defer func() { recvTestPC = nil }()
+	sendT(t, r.own(url, nil, ""))
+	if s := got.Load().(string); s != "done:" || len(r.clip()) != 1 {
+		t.Fatalf("длинный текст после срока: %q, буфер %d", s, len(r.clip()))
 	}
 }

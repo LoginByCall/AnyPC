@@ -213,9 +213,9 @@ offer, а не «занят», — как сверка. Сессия приём�
 Linux её нет. Текст перед буфером обмена очищается от управляющих символов (кроме табуляции и переводов строки) и
 от подмен направления письма (U+202A–202E, U+2066–2069); соединители (эмодзи, персидский) и мягкий перенос остаются.
 Потолки: файл 16 ГБ, 64 ГБ и 1000 файлов за сессию, текст 1 МБ, 4 сессии сразу; свой ПК — 10 сессий в минуту с
-одного ключа, чужой ключ — одна сессия сразу и 3 в минуту. Сессия закрывается без сообщений 2 минуты, если байты
-идут медленнее 64 КБ/с за 2 минуты, и после 30 минут — как только байты перестали идти (длинный файл, который
-идёт, не обрывается).
+одного ключа, чужой ключ — одна сессия сразу и 3 в минуту. Сессия закрывается без сообщений 2 минуты (пока открыто окно «Принять?» — нет), а
+после 30 минут — как только байты перестали идти или идут медленнее 64 КБ/с за 2 минуты (длинный файл, который идёт,
+не обрывается; до 30 минут скорость не проверяется — мелкие файлы по медленному каналу).
 
 Receiving files and text on this PC (Ch10.1, NEEDS HUMAN REVIEW: member key, one-time code and pinned key checks).
 To the hub a receive connection looks like a sync (own PC) or a join (foreign PC): the connect fields, the
@@ -235,5 +235,6 @@ macOS — com.apple.quarantine; not verified on Windows and Mac, V2), Linux has 
 clipboard: control characters (except tab and line breaks) and writing-direction overrides (U+202A–202E,
 U+2066–2069) are removed; joiners (emoji, Persian) and soft hyphens stay. Limits: 16 GB per file, 64 GB and 1000
 files per session, 1 MB of text, 4 sessions at once; an own PC — 10 sessions per minute per key, a foreign key — one
-session at a time and 3 per minute. A session is closed after 2 minutes without messages, if bytes flow slower than
-64 KB/s over 2 minutes, and after 30 minutes as soon as bytes stop flowing (a long file that is moving is not cut).
+session at a time and 3 per minute. A session is closed after 2 minutes without messages (not while an "Accept?" window is
+open), and after 30 minutes as soon as bytes stop flowing or flow slower than 64 KB/s over 2 minutes (a long file
+that is moving is not cut; speed is not checked during the first 30 minutes — small files over a slow link).
