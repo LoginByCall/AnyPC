@@ -683,8 +683,25 @@ func (c *config) savedSet(id, pw string) error {
 }
 
 // uiKeys — ключи localStorage окна, которые живут в config.json: «Мои ПК» (имена), имена записей для входа по ID
-// (не пароли: пароли — Saved), «Недавние», статистика, Турбо, TURN, тур, булавка панели. Секретов среди них нет.
-var uiKeys = []string{"mine", "users", "recent", "stats", "turbo", "turn", "tour_home", "tour_sess", "pinbar"}
+// (не пароли: пароли — Saved), «Недавние», статистика, Турбо, TURN, тур, булавка панели, «Не сейчас» вопроса «Это ваш
+// компьютер?» (mineno: [ID]). Секретов среди них нет.
+var uiKeys = []string{"mine", "users", "recent", "stats", "turbo", "turn", "tour_home", "tour_sess", "pinbar", "mineno"}
+
+// mineNoMax — предел списка «Не сейчас» (ui/index.html MINENO_MAX).
+const mineNoMax = 200
+
+// isID9 — ID ПК: ровно 9 цифр.
+func isID9(s string) bool {
+	if len(s) != 9 {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
 
 const (
 	uiKeyMax   = 64 << 10  // значение одного ключа
@@ -703,6 +720,9 @@ func uiValid(k, v string) bool {
 	}
 	switch x := x.(type) {
 	case []any: // mine: [{id, name}] или прежний формат — [ID] (разбирает страница, mineNorm); recent: [ID]
+		if k == "mineno" { // «Не сейчас» шага 3: ID из 9 цифр, не больше mineNoMax (как MINENO_MAX страницы)
+			return len(x) <= mineNoMax && !slices.ContainsFunc(x, func(e any) bool { s, ok := e.(string); return !ok || !isID9(s) })
+		}
 		return k == "mine" || k == "recent" && all(x)
 	case map[string]any: // users: ID → имя записи
 		return k == "users" && all(slices.Collect(maps.Values(x)))
