@@ -269,32 +269,42 @@ char *anypcScreens(void) {
 static NSStatusItem *tray;
 static ATray *trayTarget;
 
-// anypcTray — значок в строке меню: «имя · ID» (1) и «Помочь кому-то…» (2) — окно, «Выйти» (4), как в трее Linux.
-void anypcTray(const char *title, const char *help, const char *quit) {
+// anypcTray — значок в строке меню и его меню (app/tray.go, trayRows): items — строки «номер\tподпись», номер без
+// подписи — разделитель. Повторный вызов — новое меню у того же значка (сменился состав пространства или «я тут»).
+void anypcTray(const char *tip, const char *items) {
 	@autoreleasepool {
-		NSArray *items = @[ str(title), str(help), @"", str(quit) ];
+		NSString *t = str(tip);
+		NSArray *lines = [str(items) componentsSeparatedByString:@"\n"];
+		[t retain];
+		[lines retain];
 		dispatch_async(dispatch_get_main_queue(), ^{
-			if (tray) return;
-			tray = [[[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength] retain];
-			NSImage *img = [NSImage imageWithSystemSymbolName:@"display" accessibilityDescription:@"AnyPC"];
-			if (img) {
-				img.template = YES;
-				tray.button.image = img;
-			} else
-				tray.button.title = @"AnyPC";
-			tray.button.toolTip = items[0];
+			if (!tray) {
+				tray = [[[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength] retain];
+				NSImage *img = [NSImage imageWithSystemSymbolName:@"display" accessibilityDescription:@"AnyPC"];
+				if (img) {
+					img.template = YES;
+					tray.button.image = img;
+				} else
+					tray.button.title = @"AnyPC";
+			}
+			tray.button.toolTip = t;
 			if (!trayTarget) trayTarget = [ATray new];
 			NSMenu *m = [[NSMenu new] autorelease];
-			for (NSUInteger i = 0; i < items.count; i++) {
-				if (![items[i] length]) {
+			for (NSString *l in lines) {
+				NSRange r = [l rangeOfString:@"\t"];
+				if (r.location == NSNotFound) continue;
+				NSString *label = [l substringFromIndex:r.location + 1];
+				if (!label.length) {
 					[m addItem:[NSMenuItem separatorItem]];
 					continue;
 				}
-				NSMenuItem *it = [m addItemWithTitle:items[i] action:@selector(click:) keyEquivalent:@""];
+				NSMenuItem *it = [m addItemWithTitle:label action:@selector(click:) keyEquivalent:@""];
 				it.target = trayTarget;
-				it.tag = i + 1;
+				it.tag = [[l substringToIndex:r.location] integerValue];
 			}
 			tray.menu = m;
+			[t release];
+			[lines release];
 		});
 	}
 }

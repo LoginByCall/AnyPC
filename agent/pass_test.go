@@ -393,3 +393,34 @@ func TestPassOffLocked(t *testing.T) {
 		t.Errorf("неудач %d", f)
 	}
 }
+
+// TestPassMaster — ключ мастера с живым пропуском для трея: нет — nil; два — выданный последним; истёк — nil.
+func TestPassMaster(t *testing.T) {
+	a := &Agent{SpaceMember: func(salt, pub []byte) bool { return true }} // снятие одного не гасит прочие (passPrune)
+	if a.PassMaster() != nil {
+		t.Fatal("пропусков нет, а мастер есть")
+	}
+	k1, k2 := bytes.Repeat([]byte{1}, ed25519.PublicKeySize), bytes.Repeat([]byte{2}, ed25519.PublicKeySize)
+	a.passGive(k1, []byte("s"))
+	time.Sleep(time.Millisecond)
+	a.passGive(k2, []byte("s"))
+	if got := a.PassMaster(); !bytes.Equal(got, k2) {
+		t.Errorf("мастер %x, ждали последний выданный", got)
+	}
+	a.passDrop(k2)
+	if got := a.PassMaster(); !bytes.Equal(got, k1) {
+		t.Errorf("после снятия второго: %x", got)
+	}
+	var view atomic.Bool
+	a.ViewOnly = view.Load
+	view.Store(true)
+	if a.PassMaster() != nil {
+		t.Error("«Только показ экрана» — мастер есть (пропуск там не пускает)")
+	}
+	view.Store(false)
+	defer passSkew.Store(0)
+	passSkew.Store(int64(PassTTL + time.Second))
+	if a.PassMaster() != nil {
+		t.Error("истёкший пропуск — мастер")
+	}
+}
