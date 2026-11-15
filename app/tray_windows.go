@@ -92,12 +92,12 @@ const (
 
 // winTray — состояние значка; трогается только из потока окна (оконная процедура и runTray).
 type winTray struct {
-	nid        notifyIconData
-	title      string
-	created    uintptr // номер сообщения TaskbarCreated
-	gate       func() bool
-	open, quit func()
-	light      bool // значок нарисован для светлой панели
+	nid     notifyIconData
+	title   string
+	created uintptr // номер сообщения TaskbarCreated
+	gate    func() bool
+	d       trayDeps
+	light   bool // значок нарисован для светлой панели
 }
 
 var (
@@ -108,9 +108,10 @@ var (
 )
 
 // runTray — значок, пока жив ctx; возвращается, когда значок снят (NIM_DELETE). Не вышло — в журнал, окно — как обычно.
-func runTray(ctx context.Context, id string, open, quit func()) {
+// Меню строится при каждом открытии из текущего состояния (d.rows): опроса нет.
+func runTray(ctx context.Context, d trayDeps) {
 	runtime.LockOSThread() // окно принадлежит потоку: создание и цикл сообщений — на одном (поток умрёт с горутиной)
-	h, err := createTray(&winTray{title: trayTitle(id), gate: trayGate(trayOpenGap), open: open, quit: quit})
+	h, err := createTray(&winTray{title: trayTitle(d.id), gate: trayGate(trayOpenGap), d: d})
 	if err != nil {
 		log.Printf("трей: %v — значка не будет, окно — как обычно", err)
 		return
@@ -183,7 +184,7 @@ func trayProc(h, msg, wp, lp uintptr) uintptr {
 	case msg == trayCallback:
 		switch lp & 0xffff {
 		case ninSelect, ninKeySelect: // левый щелчок, Enter/пробел — главное окно
-			t.run(trayOpen)
+			t.run(trayOpen, nil)
 		case wmContextMenu: // правый щелчок, Shift+F10, клавиша меню
 			x, y := trayXY(wp)
 			t.menu(h, x, y)
@@ -212,13 +213,13 @@ func trayProc(h, msg, wp, lp uintptr) uintptr {
 // trayXY — точка меню из wParam (NOTIFYICON_VERSION_4): x в младшем слове, y в старшем, со знаком (мониторы левее/выше).
 func trayXY(wp uintptr) (x, y int32) { return int32(int16(wp)), int32(int16(wp >> 16)) }
 
-func (t *winTray) run(id int) {
-	if f := trayPick(id, t.gate, t.open, t.quit); f != nil {
+func (t *winTray) run(id int, rows []trayRow) {
+	if f := trayPick(id, rows, t.gate, t.d); f != nil {
 		go f() // не держать поток значка
 	}
 }
 
-// menu — то же меню, что на Linux и Маке. SetForegroundWindow до и WM_NULL после — иначе меню не закрывается щелчком мимо
+// menu — то же меню, что на Linux и Маке (trayRows). SetForegroundWindow до и WM_NULL после — иначе меню не закрывается щелчком мимо
 // (KB135788).
 func (t *winTray) menu(h uintptr, x, y int32) {
 	m, _, _ := pPopupMenu.Call()
@@ -226,22 +227,40 @@ func (t *winTray) menu(h uintptr, x, y int32) {
 		return
 	}
 	defer pDestroyMenu.Call(m)
-	for _, it := range []struct {
-		id    int
-		label string
-	}{{trayOpen, t.title}, {trayHelp, "Помочь кому-то…"}, {3, ""}, {trayQuit, "Выйти"}} {
-		if it.label == "" {
+	rows := t.d.rows()
+	for i, r := range rows {
+		if r.Label == "" {
 			pAppendMenu.Call(m, 0x800, 0, 0) // MF_SEPARATOR
 			continue
 		}
-		s, _ := syscall.UTF16PtrFromString(strings.ReplaceAll(it.label, "&", "&&")) // «&» — мнемоника
-		pAppendMenu.Call(m, 0, uintptr(it.id), uintptr(unsafe.Pointer(s)))          // MF_STRING
+		id := r.ID
+		if id >= trayPC0 { // номер ПК больше 16 бит (номера пунктов меню Windows — WORD): в этом меню — 0x1000 + место
+			id = trayWinPC + i
+		}
+		// «&» — мнемоника; табуляция — подпись «я тут» прижата вправо (как в макете)
+		s, err := syscall.UTF16PtrFromString(strings.ReplaceAll(trayText(r, "\t"), "&", "&&"))
+		if err != nil { // NUL в имени ПК
+			continue
+		}
+		pAppendMenu.Call(m, 0, uintptr(id), uintptr(unsafe.Pointer(s))) // MF_STRING
 	}
 	pDefaultItem.Call(m, trayOpen, 0) // жирным — то, что делает левый щелчок
 	pSetForeground.Call(h)
 	cmd, _, _ := pTrackMenu.Call(m, tpmFlags, uintptr(x), uintptr(y), 0, h, 0)
 	pPostMsg.Call(h, wmNull, 0, 0)
-	t.run(int(cmd))
+	t.run(trayWinCmd(int(cmd), rows), rows)
+}
+
+// trayWinPC — номера пунктов ПК в меню Windows: trayWinPC + место в rows того же меню (меню строится и
+// выбирается из одних rows — смена состава между ними невозможна).
+const trayWinPC = 0x1000
+
+// trayWinCmd — номер пункта trayRows по ответу TrackPopupMenu.
+func trayWinCmd(cmd int, rows []trayRow) int {
+	if i := cmd - trayWinPC; i >= 0 && i < len(rows) {
+		return rows[i].ID
+	}
+	return cmd
 }
 
 // trayHIcon — значок из ресурсов exe (сейчас их нет: build.sh не кладёт .syso), иначе нарисованный, как на Linux,

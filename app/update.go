@@ -20,8 +20,15 @@ const updateSite = "https://www.anypc.org/#get"
 // siteHome — ссылка из справки окна Windows; тоже фиксирована в программе.
 const siteHome = "https://www.anypc.org/"
 
+// updateBase — адрес вместо хабов для проверки обновлений; задаётся только при сборке (-ldflags -X main.updateBase=…):
+// тест сборки (TestCLI) запускает хост и не должен ходить на боевые хабы.
+var updateBase string
+
 // updateURLs — VERSION на наших хабах (не на «своём сервере» пользователя): http(s)-адреса из DefaultServer.
 var updateURLs = func() (l []string) {
+	if updateBase != "" {
+		return []string{updateBase + "/download/VERSION"}
+	}
 	for _, u := range strings.Split(DefaultServer, ",") {
 		l = append(l, strings.Replace(strings.TrimSuffix(u, "/ws"), "wss://", "https://", 1)+"/download/VERSION")
 	}

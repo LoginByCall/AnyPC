@@ -89,6 +89,9 @@ func sendInput(e event, mon *Monitor) error {
 	return nil
 }
 
+// Lang — язык интерфейса ОС (en, ru…; неизвестный — как есть или ""): подписи трея (app/tray.go).
+func Lang() string { return uiLang() }
+
 // uiLang — язык плашки по основному языку интерфейса Windows.
 func uiLang() string {
 	id, _, _ := syscall.NewLazyDLL("kernel32.dll").NewProc("GetUserDefaultUILanguage").Call()

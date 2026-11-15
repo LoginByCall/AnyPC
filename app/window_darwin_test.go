@@ -59,7 +59,7 @@ func TestMacWindowLive(t *testing.T) {
 	go http.Serve(l, handler(addr, "toklive", page, cfg, &agent.Agent{}, nil, info, newFiles(t.TempDir()), once))
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
-	go macTray(ctx, cfg.ID, func() {}, func() {})
+	go macTray(ctx, trayDeps{id: cfg.ID, open: func() {}, quit: func() {}})
 	w := macWins{base: "http://" + addr, issue: once.issue}
 	s, err := w.screens(ctx)
 	t.Logf("мониторы: %+v %v", s, err)

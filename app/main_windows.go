@@ -198,7 +198,22 @@ func main() {
 	trayDone := make(chan struct{})
 	go func() {
 		defer close(trayDone)
-		runTray(ctx, cfg.ID, func() { w.Dispatch(func() { showMain(uintptr(w.Window())) }) }, w.Destroy)
+		show := func(js string) { // окно наверх и в нём js (ПК вкладкой, «Я тут» — trayJSPC, trayJSHere)
+			w.Dispatch(func() {
+				showMain(uintptr(w.Window()))
+				if js != "" {
+					w.Eval(js)
+				}
+			})
+		}
+		state := func() trayState { // только при открытии меню (опроса нет): перечитать файл — правки CLI и других копий
+			cfg.mu.Lock()
+			cfg.reload()
+			cfg.mu.Unlock()
+			return trayStateOf(cfg, a.PassMaster)
+		}
+		runTray(ctx, trayDeps{id: cfg.ID, state: state, quit: w.Destroy,
+			open: func() { show("") }, here: func() { show(trayJSHere) }, pc: func(id string) { show(trayJSPC(id)) }})
 	}()
 	startSpaceSync(ctx, cfg, a)
 	run.start(cfg.Server)
