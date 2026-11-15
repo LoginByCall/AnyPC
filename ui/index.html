@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="ru">
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-PoB6ibY9U7FzNVGTrFVzqeYi320i9qDJDZmmmw+owPw=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-kFfISO+0NmNQnvyDsAni2XbsYPLXaUAWSYXtCe0O65k=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AnyPC</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26'><style>.a{stroke:%2317181c}.b{fill:%23d2452d}@media(prefers-color-scheme:dark){.a{stroke:%23eceae4}.b{fill:%23ef6a52}}</style><rect class='a' x='1.5' y='3' width='15' height='11' rx='2' fill='none' stroke-width='2.6'/><rect class='b' x='10' y='12' width='15' height='11' rx='2'/></svg>">
@@ -72,7 +72,7 @@
   #keyrow, #pwsrow { gap: 6px; } #keyrow .lnk, #pwsrow .lnk { min-height: 32px; }
   /* шаг 3 — компактно (≈300 px), чтобы не закрывать угол удалённого экрана (трей, часы); «–» сворачивает в ☆ на панели */
   #mineq { position: fixed; right: 12px; bottom: 12px; z-index: 6; width: min(300px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow: auto; padding: 12px 14px 14px; gap: 8px; box-shadow: 0 8px 28px #0004; }
-  #mineq .hd { flex-wrap: nowrap; } #mineq h2 { font-size: 16px; flex: 1; } #mineq p { margin: 0; font-size: 13px; line-height: 1.35; } #mineq label { font-size: 13px; }
+  #mineq .hd { flex-wrap: nowrap; } #mineq h2 { font-size: 16px; flex: 1; } #mineq p { margin: 0; font-size: 13px; line-height: 1.35; } #mineq label { font-size: 13px; } #mineq #mineqnl { font-weight: 600; margin-bottom: -4px; }
   #mineq button, #mineq input:not([type="checkbox"]) { min-height: 44px; } #mineq #mineqn { padding: 0 12px; } #mineq #mineqmin { min-width: 44px; padding: 0; font-weight: 700; }
   #mineq .row:last-child button { flex: 1; } #mineq #mineqok { width: 100%; }
   #copts summary { min-height: 32px; display: flex; align-items: center; cursor: pointer; } #copts .opts { display: flex; flex-direction: column; gap: 10px; padding-top: 8px; }
@@ -332,9 +332,9 @@
   <div id="hstate" class="hidden" role="status"></div>
   <!-- шаг 3 (Ч7): «Это ваш компьютер?» — поверх идущей сессии, вместо «Запомнить пароль», «Доверять этому ПК» и ☆ -->
   <div id="mineq" class="card hidden" role="dialog" aria-labelledby="mineqh">
-    <div class="row hd"><h2 id="mineqh" data-t="c3_h"></h2><button id="mineqmin" data-tt="c3_min" aria-label="–">–</button></div>
+    <div class="row hd"><h2 id="mineqh" data-t="c3_h"></h2><button id="mineqmin" data-tt="c3_min">–</button></div>
     <p class="mut" id="mineqb"></p>
-    <input id="mineqn" maxlength="40" autocomplete="off" data-tt="c3_nm" aria-labelledby="mineqnl"><span id="mineqnl" hidden data-t="c3_nm"></span>
+    <label for="mineqn" id="mineqnl" data-t="c3_nm"></label><input id="mineqn" maxlength="40" autocomplete="off">
     <label class="mut" id="mineqrl"><input id="mineqr" type="checkbox"> <span data-t="remember_l"></span></label>
     <button id="mineqok" class="main" data-t="c3_add"></button>
     <div class="row"><button id="mineqno" data-t="c3_no"></button></div>
@@ -1036,7 +1036,7 @@ let mq = null; // открытый вопрос {host, pw, user, key: 'on'|'can'
 function mineAsk(o) {
   if (mq?.min && mq.host === host) { mq.min = false; $('mineq').classList.remove('hidden'); starShow(); return; } // свёрнутый — как был
   mq = { ...o, host };
-  $('mineqn').value = ''; $('mineqn').placeholder = t('c3_nm') + ': ' + grp(host);
+  $('mineqn').value = ''; $('mineqn').placeholder = grp(host); // пример имени: пустое — останется ID
   // текст — по варианту: ключ включим / уже есть / без пароля (вход кодом, ключом) / с галочкой «Запомнить пароль»
   $('mineqb').textContent = t(o.key === 'can' ? 'c3_b_key' : o.key === 'on' ? 'c3_b_on' : !o.pw ? 'c3_b_np' : 'c3_b');
   $('mineqrl').classList.toggle('hidden', !!o.key || !o.pw); // ключ есть или будет — пароль хранить незачем; без пароля — нечего
@@ -1048,8 +1048,17 @@ const sessTour = () => setTimeout(() => !$('sess').classList.contains('hidden') 
 const mineHide = () => { mq = null; $('mineq').classList.add('hidden'); if (host?.length === 9) starShow(); sessTour(); };
 // «–» — свернуть в ☆ на панели: ответа нет, «Не сейчас» не записывается; ☆ разворачивает тот же вопрос
 $('mineqmin').onclick = () => { if (mq) mq.min = true; $('mineq').classList.add('hidden'); starShow(); sessTour(); v.focus(); };
+$('mineqmin').setAttribute('aria-label', t('c3_min')); // экранному чтению — «Свернуть…», не «тире»
 // клавиши на карточке (Enter/пробел на кнопках, ввод имени) — не на удалённый ПК: ни нажатие, ни отпускание
 for (const k of ['keydown', 'keyup']) $('mineq').addEventListener(k, e => e.stopPropagation());
+// Tab — по кругу внутри карточки: фокус не уходит на видео/панель (keyup Tab ушёл бы на удалённый ПК)
+$('mineq').addEventListener('keydown', e => {
+  if (e.key !== 'Tab') return;
+  const f = [...$('mineq').querySelectorAll('button, input')].filter(x => x.checkVisibility()), i = f.indexOf(document.activeElement);
+  if (!f.length) return;
+  e.preventDefault();
+  f[(i + (e.shiftKey ? -1 : 1) + f.length) % f.length].focus();
+});
 $('mineqn').onkeydown = e => { if (e.key === 'Enter' && !e.isComposing && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) $('mineqok').click(); };
 $('mineqok').onclick = () => {
   const q = mq;

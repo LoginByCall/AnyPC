@@ -77,6 +77,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   // клавиши на карточке не уходят на удалённый ПК (ни нажатие, ни отпускание); Enter с модификатором или в наборе IME — не «Добавить»
   await ev("(() => { window.kk = []; const o = dc.send.bind(dc); dc.send = x => { if (JSON.parse(x).t === 'k') kk.push(x); return o(x); }; const b = document.getElementById('mineqok'); b.focus(); for (const ty of ['keydown', 'keyup']) b.dispatchEvent(new KeyboardEvent(ty, { code: 'KeyA', key: 'a', bubbles: true })); const n = document.getElementById('mineqn'); n.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true })); n.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true })); return 1; })()");
   console.log('keys=' + await ev("kk.length + ',' + held.size") + '|' + await q());
+  // Tab — по кругу внутри карточки (с последней кнопки — на первую, Shift+Tab с первой — на последнюю); подпись поля и aria «–»
+  console.log('tab=' + await ev("(() => { const d = i => document.getElementById(i), key = (el, sh) => el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: sh, bubbles: true, cancelable: true })); d('mineqno').focus(); key(d('mineqno'), false); const a = document.activeElement.id; key(document.activeElement, true); return [a, document.activeElement.id, kk.length, d('mineqnl').checkVisibility() && d('mineqnl').textContent === t('c3_nm'), d('mineqmin').getAttribute('aria-label') === t('c3_min'), d('mineqn').placeholder].join(','); })()"));
   await ev("document.getElementById('mineqok').click(); 1");
   console.log('re1=' + await until(s => s.startsWith('2|')) + '|' + await ls('mine'));
   // приёмка B1: «Отмена» повторного входа — trust не переживает попытку: следующий вход паролем (ПК убран из списка)
@@ -211,6 +213,7 @@ func TestBrowserConnect(t *testing.T) {
 		"min=false,-,false,false,true|null|tour=true\n",
 		"unmin=true,key,false,false,false|Работа\n",
 		"keys=0,0|true,key,false,false,false\n",
+		"tab=mineqmin,mineqno,0,true,true,123 456 789\n",
 		`cancel1=1||false|""` + "\n",
 		"s2b=2||false\n",
 		"again1=1||true|[null]|true,key,false,false,false|[]\n",
