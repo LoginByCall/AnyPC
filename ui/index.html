@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="ru">
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-nv9M36tYPN2aYMb+KylSa1/SVO9VSlmXPaVwUD9wOJc=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-YlW4k5KM7/SRwg5LTI+NRFLilAoKEXpGtd8KKTgFv8Q=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AnyPC</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26'><style>.a{stroke:%2317181c}.b{fill:%23d2452d}@media(prefers-color-scheme:dark){.a{stroke:%23eceae4}.b{fill:%23ef6a52}}</style><rect class='a' x='1.5' y='3' width='15' height='11' rx='2' fill='none' stroke-width='2.6'/><rect class='b' x='10' y='12' width='15' height='11' rx='2'/></svg>">
@@ -1915,6 +1915,7 @@ document.addEventListener('keydown', e => {
   }
   if (!capturing() || e.repeat && pasting) return;
   syncMods(e);
+  if (e.repeat && !held.has(e.code)) { e.preventDefault(); return; } // автоповтор клавиши, нажатие которой не уходило (Esc, закрывший меню; Enter на пункте) — не слать
   if (isPaste(e) && !pasting) { // без preventDefault: браузер вставит в pasteBox → событие paste
     held.add(e.code); pasteBox.value = ''; pasteBox.focus();
     pasting = { timer: setTimeout(() => pasteNow(''), 300), ups: [] }; // paste не пришло (нет текста) — V как есть
@@ -1924,7 +1925,6 @@ document.addEventListener('keydown', e => {
 });
 document.addEventListener('keyup', e => {
   if (switching(e)) { e.preventDefault(); return; } // пара к перехвату переключения (и отпускание автоповтора)
-  if (eatUp === e.code) { eatUp = ''; e.preventDefault(); return; }
   if (!capturing()) return;
   syncMods(e);
   e.preventDefault(); const was = held.delete(e.code); // нажатие не уходило (Tab, перенёсший фокус на картинку; Enter, выбравший пункт меню) — и отпускание не шлём
@@ -1940,7 +1940,7 @@ document.querySelectorAll('[data-keys]').forEach(b => b.onclick = () => { keyCom
 // Открытие — щелчок, Enter/пробел или ↓/↑ на кнопке; ↑↓ Home End — по пунктам, Esc — закрыть (фокус на кнопку), Tab — закрыть.
 // Пока меню открыто, клавиши остаются в окне (capturing: menuOpen и фокус на панели) — на удалённый ПК не уходят.
 // Пустое меню (только просмотр: ни клавиш, ни файлов) не показываем; «Управляю ▾» видно всегда — это текущий режим.
-let menuOpen = null, eatUp = ''; // eatUp — отпускание клавиши, закрывшей меню: на удалённый ПК не слать
+let menuOpen = null;
 const menuItems = m => [...m.querySelectorAll('[role^="menuitem"]')].filter(b => !b.disabled && getComputedStyle(b).display !== 'none' && !b.closest('.hidden'));
 const anyItem = m => [...m.querySelectorAll('[role^="menuitem"]')].some(b => { const h = b.closest('.hidden'); return getComputedStyle(b).display !== 'none' && (!h || h === m || !m.contains(h)); }); // скрытое внутри меню — не в счёт
 function menuShut(back) {
@@ -1979,7 +1979,7 @@ for (const b of document.querySelectorAll('#bar .mb')) {
     const go = k => { e.preventDefault(); it[(k + it.length) % it.length]?.focus(); };
     if (e.key === 'ArrowDown') go(i + 1); else if (e.key === 'ArrowUp') go(i < 0 ? -1 : i - 1);
     else if (e.key === 'Home') go(0); else if (e.key === 'End') go(-1);
-    else if (e.key === 'Escape') { e.preventDefault(); const kb = menuOpen?.kb; menuShut(kb); if (!kb) { eatUp = e.code; v.focus(); } }
+    else if (e.key === 'Escape') { e.preventDefault(); const kb = menuOpen?.kb; menuShut(kb); if (!kb) v.focus(); }
     else if (e.key === 'Tab') menuShut();
   });
   m.addEventListener('keyup', e => { if (!switchCombo(e)) e.stopPropagation(); });

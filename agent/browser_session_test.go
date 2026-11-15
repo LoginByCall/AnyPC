@@ -191,6 +191,25 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await mclick('#swhint', true); b1.push('strip:' + await typed());
   await mclick('#ctlm'); b1.push('ctlm:' + await ev(AW + ".document.getElementById('ctlmenu').checkVisibility()") + ':' + await typed());
   console.log('b1=' + b1.join('|'));
+  // B2 (приёмка, круг 2): Esc удержан до автоповтора в меню, открытом мышью, — первое нажатие закрыло меню, повторы и
+  // отпускание на удалённый ПК не уходят, зажатых нет; обычный автоповтор цел
+  await mclick('#morem'); await takeA();
+  await key('rawKeyDown', { code: 'Escape', key: 'Escape', windowsVirtualKeyCode: 27 });
+  for (let r = 0; r < 3; r++) await key('rawKeyDown', { code: 'Escape', key: 'Escape', windowsVirtualKeyCode: 27, autoRepeat: true });
+  await key('keyUp', { code: 'Escape', key: 'Escape', windowsVirtualKeyCode: 27 }); await sleep(200);
+  const escRep = await takeA() + ':' + await ev(AW + ".sessHeld()") + ':' + await ev(AW + ".document.getElementById('moremenu').checkVisibility()");
+  await key('rawKeyDown', { code: 'KeyA', key: 'a', windowsVirtualKeyCode: 65 });
+  for (let r = 0; r < 3; r++) await key('rawKeyDown', { code: 'KeyA', key: 'a', windowsVirtualKeyCode: 65, autoRepeat: true });
+  await key('keyUp', { code: 'KeyA', key: 'a', windowsVirtualKeyCode: 65 }); await sleep(200);
+  console.log('b2=' + escRep + '|' + await takeA() + ':' + await ev(AW + ".sessHeld()"));
+  // список передач — под панелью от кольца (не right:0); настоящий щелчок по «Ещё → Переименовать ПК» — фокус в поле имени
+  await mclick('#dlbtn');
+  console.log('dlpos=' + await ev("(d => { const p = d.getElementById('dlpop').getBoundingClientRect(), r = d.getElementById('dl').getBoundingClientRect(), b = d.getElementById('bar').getBoundingClientRect(); return [Math.abs(p.left - r.left) < 2, p.top >= b.bottom, getComputedStyle(d.getElementById('dlpop')).right !== '0px'].join(); })(" + AW + ".document)"));
+  await ev(AW + ".document.body.click(); 1");
+  await mclick('#morem'); await mclick('#mren');
+  const renFocus = await ev("(d => d.activeElement?.classList.contains('nmedit') && d.activeElement.closest('#bar') !== null)(" + AW + ".document)");
+  await press('Escape', 'Escape', 27); await sleep(200);
+  console.log('renclick=' + renFocus + '|' + await ev(AW + ".document.activeElement.id") + '|' + await takeA());
   // M3: отпускание без нажатия не уходит — Tab с последней кнопки панели на картинку, Enter, выбравший пункт меню
   await ev(AW + ".document.getElementById('bye').focus(); 1"); await press('Tab', 'Tab', 9);
   const tabTo = await ev(AW + ".document.activeElement.id"), tabRec = await takeA();
@@ -318,6 +337,9 @@ func TestBrowserSession(t *testing.T) {
 		// в меню, открытом мышью (отпускание Esc не уходит), щелчка по подсказке полосы и по выключенной «Управляю» — набор уходит
 		`b1=mic:KeyAv,KeyA^|ring:true:KeyAv,KeyA^|xfopen:true:KeyAv,KeyA^|reclick:false:KeyAv,KeyA^|esc:false:v:KeyAv,KeyA^|strip:KeyAv,KeyA^|ctlm:false:KeyAv,KeyA^` + "\n",
 		`ups=v:|MetaLeftv,MetaLeft^` + "\n", // M3: ни Tab^, ни Enter^
+		`b2=:0:false|KeyAv,KeyAv,KeyAv,KeyAv,KeyA^:0` + "\n", // Esc с автоповтором в меню не уходит, зажатых нет; KeyA×4 + отпускание
+		`dlpos=true,true,true` + "\n",
+		`renclick=true|v|` + "\n", // щелчок мышью по «Переименовать ПК» — фокус в поле; Esc — отмена, фокус на картинке, ничего не ушло
 		// член пространства — «Убрать» нет; × — только в окне вкладок; Ctrl+Alt+→ в поле не переключает; меню держит панель
 		// в полном экране; открытие меню отпускает зажатое; blur закрывает меню
 		`holes=false,true|0,2|true|true,true|KeyBv,KeyB^|true` + "\n",
