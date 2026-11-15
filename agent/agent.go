@@ -1369,7 +1369,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		st, view, s.salt = state, v, salt
 		s.mu.Unlock()
 		send(authMsg{T: "a", Salt: salt, Msg: msgA, Users: true, Keys: a.KeyLogin != nil, Space: a.SpaceGet != nil, Pass: a.SpaceMember != nil, Sync: a.SpaceSync != nil,
-			SX: s.seal.answer(fpClient, fpHost), Recv: !a.noRecv}) // Ч10.1: приём (recv.go) // Э4в: у каждой сессии, у сверки — статус (spseal.go)
+			SX: s.seal.answer(fpClient, fpHost), Recv: !a.noRecv}) // Э4в: sx у каждой сессии, у сверки — статус (spseal.go); Ч10.1: приём (recv.go)
 	})
 	ch.OnMessage(func(msg webrtc.DataChannelMessage) {
 		var m authMsg
