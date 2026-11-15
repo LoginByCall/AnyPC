@@ -374,6 +374,8 @@ func TestRecvLimits(t *testing.T) {
 	defer func(l *rxLimits, n int32) { rxLimP.Store(l); rxRateOwn.Store(n) }(rxLimP.Load(), rxRateOwn.Load())
 	rxLimP.Store(&rxLimits{File: 1000, Total: 1500, Items: 2, Text: 10})
 	rxRateOwn.Store(100)
+	sendNoFit = true // Ч10.3: отправитель проверяет lim до первого байта — здесь проверяется хост (план — TestRecvFolderLimits)
+	defer func() { sendNoFit = false }()
 	url := local(t)
 	r := recvHost(t, url)
 	small := srcFile(t, "s.txt", bytes.Repeat([]byte{1}, 800))
