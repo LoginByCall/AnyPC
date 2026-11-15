@@ -11,7 +11,9 @@ import (
 // TestScaleFrom — регрессия (канбан 2026-11-13, «указатели расползлись»): при layout-mode logical координаты мыши
 // портала умножаются на масштаб монитора в позиции потока; physical или монитор не найден — 1.
 func TestScaleFrom(t *testing.T) {
-	lm := func(x, y int32, k float64) []any { return []any{x, y, k, uint32(0), true, [][]any{}, map[string]dbus.Variant{}} }
+	lm := func(x, y int32, k float64) []any {
+		return []any{x, y, k, uint32(0), true, [][]any{}, map[string]dbus.Variant{}}
+	}
 	body := func(mode uint32, lms ...[]any) []any {
 		return []any{uint32(1), [][]any{}, lms, map[string]dbus.Variant{"layout-mode": dbus.MakeVariant(mode)}}
 	}

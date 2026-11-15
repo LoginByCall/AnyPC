@@ -15,8 +15,8 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -164,7 +164,9 @@ func TestSpaceOpOtherLogged(t *testing.T) {
 	n := spaceCfg(t, spacePass, totp.NewSecret())
 	host := spaceCfg(t, spacePass, totp.NewSecret()).id()
 	call := apiHandler(n)
-	withSpaceNet(t, func(context.Context, agent.SpaceDial) ([]byte, error) { return nil, errors.New("тайна обмена") })
+	withSpaceNet(t, func(context.Context, agent.SpaceDial) ([]byte, error) {
+		return nil, errors.New("тайна обмена")
+	})
 	call("spaceEnter", host, spacePass, "123456", spacePhraseNew())
 	if op := opWait(t, call, "err"); op["err"] != "other" || !strings.Contains(logs.String(), "тайна обмена") {
 		t.Errorf("итог %v; журнал %q", op, logs.String())
@@ -340,7 +342,10 @@ func TestSpaceAPIFlow(t *testing.T) {
 	passOffFn = func(context.Context, agent.PassDial) error { offs.Done(); return nil }
 	passes.cfg = p
 	passes.lockAlive("тест", true)
-	t.Cleanup(func() { passOpenFn, passOffFn, passes.cfg = oldOpen, oldOff, oldCfg; passes.lockAlive("тест", false) })
+	t.Cleanup(func() {
+		passOpenFn, passOffFn, passes.cfg = oldOpen, oldOff, oldCfg
+		passes.lockAlive("тест", false)
+	})
 	if code, _, e := callP("workHere", spacePass, "000000x"); code != 200 {
 		t.Fatal(e)
 	}
@@ -462,7 +467,10 @@ func TestSpaceOpBusy(t *testing.T) {
 	host := spaceCfg(t, spacePass, totp.NewSecret()).id()
 	call := apiHandler(n)
 	release := make(chan struct{})
-	withSpaceNet(t, func(ctx context.Context, d agent.SpaceDial) ([]byte, error) { <-release; return nil, agent.ErrSpaceOffline })
+	withSpaceNet(t, func(ctx context.Context, d agent.SpaceDial) ([]byte, error) {
+		<-release
+		return nil, agent.ErrSpaceOffline
+	})
 	if code, _, e := call("spaceEnter", host, spacePass, "123456", spacePhraseNew()); code != 200 {
 		t.Fatal(e)
 	}
