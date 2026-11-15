@@ -483,7 +483,7 @@ func (w *chromeWin) openMain(ctx context.Context) error {
 			w.main, w.mainS = tid, s.SessionID
 		}
 		w.mu.Unlock()
-		err = c.call(ctx, s.SessionID, "Page.navigate", map[string]any{"url": w.base + "/?n=" + w.issue()}, nil)
+		err = c.call(ctx, s.SessionID, "Page.navigate", map[string]any{"url": w.base + "/?n=" + w.issue() + trayNavQuery()}, nil) // метка trayGo — главному окну
 	}
 	if err == nil { // страница с токеном и привязками: код принят (живой, свой uid — peer_linux.go)
 		err = c.until(ctx, s.SessionID, "typeof hostInfo === 'function'")

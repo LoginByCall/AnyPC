@@ -105,8 +105,12 @@ func (a *Agent) passID(pub []byte) []byte {
 }
 
 // PassMaster — ключ мастера с живым пропуском на этом ПК (выдан последним; nil — нет): трей показывает «я тут» у
-// того члена M, чей это ключ (app/tray.go). Членство и соль записи не сверяются — это забота входа (passValid).
+// того члена M, чей это ключ (app/tray.go: ключ не из текущего M — не показывает). «Только показ экрана» —
+// nil: пропуск там не пускает (passValid). Соль записи не сверяется — это забота входа.
 func (a *Agent) PassMaster() []byte {
+	if a.viewOnlyHost() {
+		return nil
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	now, best := passNow(), ""

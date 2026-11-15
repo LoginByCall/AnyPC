@@ -327,7 +327,7 @@ func TestTrayLive(t *testing.T) {
 	if rev, l := trayLayoutLabels(t, menu); rev <= rev0 || l != h+" · я тут|—|Офис|200 000 002|—|Помочь кому-то…|—|Выйти" {
 		t.Errorf("в пространстве: ревизия %d, %s", rev, l)
 	}
-	if err := menu.Call(menuIface+".Event", 0, int32(trayPC0+1), "clicked", dbus.MakeVariant(""), uint32(0)).Err; err != nil {
+	if err := menu.Call(menuIface+".Event", 0, int32(trayPCID("200000002")), "clicked", dbus.MakeVariant(""), uint32(0)).Err; err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -340,21 +340,25 @@ func TestTrayLive(t *testing.T) {
 	}
 }
 
-// TestTrayNav — ПК и «Я тут» из трея: JS берёт ближайшая загрузка главного окна (не вкладки ПК), с хэшем в CSP,
-// один раз; просроченный — нет. Без Chrome AnyPC trayGo только открывает окно и оставляет JS странице.
+// TestTrayNav — ПК и «Я тут» из трея: JS берёт только загрузка главного окна со своей меткой g (её кладёт trayGo в
+// адрес — trayNavQuery; обмен ?n= → ?t= её переносит), с хэшем в CSP, один раз; окно «ПК как монитор» (тот же адрес
+// без метки), вкладка ПК (embed), чужая и просроченная метка — нет. Без Chrome AnyPC trayGo только открывает окно.
 func TestTrayNav(t *testing.T) {
+	defer func(p func(*http.Request) bool) { peerOK = p }(peerOK)
+	peerOK = func(*http.Request) bool { return true }
 	cfg, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
 	page, err := shimmed("wss://example/ws", "tok123")
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := handler("127.0.0.1:5000", "tok123", page, cfg, &agent.Agent{}, nil, func() map[string]any { return nil }, newFiles(t.TempDir()), nil)
-	get := func(path string) string {
+	once := &onceCode{}
+	h := handler("127.0.0.1:5000", "tok123", page, cfg, &agent.Agent{}, nil, func() map[string]any { return nil }, newFiles(t.TempDir()), once)
+	get := func(path string) (string, string) {
 		r := httptest.NewRequest("GET", path, nil)
 		r.Host = "127.0.0.1:5000"
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)
-		return w.Body.String()
+		return w.Body.String(), w.Header().Get("Location")
 	}
 	if trayJSPC("12345") != "" || trayJSPC(`200000001"); x(1)//`) != "" {
 		t.Fatal("trayJSPC пропустил не ID")
@@ -362,36 +366,65 @@ func TestTrayNav(t *testing.T) {
 	js := "addEventListener('DOMContentLoaded', () => { " + trayJSPC("200000001") + " });"
 	sum := sha256.Sum256([]byte(js))
 	hash := "'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
-	t.Cleanup(func() { trayNavTake() })
+	t.Cleanup(func() { trayNavTake("") })
+	if trayNavQuery() != "" {
+		t.Fatal("метка без JS трея")
+	}
 	trayNavSet(trayJSPC("200000001"))
-	if b := get("/?t=tok123&embed=200000002"); strings.Contains(b, js) {
-		t.Error("JS трея ушёл во вкладку ПК")
+	q := trayNavQuery()
+	g := strings.TrimPrefix(q, "&g=")
+	if !trayMarkRe.MatchString(g) {
+		t.Fatalf("метка: %q", q)
 	}
-	if b := get("/?t=tok123"); !strings.Contains(b, "<script>"+js+"</script>") || !strings.Contains(b, hash) {
-		t.Error("главное окно без JS трея или без хэша в CSP")
+	// окно «ПК как монитор» в те же 30 с: тот же обмен кода, но без метки — JS не берёт
+	if _, loc := get("/?n=" + once.issue()); loc != "/?t=tok123" {
+		t.Fatalf("обмен кода без метки: %q", loc)
+	} else if b, _ := get(loc); strings.Contains(b, js) {
+		t.Error("JS трея ушёл в окно без метки")
 	}
-	if b := get("/?t=tok123"); strings.Contains(b, js) {
+	for _, path := range []string{"/?t=tok123&g=" + g + "&embed=200000002", "/?t=tok123&g=0123456789abcdef"} {
+		if b, _ := get(path); strings.Contains(b, js) {
+			t.Errorf("%s: JS трея выполнен", path)
+		}
+	}
+	_, loc := get("/?n=" + once.issue() + q + "&g=x") // лишняя негодная метка — мимо (берётся первая)
+	if loc != "/?t=tok123&g="+g {
+		t.Fatalf("обмен кода не перенёс метку: %q", loc)
+	}
+	if _, loc := get("/?n=" + once.issue() + "&g=%22%3E"); loc != "/?t=tok123" {
+		t.Errorf("негодная метка перенесена: %q", loc)
+	}
+	if b, _ := get(loc); !strings.Contains(b, "<script>"+js+"</script>") || !strings.Contains(b, hash) {
+		t.Error("главное окно с меткой без JS трея или без хэша в CSP")
+	}
+	if b, _ := get(loc); strings.Contains(b, js) {
 		t.Error("JS трея выполнен дважды")
 	}
 	trayNavSet(trayJSHere)
+	g = strings.TrimPrefix(trayNavQuery(), "&g=")
 	trayNav.Lock()
 	trayNav.at = time.Now().Add(-trayNavFor - time.Second)
 	trayNav.Unlock()
-	if b := get("/?t=tok123"); strings.Contains(b, "() => { "+trayJSHere) {
-		t.Error("просроченный JS трея выполнен")
+	if b, _ := get("/?t=tok123&g=" + g); strings.Contains(b, "() => { "+trayJSHere) || trayNavQuery() != "" {
+		t.Error("просроченный JS трея выполнен или метка ещё выдаётся")
 	}
 
-	oldRaise, oldWin := raiseWindow, pcWin
-	t.Cleanup(func() { raiseWindow, pcWin = oldRaise, oldWin })
-	raised := 0
-	raiseWindow, pcWin = func() { raised++ }, nil
-	trayGo(trayJSHere)
-	if raised != 1 || trayNavTake() != trayJSHere {
-		t.Errorf("trayGo без Chrome AnyPC: окно %d, JS для страницы не оставлен", raised)
+	oldRaise, oldWin, oldFb := raiseWindow, pcWin, pcFallback
+	t.Cleanup(func() { raiseWindow, pcWin, pcFallback = oldRaise, oldWin, oldFb })
+	var opened []string
+	setupWindows("http://b", func() string { return "code" }, t.TempDir(), func(string) (string, error) { return "", os.ErrNotExist },
+		func(u string) { opened = append(opened, u) }, &agent.Agent{})
+	pcWin = nil
+	trayGo(trayJSHere) // без Chrome AnyPC: окно прежним способом — с меткой; JS ждёт страницу
+	if len(opened) != 1 || !strings.HasPrefix(opened[0], "http://b/?n=code&g=") {
+		t.Fatalf("окно из trayGo: %q", opened)
+	}
+	if trayNavTake(strings.SplitN(opened[0], "&g=", 2)[1]) != trayJSHere {
+		t.Error("JS для страницы не оставлен под меткой адреса")
 	}
 	trayGo("")
-	if raised != 2 || trayNavTake() != "" {
-		t.Error("trayGo без JS")
+	if len(opened) != 2 || opened[1] != "http://b/?n=code" {
+		t.Errorf("trayGo без JS: %q", opened)
 	}
 }
 

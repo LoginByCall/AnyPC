@@ -24,6 +24,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -204,32 +205,47 @@ func hostMain() {
 // и делать — d (tray.go).
 var startTray func(ctx context.Context, d trayDeps)
 
-// trayNav — JS для главного окна, открытого из трея (trayJSPC, trayJSHere): страница берёт его при загрузке
-// (handler, withScript), а уже открытое окно Chrome AnyPC получает его eval. Годен trayNavFor: потом окно,
-// открытое иначе, его не выполнит.
+// trayNav — JS для главного окна, открытого из трея (trayJSPC, trayJSHere). Страница берёт его при загрузке
+// (handler, withScript) только по метке g, которую trayGo кладёт в адрес главного окна (trayNavQuery: pcFallback,
+// openMain; переживает обмен ?n= → ?t=): окна «ПК как монитор» грузят ту же страницу без метки и его не берут.
+// Уже открытое окно Chrome AnyPC получает его eval. Годен trayNavFor.
 var trayNav struct {
 	sync.Mutex
-	js string
-	at time.Time
+	js, mark string
+	at       time.Time
 }
 
 const trayNavFor = 30 * time.Second
 
+var trayMarkRe = regexp.MustCompile(`^[0-9a-f]{16}$`)
+
 func trayNavSet(js string) {
+	b := make([]byte, 8)
+	rand.Read(b)
 	trayNav.Lock()
-	trayNav.js, trayNav.at = js, time.Now()
+	trayNav.js, trayNav.mark, trayNav.at = js, hex.EncodeToString(b), time.Now()
 	trayNav.Unlock()
 }
 
-// trayNavTake — JS, если он ещё годен (и больше его нет); "" — нечего.
-func trayNavTake() string {
+// trayNavQuery — «&g=метка» для адреса главного окна, пока JS трея ждёт; "" — не ждёт.
+func trayNavQuery() string {
 	trayNav.Lock()
 	defer trayNav.Unlock()
-	js := trayNav.js
-	trayNav.js = ""
-	if time.Since(trayNav.at) > trayNavFor {
+	if trayNav.js == "" || time.Since(trayNav.at) > trayNavFor {
 		return ""
 	}
+	return "&g=" + trayNav.mark
+}
+
+// trayNavTake — JS, если он ещё годен и mark — его метка ("" — любой: eval в открытом окне); взятый больше не отдаётся.
+func trayNavTake(mark string) string {
+	trayNav.Lock()
+	defer trayNav.Unlock()
+	if trayNav.js == "" || mark != "" && mark != trayNav.mark || time.Since(trayNav.at) > trayNavFor {
+		return ""
+	}
+	js := trayNav.js
+	trayNav.js, trayNav.mark = "", ""
 	return js
 }
 
@@ -245,7 +261,7 @@ func trayGo(js string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	if pcWin != nil {
-		if err := pcWin.evalMain(ctx, trayNavTake); err != nil && !errors.Is(err, errNoWindow) {
+		if err := pcWin.evalMain(ctx, func() string { return trayNavTake("") }); err != nil && !errors.Is(err, errNoWindow) {
 			log.Printf("трей: окно AnyPC: %s", scrub(err.Error()))
 		}
 	}
@@ -259,7 +275,7 @@ var raiseWindow func()
 // рекурсии — mainWindow зовёт его, а не себя); pcWin — Chrome AnyPC (Linux): и главное окно, и окна ПК, закрытие
 // главного окна → mainClosed. Возвращает «Открыть» и «Выйти» для трея; «Открыть» не ждёт Chrome (до 20 с).
 func setupWindows(base string, issue func() string, chromeDir string, look func(string) (string, error), open func(string), a *agent.Agent) (func(), func()) {
-	pcFallback = func() { open(base + "/?n=" + issue()) }
+	pcFallback = func() { open(base + "/?n=" + issue() + trayNavQuery()) } // метка trayGo — только главному окну
 	pcWin = nil
 	if cdpWindows { // Linux: и главное окно — в нём же (закрыть окно = выйти, «Выйти» закрывает окно — как в Windows)
 		pcWin = &chromeWin{base: base, issue: issue, dir: chromeDir, look: look, onClose: func() { mainClosed(a) }}
@@ -443,7 +459,11 @@ func handler(addr, token string, page []byte, cfg *config, a *agent.Agent, run *
 				return
 			}
 			w.Header().Set("Cache-Control", "no-store") // адрес с токеном — не в кэш браузера
-			http.Redirect(w, r, "/?t="+token, http.StatusSeeOther)
+			g := ""
+			if m := r.URL.Query().Get("g"); trayMarkRe.MatchString(m) { // метка JS трея (trayNav) — дальше, к странице
+				g = "&g=" + m
+			}
+			http.Redirect(w, r, "/?t="+token+g, http.StatusSeeOther)
 		case r.URL.Path == "/blank": // пустая страница источника окна: список мониторов (cdp_unix.go, screens)
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Write([]byte("<!doctype html><title>AnyPC</title><body style=\"background:#000\"></body>"))
@@ -455,8 +475,9 @@ func handler(addr, token string, page []byte, cfg *config, a *agent.Agent, run *
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Header().Set("Cache-Control", "no-store")
 			out := withUI(page, cfg.uiGet())
-			if !r.URL.Query().Has("embed") { // вкладка ПК в главном окне — не главное окно
-				if js := trayNavTake(); js != "" { // из трея: ПК вкладкой или «Я тут» (trayGo)
+			// из трея: ПК вкладкой или «Я тут» (trayGo) — только загрузке со своей меткой; вкладка ПК (embed) — не главное окно
+			if g := r.URL.Query().Get("g"); g != "" && !r.URL.Query().Has("embed") {
+				if js := trayNavTake(g); js != "" {
 					out = withScript(out, "addEventListener('DOMContentLoaded', () => { "+js+" });")
 				}
 			}
