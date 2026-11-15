@@ -24,7 +24,9 @@ const extra = async () => ` + "`" + `
     { id: '730554218', fp: 'HO', pub: 'aG8=', self: false, passUntil: 0 });
   st.space.members[0].passUntil = Date.now() + 3600e3;
   localStorage.setItem('mine', JSON.stringify([{ id: '482113907', name: 'Офис' }, { id: '730554218', name: 'Дом' }, { id: '915020664', name: 'Ноутбук мамы' }]));
-  window.quit = () => calls.push('quit');` + "`" + `;` + cdpHead + `
+  window.quit = () => calls.push('quit'); localStorage.setItem('tour_connect', '1');
+  window.savedGet = async id => id === '111222333' ? 'pw1' : ''; window.savedSet = async () => {};
+  localStorage.setItem('users', JSON.stringify({ '111222333': 'anna' }));` + "`" + `;` + cdpHead + `
   const fs = require('fs');
   const shown = i => "(e => !!e && e.checkVisibility())(document.getElementById('" + i + "'))";
   await call('Emulation.setDeviceMetricsOverride', { width: 1200, height: 760, deviceScaleFactor: 1, mobile: false });
@@ -67,10 +69,60 @@ const extra = async () => ` + "`" + `
   // «Открыть» на плитке бывшего «Моего ПК» — вкладка «Моих ПК» к нему
   await ev(own + ".querySelector('.mpcopen').click(); 1"); await sleep(300);
   console.log('open=' + await ev("[...document.querySelectorAll('#frames iframe')].map(f => new URL(f.src).searchParams.get('embed')).join(',') + '|' + " + shown('home')));
+  // вкладка к ПК «по паролю» без запомненного пароля и ключа: во фрейме карточка входа — пароль есть куда ввести
+  const fr = "document.querySelector('#frames iframe').contentWindow.document";
+  for (let k = 0; k < 50 && await ev(fr + "?.body?.classList.contains('needpw')") !== true; k++) await sleep(100);
+  console.log('framepw=' + await ev("(() => { const d = " + fr + "; return [d.body.classList.contains('needpw'), ...['connect', 'remote', 'pw', 'go'].map(i => d.getElementById(i).checkVisibility()), ...['home', 'connhead'].map(i => d.getElementById(i).checkVisibility()), [...document.querySelectorAll('#tabs .tab .stt')].map(e => e.textContent).join(',')].join('|'); })()"));
+  await shot('frame-nopw');
+  // myPcHome (трей): из вкладки ПК — на главный, вкладка жива
+  console.log('pchome=' + await ev("[myPcHome(), " + shown('home') + ", " + shown('mypc') + ", document.querySelectorAll('#frames iframe').length].join('|')"));
+  await ev("myPcAdd('915020664'); 1"); await sleep(200);
   // узкое окно: плиток в ряд меньше трёх, колонка «Передать управление» под ними
   await ev("document.getElementById('tabhome').click(); 1");
   await call('Emulation.setDeviceMetricsOverride', { width: 640, height: 900, deviceScaleFactor: 1, mobile: false }); await sleep(300);
   console.log('narrow=' + await ev("(() => { const t = [...document.querySelectorAll('#sptiles .sptile')].map(d => d.getBoundingClientRect().top); const s = document.getElementById('side').getBoundingClientRect(), m = document.getElementById('spmain').getBoundingClientRect(); return (new Set(t).size > 1) + ',' + (s.top >= m.bottom) + ',' + (document.documentElement.scrollWidth <= 640); })()"));
+  await call('Emulation.setDeviceMetricsOverride', { width: 1200, height: 760, deviceScaleFactor: 1, mobile: false }); await sleep(300);
+  // «···» у членов пространства — только «Переименовать» («Убрать» члена — исключение на «Доступе»); член без записи в mine получает имя
+  const mt = i => "document.querySelector('#sptiles .sptile[data-id=\"" + i + "\"]')";
+  const memMenu = await ev("[" + mt('482113907') + ".querySelector('.mpcmore').getAttribute('aria-label'), [..." + mt('482113907') + ".querySelectorAll('.tmenu button')].map(b => b.textContent).join('/'), " + mt('482113907') + ".querySelector('button').className].join('|')");
+  await ev("localStorage.setItem('mine', JSON.stringify(JSON.parse(localStorage.getItem('mine')).filter(p => p.id !== '730554218'))); myPcRender(); 1"); await sleep(200);
+  await ev(mt('730554218') + ".querySelector('.mpcmore').click(); " + mt('730554218') + ".querySelector('.mpcren').click(); { const n = document.querySelector('#sptiles input.nmedit'); n.value = 'Дача'; n.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); } 1"); await sleep(300);
+  console.log('memmenu=' + memMenu + '|' + await ev("JSON.stringify(JSON.parse(localStorage.getItem('mine')).find(p => p.id === '730554218')) + '|' + " + mt('730554218') + ".querySelector('.nm').textContent"));
+  // ★ в сессии: член пространства — уже свой (★, снять нельзя); ПК из mine — ★ (переключатель); чужой — ☆
+  console.log('star=' + await ev("['482113907', '915020664', '123123123'].map(h => { host = h; starShow(); const b = document.getElementById('starbtn'); return b.textContent + ':' + b.disabled; }).join('|')"));
+  await ev("host = ''; 1");
+  // набранный код в плитке без фокуса переживает перерисовку; с фокусом плитка не перерисовывается до ухода фокуса
+  const ci = mt('730554218') + ".querySelector('input')";
+  await ev("window.t0 = " + mt('730554218') + "; " + ci + ".value = '135'; localStorage.setItem('mine', JSON.stringify([...JSON.parse(localStorage.getItem('mine')), { id: '555666777', name: 'X' }])); myPcRender(); 1"); await sleep(100);
+  const kept = await ev("[t0 !== " + mt('730554218') + ", " + ci + ".value].join('|')");
+  await ev("window.t1 = " + mt('730554218') + "; " + ci + ".focus(); " + ci + ".value = '2468'; localStorage.setItem('mine', JSON.stringify(JSON.parse(localStorage.getItem('mine')).filter(p => p.id !== '555666777'))); myPcRender(); 1"); await sleep(1300);
+  const foc = await ev("[t1 === " + mt('730554218') + ", document.activeElement === " + ci + ", " + ci + ".value, !!" + mt('555666777') + "].join('|')");
+  await ev("document.activeElement.blur(); 1"); await sleep(1000);
+  console.log('typed=' + kept + '/' + foc + '/' + await ev("[t1 !== " + mt('730554218') + ", " + ci + ".value, !!" + mt('555666777') + "].join('|')"));
+  // начатое переименование не сбрасывается опросом (пропуск Офиса истёк — плиткам нужна перерисовка)
+  await ev(own + ".querySelector('.mpcmore').click(); " + own + ".querySelector('.mpcren').click(); document.querySelector('#sptiles input.nmedit').value = 'Набор'; st.space.members[1].passUntil = 0; 1"); await sleep(1300);
+  const rn = await ev("(i => [!!i && i.isConnected, document.activeElement === i, i?.value].join('|'))(document.querySelector('#sptiles input.nmedit'))");
+  await ev("document.querySelector('#sptiles input.nmedit').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); 1"); await sleep(1300);
+  console.log('renpoll=' + rn + '|' + await ev(mt('482113907') + ".querySelector('.tag').textContent + '|' + " + own + ".querySelector('.nm').textContent"));
+  // «Разорвать» — красный (--bad), не синий акцент; «Подключиться» — синий
+  console.log('colors=' + await ev("['bye', 'hostbye', 'go'].map(i => getComputedStyle(document.getElementById(i)).backgroundColor).join('|') + '|' + getComputedStyle(document.getElementById('msg')).color"));
+  // тур не ссылается на скрытые/несуществующие элементы: главный — без формы (она на «Другом ПК»), «Другой ПК» — форма и «Параметры»
+  const tl = k => ev("TOURS." + k + ".filter(s => tEls(s).length).map(s => s[1]).join(',')");
+  const tHome = await tl('home'), tAll = await ev("Object.values(TOURS).flat().flatMap(s => s[0]).filter(i => !document.getElementById(i)).join(',')");
+  await ev("startTour('home', true); 1"); await sleep(200);
+  const tOn = await ev(shown('tour') + " + ':' + tour?.kind");
+  await ev("document.getElementById('hadd').click(); 1"); await sleep(500);
+  const tConn = await tl('connect'), tOff = await ev(shown('tour'));
+  // конец сессии, начатой с «Другого ПК», — снова «Другой ПК» (там причина разрыва), не главный
+  await ev("show(true); show(false); document.getElementById('msg').textContent = 'reason'; 1");
+  console.log('tour=' + tHome + '|' + tAll + '|' + tOn + '|' + tConn + '|' + tOff + '|end=' + await ev("[" + shown('connect') + ", " + shown('home') + ", " + shown('msg') + "].join(',')"));
+  // имя записи из запомненного входа не прячется в свёрнутых «Параметрах»
+  await ev("{ const d = document.getElementById('id'); d.value = '111222333'; d.dispatchEvent(new Event('input')); } 1"); await sleep(400);
+  console.log('user=' + await ev("[document.getElementById('copts').open, " + shown('user') + ", document.getElementById('user').value].join('|')"));
+  // myPcHome: с «Другого ПК» и из «Настроек» — на главный
+  const h1 = await ev("myPcHome() + ':' + " + shown('home') + " + ':' + " + shown('connect'));
+  await ev("document.getElementById('setgo').click(); 1");
+  console.log('myPcHome=' + h1 + '|' + await ev("myPcHome() + ':' + " + shown('home') + " + ':' + " + shown('settings')) + '|' + await ev("typeof myPcAdd + ',' + !!document.getElementById('shpw')"));
   await ev("document.getElementById('quit').click(); 1");
   console.log('quit=' + await ev("calls.join(',')"));
   process.exit(0);
@@ -101,6 +153,16 @@ func TestBrowserHome(t *testing.T) {
 		"connback=false|true\n",
 		"settings=true|false|true|true|true|ab12 cd34|AnyPC 0.3.1|true|Настройки\n",
 		"quit=quit\n",
+		"framepw=true|true|true|true|true|false|false|нужен пароль\n", // B1: во фрейме без пароля — карточка входа, без главного и «Назад»
+		"pchome=true|true|false|1\n",
+		"memmenu=Переименовать: Офис|Переименовать|main|{\"id\":\"730554218\",\"name\":\"Дача\"}|Дача\n",
+		"star=★ В моём пространстве:true|★ В моём пространстве:false|☆ В моё пространство:false\n",
+		"typed=true|135/true|true|2468|true/true|2468|false\n",
+		"renpoll=true|true|Набор|нужен код|Мамин\n",
+		"colors=rgb(180, 35, 24)|rgb(180, 35, 24)|rgb(29, 78, 216)|rgb(180, 35, 24)\n",
+		"tour=tour_id,tour_code,tour_pw,tour_add,tour_talk,tour_help||true:home|tour_go,tour_opts|false|end=true,false,true\n",
+		"user=true|true|anna\n",
+		"myPcHome=true:true:false|true:true:false|function,true\n",
 		"incoming=true|settings/true|me\n",
 		"menu=true|true|Переименовать/Убрать из «Моего пространства»|Мамин|Мамин|true\n",
 		"open=915020664|false\n",

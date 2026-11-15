@@ -186,7 +186,7 @@ func TestBrowserMain(t *testing.T) {
 			t.Errorf("нет %q", want)
 		}
 	}
-	if !regexp.MustCompile(`tiles=Officeuntil \d\d:\d\d[^;|]*sign-in without password · 444 555 666Open\|;777 888 999code neededsign-in without password · 777 888 999Sign in\|Code from the app\n`).MatchString(out) {
+	if !regexp.MustCompile(`tiles=Officeuntil \d\d:\d\d[^;|]*sign-in without password · 444 555 666Open···Rename\|;777 888 999code neededsign-in without password · 777 888 999Sign in···Rename\|Code from the app\n`).MatchString(out) {
 		t.Error("плитки не те")
 	}
 	if !regexp.MustCompile(`tabs=This PCI'm here;Officeno password until \d\d:\d\d[^;]*;777 888 999code needed;\+\n`).MatchString(out) {
