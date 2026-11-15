@@ -3,7 +3,7 @@
 package agent
 
 // Хост на Linux: X11 (ffmpeg x11grab + XTest) или Wayland (портал RemoteDesktop/ScreenCast + PipeWire).
-// Плашка и выбор файла — zenity; буфер обмена — xclip (X11) или wl-clipboard (Wayland).
+// Плашка — gjs (plaque_linux.go), запасная и выбор файла — zenity; буфер обмена — xclip (X11) или wl-clipboard (Wayland).
 
 import (
 	"context"
@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -156,30 +155,6 @@ func sysLang() string {
 
 func pangoEscape(s string) string {
 	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(s)
-}
-
-// showIndicator — плашка REQ-F-15: окно zenity; закрыл человек → разорвать сессию.
-func showIndicator(cid string, mode plaqueMode, onUserClose func()) (func(), error) {
-	if fakeDesktop {
-		return func() {}, nil
-	}
-	bin, err := exec.LookPath("zenity")
-	if err != nil {
-		return nil, errors.New("нет zenity — установите пакет zenity")
-	}
-	title, text := plaqueText(sysLang(), cid, mode)
-	cmd := exec.Command(bin, "--warning", "--no-wrap", "--title="+title, "--text="+pangoEscape(text))
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-	var byUs atomic.Bool
-	go func() {
-		cmd.Wait()
-		if !byUs.Load() {
-			onUserClose()
-		}
-	}()
-	return func() { byUs.Store(true); cmd.Process.Kill() }, nil
 }
 
 // pickFile — окно выбора файла на хосте (zenity работает и в X11, и в Wayland).
