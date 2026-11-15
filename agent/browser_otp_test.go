@@ -15,8 +15,9 @@ import (
 	"anypc/ui"
 )
 
-// cdpOTP: вход в хост с TOTP — поле кода, неверный код (новый запрос), верный — сессия; «Запомнить пароль»:
-// сохранён после входа, подставляется при вводе ID, снятие галочки забывает.
+// cdpOTP: вход в хост с TOTP — шаг 2 (поле кода; шестая цифра отправляет сама), неверный код (новый запрос), верный —
+// сессия; веб-клиент сам не спрашивает «Это ваш компьютер?», по ☆ — спрашивает; хост без входа ключом — «Добавить» с
+// галочкой «Запомнить пароль» (по умолчанию снята): сохранён, подставляется при вводе ID, «Забыть» забывает.
 const cdpOTP = `
 const [, , port, url] = process.argv;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -31,15 +32,24 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const code = () => ev("fetch('/code').then(r => r.text())");
   const call = (method, params) => new Promise(r => { const i = ++id; wait[i] = r; ws.send(JSON.stringify({ id: i, method, params })); });
   await sleep(1000);
-  await ev("document.getElementById('id').value='123456789'; document.getElementById('pw').value='secret123'; document.getElementById('remember').checked = true; document.getElementById('go').click()");
-  console.log('ask=' + await until(s => s.includes('|true|')));
+  await ev("document.getElementById('id').value='123456789'; document.getElementById('pw').value='secret123'; document.getElementById('go').click()");
+  console.log('ask=' + await until(s => s.includes('|true|')) + '|' + await ev("document.getElementById('otptxt').textContent + '|' + document.getElementById('id').checkVisibility()"));
   const c = await code(), bad = String((+c[0] + 1) % 10) + c.slice(1);
-  await ev("document.getElementById('otp').value='" + bad + "'; document.getElementById('otpgo').click()");
+  await ev("const o = document.getElementById('otp'); o.value='" + bad.slice(0, 5) + "'; o.dispatchEvent(new Event('input')); 1");
+  console.log('five=' + await state()); // пять цифр — ещё не отправлено
+  await ev("const o2 = document.getElementById('otp'); o2.value += '" + bad.slice(5) + "'; o2.dispatchEvent(new Event('input')); 1");
   await sleep(300);
   console.log('bad=' + await until(s => s.includes('|true|')));
   await ev("document.getElementById('otp').value='" + await code() + "'; document.getElementById('otp').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }))");
   console.log('ok=' + await until(s => s.endsWith('|true')));
-  console.log('saved=' + await ev("localStorage.getItem('pass')"));
+  const q = "[document.getElementById('mineq').checkVisibility(), document.getElementById('mineqb').textContent === t('c3_b'), document.getElementById('mineqrl').checkVisibility(), document.getElementById('mineqr').checked, document.getElementById('starbtn').checkVisibility()].join(',')";
+  await sleep(300);
+  console.log('webq=' + await ev(q)); // веб-клиент: вопрос сам не появился, ☆ видна
+  await ev("document.getElementById('starbtn').click(); 1");
+  console.log('starq=' + await ev(q)); // ☆ — тот же вопрос; галочка «Запомнить пароль» снята, ☆ спрятана
+  await ev("document.getElementById('mineqn').value = 'Дача'; document.getElementById('mineqr').checked = true; document.getElementById('mineqok').click(); 1");
+  await sleep(300);
+  console.log('saved=' + await ev("localStorage.getItem('pass')") + '|' + await ev("localStorage.getItem('mine')") + '|' + await ev(q) + '|' + await ev("document.getElementById('starbtn').textContent"));
   // обрыв → автопереподключение кладёт пароль в поле: глазик его не показывает
   await ev("const p = pc; Object.defineProperty(p, 'connectionState', { get: () => 'failed' }); p.onconnectionstatechange(); 1");
   await sleep(200);
@@ -47,18 +57,18 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   console.log('redial=' + await ev("document.getElementById('pw').type + '|' + document.querySelector('[data-eye=pw]').disabled + '|' + (document.getElementById('pw').value.length > 0)"));
   await until(s => s.includes('|true|')); // переподключение дошло до кода
   await ev("document.getElementById('bye').click()");
-  await ev("document.getElementById('pw').value=''; document.getElementById('remember').checked = false; const i = document.getElementById('id'); i.value = '123456789'; i.dispatchEvent(new Event('input'))");
+  await ev("document.getElementById('pw').value=''; const i = document.getElementById('id'); i.value = '123456789'; i.dispatchEvent(new Event('input'))");
   await sleep(300);
-  console.log('fill=' + await ev("document.getElementById('pw').value + '|' + document.getElementById('remember').checked"));
+  console.log('fill=' + await ev("document.getElementById('pw').value + '|' + !document.getElementById('pwsrow').classList.contains('hidden')"));
   // подставленный пароль «глазиком» не открыть; правка человека начинается с пустого поля
   await ev("document.querySelector('[data-eye=pw]').click(); 1");
   console.log('eye=' + await ev("document.getElementById('pw').type + '|' + document.querySelector('[data-eye=pw]').disabled"));
   await ev("document.getElementById('pw').dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: 'x', cancelable: true })); 1");
   console.log('edit=' + await ev("JSON.stringify(document.getElementById('pw').value) + '|' + document.querySelector('[data-eye=pw]').disabled"));
   await ev("const i2 = document.getElementById('id'); i2.dispatchEvent(new Event('input')); 1"); await sleep(300); // снова подставить для «забыть»
-  await ev("const r = document.getElementById('remember'); r.checked = false; r.dispatchEvent(new Event('change'))");
+  await ev("document.getElementById('pwforget').click(); 1");
   await sleep(300);
-  console.log('forgot=' + await ev("localStorage.getItem('pass')"));
+  console.log('forgot=' + await ev("localStorage.getItem('pass') + '|' + document.getElementById('pwsrow').classList.contains('hidden') + '|' + JSON.stringify(document.getElementById('pw').value)")); // забытый пароль не остаётся в поле
   // Enter (настоящая клавиша) в поле с подставленным паролем входит с ним, а не с пустым
   await ev("localStorage.setItem('pass', JSON.stringify({ '123456789': 'secret123' })); document.getElementById('pw').value = ''; const i3 = document.getElementById('id'); i3.dispatchEvent(new Event('input')); 1");
   await sleep(300);
@@ -73,16 +83,19 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 func TestBrowserOTP(t *testing.T) {
 	out := otpBrowser(t, cdpOTP)
 	for _, want := range []string{
-		"ask=Enter the 6-digit code from the authenticator app for this PC|true|false",
+		"ask=|true|false|This PC lets people in without confirmation, so it asks for a second step. Open the authenticator app and enter the 6 digits for “123 456 789”.|false",
+		"five=|true|false",
 		"bad=Wrong code. Check that the time on the phone is correct and try again|true|false",
 		"ok=|false|true",
-		`saved={"123456789":"secret123"}`,
+		"webq=false,false,false,false,true",
+		"starq=true,true,true,false,false",
+		`saved={"123456789":"secret123"}|[{"id":"123456789","name":"Дача"}]|false,true,false,true,true|★ In My space`,
 		"fill=secret123|true",
 		"eye=password|true",
 		`edit=""|false`,
-		"forgot={}",
+		`forgot={}|true|""`,
 		"redial=password|true|true",
-		"enter=Enter the 6-digit code from the authenticator app for this PC|true|false",
+		"enter=|true|false",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("нет %q", want)
@@ -106,7 +119,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await ev("document.getElementById('id').value='123456789'; document.getElementById('pw').value='secret123'; document.getElementById('go').click()");
   console.log('ask=' + await until(s => s.includes('|true|')));
   console.log('late=' + await until(s => s.includes('|false|')));
-  await ev("document.getElementById('otp').value='123456'; document.getElementById('otpgo').click()");
+  await ev("const o = document.getElementById('otp'); o.value='123456'; o.dispatchEvent(new Event('input')); 1");
   await sleep(300);
   console.log('after=' + await state());
   process.exit(0);

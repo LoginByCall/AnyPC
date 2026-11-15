@@ -18,10 +18,12 @@ import (
 	"anypc/ui"
 )
 
-// cdpKeyLogin: «Доверять этому ПК» (REQ-S-24) — вход паролем с галочкой, дальше без пароля (только код TOTP);
+// cdpKeyLogin: вход ключом (REQ-S-24) — после входа паролем ☆ (веб-клиент: сам вопрос не задаётся) → «Это ваш
+// компьютер?» → «Добавить»: тот ПК пускает по ключу — повторный вход тем же паролем с trust и новым кодом, дальше без
+// пароля (только код TOTP);
 // ключ хоста не тот, что закреплён, или не закреплён вовсе — код не спрашивается; "ok" и "nokey" раньше своего «b» по
 // ключу не принимаются; старый хост без keys — пароль не уходит; отзыв на хосте — понятная причина, метка снята;
-// отпечаток своего ключа — у галочки; снятие галочки забывает ключ и просит отозвать его на хосте.
+// отпечаток своего ключа — в «Параметрах»; «Забыть» забывает ключ и просит отозвать его на хосте.
 const cdpKeyLogin = `
 const [, , port, url] = process.argv;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -34,16 +36,29 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const state = () => ev("document.getElementById('msg').textContent + '|' + !document.getElementById('otpbox').classList.contains('hidden') + '|' + !document.getElementById('sess').classList.contains('hidden')");
   const until = async f => { for (let i = 0; i < 75; i++) { const s = await state(); if (f(s)) return s; await sleep(200); } return await state(); };
   const code = () => ev("fetch('/code').then(r => r.text())");
-  const otp = async () => { await until(s => s.includes('|true|')); await ev("document.getElementById('otp').value='" + await code() + "'; document.getElementById('otpgo').click()"); };
+  const otp = async () => { await until(s => s.includes('|true|')); await ev("(o => { o.value = '" + await code() + "'; o.dispatchEvent(new Event('input')); return 1; })(document.getElementById('otp'))"); };
   const login = "JSON.stringify(Object.values(JSON.parse(localStorage.getItem('ckeys') || '{}')).map(k => [k.login, k.lu]))";
   const go = "document.getElementById('pw').value=''; document.getElementById('go').click()";
+  const keyOn = "!document.getElementById('keyrow').classList.contains('hidden')";
+  // вход паролем + код, затем ☆ (★ — сначала снять: ПК уже в списке) → «Добавить» → повторный вход с trust и новым кодом
+  const trust = async () => {
+    await ev("document.getElementById('pw').value='secret123'; document.getElementById('go').click()");
+    await otp(); await until(s => s.endsWith('|true'));
+    if (await ev("document.getElementById('starbtn').getAttribute('aria-pressed')") === 'true') await ev("document.getElementById('starbtn').click(); 1");
+    await ev("document.getElementById('starbtn').click(); 1");
+    const q = await ev("[document.getElementById('mineq').checkVisibility(), document.getElementById('mineqb').textContent === t('c3_b_key'), document.getElementById('mineqrl').checkVisibility(), " + login + "].join(',')");
+    await ev("document.getElementById('mineqn').value = 'Работа'; document.getElementById('mineqok').click(); 1");
+    const re = await until(s => s.includes('|true|')); // повторный вход: шаг 2 с просьбой о новом коде
+    await otp();
+    return q + '|' + re;
+  };
   await sleep(1000);
-  await ev("document.getElementById('id').value='123456789'; document.getElementById('pw').value='secret123'; document.getElementById('keylogin').checked = true; document.getElementById('go').click()");
-  await otp();
-  console.log('trust=' + await until(s => s.endsWith('|true')) + '|' + await ev(login) + '|' + await ev("document.getElementById('keyfp').textContent"));
+  await ev("document.getElementById('id').value='123456789'; 1");
+  console.log('trustq=' + await trust());
+  console.log('trust=' + await until(s => s.endsWith('|true')) + '|' + await ev(login) + '|' + await ev("document.getElementById('keyfp').textContent") + '|' + await ev("localStorage.getItem('mine')"));
   await ev("document.getElementById('bye').click()"); await sleep(300);
-  await ev("document.getElementById('keylogin').checked = false; const i = document.getElementById('id'); i.value = '123456789'; i.dispatchEvent(new Event('input'))"); await sleep(300);
-  console.log('box=' + await ev("document.getElementById('keylogin').checked"));
+  await ev("document.getElementById('keyrow').classList.add('hidden'); const i = document.getElementById('id'); i.value = '123456789'; i.dispatchEvent(new Event('input'))"); await sleep(300);
+  console.log('box=' + await ev(keyOn));
   await ev(go);
   console.log('ask=' + await until(s => s.includes('|true|')));
   await otp();
@@ -76,23 +91,21 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await ev("JSON.parse = op; 1");
   await fetch(url + 'ask'); // на хосте ключ в списке, но вход им выключен: "nokey" без why — попросить отозвать там
   await ev(go);
-  console.log('nokey=' + await until(s => s.includes('rror')) + '|' + await ev(login) + '|' + await ev("document.getElementById('keylogin').checked"));
+  console.log('nokey=' + await until(s => s.includes('rror')) + '|' + await ev(login) + '|' + await ev(keyOn));
   await fetch(url + 'revoke');
   await ev(go); await sleep(300);
   console.log('nopw=' + await state());
-  // снова «Доверять» (новый ключ), отпечаток у галочки; снятие галочки — забыть и попросить отозвать
-  await ev("document.getElementById('pw').value='secret123'; document.getElementById('keylogin').checked = true; document.getElementById('go').click()");
-  await otp();
+  // снова вход ключом (новый ключ), отпечаток в «Параметрах»; «Забыть» — забыть и попросить отозвать
+  await trust();
   await until(s => s.endsWith('|true'));
   await ev("document.getElementById('bye').click()"); await sleep(300);
   await ev("const i4 = document.getElementById('id'); i4.dispatchEvent(new Event('input')); 1");
   await sleep(300);
-  console.log('fp=' + await ev("document.getElementById('keyfp').textContent + '|' + document.getElementById('keylogin').checked"));
-  await ev("const c = document.getElementById('keylogin'); c.checked = false; c.dispatchEvent(new Event('change')); 1"); await sleep(300);
+  console.log('fp=' + await ev("document.getElementById('keyfp').textContent + '|' + " + keyOn));
+  await ev("document.getElementById('keyforget').click(); 1"); await sleep(300);
   console.log('forgot=' + await ev("document.getElementById('msg').textContent + '|' + localStorage.getItem('ckeys') + '|' + document.getElementById('keyfp').textContent"));
   // ключа на хосте нет (отозван там, сброшен вступлением в пространство): "nokey" why:"none" — отзывать нечего
-  await ev("document.getElementById('pw').value='secret123'; document.getElementById('keylogin').checked = true; document.getElementById('go').click()");
-  await otp();
+  await trust();
   await until(s => s.endsWith('|true'));
   await ev("document.getElementById('bye').click()"); await sleep(300);
   await fetch(url + 'revoke');
@@ -160,15 +173,16 @@ func TestBrowserKeyLogin(t *testing.T) {
 	}
 	fp, fp2 := fps[0], fps[1]
 	for _, want := range []string{
-		"trust=|false|true|[[true,\"\"]]|🔑 " + fp + "\n",
+		"trustq=true,true,false,[[null,null]]|A new code is needed: the previous one has already been used.|true|false\n", // ключ есть, вход им — ещё нет
+		"trust=|false|true|[[true,\"\"]]|🔑 " + fp + `|[{"id":"123456789","name":"Работа"}]` + "\n",
 		"early=Error: the remote PC could not be verified — connection may be intercepted|false|false",
 		"earlyno=false|[[true,\"\"]]",
-		"earlyask=Enter the 6-digit code from the authenticator app for this PC|true|false",
+		"earlyask=|true|false",
 		"noknown=Error: the remote PC does not accept sign-in without a password — enter the password|false|false|[[true,\"\"]]",
 		"fp=🔑 " + fp2 + "|true",
 		"forgot=Sign-in without a password from this PC is off. Also revoke key " + fp2 + " in the remote PC’s window|{}|\n",
 		"box=true",
-		"ask=Enter the 6-digit code from the authenticator app for this PC|true|false",
+		"ask=|true|false",
 		"key=|false|true",
 		"fake=Error: the remote PC key has changed. If AnyPC was not reinstalled there, do not connect|false|false|false",
 		"old=Error: the remote PC does not accept sign-in without a password — enter the password|false|false|[[true,\"\"]]",
@@ -213,7 +227,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await call('Page.navigate', { url }); await sleep(1500);
   console.log('keys=' + await list());
   await ev("const i = document.getElementById('id'); i.value = '123456789'; i.dispatchEvent(new Event('input')); 1"); await sleep(300);
-  console.log('migr=' + await ev("localStorage.getItem('ckeys') + '|' + JSON.stringify(ck) + '|' + document.getElementById('keylogin').checked"));
+  console.log('migr=' + await ev("localStorage.getItem('ckeys') + '|' + JSON.stringify(ck) + '|' + !document.getElementById('keyrow').classList.contains('hidden')"));
   await ev("[...document.querySelectorAll('#ulist button')].find(b => b.parentNode.textContent.includes('aaaa')).click(); 1"); await sleep(300);
   console.log('revoked=' + await list());
   process.exit(0);
