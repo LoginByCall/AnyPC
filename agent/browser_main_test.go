@@ -87,7 +87,7 @@ const extra = async () => ` + "`" + `
   await tile('444555666', 'button'); await sleep(300);
   console.log('open=' + await ev("[...document.querySelectorAll('#frames iframe')].map(f => new URL(f.src).searchParams.get('embed')).join(',') + '|' + " + vis('home')));
   // Ч8: полоса ПК окна вкладок в программе — «This PC» (к главному), открытая вкладка с ×, «+», подсказка Ctrl+Alt+← →
-  console.log('sessstrip=' + await ev("[...document.getElementById('tabs').children].map(e => e.id || (e.querySelector('.nm') ? e.querySelector('.nm').dataset.id + (e.classList.contains('sel') ? '*' : '') + ':' + !!e.querySelector('.tabx') : e.className)).join(',')"));
+  console.log('sessstrip=' + await ev("[...document.getElementById('tabs').children].map(e => e.id || (e.querySelector('.nm') ? e.querySelector('.nm').dataset.id + (e.classList.contains('sel') ? '*' : '') + ':' + !!e.querySelector('.tabx') : e.className)).join(',') + '|' + document.querySelectorAll('#hometabs .tabx').length")); // на полосе главного × нет
   if (process.env.ANYPC_SHOT) { await call('Emulation.setDeviceMetricsOverride', { width: 1200, height: 760, deviceScaleFactor: 1, mobile: false }); await sleep(300);
     const r = await call('Page.captureScreenshot', { format: 'png' }); require('fs').writeFileSync(process.env.ANYPC_SHOT, Buffer.from(r.result.data, 'base64')); }
   await ev("document.getElementById('tabhome').click(); 1"); await sleep(200);
@@ -175,7 +175,7 @@ func TestBrowserMain(t *testing.T) {
 		"here=Office · 444 555 666 — open777 888 999 — refused: Wrong password or code|\n", // итог по ПК; пароль и код из полей стёрты
 		"other=Office · 444 555 666 — open777 888 999 — refused: Wrong password or code\n",
 		"open=444555666|false\n",
-		"sessstrip=tabhome,444555666*:true,777888999:false,tabadd,grow,swhint\n", // «This PC» — к главному; открытая — с ×; закрытый ПК — без
+		"sessstrip=tabhome,444555666*:true,777888999:false,tabadd,grow,swhint|0\n", // «This PC» — к главному; открытая — с ×; закрытый ПК — без
 		"short=1|true\n",           // код не из 6 цифр: вкладки нет, фокус в поле
 		"code=135790||777888999\n", // код из плитки — во фрейм на первый запрос; второй запрос — в общую строку кода
 		"stale=|777888999||777888999\n",
