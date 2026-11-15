@@ -31,7 +31,7 @@ import (
 // переименование ✎ на месте (Enter — сохранить, Esc — отмена, пустое — ID, ≤ 40 символов) видно на вкладке;
 // ★ на панели сессии убирает/добавляет ПК и сразу даёт поле имени; × в списке — явное удаление; «nokey» и снятие
 // «Доверять» ПК из `mine` НЕ убирают (было в фазе 1): вкладка честно «нужен пароль», во фрейме — карточка входа
-// с объяснением; подсказка про вход без пароля видна и в пустом, и в непустом списке. Пиксельная задержка картинки ≤ 1 с (MULTI-PC.md) — свойство
+// с объяснением; отдельной карточки «Мои ПК» нет (v0.3.1): ПК из `mine` — плитки «Моё пространство», подсказка — только при пустом списке. Пиксельная задержка картинки ≤ 1 с (MULTI-PC.md) — свойство
 // реального браузера (headless приостанавливает декод скрытого видео), проверяется вживую (V2); тест гейтит то,
 // что контролирует код: соединение не рвётся и входов на хосте по 1.
 const cdpMyPC = `
@@ -52,7 +52,10 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const tabClick = i => ev("[...document.querySelectorAll('#tabs .tab .nm')].find(n => n.dataset.id === '" + i + "').parentNode.click(); 1");
   // правка имени в поле .nmedit документа d (родитель или фрейм): значение и клавиша
   const nmKey = (d, val, key) => d + ".querySelector('input.nmedit').value = " + JSON.stringify(val) + "; " + d + ".querySelector('input.nmedit').dispatchEvent(new KeyboardEvent('keydown', { key: '" + key + "', bubbles: true })); 1";
-  const ren = async (i, val, key) => { await ev("document.querySelector('#minelist .mpc[data-id=\"" + i + "\"] .mpcren').click(); 1"); await ev(nmKey('document', val, key)); };
+  // плитка бывшего «Моего ПК» в «Моё пространство» (v0.3.1): «···» → «Переименовать» / «Убрать»
+  const menu = (i, what) => ev("(() => { const d = document.querySelector('#sptiles .sptile[data-id=\"" + i + "\"]'); d.querySelector('.mpcmore').click(); const m = d.querySelector('.tmenu'); const on = !m.classList.contains('hidden'); d.querySelector('." + what + "').click(); return on; })()");
+  const ren = async (i, val, key) => { await menu(i, 'mpcren'); await ev(nmKey('document', val, key)); };
+  const tileNames = "JSON.stringify([...document.querySelectorAll('#sptiles .sptile')].map(d => d.querySelector('.nm').textContent + '|' + d.querySelector('.sub').textContent)";
   await sleep(800);
   // ВЕРХНЕЕ окно: ?embed=<ID> не должно входить само (parent===window) даже с готовым ключом — пробуем до засева
   const top = await (await fetch('http://127.0.0.1:' + port + '/json/new?' + url + '?embed=111111111', { method: 'PUT' })).json();
@@ -122,7 +125,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   console.log('names=' + await names());
   // переименование в списке освежило имя на панели сессии открытой вкладки (родитель → embedStar)
   console.log('renstar=' + await ev("document.querySelectorAll('#frames iframe')[1].contentWindow.document.getElementById('starnm').textContent"));
-  console.log('listnames=' + await ev("JSON.stringify([...document.querySelectorAll('#minelist .mpcopen')].map(b => b.textContent).sort())"));
+  console.log('listnames=' + await ev(tileNames + ".sort())"));
   // ★ на панели сессии третьего ПК: снять — ушёл из списка; поставить — вернулся и сразу поле имени
   await tabClick(ids[2]); await sleep(200);
   const f2 = "document.querySelectorAll('#frames iframe')[2].contentWindow.document";
@@ -152,7 +155,9 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   console.log('afternokey=' + JSON.stringify(await mine()) + '|' + JSON.parse(await tabState())[0]);
   console.log('pwlabel=' + await ev("[...document.querySelectorAll('#tabs .tab')].find(b => b.querySelector('.nm')?.dataset.id === '" + ids[0] + "').querySelector('.stt').textContent === t('st_pw')"));
   const f0 = "document.querySelectorAll('#frames iframe')[0].contentWindow";
-  console.log('pwform=' + await ev("(() => { const w = " + f0 + ", d = w.document; return [d.body.classList.contains('needpw'), d.getElementById('home').checkVisibility(), d.getElementById('pw').checkVisibility(), !d.getElementById('me').checkVisibility(), d.getElementById('msg').textContent.includes(t('e_nokey_why'))].join('|'); })()"));
+  console.log('pwform=' + await ev("(() => { const w = " + f0 + ", d = w.document; return [d.body.classList.contains('needpw'), d.getElementById('connect').checkVisibility(), d.getElementById('pw').checkVisibility(), !d.getElementById('me').checkVisibility(), d.getElementById('msg').textContent.includes(t('e_nokey_why'))].join('|'); })()"));
+  // вкладка-фрейм без пароля: только карточка входа — ни главного экрана, ни полосы ПК, ни «Назад», ни «Настроек»
+  console.log('pwonly=' + await ev("(() => { const d = " + f0 + ".document; return ['home', 'hometabs', 'sptiles', 'connhead', 'settings', 'access', 'setgo'].map(i => d.getElementById(i).checkVisibility()).join(',') + '|' + d.getElementById('remote').checkVisibility(); })()"));
   // приёмка: вкладка — только к своему ID. «Недавние» во фрейме скрыты; подмена поля скриптом и щелчок по недавнему
   // чужому ID не подключают к нему (на чужом хосте новых входов нет — проверка logins ниже), вкладка не «на связи»
   const fd = f0 + ".document";
@@ -188,11 +193,11 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   console.log('afteruntrust=' + JSON.stringify(await mine()) + '|key=' + await ev("!!JSON.parse(localStorage.getItem('ckeys'))['" + ids[1] + "']"));
   // явное удаление: × в списке «Мои ПК»
   await ev("document.getElementById('tabhome').click(); 1"); await sleep(200);
-  await ev("document.querySelector('#minelist .mpc[data-id=\"" + ids[0] + "\"] .mpcdel').click(); 1");
-  console.log('afterdel=' + JSON.stringify(await mine()));
+  const menuOn = await menu(ids[0], 'mpcdel');
+  console.log('afterdel=' + JSON.stringify(await mine()) + '|' + menuOn + '|' + await ev("!!document.querySelector('#sptiles .sptile[data-id=\"" + ids[0] + "\"]')"));
   console.log('delstar=' + await ev(fd + ".getElementById('starbtn').getAttribute('aria-pressed')")); // × в списке освежил ★ открытой вкладки
-  // подсказка про вход без пароля: видна в непустом и в пустом списке
-  const hint = () => ev("[document.getElementById('minehow').checkVisibility() && document.getElementById('minehow').textContent.includes('TOTP'), document.getElementById('mineempty').checkVisibility()].join(',')");
+  // v0.3.1 (по макету): отдельной карточки «Мои ПК» нет — одна строка подсказки только при пустом списке
+  const hint = () => ev("[!document.getElementById('mine'), !document.getElementById('minelist'), document.getElementById('mineempty').checkVisibility(), document.getElementById('sptiles').childElementCount].join(',')");
   const h1 = await hint();
   await ev("localStorage.setItem('mine', '[]'); myPcRender(); 1");
   console.log('hint=' + h1 + '|' + await hint());
@@ -200,7 +205,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await ev("localStorage.setItem('mine', JSON.stringify(['111111111', 5, { id: 'x' }, null, '222222222', '111111111', { id: '333333333', name: 'Склад' }])); 1");
   await tev("location.reload(); 1"); await sleep(1500);
   console.log('migrated=' + await tev("localStorage.getItem('mine')"));
-  console.log('miglist=' + await tev("JSON.stringify([...document.querySelectorAll('#minelist .mpcopen')].map(b => b.textContent))"));
+  console.log('miglist=' + await tev(tileNames + ")"));
   await ev("localStorage.setItem('mine', '{\"bad\":1}'); 1");
   console.log('garbage=' + await ev("JSON.stringify(myPcs.get())"));
   process.exit(0);
@@ -318,8 +323,9 @@ func TestBrowserMyPC(t *testing.T) {
 		`afterbye=["connected","connected","broken"]`, // обрыв третьего не тронул первые два; его вкладка «разорвано»
 		// имена: Enter сохранил, Esc отменил, пробелы → ID, длинное обрезано до 40
 		`names={"111111111":"` + strings.Repeat("A", 40) + `","222222222":"Офис","333333333":"333333333"}`,
-		`listnames=["333 333 333","` + strings.Repeat("A", 40) + `111 111 111","Офис222 222 222"]`, // имя + ID мелко; без имени — ID (сортировка: порядок входов не задан)
-		`star=true|false|["111111111","222222222"]|true|true`,                                      // ★ снял — ушёл; поставил — вернулся, поле имени сразу
+		// плитка: имя (без имени — ID) и «по паролю · ID» (сортировка: порядок входов не задан)
+		`listnames=["333 333 333|by password · 333 333 333","` + strings.Repeat("A", 40) + `|by password · 111 111 111","Офис|by password · 222 222 222"]`,
+		`star=true|false|["111111111","222222222"]|true|true`, // ★ снял — ушёл; поставил — вернулся, поле имени сразу
 		`starlabel=Дом ✎`,
 		`names2={"111111111":"` + strings.Repeat("A", 40) + `","222222222":"Офис","333333333":"Дом"}`,
 		`tabnames=["` + strings.Repeat("A", 40) + `","Офис","Дом"]`, // на вкладках — имена
@@ -328,18 +334,19 @@ func TestBrowserMyPC(t *testing.T) {
 		`afternokey=["111111111","222222222","333333333"]|pw`, // "nokey": ПК остался, вкладка «нужен пароль»
 		`pwlabel=true`,
 		`pwform=true|true|true|true|true`, // во фрейме — карточка входа (без «Это рабочее место») и объяснение
-		`wrongpw=pw|true`,                 // неверный пароль во фрейме: метка «нужен пароль», карточка входа осталась
-		`pwlogin=ok|false|connected`,      // верный пароль + код TOTP из окна-родителя: вкладка на связи
+		`pwonly=false,false,false,false,false,false,false|true`, // и больше ничего: ни главного, ни полосы ПК, ни «Назад», ни ⚙
+		`wrongpw=pw|true`,            // неверный пароль во фрейме: метка «нужен пароль», карточка входа осталась
+		`pwlogin=ok|false|connected`, // верный пароль + код TOTP из окна-родителя: вкладка на связи
 		`afteruntrust=["111111111","222222222","333333333"]|key=false`, // ключ забыт, ПК в списке остался
-		`afterdel=["222222222","333333333"]`,
-		`delstar=false`,                        // × в списке — ★ во вкладке снята
-		`renstar=Офис ✎`,                       // ✎ в списке — имя на панели вкладки обновилось
-		`recenthidden=true`,                    // «Недавние» во фрейме скрыты (кнопки есть)
-		`hijack=pw||111111111|/pw||111111111|`, // ни недавний, ни подмена поля не подключили вкладку к чужому ID
-		`typefocus=Secr3|`,                     // символы остались в пароле, #mcot пуст                           // × — явное удаление
-		`hint=true,false|true,true`,            // подсказка видна в непустом и пустом списке
+		`afterdel=["222222222","333333333"]|true|false`,                // «···» открыл меню, «Убрать» — ПК ушёл из `mine` и плитки
+		`delstar=false`,                           // × в списке — ★ во вкладке снята
+		`renstar=Офис ✎`,                          // ✎ в списке — имя на панели вкладки обновилось
+		`recenthidden=true`,                       // «Недавние» во фрейме скрыты (кнопки есть)
+		`hijack=pw||111111111|/pw||111111111|`,    // ни недавний, ни подмена поля не подключили вкладку к чужому ID
+		`typefocus=Secr3|`,                        // символы остались в пароле, #mcot пуст                           // × — явное удаление
+		`hint=true,true,false,2|true,true,true,0`, // карточки «Мои ПК» нет; подсказка — одна строка и только при пустом списке
 		`migrated=[{"id":"111111111","name":"111111111"},{"id":"222222222","name":"222222222"},{"id":"333333333","name":"Склад"}]`,
-		`miglist=["111 111 111","222 222 222","Склад333 333 333"]`,
+		`miglist=["111 111 111|by password · 111 111 111","222 222 222|by password · 222 222 222","Склад|by password · 333 333 333"]`,
 		`garbage=[]`,
 	} {
 		if !strings.Contains(out, want) {
