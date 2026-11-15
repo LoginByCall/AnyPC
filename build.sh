@@ -13,7 +13,7 @@ GOOS=js GOARCH=wasm go build -ldflags='-s -w' -o ui/pake.wasm ./wasm
 install -m 644 "$(go env GOROOT)/lib/wasm/wasm_exec.js" ui/wasm_exec.js
 go vet ./...
 if command -v node >/dev/null; then node ui/i18n_check.js; fi
-go test ./...
+go test -timeout 20m ./... # ./agent идёт ~12 мин (2026-11-14), стандартных 10 мин мало
 mkdir -p bin
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=$V" -o bin/anypc-server ./server
 # Кодер VP9 в процессе (agent/vp9.go): если deploy/libvpx.sh собрал статическую libvpx для цели — cgo и -tags vp9,
