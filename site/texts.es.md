@@ -16,7 +16,7 @@
 - `f4t`: Fluido y ágil
 - `f4d`: Vídeo VP9 (o H.264) hasta 1080p a 30 fps; la tasa de bits y los fotogramas por segundo se adaptan a la conexión al vuelo, sin pausas; estadísticas de conexión en tiempo real.
 - `f10t`: Tus PC en pestañas
-- `f10d`: Los equipos a los que accedes con «Confiar en este PC» se abren como pestañas en una sola ventana: cambia entre ellos con un clic, sin volver a iniciar sesión. El vídeo de una pestaña inactiva se pausa y ahorra ancho de banda.
+- `f10d`: Los equipos que añades con «Añadir a Mi espacio» se abren como pestañas en una sola ventana: cambia entre ellos con un clic, sin volver a iniciar sesión. El vídeo de una pestaña inactiva se pausa y ahorra ancho de banda.
 - `getT`: Descargar AnyPC
 - `tab_win`: Windows
 - `tab_lin`: Linux
@@ -28,7 +28,7 @@
 - `w1`: Ejecuta el AnyPC.exe descargado: no requiere instalación y el programa muestra al instante el ID de este equipo. En el primer inicio descarga una sola vez el componente FFmpeg (unos 40 MB).
 - `w2`: Si aparece «Windows protegió su PC», haz clic en «Más información» → «Ejecutar de todas formas»: el programa aún no está firmado.
 - `w3`: Si el Firewall de Windows pide acceso a la red, permítelo; de lo contrario, puede que la conexión directa no funcione y el tráfico pase por el servidor de retransmisión.
-- `w4`: Para que puedan conectarse a este equipo, establece una contraseña en la sección «Este equipo».
+- `w4`: Para que puedan conectarse a este equipo, establece una contraseña: «Acceso a este PC» → «Configurar» en la pantalla principal.
 - `w5`: Si FFmpeg no se descarga solo (la ventana muestra un error de descarga), descarga el archivo manualmente — [ffmpeg-9.0.2-essentials_build.zip](https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip) (~115 MB) — y colócalo, sin descomprimir, en la carpeta Descargas o junto a AnyPC.exe. El programa lo detectará en 30 segundos y comprobará su suma de control.
 - `wchk`: Comprueba el archivo (PowerShell): la suma debe coincidir con la indicada arriba:
 - `l1`: Instala las dependencias, que varían según tu sesión gráfica:

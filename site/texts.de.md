@@ -16,7 +16,7 @@
 - `f4t`: Flüssig und reaktionsschnell
 - `f4d`: VP9- (oder H.264-)Video bis 1080p mit 30 fps; Bitrate und Bildrate passen sich der Verbindung laufend und ohne Pausen an; Verbindungsstatistik live.
 - `f10t`: Mehrere eigene PCs
-- `f10d`: Die Rechner, bei denen Sie sich mit «Diesem PC vertrauen» anmelden, öffnen sich als Tabs in einem Fenster – wechseln Sie per Klick, ohne erneute Anmeldung. Video in einem inaktiven Tab pausiert und spart Bandbreite.
+- `f10d`: Die Rechner, die Sie mit «Zu Mein Bereich hinzufügen» aufnehmen, öffnen sich als Tabs in einem Fenster – wechseln Sie per Klick, ohne erneute Anmeldung. Video in einem inaktiven Tab pausiert und spart Bandbreite.
 - `getT`: AnyPC herunterladen
 - `tab_win`: Windows
 - `tab_lin`: Linux
@@ -28,7 +28,7 @@
 - `w1`: Starten Sie die heruntergeladene AnyPC.exe – eine Installation ist nicht nötig, das Programm zeigt sofort die ID dieses Computers an. Beim ersten Start lädt es einmalig die FFmpeg-Komponente herunter (etwa 40 MB).
 - `w2`: Erscheint „Der Computer wurde durch Windows geschützt“, klicken Sie auf „Weitere Informationen“ → „Trotzdem ausführen“: Das Programm ist noch nicht signiert.
 - `w3`: Fragt die Windows-Firewall nach dem Netzwerkzugriff, erlauben Sie ihn – sonst kommt eine direkte Verbindung womöglich nicht zustande, und die Daten laufen über den Relay-Server.
-- `w4`: Damit sich andere mit diesem Computer verbinden können, legen Sie im Bereich „Dieser Computer“ ein Passwort fest.
+- `w4`: Damit sich andere mit diesem Computer verbinden können, legen Sie ein Passwort fest: „Zugriff auf diesen PC“ → „Einrichten“ auf dem Hauptbildschirm.
 - `w5`: Lädt FFmpeg nicht von selbst herunter (das Fenster zeigt einen Download-Fehler), laden Sie das Archiv manuell herunter – [ffmpeg-9.0.2-essentials_build.zip](https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip) (~115 MB) – und legen Sie es ungeöffnet in den Ordner „Downloads“ oder neben AnyPC.exe. Das Programm findet es innerhalb von 30 Sekunden und prüft die Prüfsumme.
 - `wchk`: Datei prüfen (PowerShell) – die Prüfsumme muss mit der oben angegebenen übereinstimmen:
 - `l1`: Installieren Sie die Abhängigkeiten – welche, hängt von Ihrer grafischen Sitzung ab:

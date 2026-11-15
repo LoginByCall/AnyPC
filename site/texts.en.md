@@ -16,7 +16,7 @@
 - `f4t`: Smooth and responsive
 - `f4d`: VP9 (or H.264) video up to 1080p at 30 fps; bitrate and frame rate adapt to your connection on the fly, with no pauses; live connection statistics.
 - `f10t`: Your PCs in tabs
-- `f10d`: The computers you sign in to with «Trust this PC» open as tabs in one window — switch between them with a click, without logging in again. Video on an inactive tab pauses and spares your bandwidth.
+- `f10d`: The computers you sign in to after “Add to My space” open as tabs in one window — switch between them with a click, without logging in again. Video on an inactive tab pauses and spares your bandwidth.
 - `getT`: Download AnyPC
 - `tab_win`: Windows
 - `tab_lin`: Linux
@@ -28,7 +28,7 @@
 - `w1`: Run the downloaded AnyPC.exe — there is nothing to install, and the program shows this computer’s ID right away. On first launch it downloads the FFmpeg component once (about 40 MB).
 - `w2`: If you see “Windows protected your PC”, click “More info” → “Run anyway”: the program is not code-signed yet.
 - `w3`: If Windows Firewall asks about network access, allow it; otherwise a direct connection may fail and traffic will go through the relay server.
-- `w4`: To allow connections to this computer, set a password in the “This computer” section.
+- `w4`: To allow connections to this computer, set a password: “Access to this PC” → “Set up” on the main screen.
 - `w5`: If FFmpeg does not download by itself (the window shows a download error), download the archive manually — [ffmpeg-9.0.2-essentials_build.zip](https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip) (~115 MB) — and put it, without unpacking, into your Downloads folder or next to AnyPC.exe. The program picks it up within 30 seconds and verifies its checksum.
 - `wchk`: Verify the file (PowerShell) — the checksum must match the one above:
 - `l1`: Install the dependencies — which ones depends on your graphical session:
