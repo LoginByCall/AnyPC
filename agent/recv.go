@@ -34,7 +34,9 @@ package agent
 //
 // Каналы клиента после "rx":
 //
-//	"file" — протокол file.go (докачка); потолок — {"t":"err","msg","code":"size"|"total"|"count"|"denied"|"gone"}
+//	"file" — протокол file.go (докачка); потолок — {"t":"err","msg","code":"size"|"total"|"count"|"denied"|"gone"};
+//	         Ч10.2: файл папки — "meta" + "path":"Папка/подпапка/файл" (safeRel; хост объявляет "lim":{"dirs":true},
+//	         иначе — хост Ч10.1: папку ему не шлём, ErrRecvOldDirs), отказ пути — "code":"path"
 //	"text" — клиент → {"t":"text","size":N} (1 ≤ N ≤ lim.text), двоичные куски, {"t":"end"}; хост → {"t":"done"} |
 //	         {"t":"err","code":…}: свой ПК — сразу в буфер обмена; чужой — окно «Принять?» с текстом, после
 //	         «Принять» — в буфер. «Отклонить» или нет ответа — "denied", сессия закрывается.
@@ -65,10 +67,11 @@ import (
 
 // rxLimits — потолки сессии приёма; уходят отправителю в "rx" (lim), проверяет хост.
 type rxLimits struct {
-	File  int64 `json:"file"`  // байт в одном файле
-	Total int64 `json:"total"` // байт файлов за сессию (докачка считается целым файлом)
-	Items int   `json:"items"` // файлов и текстов за сессию
-	Text  int64 `json:"text"`  // байт одного текста
+	File  int64 `json:"file"`           // байт в одном файле
+	Total int64 `json:"total"`          // байт файлов за сессию (докачка считается целым файлом)
+	Items int   `json:"items"`          // файлов и текстов за сессию
+	Text  int64 `json:"text"`           // байт одного текста
+	Dirs  bool  `json:"dirs,omitempty"` // Ч10.2: хост принимает папки (fileMsg.Path); нет — хост Ч10.1, папку ему не слать
 }
 
 // Потолки (NOTIFY: числа выбраны исполнителем; атомарные — тесты меняют их при живых сессиях). Место на диске сверх
@@ -87,7 +90,7 @@ var (
 const rxRatePer = time.Minute // окно счёта частоты
 
 func init() {
-	rxLimP.Store(&rxLimits{File: 16 << 30, Total: 64 << 30, Items: 1000, Text: 1 << 20})
+	rxLimP.Store(&rxLimits{File: 16 << 30, Total: 64 << 30, Items: 1000, Text: 1 << 20, Dirs: true})
 	rxRateOwn.Store(10)
 	rxRateFor.Store(3)
 	rxIdle.Store(int64(2 * time.Minute))
@@ -128,12 +131,13 @@ type rxState struct {
 	lim   rxLimits
 
 	mu    sync.Mutex
-	ok    bool  // файлы — без окна: свой ПК, разовый код или уже «Принять» в этой сессии
-	items int   // начато файлов и текстов
-	bytes int64 // байт начатых файлов
-	nf    int   // принято файлов
-	nb    int64 // байт в принятых файлах
-	nt    int   // принято текстов
+	ok    bool              // файлы — без окна: свой ПК, разовый код или уже «Принять» в этой сессии
+	roots map[string]string // Ч10.2: папка, заявленная отправителем → папка приёма в «Загрузках» (mkRoot)
+	items int               // начато файлов и текстов
+	bytes int64             // байт начатых файлов
+	nf    int               // принято файлов
+	nb    int64             // байт в принятых файлах
+	nt    int               // принято текстов
 
 	declined atomic.Bool
 	asking   atomic.Int32 // открыто окно «Принять?»: ждём человека — простой и срок не считаются (rxWatch)
@@ -160,6 +164,26 @@ var rxWhy = map[string]string{
 	"viewonly": "на том ПК включено «Только показ экрана»",
 	"disk":     "на том ПК мало места",
 	"io":       "ошибка приёма на том ПК",
+	"path":     "недопустимый путь в папке",
+}
+
+// rxRoot — папка приёма для заявленной папки name (safeRel) в этой сессии: первая — новая «Загрузки/name[ (n)]»
+// (mkRoot), дальше — та же. Ч10.2.
+func (r *rxState) rxRoot(dir, name string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if v, ok := r.roots[name]; ok {
+		return v, nil
+	}
+	v, err := mkRoot(dir, name)
+	if err != nil {
+		return "", err
+	}
+	if r.roots == nil {
+		r.roots = map[string]string{}
+	}
+	r.roots[name] = v
+	return v, nil
 }
 
 // rxCount — ещё один файл размера size (text — текст) в сессии: потолки числа и объёма. "" — можно.
@@ -276,6 +300,9 @@ func (a *Agent) rxStart(s *session, rx *rxState, rate int) string {
 	a.recvs[s] = true
 	rx.t0, rx.idle, rx.life = now, time.Duration(rxIdle.Load()), time.Duration(rxLife.Load())
 	rx.win, rx.rate = time.Duration(rxSlowWin.Load()), rxMinRate.Load()
+	if a.noDirs { // тест: хост Ч10.1 — папок не объявляет, путь пропускает
+		rx.lim.Dirs = false
+	}
 	rx.touch()
 	s.rx.Store(rx)
 	return ""
@@ -646,6 +673,10 @@ var (
 	ErrRecvViewOnly = errors.New("приём: на том ПК включено «Только показ экрана»")
 	// ErrRecvWait — тот ПК ещё не сверил состав пространства (решение 12 A).
 	ErrRecvWait = errors.New("приём: тот ПК ещё не сверил состав пространства — попробуйте позже")
+	// ErrRecvOldDirs — тот ПК понимает приём, но не папки (Ч10.1): папку не шлём — он сложил бы её файлы в одну кучу.
+	ErrRecvOldDirs = errors.New("На том ПК версия AnyPC без приёма папок — обновите её")
+	// ErrRecvPath — путь в папке тот ПК не принял (safeRel; RecvError "path").
+	ErrRecvPath = errors.New("приём: недопустимый путь в папке")
 	// ErrRecvKnown — чужой ПК без кода: нужен закреплённый ключ получателя (SendDial.Known).
 	ErrRecvKnown = errors.New("приём: ключ того ПК не закреплён — нужен разовый код")
 )
@@ -665,6 +696,8 @@ func (e *RecvError) Unwrap() error {
 		return ErrRecvGone
 	case "viewonly":
 		return ErrRecvViewOnly
+	case "path":
+		return ErrRecvPath
 	}
 	return nil
 }
@@ -689,44 +722,63 @@ func rxErr(why string) error {
 	return fmt.Errorf("%w: %s", ErrSpaceRefused, why)
 }
 
-// SendDial — отправить файлы и текст на ПК ID (Ч10.1; основа отправителя Ч10.3).
+// SendDial — отправить файлы, папки и текст на ПК ID (Ч10.1–Ч10.3; send.go).
 type SendDial struct {
-	Server  string             // хабы через запятую, как Agent.Server
-	ID      string             // получатель
-	HostPub ed25519.PublicKey  // свой ПК: ключ хоста получателя из M этого ПК; nil — чужой ПК
-	Key     ed25519.PrivateKey // ключ хоста этого ПК (ключ члена; у чужого закрепляется он)
-	From    string             // ID этого ПК — подсказка получателю для закрепления
-	Name    string             // имя этого ПК — подсказка получателю
-	Code    string             // чужой ПК, первый раз: разовый код с его экрана; "" — по закреплённому ключу («Принять?»)
-	Known   string             // чужой ПК: отпечаток его ключа (pake.KeyFingerprint) с прошлого раза; другой — отказ
-	Files   []string
-	Text    string // "" — без текста
+	Server   string             // хабы через запятую, как Agent.Server
+	ID       string             // получатель
+	HostPub  ed25519.PublicKey  // свой ПК: ключ хоста получателя из M этого ПК; nil — чужой ПК
+	Key      ed25519.PrivateKey // ключ хоста этого ПК (ключ члена; у чужого закрепляется он)
+	From     string             // ID этого ПК — подсказка получателю для закрепления
+	Name     string             // имя этого ПК — подсказка получателю
+	Code     string             // чужой ПК, первый раз: разовый код с его экрана; "" — по закреплённому ключу («Принять?»)
+	Known    string             // чужой ПК: отпечаток его ключа (pake.KeyFingerprint) с прошлого раза; другой — отказ
+	Files    []string
+	Dirs     []string           // Ч10.2: папки целиком (ссылки внутри не идут, send.go makePlan)
+	Text     string             // "" — без текста
+	Clip     bool               // текст — из буфера обмена этого ПК (Text не нужен)
+	Progress func(SendProgress) // ход отправки (из потока отправки); nil — не нужен
 }
 
 // Испытательные подмены приёма (agent/recv_test.go); в рабочем пути — nil.
 var (
 	recvTestDC func(*webrtc.DataChannel)          // каналы хоста, кроме "auth" ("input", "ctl")
 	recvTestPC func(*webrtc.PeerConnection) error // после "rx" — вместо файлов и текста
+	sendNoFit  bool                               // не проверять план по lim: потолки проверяет хост
 )
 
 // sendWait — от connect до "rx"; recvWait — ответ получателя на файл или текст (окно «Принять?» — до AskTimeout).
 var (
 	sendWait = 60 * time.Second
 	recvWait = 30*time.Second + AskTimeout
+	// sendGrace — сколько соединение живёт после отмены ctx (sendVia)
+	sendGrace = 3 * time.Second
 )
 
-// SendTo — отправить d.Files и d.Text на ПК d.ID. Итог — ключ получателя (подпись проверена; чужой ПК с кодом —
-// и код): его запоминает вызывающий (избранные, Ч10.4).
-func SendTo(ctx context.Context, d SendDial) (hostPub ed25519.PublicKey, err error) {
-	for _, u := range strings.Split(d.Server, ",") {
-		if hostPub, err = sendVia(ctx, strings.TrimSpace(u), d); !errors.Is(err, ErrSpaceOffline) {
-			return hostPub, err
+// SendTo — отправить d.Files, d.Dirs и текст на ПК d.ID. Итог — ключ получателя (подпись проверена; чужой ПК с
+// кодом — и код): его запоминает вызывающий (избранные, Ч10.4), сколько ушло и что пропущено в папках.
+func SendTo(ctx context.Context, d SendDial) (res SendResult, err error) {
+	text := d.Text
+	if d.Clip {
+		if text, err = clipRead(); err != nil || text == "" {
+			return res, ErrSendClip
 		}
 	}
-	return nil, err
+	p, err := makePlan(d.Files, d.Dirs, text)
+	if err != nil {
+		return res, err
+	}
+	defer p.close()
+	res.Skipped = p.skipped // пустой план — только доказательство сторон (и закрепление ключа разовым кодом)
+	for _, u := range strings.Split(d.Server, ",") {
+		if res.HostPub, err = sendVia(ctx, strings.TrimSpace(u), d, p); !errors.Is(err, ErrSpaceOffline) {
+			break
+		}
+	}
+	res.Files, res.Bytes, res.Text = p.sentFiles, p.sentBytes, p.sentText
+	return res, err
 }
 
-func sendVia(ctx context.Context, server string, d SendDial) (ed25519.PublicKey, error) {
+func sendVia(ctx context.Context, server string, d SendDial, p *sendPlan) (ed25519.PublicKey, error) {
 	own := d.HostPub != nil
 	if !own && d.Code == "" && d.Known == "" { // без кода получатель ничем себя не докажет, кроме закреплённого ключа (M7)
 		return nil, ErrRecvKnown
@@ -743,8 +795,14 @@ func sendVia(ctx context.Context, server string, d SendDial) (ed25519.PublicKey,
 	var (
 		mu      sync.Mutex
 		hostPub ed25519.PublicKey
+		sending sync.WaitGroup // отправка плана: SendTo читает итог и закрывает os.Root папок только после её конца
+		over    bool           // hostDial вернулся: запоздавший "rx" отправку не начинает
 	)
-	err := hostDial(ctx, server, d.ID, req, func(pc *webrtc.PeerConnection, finish func(error)) {
+	// отмена ctx: соединение живёт ещё sendGrace — отправитель успевает послать "cancel" (получатель удалит часть)
+	dctx, stop := context.WithCancel(context.WithoutCancel(ctx))
+	defer stop()
+	defer context.AfterFunc(ctx, func() { time.AfterFunc(sendGrace, stop) })()
+	err := hostDial(dctx, server, d.ID, req, func(pc *webrtc.PeerConnection, finish func(error)) {
 		wait := time.AfterFunc(sendWait, func() {
 			finish(fmt.Errorf("приём: нет ответа вовремя (%w)", context.DeadlineExceeded))
 		})
@@ -765,6 +823,9 @@ func sendVia(ctx context.Context, server string, d SendDial) (ed25519.PublicKey,
 				}
 				mu.Lock()
 				defer mu.Unlock()
+				if over {
+					return
+				}
 				fc, fh := pake.Fingerprint(pc.LocalDescription().SDP), pake.Fingerprint(pc.RemoteDescription().SDP)
 				switch t := am.T; {
 				case t == "a" && first:
@@ -828,13 +889,17 @@ func sendVia(ctx context.Context, server string, d SendDial) (ed25519.PublicKey,
 					}
 					wait.Stop()
 					hostPub = bytes.Clone(am.Pub)
-					go func() {
+					if err := p.fits(am.Lim); err != nil && !sendNoFit { // потолки и папки — до первого байта
+						finish(err)
+						return
+					}
+					sending.Go(func() {
 						if recvTestPC != nil {
 							finish(recvTestPC(pc))
 							return
 						}
-						finish(sendItems(ctx, pc, d))
-					}()
+						finish(p.send(ctx, pc, d.Progress))
+					})
 				case t == "fail":
 					finish(ErrRecvCode)
 				case t == "locked":
@@ -850,24 +915,18 @@ func sendVia(ctx context.Context, server string, d SendDial) (ed25519.PublicKey,
 		})
 	})
 	mu.Lock()
+	over = true
+	mu.Unlock()
+	sending.Wait() // соединение закрыто (hostDial): каналы закрыты — отправка кончается сразу
+	mu.Lock()
 	defer mu.Unlock()
+	if err != nil && ctx.Err() != nil && errors.Is(err, context.Canceled) { // остановил sendGrace — причина в ctx
+		err = ctx.Err()
+	}
 	if err != nil {
 		return nil, err
 	}
 	return hostPub, nil
-}
-
-// sendItems — файлы по очереди, затем текст.
-func sendItems(ctx context.Context, pc *webrtc.PeerConnection, d SendDial) error {
-	for _, p := range d.Files {
-		if err := sendFileWait(ctx, pc, p, recvWait, true); err != nil {
-			return err
-		}
-	}
-	if d.Text != "" {
-		return sendText(ctx, pc, d.Text)
-	}
-	return nil
 }
 
 // sendText — текст по каналу "text" (протокол — в начале файла).

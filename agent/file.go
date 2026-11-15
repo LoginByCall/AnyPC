@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/pion/webrtc/v4"
 )
@@ -42,6 +43,7 @@ type fileMsg struct {
 	SHA256 string `json:"sha256,omitempty"`
 	Msg    string `json:"msg,omitempty"`
 	Code   string `json:"code,omitempty"` // Ч10.1: в "err" сессии приёма — код отказа (rxWhy, recv.go)
+	Path   string `json:"path,omitempty"` // Ч10.2: в "meta" сессии приёма — путь в папке «Папка/подпапка/файл» (safeRel)
 }
 
 const (
@@ -69,6 +71,131 @@ func safeName(name string) string {
 		name = "_" + name
 	}
 	return name
+}
+
+// Ч10.2: путь файла в папке от другой стороны (fileMsg.Path). ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ (A13): проверка путей.
+const (
+	relMaxDepth = 32   // составляющих пути, считая папку и имя файла
+	relMaxLen   = 1024 // байт во всём пути
+	relMaxComp  = 255  // байт в одной составляющей
+)
+
+var errRel = errors.New("недопустимый путь в папке")
+
+// relBidi — подмены направления письма (U+202A–202E, U+2066–2069): «фото‮gpj.exe».
+func relBidi(r rune) bool { return r >= 0x202A && r <= 0x202E || r >= 0x2066 && r <= 0x2069 }
+
+// safeRel — путь файла в папке «Папка/подпапка/файл» (разделитель только "/") → составляющие, годные на любой ОС.
+// Отказ (errRel): пусто, длиннее relMaxLen, не UTF-8; "\" и ":" где угодно (UNC, \\?\, «C:», потоки NTFS «a:b»);
+// меньше двух или больше relMaxDepth составляющих; пустая составляющая (абсолютный путь, «//»), «.», «..», только
+// точки и пробелы, длиннее relMaxComp; управляющие C0, DEL, C1; подмены направления; имена устройств Windows (CON,
+// NUL.txt, COM1…); папка «.anypc-…» (место частей докачки). Запрещённые в Windows «<>"|?*» → «_», точки и пробелы в
+// конце составляющей отбрасываются (Windows их срезает сам — имена совпали бы иначе молча: совпадения — «(1)»).
+func safeRel(p string) ([]string, error) {
+	if p == "" || len(p) > relMaxLen || !utf8.ValidString(p) || strings.ContainsAny(p, `\:`) {
+		return nil, errRel
+	}
+	parts := strings.Split(p, "/")
+	if len(parts) < 2 || len(parts) > relMaxDepth {
+		return nil, errRel
+	}
+	for i, c := range parts {
+		if c == "." || c == ".." || len(c) > relMaxComp {
+			return nil, errRel
+		}
+		for _, r := range c {
+			if r < 32 || r == 0x7f || r >= 0x80 && r <= 0x9f || relBidi(r) {
+				return nil, errRel
+			}
+		}
+		c = strings.TrimRight(strings.Map(func(r rune) rune {
+			if strings.ContainsRune(`<>"|?*`, r) {
+				return '_'
+			}
+			return r
+		}, c), ". ")
+		if c == "" || reserved.MatchString(strings.ToUpper(strings.SplitN(c, ".", 2)[0])) || i == 0 && strings.HasPrefix(c, ".anypc-") {
+			return nil, errRel
+		}
+		parts[i] = c
+	}
+	return parts, nil
+}
+
+// errRelDir — составляющая пути в папке приёма уже есть, но не папка (файл, символьная ссылка, точка повторной
+// обработки Windows): за ней не идём.
+var errRelDir = errors.New("в пути папки — не папка (файл или ссылка)")
+
+// mkRoot — новая папка приёма dir/name, а если занято — «name (1)»… (Mkdir не идёт по ссылке с этим именем: занято).
+func mkRoot(dir, name string) (string, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
+	for i := range 1000 {
+		n := name
+		if i > 0 {
+			n = fmt.Sprintf("%s (%d)", name, i)
+		}
+		err := root.Mkdir(n, 0o755)
+		if err == nil {
+			return n, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return "", err
+		}
+	}
+	return "", errors.New("нет свободного имени папки")
+}
+
+// placeIn переносит часть dir/part в dir/rel[0]/…/rel[n-1] (rel — составляющие после safeRel, rel[0] — папка приёма
+// от mkRoot). Всё — через os.Root каталога dir: ни ссылка, ни «..» не выведут за него (Windows — и точки повторной
+// обработки); каждая папка пути — настоящая папка (Lstat, не ссылка), иначе errRelDir. Занятое имя файла — «(1)».
+func placeIn(dir, part string, rel []string) (string, error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
+	sub := ""
+	for i, c := range rel[:len(rel)-1] {
+		sub = filepath.Join(sub, c)
+		if i > 0 {
+			if err := root.Mkdir(sub, 0o755); err != nil && !errors.Is(err, os.ErrExist) {
+				return "", err
+			}
+		}
+		if st, err := root.Lstat(sub); err != nil || st.Mode().Type() != os.ModeDir {
+			return "", errRelDir
+		}
+	}
+	name := rel[len(rel)-1]
+	ext := filepath.Ext(name)
+	stem := strings.TrimSuffix(name, ext)
+	for i := range 1000 {
+		n := name
+		if i > 0 {
+			n = fmt.Sprintf("%s (%d)%s", stem, i, ext)
+		}
+		dst := filepath.Join(sub, n)
+		err := root.Link(part, dst)
+		if err == nil {
+			root.Remove(part) // не удалилась — уберёт cleanParts
+			return filepath.Join(dir, dst), nil
+		}
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if _, e := root.Lstat(dst); !errors.Is(e, os.ErrNotExist) { // FAT/exFAT без жёстких ссылок: Rename — только на свободное
+			continue
+		}
+		return filepath.Join(dir, dst), root.Rename(part, dst)
+	}
+	return "", errors.New("нет свободного имени")
 }
 
 // freePath — dir/name, а если занято — "name (1).ext", "name (2).ext"…
@@ -123,6 +250,7 @@ type Receiver struct {
 	size, got int64
 	checked   int64 // got на последней проверке места (Write)
 	h         hash.Hash
+	rel       []string // Ч10.2: путь в папке приёма (safeRel; rel[0] — папка от mkRoot); nil — файл прямо в dir
 }
 
 var idRe = regexp.MustCompile(`^[0-9a-f]{16,64}$`)
@@ -211,7 +339,9 @@ func (r *Receiver) Finish() (dst, sum string, err error) {
 	if err == nil && r.got != r.size {
 		err = fmt.Errorf("получено %d из %d байт", r.got, r.size)
 	}
-	if err == nil {
+	if err == nil && r.rel != nil {
+		r.dst, err = placeIn(r.dir, filepath.Base(r.part), r.rel)
+	} else if err == nil {
 		r.dst, err = place(r.part, r.dir, r.name)
 	}
 	if err != nil {
@@ -331,6 +461,14 @@ func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32, s *ses
 		json.Unmarshal(m.Data, &fm)
 		switch {
 		case fm.T == "meta" && state == "new":
+			var rel []string // Ч10.2: файл папки — путь в ней (только сессия приёма хоста, объявившего папки)
+			if rx != nil && fm.Path != "" && rx.lim.Dirs {
+				var err error
+				if rel, err = safeRel(fm.Path); err != nil {
+					failCode("path", rxWhy["path"])
+					return
+				}
+			}
 			if rx != nil {
 				if code := rx.count(fm.Size, false); code != "" {
 					failCode(code, rxWhy[code])
@@ -342,7 +480,11 @@ func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32, s *ses
 			state = "wait"
 			go func() {
 				if rx != nil { // окно «Принять?» (чужой ПК) — до места в очереди
-					if code := a.rxConfirm(s, rx, RecvReq{Name: safeName(fm.Name), Size: fm.Size}); code != "" {
+					q := RecvReq{Name: safeName(fm.Name), Size: fm.Size}
+					if rel != nil {
+						q.Name = strings.Join(rel, "/")
+					}
+					if code := a.rxConfirm(s, rx, q); code != "" {
 						mu.Lock()
 						if state == "wait" {
 							failCode(code, rxWhy[code])
@@ -389,11 +531,23 @@ func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32, s *ses
 				if rx != nil && !rx.own { // часть чужого не хранится — и id частей других отправителей ему не открывать
 					fm.ID = ""
 				}
+				var top string
+				if rel != nil { // папка приёма этой папки отправителя: первая — новая «Загрузки/<папка>[ (n)]»
+					var err error
+					if top, err = rx.rxRoot(r.dir, rel[0]); err != nil {
+						active.Add(-1)
+						fail(err.Error())
+						return
+					}
+				}
 				off, err := r.Open(fm.Name, fm.Size, fm.ID)
 				if err != nil {
 					active.Add(-1)
 					fail(err.Error())
 					return
+				}
+				if rel != nil {
+					r.rel = append([]string{top}, rel[1:]...)
 				}
 				state = "open"
 				if off > 0 {
@@ -403,6 +557,10 @@ func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32, s *ses
 			}()
 		case fm.T == "end" && state == "open":
 			dst, sum, err := r.Finish()
+			if errors.Is(err, errRelDir) { // в пути папки — ссылка или файл (Ч10.2)
+				failCode("path", err.Error())
+				return
+			}
 			if err != nil {
 				fail(err.Error())
 				return
@@ -473,6 +631,15 @@ func sendFileWait(ctx context.Context, pc *webrtc.PeerConnection, path string, w
 	if err != nil {
 		return err
 	}
+	return sendOpen(ctx, pc, src, fileMsg{T: "meta", Name: filepath.Base(path), Size: st.Size(), ID: fileID(path, st)}, path, wait, quiet, nil)
+}
+
+// sendOpen — открытый src (meta — его "meta": имя, размер, id, путь в папке) по новому каналу "file"; prog — сколько
+// байт ушло (докачка — сразу offset). Отмена ctx после meta — {"t":"cancel"}: получатель удаляет часть.
+func sendOpen(ctx context.Context, pc *webrtc.PeerConnection, src *os.File, meta fileMsg, path string, wait time.Duration, quiet bool, prog func(int64)) error {
+	if prog == nil {
+		prog = func(int64) {}
+	}
 	dc, err := pc.CreateDataChannel("file", nil)
 	if err != nil {
 		return err
@@ -505,14 +672,23 @@ func sendFileWait(ctx context.Context, pc *webrtc.PeerConnection, path string, w
 	case <-time.After(10 * time.Second):
 		return errors.New("канал не открылся")
 	}
-	sendJSON(dc, fileMsg{T: "meta", Name: filepath.Base(path), Size: st.Size(), ID: fileID(path, st)})
+	size := meta.Size
+	sendJSON(dc, meta)
+	cancel := func() error { // "cancel" — за кусками в буфере канала: ждать, пока получатель закроет канал (удалив часть)
+		sendJSON(dc, fileMsg{T: "cancel"})
+		select {
+		case <-closed:
+		case <-time.After(sendGrace - 500*time.Millisecond):
+		}
+		return ctx.Err()
+	}
 	var off int64
 	select {
 	case r := <-result:
 		if r.T == "err" && r.Code != "" {
 			return &RecvError{Code: r.Code, Msg: r.Msg}
 		}
-		if r.T != "resume" || r.Offset < 0 || r.Offset > st.Size() {
+		if r.T != "resume" || r.Offset < 0 || r.Offset > size {
 			return fmt.Errorf("получатель: %s %s", r.T, r.Msg)
 		}
 		off = r.Offset
@@ -526,19 +702,26 @@ func sendFileWait(ctx context.Context, pc *webrtc.PeerConnection, path string, w
 		}
 		return errors.New("отменено получателем")
 	case <-ctx.Done():
-		return ctx.Err()
+		return cancel()
 	case <-time.After(wait):
 		return errors.New("получатель не ответил")
 	}
-	if off > 0 && !quiet {
-		log.Printf("отправка %s: докачка с %d байт", path, off)
+	if off > 0 { // quiet — только без журнала: докачка без Seek послала бы начало файла в конец части
+		if !quiet {
+			log.Printf("отправка %s: докачка с %d байт", path, off)
+		}
 		if _, err := src.Seek(off, io.SeekStart); err != nil {
 			return err
 		}
+		prog(off)
 	}
+	in := io.LimitReader(src, size-off) // файл вырос после Stat — лишнего не слать (получатель отказал бы)
 	buf := make([]byte, fileChunk)
 	for {
-		n, err := src.Read(buf)
+		if ctx.Err() != nil {
+			return cancel()
+		}
+		n, err := in.Read(buf)
 		if n > 0 {
 			for dc.BufferedAmount() > fileHigh {
 				select {
@@ -546,12 +729,13 @@ func sendFileWait(ctx context.Context, pc *webrtc.PeerConnection, path string, w
 				case <-closed:
 					return errors.New("отменено получателем")
 				case <-ctx.Done():
-					return ctx.Err()
+					return cancel()
 				}
 			}
 			if err := dc.Send(buf[:n]); err != nil {
 				return err
 			}
+			prog(int64(n))
 		}
 		if err == io.EOF {
 			break
@@ -574,8 +758,15 @@ func sendFileWait(ctx context.Context, pc *webrtc.PeerConnection, path string, w
 		}
 		return nil
 	case <-closed:
+		select { // отказ с кодом (место на диске, путь) и закрытие приходят почти вместе
+		case r := <-result:
+			if r.T == "err" && r.Code != "" {
+				return &RecvError{Code: r.Code, Msg: r.Msg}
+			}
+		default:
+		}
 		return errors.New("отменено получателем")
 	case <-ctx.Done():
-		return ctx.Err()
+		return cancel()
 	}
 }

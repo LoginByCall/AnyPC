@@ -256,3 +256,33 @@ files per session, 1 MB of text, 4 sessions at once; an own PC — 10 sessions p
 session at a time and 3 per minute. A session is closed after 2 minutes without messages (not while an "Accept?" window is
 open), and after 30 minutes as soon as bytes stop flowing or flow slower than 64 KB/s over 2 minutes (a long file
 that is moving is not cut; speed is not checked during the first 30 minutes — small files over a slow link).
+
+Папки и отправка с этого ПК (Ч10.2–Ч10.3, ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ: проверка путей и выбор доказательства
+получателя). Папка принимается в новую «Загрузки/<имя папки>» (занято — «<имя> (1)»…), каждый файл — по
+относительному пути внутри неё. Путь отклоняется целиком, если в нём «..», «.», пустая составляющая (абсолютный путь,
+«//»), «\» или «:» (UNC, «\\?\», «C:», потоки NTFS), имя устройства Windows (CON, NUL.txt, COM1…), управляющие
+символы и NUL, подмены направления письма (U+202A–202E, U+2066–2069), глубже 32 составляющих, длиннее 1024 байт или
+составляющая длиннее 255 байт; «<>"|?*» заменяются на «_», точки и пробелы в конце имени отбрасываются. Всё пишется
+через os.Root каталога «Загрузок»: ни ссылка, ни точка повторной обработки Windows не выведут за него; каждая папка
+пути должна быть настоящей папкой (не ссылкой) — иначе файл отклонён; ссылку с именем папки или файла приёмник не
+трогает, а берёт следующее свободное имя. Сам каталог «Загрузок» может быть ссылкой (так его переносят) — по ней
+идём. Потолки приёма действуют на сумму файлов папки; пустые папки не передаются. Отправитель: внутри отправляемой
+папки символьные ссылки, устройства и FIFO не идут (список пропущенного — в итоге), файлы открываются через os.Root
+папки. Свой ПК — по ключу из состава пространства, без кода; чужой — разовым кодом с его экрана (ключ того ПК после
+этого запоминается, как после входа) или без кода по запомненному ключу, если тот ПК закрепил этот. В журнале
+отправителя — одна строка без путей и текста. Буфер обмена отправляется только по явному выбору.
+
+Folders and sending from this PC (Ch10.2–Ch10.3, NEEDS HUMAN REVIEW: path checks and how the recipient is proven).
+A folder is received into a new "Downloads/<folder name>" (taken — "<name> (1)"…), each file at its relative path
+inside it. A path is refused whole if it has "..", ".", an empty component (absolute path, "//"), "\" or ":" (UNC,
+"\\?\", "C:", NTFS streams), a Windows device name (CON, NUL.txt, COM1…), control characters or NUL,
+writing-direction overrides (U+202A–202E, U+2066–2069), more than 32 components, more than 1024 bytes, or a
+component longer than 255 bytes; "<>"|?*" become "_", trailing dots and spaces are dropped. Everything is written
+through an os.Root of the Downloads folder: neither a symlink nor a Windows reparse point leads out of it; every folder
+of the path must be a real folder (not a link), otherwise the file is refused; a link named like the folder or the
+file is not touched — the next free name is used. Downloads itself may be a link (that is how it is moved) and is
+followed. The receive limits apply to the sum of the folder's files; empty folders are not sent. Sender: inside the
+folder being sent symlinks, devices and FIFOs are not sent (the skipped list is in the result), files are opened
+through the folder's os.Root. Own PC — by the key from the space membership, no code; foreign — by the one-time code
+from its screen (that PC's key is then remembered, as after a login) or without a code by the remembered key if that
+PC pinned this one. The sender's log has one line without paths or text. The clipboard is sent only when chosen.
