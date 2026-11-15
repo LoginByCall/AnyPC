@@ -149,6 +149,7 @@ type Agent struct {
 	rxRate  map[string][]time.Time // Ч10.1: ключ отправителя → начала его сессий приёма за rxRatePer
 	rxParts int64                  // Ч10.1: заявленный размер открытых .part сессий приёма (не больше rxPartMax)
 	noRecv  bool                   // тест: хост старой версии — приём не объявляет
+	noDirs  bool                   // тест: хост Ч10.1 — приём без папок (recv.go, rxStart)
 
 	syncs  map[string]*session  // Э4: ключ члена → его соединение сверки (одно; nil — пока шлётся offer), spsync.go
 	sxSeen map[string]time.Time // Э4в: соли открытых sx → до какого времени помнить (повтор хабом, spseal.go)

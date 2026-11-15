@@ -497,7 +497,7 @@ func shimmed(server, token string) ([]byte, error) {
 	}
 	ws, _ := json.Marshal(server)
 	t, _ := json.Marshal(token)
-	names, _ := json.Marshal(spaceNames)
+	names, _ := json.Marshal(append(append([]string{}, spaceNames...), sendNames...))
 	js := fmt.Sprintf(`
 window.ANYPC = {ws: %s, clipPoll: %t};
 (() => {
@@ -652,11 +652,15 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 	case "pakeRespond":
 		res, err = pake.ClientRespondB64(str(0), str(1), str(2), str(3), str(4), str(5))
 	default:
-		if !slices.Contains(spaceNames, name) {
+		switch {
+		case slices.Contains(spaceNames, name):
+			res, err = spaceCall(cfg, name, args) // пространство (spaceapi.go): ошибки — space:<код>
+		case slices.Contains(sendNames, name):
+			res, err = sendCall(cfg, name, args) // «Отправить» (send.go): ошибки — send:<код>
+		default:
 			http.NotFound(w, r)
 			return
 		}
-		res, err = spaceCall(cfg, name, args) // пространство (spaceapi.go): ошибки — space:<код>
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
