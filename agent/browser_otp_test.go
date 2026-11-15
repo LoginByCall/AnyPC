@@ -89,7 +89,7 @@ func TestBrowserOTP(t *testing.T) {
 		"ok=|false|true",
 		"webq=false,false,false,false,true",
 		"starq=true,true,true,false,false",
-		`saved={"123456789":"secret123"}|[{"id":"123456789","name":"Дача"}]|false,true,false,true,true|★ In My space`,
+		`saved={"123456789":"secret123"}|[{"id":"123456789","name":"Дача"}]|false,true,false,true,false|★ In My space`,
 		"fill=secret123|true",
 		"eye=password|true",
 		`edit=""|false`,

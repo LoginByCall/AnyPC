@@ -69,11 +69,13 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await ev("document.getElementById('view').checked = true; document.getElementById('pw').value='secret123'; document.getElementById('go').click()");
   console.log('view_session=' + await until(sess));
   await sleep(2500);
-  console.log('view_body=' + await ev("document.body.classList.contains('view')") + ' keys_btn=' + await vis('[data-keys]') + ' fsend=' + await vis('#fsend') + ' clipbtn=' + await vis('#clipbtn'));
+  // Ч8: пункт виден, только если его меню открывается: открыть (если кнопка меню видна), посмотреть, закрыть
+  const inMenu = async (m, sel) => { await ev("(b => { b.classList.contains('hidden') || b.click(); 1 })(document.getElementById('" + m + "'))"); const r = await vis(sel); await ev("menuShut(); 1"); return r; };
+  console.log('view_body=' + await ev("document.body.classList.contains('view')") + ' keys_btn=' + await inMenu('keysm', '[data-keys]') + ' fsend=' + await inMenu('filesm', '#fsend') + ' clipbtn=' + await inMenu('keysm', '#clipbtn') + ' pastebtn=' + await inMenu('keysm', '#pastebtn') + ' keysm=' + await vis('#keysm') + ' ctlm=' + await vis('#ctlm'));
   console.log('view_status=' + await ev("document.getElementById('st').textContent"));
-  console.log('stat_hidden=' + !(await vis('#csv')) + ' view_mark=' + await vis('#st')); // статистика по умолчанию скрыта, «только просмотр» видно
+  console.log('stat_hidden=' + !(await inMenu('morem', '#csv')) + ' view_mark=' + await vis('#st')); // статистика по умолчанию скрыта, «только просмотр» видно
   await ev("document.getElementById('statbtn').click()"); await sleep(200);
-  console.log('stat_shown=' + await vis('#csv'));
+  console.log('stat_shown=' + await inMenu('morem', '#csv'));
   await ev("document.getElementById('statbtn').click()"); await sleep(200);
   // залипший Super (отпускание забрала система) отпускается при следующем нажатии; Ctrl+Alt+Enter — полный экран, не на удалённый ПК
   console.log('mods=' + await ev("(() => { const out = [], o = dc.send; dc.send = x => { const m = JSON.parse(x); m.t === 'k' && out.push(m.c + (m.d ? '+' : '-')); }; try { const k = (code, mods = {}) => document.dispatchEvent(new KeyboardEvent('keydown', { code, ...mods, bubbles: true, cancelable: true })); k('MetaLeft', { metaKey: true }); k('KeyA'); k('ControlLeft', { ctrlKey: true }); k('AltLeft', { ctrlKey: true, altKey: true }); k('Enter', { ctrlKey: true, altKey: true }); return out.join(' ') + ' full=' + full; } finally { dc.send = o; setFs(false); } })()"));
@@ -124,7 +126,7 @@ func TestBrowserView(t *testing.T) {
 	go a.Run(ctx)
 	out := string(runCDP(t, ctx, chrome, cdpVisual, srv.URL+"/"))
 	for _, want := range []string{"tour_home=true", "tour_sess=true", "help=true sections=10", "help_link=site", "session=true", "ring=true cnt=6", "view_session=true",
-		"view_body=true keys_btn=false fsend=false clipbtn=false", "view only",
+		"view_body=true keys_btn=false fsend=false clipbtn=false pastebtn=false keysm=false ctlm=true", "view only",
 		"eye=text/password", "stat_hidden=true view_mark=true", "stat_shown=true",
 		"mods=MetaLeft+ MetaLeft- KeyA+ ControlLeft+ AltLeft+ KeyA- ControlLeft- AltLeft- full=true", "view.bin | ✗ View only: files are not sent"} {
 		if !strings.Contains(out, want) {
