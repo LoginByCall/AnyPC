@@ -407,7 +407,7 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 							}
 						}
 						k, _ := pake.ClientSignB64(e2eSeed(), id, local, pc.RemoteDescription().SDP)
-						bm := authMsg{T: "b", Key: true}
+						bm := authMsg{T: "b", Key: true, Pass: e2ePass}
 						bm.CPub, _ = base64.StdEncoding.DecodeString(k["pub"])
 						bm.CSig, _ = base64.StdEncoding.DecodeString(k["sig"])
 						if e2eKey == "bad" {
@@ -426,7 +426,15 @@ func e2e(t *testing.T, url, id string, relay bool, ff []string, pass string) {
 					wantConf = hc
 					bm := authMsg{T: "b", Msg: b, Conf: conf, Trust: e2eTrust}
 					if e2eKey != "" {
-						k, _ := pake.ClientSignB64(e2eSeed(), id, pc.LocalDescription().SDP, pc.RemoteDescription().SDP)
+						local := pc.LocalDescription().SDP
+						if e2eKey == "otherpw" { // Ч7б: вход паролем, ключ подписан над отпечатком другого соединения
+							p2, _ := webrtc.NewPeerConnection(webrtc.Configuration{})
+							p2.CreateDataChannel("x", nil)
+							o, _ := p2.CreateOffer(nil)
+							p2.Close()
+							local = o.SDP
+						}
+						k, _ := pake.ClientSignB64(e2eSeed(), id, local, pc.RemoteDescription().SDP)
 						bm.CPub, _ = base64.StdEncoding.DecodeString(k["pub"])
 						bm.CSig, _ = base64.StdEncoding.DecodeString(k["sig"])
 						if e2eKey == "bad" {
@@ -688,7 +696,7 @@ var (
 	e2eDeny    bool                                                          // ожидать отказ человека на хосте (REQ-F-03)
 	e2eCtl     func(*testing.T, *webrtc.DataChannel, chan ctlMsg)
 	e2eSquat   int                      // столько клиентов до настоящего шлют connect и молчат (У3, У9)
-	e2eKey     string                   // seed ключа клиента (base64): заявить в connect и подписать в «b» (У3); "bad" — заявить, подпись испортить; "other" — подписать отпечаток другого соединения (вход по ключу)
+	e2eKey     string                   // seed ключа клиента (base64): заявить в connect и подписать в «b» (У3); "bad" — заявить, подпись испортить; "other" — подписать отпечаток другого соединения (вход по ключу); "otherpw" — то же при входе паролем (вход идёт, ключ не доказан)
 	e2eNoVideo bool                     // видео не ждать (захват отклонён на хосте) — сразу к e2eCtl
 	e2eOTP     func(n int) string       // код TOTP на n-й запрос хоста; "" — не отвечать
 	e2eSeen    func(authMsg)            // каждое сообщение auth от хоста
@@ -698,6 +706,7 @@ var (
 	e2eTwice   bool                     // назвать имя дважды (хост обязан оборвать вход)
 	e2eByKey   bool                     // REQ-S-24: вход ключом e2eSeed без пароля (CPace не начинать; conf в "otp"/"ok" нет)
 	e2eTrust   bool                     // в "b" со входом паролем — trust (ключ во вход без пароля)
+	e2ePass    bool                     // Э3: с e2eByKey — вход по пропуску (pass в "b")
 	e2eInput   func(*testing.T, *Agent) // после нажатия ControlLeft клиентом, до bye
 	e2eIn      *webrtc.DataChannel      // канал input клиента (для e2eCtl): ставит e2e
 	e2eWait    = 20 * time.Second       // весь e2e: вход, видео, e2eCtl

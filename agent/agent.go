@@ -170,6 +170,8 @@ type session struct {
 	gone    atomic.Bool  // сессия освобождена (release) — в pend не возвращать
 	spaceOK atomic.Bool  // Э2: вход записью по умолчанию паролем и кодом TOTP (не ключом, не одноразовым кодом) — ctl "sp" можно
 	spJoin  atomic.Bool  // Э2: SpaceJoin уже был в этой сессии (одно вступление на сессию)
+	trustOK atomic.Bool  // Ч7б: вход паролем записи и кодом TOTP — ctl "trust" можно, если ключ доказан в "b" (trustctl.go)
+	trusted atomic.Bool  // Ч7б: ctl "trust" уже был в этой сессии (один на сессию)
 	cpub    []byte       // под mu: ключ клиента, доказанный подписью в "b" (pake.ClientVerify); nil — не доказан
 	tag     []byte       // под mu: LoginTag при "b" (revoked сверяет, если tagged)
 	tagged  bool         // под mu: tag взят
@@ -284,7 +286,7 @@ type authMsg struct {
 	CSig  []byte `json:"csig,omitempty"`
 	Keys  bool   `json:"keys,omitempty"`  // в первом "a" хоста: хост принимает вход по ключу без пароля (REQ-S-24)
 	Key   bool   `json:"key,omitempty"`   // в "b": вход ключом cpub без пароля (без msg/conf); в "ok": ключ — во входе без пароля
-	Trust bool   `json:"trust,omitempty"` // в "b" со входом паролем: «Доверять этому ПК» — ключ cpub во вход без пароля
+	Trust bool   `json:"trust,omitempty"` // в "b" со входом паролем: «Доверять этому ПК» — ключ cpub во вход без пароля; в "ok" — сессии можно ctl "trust" (Ч7б, trustctl.go; старый хост не шлёт)
 	Code  string `json:"code,omitempty"`  // в "otp" от клиента: код TOTP
 	NoOTP bool   `json:"nootp,omitempty"` // в "ask": вход без подтверждения выключен, пока на хосте не настроят TOTP
 	Space bool   `json:"space,omitempty"` // в первом "a" хоста: хост понимает ctl "sp" (Э2, space.go)
@@ -1201,6 +1203,8 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 				mm.View = nil
 			}
 			a.setMode(sctx, s, mm.View, func(r modeMsg) { b, _ := json.Marshal(r); ctl.SendText(string(b)) })
+		case m.T == "trust": // Ч7б: «Добавить» — ключ во вход без пароля без переподключения (trustctl.go)
+			a.trustCtl(s, msg.Data, func(r trustMsg) { b, _ := json.Marshal(r); ctl.SendText(string(b)) })
 		case m.T == "sp" && a.SpaceGet != nil: // Э2: состав пространства (space.go)
 			a.spaceCtl(s, msg.Data, func(r spMsg) { b, _ := json.Marshal(r); ctl.SendText(string(b)) })
 		case m.T == "audio" && m.SDP != "" && a.Audio:
@@ -1558,6 +1562,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 				case ok:
 					s.asking.Store(false)
 					s.spaceOK.Store(user == "" && !m.Key) // Э2: пароль записи по умолчанию + код, не ключ
+					s.trustOK.Store(!m.Key)               // Ч7б: как trust в "b" — пароль записи + код (не ключ; пропуск сюда не доходит)
 					a.accept(ctx, s, track, send, conf, fpc, fph, pin)
 				case locked:
 					reject("locked")
@@ -1685,7 +1690,7 @@ func (a *Agent) accept(ctx context.Context, s *session, track *webrtc.TrackLocal
 		s.mu.Unlock()
 		pid = a.passID(cpub)
 	}
-	send(authMsg{T: "ok", PID: pid, Conf: conf, Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph), View: view, Audio: a.Audio, Mode: s.byAsk.Load() && a.ConfirmControl != nil, Pause: a.Pause, Key: kp != nil, Pass: s.pass.Load()})
+	send(authMsg{T: "ok", PID: pid, Conf: conf, Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph), View: view, Audio: a.Audio, Mode: s.byAsk.Load() && a.ConfirmControl != nil, Pause: a.Pause, Key: kp != nil, Pass: s.pass.Load(), Trust: a.trustCan(s)})
 	log.Printf("сессия %s: вход выполнен%s", s.label(), map[bool]string{true: " (только просмотр)"}[view]) // REQ-F-16, F-24
 	s.sendMonitors()
 	closeInd, err := indicator(s.label(), s.plaque(), a.userClose(s)) // REQ-F-15, F-24

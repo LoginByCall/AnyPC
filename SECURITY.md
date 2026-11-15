@@ -74,6 +74,20 @@ that connection, also send "off" and a password "b" with this PC's key as cpub; 
 the target (passUntil), passwords can be guessed this way past the brute-force lockout (the TOTP code is still needed).
 No separate signature domain: v0.2.0 targets would not accept it.
 
+«Добавить» в уже вошедшей сессии (ctl «trust», с v0.3.1; ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ): ключ клиента попадает во вход без
+пароля записи без повторного входа. Условия те же, что у trust в «b»: вход паролем записи с кодом TOTP (не ключом, не
+пропуском, не через «Разрешить»), ключ доказан подписью над отпечатками этого соединения в «b» (в ctl новый ключ не
+принимается), сейчас не «Спрашивать», запись и пароль те же, ключ не исключён из пространства; один раз за сессию.
+Новой возможности это не даёт: тот же клиент мог войти заново с trust. Но окно для неё — вся сессия, а не момент входа:
+посторонний скрипт в вошедшем клиенте (веб-клиент, окно) может добавить ключ без нажатия «Добавить».
+"Add" in a live session (ctl "trust", since v0.3.1; NEEDS HUMAN REVIEW): the client key goes into password-less login
+of the account without a second login. Same conditions as trust in "b": login with the account password and TOTP code
+(not by key, pass or "Allow"), the key proven by a signature over this connection's fingerprints in "b" (no new key is
+accepted over ctl), "Ask" is off now, the account and password unchanged, the key not removed from the space; once per
+session. This adds no new capability — the same client could log in again with trust — but the window for it is the
+whole session rather than the login: a foreign script in a logged-in client (web client, window) can add the key
+without "Add" being pressed.
+
 «Моё пространство», сверка состава: ПК пространства сами сверяют состав (кто в пространстве, пароль входа, секрет
 кода) отдельным соединением без видео и входа — вне мест входа (их три) и вне блокировки перебора паролей; места
 сессии оно не занимает, но пока на цели идёт сессия, сверке отвечают тем же «занято», что обычному подключению. Запрос

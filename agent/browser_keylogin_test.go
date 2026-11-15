@@ -23,7 +23,8 @@ import (
 // пароля (только код TOTP);
 // ключ хоста не тот, что закреплён, или не закреплён вовсе — код не спрашивается; "ok" и "nokey" раньше своего «b» по
 // ключу не принимаются; старый хост без keys — пароль не уходит; отзыв на хосте — понятная причина, метка снята;
-// отпечаток своего ключа — в «Параметрах»; «Забыть» забывает ключ и просит отозвать его на хосте.
+// отпечаток своего ключа — в «Параметрах»; «Забыть» забывает ключ и просит отозвать его на хосте. Ч7б: хост с trust в
+// «ok» — «Добавить» шлёт ctl trust в этой же сессии (без разрыва и нового кода); без поля (старый хост) — прежний путь.
 const cdpKeyLogin = `
 const [, , port, url] = process.argv;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -53,6 +54,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     return q + '|' + re;
   };
   await sleep(1000);
+  // сначала — хост без ctl trust (старый, v0.3.0): поле trust из «ok» убирается, «Добавить» — повторным входом
+  await ev("window.stripTrust = true; window.jp0 = JSON.parse; JSON.parse = (s, r) => { const m = jp0(s, r); if (stripTrust && m && m.t === 'ok') delete m.trust; return m; }; 1");
   await ev("document.getElementById('id').value='123456789'; 1");
   console.log('trustq=' + await trust());
   console.log('trust=' + await until(s => s.endsWith('|true')) + '|' + await ev(login) + '|' + await ev("document.getElementById('keyfp').textContent") + '|' + await ev("localStorage.getItem('mine')"));
@@ -111,6 +114,21 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await fetch(url + 'revoke');
   await ev(go);
   console.log('nonekey=' + await until(s => s.includes('rror')) + '|' + await ev(login));
+  // Ч7б: хост с trust в «ok» — «Добавить» шлёт ctl trust в этой же сессии: ни разрыва, ни нового кода
+  await ev("stripTrust = false; 1");
+  await ev("document.getElementById('pw').value='secret123'; document.getElementById('go').click()");
+  await otp(); await until(s => s.endsWith('|true'));
+  if (await ev("document.getElementById('starbtn').getAttribute('aria-pressed')") === 'true') await ev("document.getElementById('starbtn').click(); 1");
+  await ev("document.getElementById('starbtn').click(); 1");
+  const cq = await ev("[document.getElementById('mineq').checkVisibility(), document.getElementById('mineqb').textContent, " + login + "].join(',')");
+  await ev("window.p0 = pc; window.ts = []; const so = ctl.send.bind(ctl); ctl.send = x => { ts.push(JSON.parse(x).t); return so(x); }; document.getElementById('mineqn').value = 'Дом'; document.getElementById('mineqok').click(); 1");
+  await sleep(1500);
+  console.log('ctltrust=' + cq + '|' + await state() + '|' + await ev("pc === p0") + '|' + await ev("ts.join()") + '|' + await ev(login) + '|' + await ev(keyOn));
+  await ev("document.getElementById('bye').click()"); await sleep(300);
+  await ev(go);
+  console.log('ctlask=' + await until(s => s.includes('|true|')));
+  await otp();
+  console.log('ctlkey=' + await until(s => s.endsWith('|true')));
   process.exit(0);
 })();`
 
@@ -168,7 +186,7 @@ func TestBrowserKeyLogin(t *testing.T) {
 	mu.Lock()
 	fps := slices.Clone(added)
 	mu.Unlock()
-	if len(fps) != 3 {
+	if len(fps) != 4 { // три — повторным входом (старый хост), один — ctl trust
 		t.Fatalf("добавлено ключей %d: %v", len(fps), fps)
 	}
 	fp, fp2 := fps[0], fps[1]
@@ -189,6 +207,9 @@ func TestBrowserKeyLogin(t *testing.T) {
 		"nokey=Error: this PC’s key was not accepted: it was revoked, or the remote PC has no TOTP code or has “Ask before each connection” on — sign in with the password. Sign-in without a password from this PC is off. Also revoke key " + fp + " in the remote PC’s window|false|false|[]|false",
 		"nopw=Enter the password|false|false",
 		"nonekey=Error: this PC’s key was not accepted: it was revoked, or the remote PC has no TOTP code or has “Ask before each connection” on — sign in with the password|false|false|[]\n",
+		"ctltrust=true,Next time — one click, no password, only the code from the app.,[[null,null]]||false|true|true|trust|[[true,\"\"]]|true\n", // сессия та же, кода не просили, ключ — один раз
+		"ctlask=|true|false\n", // дальше — ключом: только код
+		"ctlkey=|false|true\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("нет %q", want)
