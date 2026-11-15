@@ -151,3 +151,18 @@ func TestSpaceConfirmSave(t *testing.T) {
 		spaceOps.wg.Wait()
 	}
 }
+
+// Ч12, круг 3: шаг, сообщённый после конца операции (горутина обмена пережила её), в итог не попадает.
+func TestSpaceStageAfterEnd(t *testing.T) {
+	opsReset(t)
+	var stage func(string)
+	spaceOps.start("enter", func(ctx context.Context, _ func(spacePreview), _ <-chan bool) (any, error) {
+		stage = spaceStageOf(ctx)
+		return nil, agent.ErrSpaceNoLink
+	})
+	spaceOps.wg.Wait()
+	stage("auth")
+	if op := spaceOps.snap(true); op["stage"] != nil || op["err"] != "nolink" {
+		t.Errorf("шаг после конца: %v", op)
+	}
+}

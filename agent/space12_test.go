@@ -159,7 +159,7 @@ func TestDialHungProxy(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	t0 := time.Now()
-	c, err := dial(ctx, hubURL)
+	c, err := dialWait(ctx, hubURL, proxyWait)
 	if err != nil || time.Since(t0) > 3*time.Second {
 		t.Fatalf("зависший прокси: %v за %v", err, time.Since(t0))
 	}
