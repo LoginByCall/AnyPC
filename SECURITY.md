@@ -74,6 +74,24 @@ that connection, also send "off" and a password "b" with this PC's key as cpub; 
 the target (passUntil), passwords can be guessed this way past the brute-force lockout (the TOTP code is still needed).
 No separate signature domain: v0.2.0 targets would not accept it.
 
+«Добавить» в уже вошедшей сессии (ctl «trust», с v0.3.1; ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ): ключ клиента попадает во вход без
+пароля записи без повторного входа. Условия те же, что у trust в «b»: вход паролем записи с кодом TOTP (не ключом, не
+пропуском, не через «Разрешить»), ключ доказан подписью над отпечатками этого соединения в «b» (в ctl новый ключ не
+принимается), сейчас не «Спрашивать», запись и пароль те же, ключ не исключён из пространства; один раз за сессию.
+Новой возможности это не даёт: окно для trust теперь — вся сессия, а не момент входа, но посторонний скрипт в
+вошедшем клиенте (веб-клиент, окно) и так держит пароль сессии (повторный вход, again.pw) и мог войти заново с trust;
+а вход добавленным ключом по-прежнему требует кода TOTP. Как и trust в «b», ctl «trust» разрешён при «Только показ
+экрана» на хосте и у записи с правами «просмотр»: ключ даёт ровно права записи, не больше.
+"Add" in a live session (ctl "trust", since v0.3.1; NEEDS HUMAN REVIEW): the client key goes into password-less login
+of the account without a second login. Same conditions as trust in "b": login with the account password and TOTP code
+(not by key, pass or "Allow"), the key proven by a signature over this connection's fingerprints in "b" (no new key is
+accepted over ctl), "Ask" is off now, the account and password unchanged, the key not removed from the space; once per
+session. This adds no new capability: the window for trust is now the whole session rather than the login, but a
+foreign script in a logged-in client (web client, window) already holds the session password (kept for a reconnect)
+and could log in again with trust; and logging in with the added key still requires the TOTP code. Like trust in "b",
+ctl "trust" is allowed with "Screen sharing only" on the host and for a "view" account: the key gives exactly the
+account's rights, no more.
+
 «Моё пространство», сверка состава: ПК пространства сами сверяют состав (кто в пространстве, пароль входа, секрет
 кода) отдельным соединением без видео и входа — вне мест входа (их три) и вне блокировки перебора паролей; места
 сессии оно не занимает, но пока на цели идёт сессия, сверке отвечают тем же «занято», что обычному подключению. Запрос

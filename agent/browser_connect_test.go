@@ -20,7 +20,7 @@ import (
 
 // cdpConnect — экран «Другой ПК» по макету (Ч7) в окне программы (привязки подменены, CPace — pake.wasm): шаг 2 —
 // только у ПК с TOTP, отправка на шестой цифре; ожидание «Разрешить» — отсчёт; шаг 3 «Это ваш компьютер?» поверх
-// сессии после входа паролем: ПК пускает по ключу — «Добавить» = имя в `mine` и повторный вход с trust (новый код),
+// сессии после входа паролем: ПК пускает по ключу — «Добавить» = имя в `mine` и (хост без ctl trust) повторный вход с trust (новый код),
 // дальше по ключу; не пускает — «Добавить» с галочкой «Запомнить пароль» (снята по умолчанию); «Не сейчас» — больше
 // не спрашивать; не спрашивать у члена пространства и после кода разовой помощи.
 const cdpConnect = `
@@ -44,6 +44,9 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   })();` + "`" + ` });
   await call('Page.navigate', { url }); await sleep(1500);
   console.log('app=' + await ev("(async () => APP + '|' + await loadPake())()"));
+  // хост без ctl trust (v0.3.0, Ч7б): поле trust из «ok» убирается — здесь проверяется прежний путь повторного входа
+  // (B1: again.trust только этой попытки); путь ctl trust — TestBrowserKeyLogin
+  await ev("window.jp0 = JSON.parse; JSON.parse = (s, r) => { const m = jp0(s, r); if (m && m.t === 'ok') delete m.trust; return m; }; 1");
   await ev("document.getElementById('hadd').click(); 1"); await sleep(600); // «+» — экран «Другой ПК» (и его тур)
   console.log('tour1=' + await ev("!document.getElementById('tour').classList.contains('hidden')"));
   const vis = i => "document.getElementById('" + i + "').checkVisibility()";
@@ -54,7 +57,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const login = async (hid, pw) => { await ev("document.getElementById('id').value = '" + hid + "'; document.getElementById('pw').value = '" + pw + "'; document.getElementById('go').click(); 1"); };
   const bye = async () => { await ev("document.getElementById('bye').click(); 1"); await sleep(400); };
   // вопрос шага 3: виден, вариант (key — ключ включим, pw — без ключа, on — ключ уже есть, np — вход без пароля), галочка «Запомнить пароль» видна и стоит, ☆ видна
-  const q = () => ev("(() => { const d = i => document.getElementById(i), on = d('mineq').checkVisibility(), b = d('mineqb').textContent; return [on, !on ? '-' : b === t('c3_b_key') ? 'key' : b === t('c3_b') ? 'pw' : b === t('c3_b_on') ? 'on' : b === t('c3_b_np') ? 'np' : '?', d('mineqrl').checkVisibility(), d('mineqrl').checkVisibility() && d('mineqr').checked, d('starbtn').checkVisibility()].join(','); })()");
+  const q = () => ev("(() => { const d = i => document.getElementById(i), on = d('mineq').checkVisibility(), b = d('mineqb').textContent; return [on, !on ? '-' : b === t('c3_b_key') ? 'key' : b === t('c3_b_kt') ? 'kt' : b === t('c3_b') ? 'pw' : b === t('c3_b_on') ? 'on' : b === t('c3_b_np') ? 'np' : '?', d('mineqrl').checkVisibility(), d('mineqrl').checkVisibility() && d('mineqr').checked, d('starbtn').checkVisibility()].join(','); })()");
   const ls = k => ev("localStorage.getItem('" + k + "')");
   const tourOn = () => ev("!document.getElementById('tour').classList.contains('hidden')");
 
