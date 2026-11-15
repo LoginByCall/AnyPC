@@ -391,7 +391,7 @@ func (a *Agent) recvMember(ctx context.Context, s *session, m authMsg, keyOK boo
 			break
 		}
 		st.phase = 4 // "sp" сверки в этом соединении больше не принимаются
-		send(authMsg{T: "rx", Pub: me, Sig: pake.HostSign(a.Key, a.ID, fpc, fph), Lim: &rx.lim})
+		send(rxTest(authMsg{T: "rx", Pub: me, Sig: pake.HostSign(a.Key, a.ID, fpc, fph), Lim: &rx.lim}, fpc, fph))
 		go a.rxWatch(ctx, s, rx)
 		return
 	}
@@ -433,7 +433,7 @@ func (a *Agent) recvB(ctx context.Context, s *session, m authMsg, cur *cpace.Sta
 			reject("rx", why)
 			return
 		}
-		send(authMsg{T: "rx", Pub: me, Sig: sig, Ask: true, Lim: &rx.lim})
+		send(rxTest(authMsg{T: "rx", Pub: me, Sig: sig, Ask: true, Lim: &rx.lim}, fpc, fph))
 		go a.rxWatch(ctx, s, rx)
 		return
 	}
@@ -470,7 +470,7 @@ func (a *Agent) recvB(ctx context.Context, s *session, m authMsg, cur *cpace.Sta
 	}
 	rx.pinning.Store(false)
 	log.Printf("приём от %s: разовый код верный, ключ закреплён", rx.from)
-	send(authMsg{T: "rx", Conf: conf, Pub: me, Sig: sig, Lim: &rx.lim})
+	send(rxTest(authMsg{T: "rx", Conf: conf, Pub: me, Sig: sig, Lim: &rx.lim}, fpc, fph))
 	go a.rxWatch(ctx, s, rx)
 }
 
@@ -744,7 +744,16 @@ var (
 	recvTestDC func(*webrtc.DataChannel)          // каналы хоста, кроме "auth" ("input", "ctl")
 	recvTestPC func(*webrtc.PeerConnection) error // после "rx" — вместо файлов и текста
 	sendNoFit  bool                               // не проверять план по lim: потолки проверяет хост
+	rxTestRx   func(m *authMsg, fpc, fph string)  // порча "rx" хоста (ключ, подпись, подтверждение кода)
 )
+
+// rxTest — "rx" хоста через подмену rxTestRx (тесты проверок отправителя); в рабочем пути — как есть.
+func rxTest(m authMsg, fpc, fph string) authMsg {
+	if rxTestRx != nil {
+		rxTestRx(&m, fpc, fph)
+	}
+	return m
+}
 
 // sendWait — от connect до "rx"; recvWait — ответ получателя на файл или текст (окно «Принять?» — до AskTimeout).
 var (
@@ -923,10 +932,7 @@ func sendVia(ctx context.Context, server string, d SendDial, p *sendPlan) (ed255
 	if err != nil && ctx.Err() != nil && errors.Is(err, context.Canceled) { // остановил sendGrace — причина в ctx
 		err = ctx.Err()
 	}
-	if err != nil {
-		return nil, err
-	}
-	return hostPub, nil
+	return hostPub, err // ключ — только доказанный (подпись, код, Known); и при отказе после "rx": закрепление не сгорает
 }
 
 // sendText — текст по каналу "text" (протокол — в начале файла).

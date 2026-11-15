@@ -398,8 +398,21 @@ func pickFile(ctx context.Context) (string, bool) {
 	return p, err == nil && p != ""
 }
 
+// pickDir — окно выбора папки (osascript choose folder).
+func pickDir(ctx context.Context) (string, bool) {
+	if fakeDesktop {
+		return "", false
+	}
+	out, err := exec.CommandContext(ctx, "osascript", osa(`POSIX path of (choose folder with prompt (item 1 of argv))`, "AnyPC").Args[1:]...).Output()
+	p := strings.TrimRight(string(out), "\n")
+	return p, err == nil && p != ""
+}
+
 // utf8 — pbcopy/pbpaste перекодируют по LANG; без UTF-8 кириллица превращается в «?».
 func utf8(c *exec.Cmd) *exec.Cmd { c.Env = append(os.Environ(), "LANG=en_US.UTF-8"); return c }
+
+// clipReadFull — буфер целиком для «Отправить» (send.go): pbpaste не обрезает.
+func clipReadFull() (string, error) { return ClipText() }
 
 func ClipText() (string, error) {
 	if fakeDesktop {

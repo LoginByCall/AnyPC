@@ -270,7 +270,8 @@ that is moving is not cut; speed is not checked during the first 30 minutes — 
 папки символьные ссылки, устройства и FIFO не идут (список пропущенного — в итоге), файлы открываются через os.Root
 папки. Свой ПК — по ключу из состава пространства, без кода; чужой — разовым кодом с его экрана (ключ того ПК после
 этого запоминается, как после входа) или без кода по запомненному ключу, если тот ПК закрепил этот. В журнале
-отправителя — одна строка без путей и текста. Буфер обмена отправляется только по явному выбору.
+отправителя — одна строка без путей и текста. Буфер обмена отправляется только по явному выбору. Что отправить, страница
+не указывает путями: файл или папку выбирает человек в окне выбора ОС, страница получает только одноразовую метку.
 
 Folders and sending from this PC (Ch10.2–Ch10.3, NEEDS HUMAN REVIEW: path checks and how the recipient is proven).
 A folder is received into a new "Downloads/<folder name>" (taken — "<name> (1)"…), each file at its relative path
@@ -285,4 +286,5 @@ followed. The receive limits apply to the sum of the folder's files; empty folde
 folder being sent symlinks, devices and FIFOs are not sent (the skipped list is in the result), files are opened
 through the folder's os.Root. Own PC — by the key from the space membership, no code; foreign — by the one-time code
 from its screen (that PC's key is then remembered, as after a login) or without a code by the remembered key if that
-PC pinned this one. The sender's log has one line without paths or text. The clipboard is sent only when chosen.
+PC pinned this one. The sender's log has one line without paths or text. The clipboard is sent only when chosen. The page does not name
+what to send by path: the person picks the file or folder in the OS picker, the page only gets a one-time token.

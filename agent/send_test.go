@@ -32,7 +32,7 @@ func TestSafeRelTable(t *testing.T) {
 		"DEL": "P/a\x7fb", "C1": "P/a\u0085b", "RLO": "P/фото\u202Egpj.exe", "LRE": "P/\u202Ax", "FSI": "P/a\u2068b",
 		"PDI": "P/a\u2069", "только точки": "P/...", "только пробелы": "P/  ", "глубже 32": deep + "/g",
 		"длиннее 1024":       "P/" + strings.Repeat("a", 200) + "/" + strings.Repeat("b", 200) + "/" + strings.Repeat("c", 200) + "/" + strings.Repeat("d", 200) + "/" + strings.Repeat("e", 230),
-		"составляющая > 255": "P/" + strings.Repeat("я", 128), "не UTF-8": "P/a\xffb", "место частей": ".anypc-1.part/x",
+		"составляющая > 255": "P/" + strings.Repeat("я", 128), "не UTF-8": "P/a\xffb", "место частей": ".anypc-1.part/x", "место частей, регистр": ".ANYPC-1.part/x",
 	}
 	for k, p := range bad {
 		if got, err := safeRel(p); err == nil {
@@ -40,13 +40,14 @@ func TestSafeRelTable(t *testing.T) {
 		}
 	}
 	good := map[string][]string{
-		"Папка/a.txt":                   {"Папка", "a.txt"},
-		"P/sub/deep/x.bin":              {"P", "sub", "deep", "x.bin"},
-		"P/what?.mp3":                   {"P", "what_.mp3"},
-		"P/a<b>|\"*.txt":                {"P", "a_b____.txt"},
-		"P/dir./name. ":                 {"P", "dir", "name"},
-		".hidden/.git/x":                {".hidden", ".git", "x"},
-		"P/👩\u200d💻 файл.txt":           {"P", "👩\u200d💻 файл.txt"},
+		"Папка/a.txt":         {"Папка", "a.txt"},
+		"P/sub/deep/x.bin":    {"P", "sub", "deep", "x.bin"},
+		"P/what?.mp3":         {"P", "what_.mp3"},
+		"P/a<b>|\"*.txt":      {"P", "a_b____.txt"},
+		"P/dir./name. ":       {"P", "dir", "name"},
+		".hidden/.git/x":      {".hidden", ".git", "x"},
+		"P/👩\u200d💻 файл.txt": {"P", "👩_💻 файл.txt"}, // Cf → «_», как safeName (M6 приёмки)
+		"P/a\u200bb\u200e\u200f\u061c\ufeff\u2028\u2029c": {"P", "a_b______c"},
 		"P/CONSOLE.txt":                 {"P", "CONSOLE.txt"},
 		deep:                            strings.Split(deep, "/"),
 		"P/" + strings.Repeat("я", 127): {"P", strings.Repeat("я", 127)},

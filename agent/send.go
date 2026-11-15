@@ -19,9 +19,15 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"syscall"
 
 	"github.com/pion/webrtc/v4"
 )
+
+// PickFile, PickDir — окно выбора файла или папки ОС на этом ПК для «Отправить» (Ч10.3): путь выбирает человек, страница
+// получает только метку (app/send.go). ctx кончился — окно закрывается (кроме Windows).
+func PickFile(ctx context.Context) (string, bool) { return pickFile(ctx) }
+func PickDir(ctx context.Context) (string, bool)  { return pickDir(ctx) }
 
 // SendProgress — ход отправки: Item — номер текущего (с 1; текст — последний), Done и Total — байт (с текстом).
 type SendProgress struct {
@@ -40,15 +46,18 @@ type SendResult struct {
 
 var (
 	ErrSendEmpty   = errors.New("отправка: нечего отправлять") // окну (app/send.go); SendTo пустой план шлёт: проверка и закрепление
-	ErrSendClip    = errors.New("отправка: буфер обмена пуст или недоступен")
+	ErrSendClip    = errors.New("отправка: буфер обмена пуст, больше 1 МБ или недоступен (Wayland: окно AnyPC должно быть в фокусе)")
+	ErrSendRoot    = errors.New("отправка: корень диска целиком не отправляется — выберите папку")
 	ErrSendNotFile = errors.New("отправка: не файл и не папка")
 	ErrSendMany    = errors.New("отправка: больше 100000 файлов")
 )
 
-// clipRead — буфер обмена этого ПК (подмена — в тестах: wl-paste в GNOME крадёт фокус).
-var clipRead = ClipText
+// clipRead — буфер обмена этого ПК целиком (до 1 МБ; больше — ошибка, не обрезка); подмена — в тестах: wl-paste в
+// GNOME крадёт фокус.
+var clipRead = clipReadFull
 
-const sendMaxItems = 100_000 // файлов в плане: обход огромного дерева кончается до соединения
+// sendMaxItems — файлов в плане: обход огромного дерева кончается до соединения (переменная — тест).
+var sendMaxItems = 100_000
 
 // sendItem — файл плана: отдельный (root nil, path) или файл папки (root — её os.Root, rel — путь в ней).
 type sendItem struct {
@@ -99,7 +108,12 @@ func makePlan(files, dirs []string, text string) (_ *sendPlan, err error) {
 		p.total += st.Size()
 	}
 	for _, d := range dirs {
-		d = filepath.Clean(d)
+		if d, err = filepath.Abs(d); err != nil { // «.» и «sub/..» — папка со своим именем
+			return nil, err
+		}
+		if filepath.Dir(d) == d { // «/», «C:\», UNC-корень «\\srv\share\»: имени нет, и целиком — не то, что хотели
+			return nil, ErrSendRoot
+		}
 		if st, err := os.Stat(d); err != nil {
 			return nil, err
 		} else if !st.IsDir() {
@@ -189,10 +203,11 @@ func (p *sendPlan) fits(l *rxLimits) error {
 func (it sendItem) open() (*os.File, os.FileInfo, error) {
 	var f *os.File
 	var err error
+	// O_NONBLOCK: FIFO, подложенный после обхода, не вешает открытие (дальше — отказ «не обычный файл»)
 	if it.root != nil {
-		f, err = it.root.Open(it.rel)
+		f, err = it.root.OpenFile(it.rel, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	} else {
-		f, err = os.Open(it.path)
+		f, err = os.OpenFile(it.path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	}
 	if err != nil {
 		return nil, nil, err
