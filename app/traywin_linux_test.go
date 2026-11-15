@@ -45,6 +45,25 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   console.log('pc=' + await ev("[[...document.querySelectorAll('#frames iframe')].map(f => new URL(f.src, location.href).searchParams.get('embed')).join(','), " + vis('mypc') + ", " + vis('home') + "].join('|')"));
   await ev(jsHere); await sleep(200);
   console.log('here2=' + await ev("[" + vis('home') + ", " + vis('mypc') + ", document.activeElement.id, document.querySelectorAll('#frames iframe').length].join('|')"));
+  // «Помочь кому-то…» из вкладки ПК: «Другой ПК» не поверх вкладок — вкладки спрятаны, «Назад» — главный
+  await ev(jsPC); await sleep(300);
+  const tabv = await ev(vis('mypc'));
+  await ev(jsHelp); await sleep(200);
+  const h1 = await ev("[" + vis('connect') + ", " + vis('mypc') + ", " + vis('home') + "].join('|')");
+  await ev("document.getElementById('connback').click(); 1"); await sleep(200);
+  console.log('helptab=' + tabv + '|' + h1 + '/' + await ev("[" + vis('home') + ", " + vis('mypc') + "].join('|')"));
+  // своя сессия в окне (myPcHome() === false): ни один JS трея окно не меняет, фокус остаётся на видео
+  await ev("show(true); document.getElementById('v').focus(); 1"); await sleep(200);
+  const own = () => ev("[" + vis('sess') + ", " + vis('connect') + ", " + vis('home') + ", " + vis('mypc') + ", document.activeElement.id, document.querySelectorAll('#frames iframe').length].join('|')");
+  const o0 = await own();
+  const out = [];
+  for (const js of [jsHelp, jsPC, jsHere]) { await ev(js); await sleep(300); out.push(await own()); }
+  console.log('ownsess=' + o0 + '/' + out.join('/'));
+  await ev("show(false); 1");
+  // свежее окно из трея: JS — на DOMContentLoaded (как trayNav), строка «Я тут» появляется после первого hostInfo — фокус её дожидается
+  await call('Page.addScriptToEvaluateOnNewDocument', { source: "addEventListener('DOMContentLoaded', () => { " + jsHere + " });" });
+  await call('Page.navigate', { url: base + '/?t=tokui' }); await sleep(2500);
+  console.log('fresh=' + await ev("[" + vis('home') + ", document.activeElement.id].join('|')"));
   process.exit(0);
 })();`
 
@@ -81,7 +100,7 @@ func TestBrowserTrayJS(t *testing.T) {
 	pl.Close()
 	prof, _ := os.MkdirTemp("", "anypc-chrome-")
 	defer os.RemoveAll(prof)
-	ch := exec.CommandContext(ctx, chrome, "--headless=new", "--disable-gpu", "--no-proxy-server", "--disable-background-networking", "--remote-debugging-port="+port, "--user-data-dir="+prof, "about:blank")
+	ch := exec.CommandContext(ctx, chrome, "--headless=new", "--disable-gpu", "--no-proxy-server", "--disable-background-networking", "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE localhost , EXCLUDE 127.0.0.1", "--remote-debugging-port="+port, "--user-data-dir="+prof, "about:blank")
 	if err := ch.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -104,10 +123,13 @@ func TestBrowserTrayJS(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"here=true|true|false|shpw\n", // «я тут» из «Настроек»: главный экран, фокус в пароле «Я тут»
-		"help=true|false|id\n",        // «Помочь кому-то…»: «Другой ПК», фокус в ID
-		"pc=915020664|true|false\n",   // ПК из трея: вкладка «Моих ПК»
-		"here2=true|false|shpw|1\n",   // «я тут» из вкладки ПК: главный, вкладка жива
+		"here=true|true|false|shpw\n",                // «я тут» из «Настроек»: главный экран, фокус в пароле «Я тут»
+		"help=true|false|id\n",                       // «Помочь кому-то…»: «Другой ПК», фокус в ID
+		"pc=915020664|true|false\n",                  // ПК из трея: вкладка «Моих ПК»
+		"here2=true|false|shpw|1\n",                  // «я тут» из вкладки ПК: главный, вкладка жива
+		"helptab=true|true|false|false/true|false\n", // B3: «Помочь» из вкладки ПК — «Другой ПК» без вкладок поверх
+		"ownsess=true|false|false|false|v|1/true|false|false|false|v|1/true|false|false|false|v|1/true|false|false|false|v|1\n", // B3: своя сессия — окно не меняется
+		"fresh=true|shpw\n", // свежее окно: фокус в «Я тут» после первой отрисовки
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("нет %q", want)

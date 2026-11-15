@@ -500,7 +500,7 @@ func TestCDPMainLive(t *testing.T) {
 	}
 	if os.Getenv("ANYPC_CDP_HEADLESS") == "1" {
 		defer func(a []string) { chromeTestArgs = a }(chromeTestArgs)
-		chromeTestArgs = []string{"--headless=new", "--no-proxy-server", "--disable-background-networking"}
+		chromeTestArgs = []string{"--headless=new", "--no-proxy-server", "--disable-background-networking", "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE localhost , EXCLUDE 127.0.0.1"}
 	}
 	dir, err := os.MkdirTemp(dir, "live-")
 	if err != nil {

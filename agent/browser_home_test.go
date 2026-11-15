@@ -38,6 +38,8 @@ const extra = async () => ` + "`" + `
   console.log('own=' + await ev("[" + own + ".querySelector('.nm').textContent, " + own + ".querySelector('.sub').textContent, " + own + ".querySelector('.mpcopen').textContent, " + own + ".querySelector('.mpcmore').textContent, " + own + ".querySelector('.mpcmore').getAttribute('aria-label')].join('|')"));
   console.log('members=' + await ev("['482113907', '730554218'].map(i => { const d = document.querySelector('#sptiles .sptile[data-id=\"' + i + '\"]'); return d.querySelector('.sub').textContent + '/' + (d.querySelector('input')?.placeholder || d.querySelector('button').textContent); }).join('|')"));
   // три плитки в ряд на ширине макета; правая колонка узкая (~340 px); цели не меньше 44 px
+  // плитки ряда одной высоты, ряды действий — по одной нижней линии (плитка «нужен код» не выше соседних)
+  console.log('align=' + await ev("(() => { const t = [...document.querySelectorAll('#sptiles .sptile')]; return [new Set(t.map(d => Math.round(d.getBoundingClientRect().height))).size, new Set(t.map(d => Math.round(d.querySelector('.tact').getBoundingClientRect().bottom))).size].join(','); })()"));
   console.log('grid=' + await ev("(() => { const t = [...document.querySelectorAll('#sptiles .sptile')].map(d => d.getBoundingClientRect().top); return new Set(t).size + ',' + Math.round(document.getElementById('side').getBoundingClientRect().width); })()"));
   console.log('small=' + await ev("[...document.querySelectorAll('#home button, #home input')].filter(e => e.checkVisibility() && e.getBoundingClientRect().height < 44).map(e => e.id || e.className || e.textContent).join(',')"));
   // на главном — ID, код, «Доступ», «в сети»; узла, отпечатка, версии и «Выйти» нет — они в «Настройках»
@@ -138,6 +140,13 @@ const extra = async () => ` + "`" + `
   const h1 = await ev("myPcHome() + ':' + " + shown('home') + " + ':' + " + shown('connect'));
   await ev("document.getElementById('setgo').click(); 1");
   console.log('myPcHome=' + h1 + '|' + await ev("myPcHome() + ':' + " + shown('home') + " + ':' + " + shown('settings')) + '|' + await ev("typeof myPcAdd + ',' + !!document.getElementById('shpw')"));
+  // «Показать подсказки снова» с главного: сброшен и тур «Другого ПК» (начнётся при входе на него), идёт тур главного
+  await ev("localStorage.setItem('tour_connect', '1'); document.getElementById('helpbtn').click(); 1"); await sleep(200);
+  await ev("[...document.querySelectorAll('#helpbody button')].find(b => b.textContent === t('help_tour')).click(); 1"); await sleep(300);
+  const again = await ev("[localStorage.getItem('tour_connect'), localStorage.getItem('tour_home'), tour?.kind].join('|')");
+  await ev("tourEnd(); document.getElementById('hadd').click(); 1"); await sleep(600);
+  console.log('tour3=' + again + '|' + await ev("[tour?.kind, localStorage.getItem('tour_connect')].join('|')"));
+  await ev("tourEnd(); document.getElementById('connback').click(); 1");
   await ev("document.getElementById('quit').click(); 1");
   console.log('quit=' + await ev("calls.join(',')"));
   process.exit(0);
@@ -179,6 +188,8 @@ func TestBrowserHome(t *testing.T) {
 		"user=true|true|anna\n",
 		"codefit=true,INPUT+BUTTON.main,true|true,INPUT+BUTTON.main,true\n", // N1
 		"hdmenu=true,true\n",
+		"align=1,1\n",
+		"tour3=0|1|home|connect|1\n",          // сброс с главного: tour_connect=0; вход на «Другой ПК» начал его тур
 		"tour2=SUMMARY#coptsum|1|0|connect\n", // на «Другом ПК»: сброшены все, начат тур «Другого ПК»
 		"myPcHome=true:true:false|true:true:false|function,true\n",
 		"incoming=true|settings/true|me\n",
