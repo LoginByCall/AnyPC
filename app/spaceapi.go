@@ -23,7 +23,7 @@ import (
 )
 
 var spaceNames = []string{"spaceCreate", "spaceCreateOK", "spaceCreateNo", "spaceEnter", "spaceOp", "spaceConfirm",
-	"spaceOpClear", "workHere", "passOff", "spaceExclude", "spaceLogin", "spaceLeave", "spaceSync"}
+	"spaceOpClear", "workHere", "passOff", "spaceExclude", "spaceLogin", "spaceLeave", "spaceSync", "spaceSign"}
 
 // spaceCodes — ошибка ядра → код окна (первое совпадение по errors.Is). change — настройки или показанное в превью
 // сменились до применения: повторить.
@@ -40,6 +40,7 @@ var spaceCodes = []struct {
 	{errSpaceSlow, "slow"}, {errSpaceDraft, "draft"}, {errSpaceLogin, "login"}, {errSpaceVia, "via"}, {errSpaceIn, "in"},
 	{errSpaceNotIn, "notin"}, {errSpaceChange, "change"}, {errSpaceSelf, "self"}, {errSpaceNoMember, "nomember"},
 	{errSpaceLast, "last"}, {errSpaceNoChange, "nochange"}, {errSpaceForeign, "foreign"}, {errSpaceHostID, "id"},
+	{errSpaceSDP, "sdp"},
 	{context.Canceled, "cancel"}, {context.DeadlineExceeded, "timeout"},
 }
 
@@ -156,6 +157,8 @@ func spaceDo(c *config, name string, str func(int) string, flag func(int) bool) 
 			spaceOps.clear()
 		}
 		return nil, err
+	case "spaceSign":
+		return spaceSign(c, str(0), str(1), str(2))
 	case "spaceSync":
 		return nil, spaceOps.start("sync", func(ctx context.Context, _ func(spacePreview), _ <-chan bool) (any, error) {
 			if c.spaceDamaged() {
@@ -168,6 +171,48 @@ func spaceDo(c *config, name string, str func(int) string, flag func(int) bool) 
 		})
 	}
 	return nil, errors.New("неизвестный вызов")
+}
+
+var errSpaceSDP = errors.New("пространство: в SDP нет DTLS-отпечатка")
+
+// spaceSign — вход «b» по пропуску из окна (Ч4): подпись ключом этого хоста над DTLS-отпечатками сессии окна с целью
+// id (localSDP — окна, remoteSDP — цели), как signB мастера (agent/space.go) и как цель её проверяет (pake.ClientVerify
+// в "b" с key и pass, agent/agent.go). Подпись привязана к этой сессии: в другой отпечатки другие. Только цели — члену M
+// (не себе) с живым пропуском (passUntil): без пропуска подпись ключом хоста окну не нужна. Окну — {pub, sig}, seed не
+// уходит. ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ (A13: ключ хоста подписывает по просьбе окна).
+func spaceSign(c *config, id, localSDP, remoteSDP string) (any, error) {
+	c.mu.Lock()
+	c.reload()
+	m, key, bad := c.spaceLocked(), ed25519.PrivateKey(bytes.Clone(c.Key)), c.spaceDamagedLocked()
+	c.mu.Unlock()
+	defer clear(key)
+	if bad {
+		return nil, errSpaceDamaged
+	}
+	self := key.Public().(ed25519.PublicKey)
+	if m == nil || !m.member(self) {
+		return nil, errSpaceNotIn
+	}
+	var pub ed25519.PublicKey
+	for _, x := range m.Members {
+		if x.ID == id && !bytes.Equal(x.Pub, self) {
+			pub = x.Pub
+		}
+	}
+	if pub == nil {
+		return nil, errSpaceNoMember
+	}
+	if passes.until(id, pub) == 0 {
+		return nil, agent.ErrPassNone
+	}
+	if pake.Fingerprint(localSDP) == "" || pake.Fingerprint(remoteSDP) == "" {
+		return nil, errSpaceSDP
+	}
+	k, err := pake.ClientSignB64(base64.StdEncoding.EncodeToString(key.Seed()), id, localSDP, remoteSDP)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]string{"pub": k["pub"], "sig": k["sig"]}, nil
 }
 
 // spaceSyncerOf — рассыльщик процесса (startSpaceSync); без него (тест, CLI) — без фоновых повторов.
