@@ -41,6 +41,7 @@ type fileMsg struct {
 	Offset int64  `json:"offset,omitempty"`
 	SHA256 string `json:"sha256,omitempty"`
 	Msg    string `json:"msg,omitempty"`
+	Code   string `json:"code,omitempty"` // Ч10.1: в "err" сессии приёма — код отказа (rxWhy, recv.go)
 }
 
 const (
@@ -246,10 +247,21 @@ func fileID(path string, st os.FileInfo) string {
 // maxRecv — сколько файлов сессия принимает одновременно: каждый держит открытый файл и место на диске.
 const maxRecv = 4
 
+// fileOK — сессия принимает файлы: управление или сессия приёма (Ч10.1, recv.go).
+func (s *session) fileOK() bool { return s.control() || s.rx.Load() != nil }
+
 // receiveFile принимает файл от клиента в папку загрузок хоста; active — идущие приёмы этой сессии. Сессия ушла
-// в просмотр — приём обрывается сразу (REQ-F-26), ждавший очереди не открывается.
+// в просмотр — приём обрывается сразу (REQ-F-26), ждавший очереди не открывается. Сессия приёма (Ч10.1) — ещё
+// потолки и окно «Принять?» (rxCount, rxConfirm); в журнал — без имён файлов (одна строка на приём, rxState.end).
 func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32, s *session) {
 	r := NewReceiver(a.fileDir())
+	rx := s.rx.Load()
+	name := func() string { // имя для журнала
+		if rx != nil {
+			return "приёма от " + rx.from
+		}
+		return fmt.Sprintf("%q", r.name)
+	}
 	var mu sync.Mutex
 	state := "new"  // new → wait → open → finished; в open занято место в active
 	var done func() // снять обрыв при переходе в просмотр
@@ -262,20 +274,24 @@ func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32, s *ses
 			done()
 		}
 	}
-	fail := func(msg string) {
-		log.Printf("файл %q: %s", r.name, msg)
+	failCode := func(code, msg string) {
+		log.Printf("файл %s: %s", name(), msg)
 		r.Abort(false)
 		end()
-		sendJSON(dc, fileMsg{T: "err", Msg: msg})
+		sendJSON(dc, fileMsg{T: "err", Msg: msg, Code: code})
 		dc.Close()
 	}
+	fail := func(msg string) { failCode("", msg) }
 	dc.OnMessage(func(m webrtc.DataChannelMessage) {
 		mu.Lock()
 		defer mu.Unlock()
 		if state == "finished" {
 			return
 		}
-		if !s.control() {
+		if rx != nil {
+			rx.touch()
+		}
+		if !s.fileOK() {
 			fail(viewFiles)
 			return
 		}
@@ -291,10 +307,26 @@ func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32, s *ses
 		json.Unmarshal(m.Data, &fm)
 		switch {
 		case fm.T == "meta" && state == "new":
+			if rx != nil {
+				if code := rx.count(fm.Size, false); code != "" {
+					failCode(code, rxWhy[code])
+					return
+				}
+			}
 			// Лишние файлы ждут очереди, а не получают отказ: клиент шлёт все выбранные сразу (выбрали 10 — 6 отказов).
 			// Ждать здесь нельзя: обработчик зовётся из цикла чтения SCTP — встали бы и идущие передачи.
 			state = "wait"
 			go func() {
+				if rx != nil { // окно «Принять?» (чужой ПК) — до места в очереди
+					if code := a.rxConfirm(s, rx, RecvReq{Name: safeName(fm.Name), Size: fm.Size}); code != "" {
+						mu.Lock()
+						if state == "wait" {
+							failCode(code, rxWhy[code])
+						}
+						mu.Unlock()
+						return
+					}
+				}
 				// ponytail: опрос раз в 200 мс; семафор на сессию — если ожидающих станут сотни
 				for active.Add(1) > maxRecv {
 					active.Add(-1)
@@ -312,7 +344,7 @@ func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32, s *ses
 					active.Add(-1)
 					return
 				}
-				if !s.control() { // ушли в просмотр, пока ждали места
+				if !s.fileOK() { // ушли в просмотр, пока ждали места
 					active.Add(-1)
 					fail(viewFiles)
 					return
@@ -325,7 +357,7 @@ func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32, s *ses
 				}
 				state = "open"
 				if off > 0 {
-					log.Printf("файл %q: докачка с %d байт", r.name, off)
+					log.Printf("файл %s: докачка с %d байт", name(), off)
 				}
 				sendJSON(dc, fileMsg{T: "resume", Offset: off})
 			}()
@@ -336,7 +368,14 @@ func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32, s *ses
 				return
 			}
 			end()
-			log.Printf("файл принят: %s (%d байт, SHA-256 %s)", dst, r.size, sum)
+			if rx != nil {
+				rx.mu.Lock()
+				rx.nf++
+				rx.nb += r.size
+				rx.mu.Unlock()
+			} else {
+				log.Printf("файл принят: %s (%d байт, SHA-256 %s)", dst, r.size, sum)
+			}
 			sendJSON(dc, fileMsg{T: "done", SHA256: sum})
 		case fm.T == "cancel":
 			r.Abort(false)
@@ -346,26 +385,28 @@ func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32, s *ses
 			fail("неожиданное сообщение")
 		}
 	})
-	d := s.whileControl(func() {
+	if rx == nil { // сессия приёма в просмотр не уходит (управления у неё нет)
+		d := s.whileControl(func() {
+			mu.Lock()
+			defer mu.Unlock()
+			if state != "finished" {
+				fail(viewFiles)
+			}
+		})
 		mu.Lock()
-		defer mu.Unlock()
-		if state != "finished" {
-			fail(viewFiles)
+		if state == "finished" {
+			d()
+		} else {
+			done = d
 		}
-	})
-	mu.Lock()
-	if state == "finished" {
-		d()
-	} else {
-		done = d
+		mu.Unlock()
 	}
-	mu.Unlock()
 	dc.OnClose(func() { // обрыв без done/cancel: часть остаётся для докачки
 		mu.Lock()
 		defer mu.Unlock()
 		if state == "open" {
 			r.Abort(true)
-			log.Printf("файл %q: передача прервана, принято %d из %d байт — докачается при повторной отправке", r.name, r.got, r.size)
+			log.Printf("файл %s: передача прервана, принято %d из %d байт — докачается при повторной отправке", name(), r.got, r.size)
 		}
 		end()
 	})
@@ -373,6 +414,12 @@ func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32, s *ses
 
 // sendFile отправляет файл хоста клиенту по новому каналу "file".
 func sendFile(ctx context.Context, pc *webrtc.PeerConnection, path string) error {
+	return sendFileWait(ctx, pc, path, 30*time.Second, false)
+}
+
+// sendFileWait — sendFile, ответ получателя на meta ждать wait (приём, Ч10.1: окно «Принять?» у получателя).
+// Отказ с кодом (сессия приёма) — *RecvError. quiet — без путей в журнале (отправитель приёма, Ч10.1).
+func sendFileWait(ctx context.Context, pc *webrtc.PeerConnection, path string, wait time.Duration, quiet bool) error {
 	src, err := os.Open(path)
 	if err != nil {
 		return err
@@ -418,18 +465,28 @@ func sendFile(ctx context.Context, pc *webrtc.PeerConnection, path string) error
 	var off int64
 	select {
 	case r := <-result:
+		if r.T == "err" && r.Code != "" {
+			return &RecvError{Code: r.Code, Msg: r.Msg}
+		}
 		if r.T != "resume" || r.Offset < 0 || r.Offset > st.Size() {
 			return fmt.Errorf("получатель: %s %s", r.T, r.Msg)
 		}
 		off = r.Offset
 	case <-closed:
+		select { // отказ с кодом и закрытие канала приходят почти вместе
+		case r := <-result:
+			if r.T == "err" && r.Code != "" {
+				return &RecvError{Code: r.Code, Msg: r.Msg}
+			}
+		default:
+		}
 		return errors.New("отменено получателем")
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-time.After(30 * time.Second):
+	case <-time.After(wait):
 		return errors.New("получатель не ответил")
 	}
-	if off > 0 {
+	if off > 0 && !quiet {
 		log.Printf("отправка %s: докачка с %d байт", path, off)
 		if _, err := src.Seek(off, io.SeekStart); err != nil {
 			return err
@@ -462,10 +519,15 @@ func sendFile(ctx context.Context, pc *webrtc.PeerConnection, path string) error
 	sendJSON(dc, fileMsg{T: "end"})
 	select {
 	case r := <-result:
+		if r.T == "err" && r.Code != "" {
+			return &RecvError{Code: r.Code, Msg: r.Msg}
+		}
 		if r.T != "done" {
 			return fmt.Errorf("получатель: %s %s", r.T, r.Msg)
 		}
-		log.Printf("файл отправлен: %s (SHA-256 у получателя %s)", path, r.SHA256)
+		if !quiet {
+			log.Printf("файл отправлен: %s (SHA-256 у получателя %s)", path, r.SHA256)
+		}
 		return nil
 	case <-closed:
 		return errors.New("отменено получателем")

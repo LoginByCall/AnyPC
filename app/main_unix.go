@@ -131,12 +131,13 @@ func hostMain() {
 		Confirm: agent.AskAccept, ConfirmControl: agent.AskControl, Unattended: func() bool { return !cfg.confirm() }, OTP: cfg.otp, ViewOnly: cfg.viewOnly, // без подтверждения — с TOTP (PLAN.md)
 		CodeUsed: cfg.codeUsed,                           // «Спрашивать»: код сменить после сессии и блокировки (REQ-S-23)
 		SpaceGet: cfg.spaceGet, SpaceJoin: cfg.spaceJoin, // «Моё пространство», Э2: отдать состав и принять вступление
-		SpaceMember: cfg.spaceMember, // Э3: пропуск 12 ч на ключ мастера (agent/pass.go)
-		LoginTag:    cfg.loginTag,    // Э4: смена входа пространства и исключение рвут сессии (revoked)
-		KeyGone:     cfg.keyGone,     // решение A: ключ исключённого ПК рвёт сессию в любом режиме
-		LoginShut:   cfg.loginShut,   // решение 12 A: вход паролем на новом ПК — после сверки с членом ≠ поручитель
-		SpaceSync:   cfg,             // Э4: сверка состава между членами (spsync.go)
-		Capture:     hostCapture(cfg.Enc), Locked: hostLocked, FileDir: downloads(), Stderr: logw}
+		SpaceMember: cfg.spaceMember,                                                                        // Э3: пропуск 12 ч на ключ мастера (agent/pass.go)
+		LoginTag:    cfg.loginTag,                                                                           // Э4: смена входа пространства и исключение рвут сессии (revoked)
+		KeyGone:     cfg.keyGone,                                                                            // решение A: ключ исключённого ПК рвёт сессию в любом режиме
+		LoginShut:   cfg.loginShut,                                                                          // решение 12 A: вход паролем на новом ПК — после сверки с членом ≠ поручитель
+		SpaceSync:   cfg,                                                                                    // Э4: сверка состава между членами (spsync.go)
+		CodeMode:    cfg.codeMode, RecvPinned: cfg.recvPinned, RecvPin: cfg.recvPin, RecvAsk: agent.AskRecv, // Ч10.1: приём на хосте (agent/recv.go)
+		Capture: hostCapture(cfg.Enc), Locked: hostLocked, FileDir: downloads(), Stderr: logw}
 	var mu sync.Mutex
 	online, session, update := false, "", ""
 	a.OnState = func(on bool, s string) { mu.Lock(); online, session = on, s; mu.Unlock() }

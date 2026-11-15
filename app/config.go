@@ -100,6 +100,8 @@ type settings struct {
 	// блокировки и по ↻. В файле (0600, как запомненные пароли): окно, ключи CLI и запущенная программа видят один код.
 	Code     string `json:"code,omitempty"`
 	CodeSalt []byte `json:"code_salt,omitempty"`
+	// Ч10.1: чужие отправители, приславшие сюда разовым кодом (app/recv.go): дальше — «Принять?» без кода.
+	RecvPins []recvPin `json:"recv_pins,omitempty"`
 	// До учётных записей (v0.1.19 и раньше) запись была одна: Salt/Hash, Trusted и account. Читаются и переезжают
 	// в Users[0] (migrate), в файл больше не пишутся.
 	Salt    []byte   `json:"salt,omitempty"`
