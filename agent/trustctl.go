@@ -48,9 +48,11 @@ func (a *Agent) trustCtl(s *session, data []byte, reply func(trustMsg)) {
 	if json.Unmarshal(data, &m) != nil {
 		return
 	}
-	no := func(why string) {
+	// отказ до «одного на сессию» — без журнала (поток отказов его не засорит); после — единственная попытка, в журнал
+	no := func(why string) { reply(trustMsg{T: "trust", Why: why}) }
+	noLog := func(why string) {
 		log.Printf("сессия %s: «Добавить» в сессии — отказ (%s)", s.label(), why)
-		reply(trustMsg{T: "trust", Why: why})
+		no(why)
 	}
 	s.mu.Lock()
 	user, salt, cpub, kp := s.user, s.salt, s.cpub, s.keyPin
@@ -73,16 +75,16 @@ func (a *Agent) trustCtl(s *session, data []byte, reply func(trustMsg)) {
 		otpSet, _ = a.OTP(user, "")
 	}
 	if !otpSet {
-		no("ask")
+		noLog("ask")
 		return
 	}
 	if gone, _ := a.revoked(s); gone { // как accept перед KeyTrust: запись, пароль, исключение ключа из пространства
-		no("gone")
+		noLog("gone")
 		return
 	}
 	a.KeyTrust(cpub, user, salt) // тот же путь, что trust в "b": соль та же — добавит (в журнал пишет сам)
 	if in, on := a.KeyLogin(cpub, user); !in || !on {
-		no("gone")
+		noLog("gone")
 		return
 	}
 	fp := pake.KeyFingerprint(cpub)
