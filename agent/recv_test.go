@@ -34,15 +34,23 @@ type recvRig struct {
 	used   atomic.Int32 // CodeUsed
 }
 
-func (r *recvRig) askN() int     { r.mu.Lock(); defer r.mu.Unlock(); return len(r.asks) }
-func (r *recvRig) clip() []string { r.mu.Lock(); defer r.mu.Unlock(); return append([]string(nil), r.clips...) }
+func (r *recvRig) askN() int { r.mu.Lock(); defer r.mu.Unlock(); return len(r.asks) }
+func (r *recvRig) clip() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.clips...)
+}
 func (r *recvRig) pinned(pub ed25519.PublicKey) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	_, ok := r.pins[string(pub)]
 	return ok
 }
-func (r *recvRig) unpin(pub ed25519.PublicKey) { r.mu.Lock(); delete(r.pins, string(pub)); r.mu.Unlock() }
+func (r *recvRig) unpin(pub ed25519.PublicKey) {
+	r.mu.Lock()
+	delete(r.pins, string(pub))
+	r.mu.Unlock()
+}
 
 // files — имена в каталоге загрузок (без частей докачки).
 func (r *recvRig) files(t *testing.T) []string {

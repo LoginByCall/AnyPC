@@ -208,13 +208,13 @@ func (a *Agent) rxStart(s *session, rx *rxState, rate int) string {
 		}
 		return out
 	}
+	if a.rxRate == nil {
+		a.rxRate = map[string][]time.Time{}
+	}
 	l := fresh(a.rxRate[k])
 	if len(l) >= rate {
 		a.rxRate[k] = l
 		return "rate"
-	}
-	if a.rxRate == nil {
-		a.rxRate = map[string][]time.Time{}
 	}
 	if _, known := a.rxRate[k]; !known && len(a.rxRate) >= rxMaxKeys {
 		for kk, v := range a.rxRate {
@@ -355,7 +355,7 @@ func (a *Agent) recvB(ctx context.Context, s *session, m authMsg, cur *cpace.Sta
 		reject("locked", "")
 		return
 	}
-	conf, err := recvFinish(cur, m.Msg, m.Conf)
+	conf, err := pake.HostFinish(cur, m.Msg, m.Conf)
 	a.countAuth(s.cid, "", err == nil)
 	a.mu.Unlock()
 	if err != nil {
@@ -378,9 +378,6 @@ func (a *Agent) recvB(ctx context.Context, s *session, m authMsg, cur *cpace.Sta
 	send(authMsg{T: "rx", Conf: conf, Pub: me, Sig: sig, Lim: &rx.lim})
 	go a.rxWatch(ctx, s, rx)
 }
-
-// recvFinish — проверка кода (CPace); подмена — только в мутационных прогонах (go test -overlay).
-var recvFinish = pake.HostFinish
 
 // rxConfirm — перед приёмом файла или текста: ключ члена ещё в составе (свой ПК); чужой — окно «Принять?» (текст —
 // всегда, файлы — один раз за сессию). "" — принимать; "denied" — сессия закрывается.
@@ -608,8 +605,12 @@ func sendVia(ctx context.Context, server string, d SendDial) (ed25519.PublicKey,
 				switch t := am.T; {
 				case t == "a" && first:
 					first = false
-					if !am.Recv || own && (!am.Sync || am.SX == nil) { // старый хост: приёма нет — до "b"
+					switch {
+					case !am.Recv: // старый хост: приёма нет — кончить до "b" (старый принял бы код за вход)
 						finish(ErrRecvOld)
+						return
+					case own && (!am.Sync || am.SX == nil): // тот ПК не в пространстве
+						finish(fmt.Errorf("%w: rights", ErrSpaceRefused))
 						return
 					}
 					b := authMsg{T: "b", Key: true}
