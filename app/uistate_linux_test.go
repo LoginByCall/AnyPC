@@ -117,7 +117,7 @@ func TestBrowserUIState(t *testing.T) {
 	pl.Close()
 	prof, _ := os.MkdirTemp("", "anypc-chrome-")
 	defer os.RemoveAll(prof)
-	ch := exec.CommandContext(ctx, chrome, "--headless=new", "--disable-gpu", "--no-proxy-server", "--disable-background-networking", "--remote-debugging-port="+port, "--user-data-dir="+prof, "about:blank")
+	ch := exec.CommandContext(ctx, chrome, "--headless=new", "--disable-gpu", "--no-proxy-server", "--disable-background-networking", "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE localhost , EXCLUDE 127.0.0.1", "--remote-debugging-port="+port, "--user-data-dir="+prof, "about:blank")
 	if err := ch.Start(); err != nil {
 		t.Fatal(err)
 	}

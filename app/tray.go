@@ -296,15 +296,18 @@ func trayJSPC(id string) string {
 	if !trayIDre.MatchString(id) {
 		return ""
 	}
-	return `window.myPcAdd && myPcAdd("` + id + `")`
+	return `window.myPcHome && myPcHome() !== false && window.myPcAdd && myPcAdd("` + id + `")` // своя сессия в окне (false) — окно только поднято
 }
 
 // trayJSHere — в главном окне к полю пароля «Я тут» (ввод пароля и кода — там): сначала на главный экран (myPcHome —
 // из вкладки ПК, «Другого ПК», «Настроек», «Доступа»); false — в окне идёт своя сессия: окно только поднято, фокус не трогаем.
-const trayJSHere = `(e => { if (window.myPcHome && myPcHome() === false) return; if (e) { e.scrollIntoView({block: 'center'}); e.focus(); } })(document.getElementById('shpw'))`
+// Свежее окно: строка «Я тут» видна только после первого hostInfo — фокус ждёт её до 5 с (getClientRects: и в старом WKWebView).
+const trayJSHere = `(() => { if (window.myPcHome && myPcHome() === false) return; let n = 0; const go = () => { const e = document.getElementById('shpw');` +
+	` if (e && e.getClientRects().length) { e.scrollIntoView({block: 'center'}); e.focus(); } else if (++n < 50) setTimeout(go, 100); }; go(); })()`
 
-// trayJSHelp — «Помочь кому-то…»: экран «Другой ПК» с фокусом в поле ID (connGo — «+» главного экрана, ui/index.html).
-const trayJSHelp = `window.connGo && connGo()`
+// trayJSHelp — «Помочь кому-то…»: экран «Другой ПК» с фокусом в поле ID (connGo — «+» главного экрана, ui/index.html);
+// сначала главный (из вкладки ПК — не поверх вкладок); своя сессия в окне (myPcHome false) — окно только поднято.
+const trayJSHelp = `window.myPcHome && myPcHome() !== false && window.connGo && connGo()`
 
 // trayOpenGap — окно открывается не чаще; лишние щелчки (или поток вызовов от любого клиента шины) — мимо.
 var trayOpenGap = time.Second
