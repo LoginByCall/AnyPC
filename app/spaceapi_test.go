@@ -89,7 +89,7 @@ func TestSpaceAPIGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := handler(apiAddr, apiTok, page, cfg, &agent.Agent{}, nil, func() map[string]any { return nil }, newFiles(t.TempDir()), nil)
-	names, _ := json.Marshal(spaceNames)
+	names, _ := json.Marshal(append(append([]string{}, spaceNames...), sendNames...)) // Ч10.3: и «Отправить» (send.go)
 	if !strings.Contains(string(page), "'uiSet'].concat("+string(names)+")) window[n] = ") {
 		t.Error("имён пространства нет в привязках страницы")
 	}
