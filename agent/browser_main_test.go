@@ -72,7 +72,7 @@ const extra = async () => ` + "`" + `
   const tabs = () => ev("[...document.querySelectorAll('#hometabs .tab')].map(b => b.textContent).join(';')");
   console.log('tabs=' + await tabs());
   console.log('tiles=' + await ev("[...document.querySelectorAll('#sptiles .sptile')].map(d => d.textContent + '|' + (d.querySelector('input')?.placeholder || '')).join(';')"));
-  console.log('give=' + await ev("document.querySelector('#me h2').textContent + '|' + " + vis('accrow') + " + '|' + " + vis('spmain')));
+  console.log('give=' + await ev("document.querySelector('#me h2').textContent + '|' + " + vis('accgo') + " + '|' + " + vis('spmain') + " + '|' + !document.getElementById('accrow')"));
   await ev("st.space.lock = false; 1"); await sleep(1300);
   console.log('nolock=' + await ev("[document.getElementById('shgo').disabled, " + vis('shlock') + ", " + txt('shlock') + "].join('|')"));
   await ev("st.space.lock = true; 1"); await sleep(1300);
@@ -168,7 +168,7 @@ func TestBrowserMain(t *testing.T) {
 	out := string(runCDP(t, ctx, chrome, cdpMain, srv.URL+"/"))
 	for _, want := range []string{
 
-		"give=Hand over control of this PC|true|true\n",
+		"give=Hand over control of this PC|true|true|true\n",
 		"nolock=true|true|Screen lock on this PC is not tracked — no pass is issued (password and code work as usual)\n",
 		"lock=false|false\n",
 		"bad=Wrong password\n",

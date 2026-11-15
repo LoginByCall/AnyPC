@@ -161,6 +161,7 @@ func main() {
 	w.Bind("otpEnable", func(s, code, user string) error { return dropAfter(a, cfg.otpEnable(s, code, user)) })
 	w.Bind("otpOff", cfg.otpOff)
 	w.Bind("newCode", func() (string, error) { return newCode(cfg, a) })
+	w.Bind("setGive", func(on bool) (string, error) { return setGive(cfg, a, on) }) // «Разрешить управление»
 	w.Bind("userSet", func(name, pw, rights string) error { return dropAfter(a, cfg.setUser(name, pw, rights)) })
 	w.Bind("userDel", func(name string) error { return dropAfter(a, cfg.delUser(name)) })
 	w.Bind("keyDel", func(name, fp string) error { return dropAfter(a, cfg.keyDel(name, fp)) }) // REQ-S-24: его сессия рвётся

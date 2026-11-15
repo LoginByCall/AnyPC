@@ -504,7 +504,7 @@ window.ANYPC = {ws: %s, clipPoll: %t};
   const T = %s;
   const api = (n, ...a) => fetch('/api/' + n, {method: 'POST', headers: {'X-Token': T, 'Content-Type': 'application/json'}, body: JSON.stringify(a)})
     .then(async r => { const j = await r.json(); if (!r.ok) throw j.error; return j.result; });
-  for (const n of ['hostInfo', 'setPassword', 'setConfirm', 'setNode', 'quit', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'hostVerify', 'knownGet', 'knownSet', 'savedGet', 'savedSet', 'otpNew', 'otpEnable', 'otpOff', 'newCode', 'userSet', 'userDel', 'keyDel', 'clientSign', 'ckeyGet', 'ckeySet', 'setViewOnly', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort', 'audioAnswer', 'audioMic', 'pcWindow', 'pcScreens', 'uiGet', 'uiSet'].concat(%s)) window[n] = (...a) => api(n, ...a);
+  for (const n of ['hostInfo', 'setPassword', 'setConfirm', 'setNode', 'quit', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'hostVerify', 'knownGet', 'knownSet', 'savedGet', 'savedSet', 'otpNew', 'otpEnable', 'otpOff', 'newCode', 'setGive', 'userSet', 'userDel', 'keyDel', 'clientSign', 'ckeyGet', 'ckeySet', 'setViewOnly', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort', 'audioAnswer', 'audioMic', 'pcWindow', 'pcScreens', 'uiGet', 'uiSet'].concat(%s)) window[n] = (...a) => api(n, ...a);
   window.fullscreen = on => on ? document.documentElement.requestFullscreen(window.anypcScreen ? {screen: window.anypcScreen} : undefined).then(() => navigator.keyboard?.lock()).catch(() => {})
                                : document.fullscreenElement && document.exitFullscreen();
 })();
@@ -639,6 +639,12 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 		err = dropAfter(a, cfg.otpEnable(str(0), str(1), str(2)))
 	case "newCode":
 		res, err = newCode(cfg, a)
+	case "setGive":
+		var on bool
+		if len(args) > 0 {
+			json.Unmarshal(args[0], &on)
+		}
+		res, err = setGive(cfg, a, on)
 	case "otpOff":
 		err = cfg.otpOff(str(0))
 	case "userSet":
