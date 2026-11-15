@@ -540,7 +540,7 @@ func TestSpaceLeaveWait(t *testing.T) {
 	n.mu.Lock()
 	u := n.Users[0]
 	n.mu.Unlock()
-	if len(u.Hash) != 0 || u.TOTP != "" || !n.codeMode() || !n.confirm() || n.code() == "" || n.code() == before || n.loginShut("") || spaceOf(n) != nil {
+	if len(u.Hash) != 0 || u.TOTP != "" || !n.codeMode() || !n.confirm() || giveOn(n).code() == "" || n.code() == before || n.loginShut("") || spaceOf(n) != nil {
 		t.Errorf("после выхода при SpaceWait: хэш %d байт, TOTP %v, «Спрашивать» %v", len(u.Hash), u.TOTP != "", n.codeMode())
 	}
 }

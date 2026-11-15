@@ -63,6 +63,11 @@ type config struct {
 	spRaw []byte       // снимок (spaceSnapLocked), из которого получен sp
 	syn   *spaceSyncer // Э4: рассылка правок состава (spsync.go); nil — нет (CLI, тесты без сети)
 	spNew []byte       // черновик создания (spaceDraft, под mu): запись M до повторного ввода фразы; только в памяти
+	// «Разрешить управление» (главный экран, требование владельца 2026-11-15): вход по одноразовому коду (режим
+	// «Спрашивать»). Только в памяти (под mu): после запуска выключен. Выключен — код не показывается (code() "") и не
+	// действует: запись по умолчанию отвечает случайным секретом offKey (тот же отказ, что неверному коду).
+	give   bool
+	offKey []byte
 }
 
 // settings — то, что лежит в файле.
@@ -408,22 +413,56 @@ func (c *config) ownCode(code string) bool {
 	return code == c.mine
 }
 
-// code — одноразовый код для окна и --status; "" — не режим «Спрашивать».
+// code — одноразовый код для окна; "" — не режим «Спрашивать» или «Разрешить управление» выключено.
 func (c *config) code() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !c.codeModeLocked() {
+	if !c.codeModeLocked() || !c.give {
 		return ""
 	}
 	return c.Code
 }
 
+// giving — «Разрешить управление» включено.
+func (c *config) giving() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.give
+}
+
+// errGiveOff — ↻ при выключенном «Разрешить управление» или включение не в режиме «Спрашивать».
+var errGiveOff = errors.New("give_off")
+
+// setGive — переключатель «Разрешить управление»: вкл — новый код (старый, в т. ч. прошлого запуска, не входит);
+// выкл — код перестаёт действовать (новый случайный offKey), идущую сессию не рвёт: соль кода та же (revoked).
+// Включить можно только в режиме «Спрашивать» — иначе кода нет (errGiveOff).
+func (c *config) setGive(on bool) (string, error) {
+	if !on {
+		k := make([]byte, 32)
+		rand.Read(k)
+		c.mu.Lock()
+		c.give, c.offKey = false, k
+		c.mu.Unlock()
+		return "", nil
+	}
+	return c.rotateCode(true)
+}
+
 // newCode — сменить одноразовый код (↻, конец сессии, блокировка перебора); KDF — сразу, первый вход не ждёт Argon2.
-func (c *config) newCode() (string, error) {
+// При выключенном «Разрешить управление» — errGiveOff: код не выдаётся.
+func (c *config) newCode() (string, error) { return c.rotateCode(false) }
+
+// rotateCode — новый код под одним c.mu с включением (on): окна, где действует код прошлого запуска, нет.
+func (c *config) rotateCode(on bool) (string, error) {
 	code := randCode()
 	c.mu.Lock()
 	c.reload()
+	if on && !c.codeModeLocked() || !on && !c.give {
+		c.mu.Unlock()
+		return "", errGiveOff
+	}
 	c.setCode(code)
+	c.give = true
 	salt := c.CodeSalt
 	err := c.save()
 	c.mu.Unlock()
@@ -431,10 +470,11 @@ func (c *config) newCode() (string, error) {
 	return code, err
 }
 
-// codeUsed — agent.Agent.CodeUsed: код израсходован — в режиме «Спрашивать» новый.
+// codeUsed — agent.Agent.CodeUsed: код израсходован — в режиме «Спрашивать» при включённом «Разрешить управление»
+// новый; выключено — новый не выдаётся (он и так не действует).
 func (c *config) codeUsed() {
-	if c.codeMode() {
-		if _, err := c.newCode(); err != nil {
+	if c.codeMode() && c.giving() {
+		if _, err := c.newCode(); err != nil && !errors.Is(err, errGiveOff) {
 			log.Printf("одноразовый код: %v", err)
 		}
 	}
@@ -933,10 +973,18 @@ func (c *config) keyList() []map[string]any {
 func (c *config) secret(user string) (salt, hash []byte, view bool) {
 	c.mu.Lock()
 	if c.codeModeLocked() {
-		code, salt := c.Code, c.CodeSalt
+		code, salt, give := c.Code, c.CodeSalt, c.give
+		if !give && len(c.offKey) == 0 {
+			c.offKey = make([]byte, 32)
+			rand.Read(c.offKey)
+		}
+		off := c.offKey
 		c.mu.Unlock()
 		if user != "" || code == "" {
 			return nil, nil, false
+		}
+		if !give { // «Разрешить управление» выключено: никакой код не подойдёт — отказ как неверному коду, соль та же
+			return salt, off, false
 		}
 		return salt, c.codeKDF(code, salt), false
 	}
