@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"log"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"anypc/hub"
@@ -31,26 +32,22 @@ func (p recvPin) valid() bool {
 	return len(p.Pub) == ed25519.PublicKeySize && (p.ID == "" || hub.IsHostID(p.ID)) && (p.Name == "" || validName(p.Name))
 }
 
-// label — подпись для окна «Принять?»: «имя» или «ID»; ключ добавит agent.
-func (p recvPin) label() string {
-	if p.Name != "" {
-		return p.Name
-	}
-	return p.ID
-}
-
-// recvPinned — agent.Agent.RecvPinned: ключ закреплён (негодные записи не действуют).
-func (c *config) recvPinned(pub []byte) (string, bool) {
+// recvPinned — agent.Agent.RecvPinned: ключ закреплён (негодные записи не действуют); id и name — закреплённые,
+// только они идут в окно «Принять?» (B2 приёмки).
+func (c *config) recvPinned(pub []byte) (id, name string, ok bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload() // закрепление могли снять из другого процесса (окно, CLI)
 	for _, p := range c.RecvPins {
 		if p.valid() && bytes.Equal(p.Pub, pub) {
-			return p.label(), true
+			return p.ID, p.Name, true
 		}
 	}
-	return "", false
+	return "", "", false
 }
+
+// recvPinNew — последнее новое закрепление: для уведомления в окне (Ч10.5); nil — не было.
+var recvPinNew atomic.Pointer[recvPin]
 
 // recvPin — agent.Agent.RecvPin: закрепить ключ после приёма разовым кодом (уже закреплённый — обновить ID, имя).
 // Заявленные ID и имя, не прошедшие проверку, не сохраняются.
@@ -67,8 +64,14 @@ func (c *config) recvPin(pub []byte, id, name string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
+	known := slices.ContainsFunc(c.RecvPins, func(p recvPin) bool { return p.valid() && bytes.Equal(p.Pub, pub) })
 	l := slices.DeleteFunc(c.RecvPins, func(p recvPin) bool { return !p.valid() || bytes.Equal(p.Pub, pub) })
-	l = append(l, recvPin{ID: id, Name: name, Pub: bytes.Clone(pub), At: time.Now().Unix()})
+	pin := recvPin{ID: id, Name: name, Pub: bytes.Clone(pub), At: time.Now().Unix()}
+	l = append(l, pin)
+	if !known { // новое закрепление — в журнал и окну (M8 приёмки)
+		log.Printf("закреплён отправитель %q (ID %s, ключ %s): дальше — «Принять?» без кода", name, id, pake.KeyFingerprint(pub)[:9])
+		recvPinNew.Store(&pin)
+	}
 	if n := len(l) - maxRecvPins; n > 0 {
 		l = l[n:]
 	}
@@ -81,15 +84,20 @@ func (c *config) recvPin(pub []byte, id, name string) {
 // recvUnpin — отозвать закреплённый ключ (окно — Ч10.5): дальше этот ПК снова шлёт только с разовым кодом.
 func (c *config) recvUnpin(pub []byte) (bool, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.reload()
 	n := len(c.RecvPins)
 	c.RecvPins = slices.DeleteFunc(c.RecvPins, func(p recvPin) bool { return bytes.Equal(p.Pub, pub) })
 	if len(c.RecvPins) == n {
+		c.mu.Unlock()
 		return false, nil
 	}
+	err := c.save()
+	c.mu.Unlock()
 	log.Printf("отправитель откреплён: ключ %s", pake.KeyFingerprint(pub)[:9])
-	return true, c.save()
+	if drop := spaceChanged; drop != nil { // DropRevoked (читает настройки — без c.mu): сессии приёма этого ключа рвутся (B3)
+		drop()
+	}
+	return true, err
 }
 
 // recvPinList — закреплённые отправители (для окна, Ч10.5): только годные, копия.

@@ -71,14 +71,29 @@ type rxLimits struct {
 	Text  int64 `json:"text"`  // байт одного текста
 }
 
-// Потолки (NOTIFY: числа выбраны исполнителем; переменные — для тестов). Место на диске сверх них бережёт diskReserve.
+// Потолки (NOTIFY: числа выбраны исполнителем; атомарные — тесты меняют их при живых сессиях). Место на диске сверх
+// них бережёт diskReserve (и на каждом мегабайте записи, Receiver.Write).
 var (
-	rxLim     = rxLimits{File: 16 << 30, Total: 64 << 30, Items: 1000, Text: 1 << 20}
-	rxRateOwn = 10              // сессий приёма с одного ключа члена за rxRatePer
-	rxRateFor = 3               // с одного чужого ключа (закреплённого или с кодом) — каждая может открыть окно
-	rxRatePer = time.Minute     // окно счёта частоты
-	rxIdle    = 2 * time.Minute // без единого сообщения — сессия приёма закрывается
+	rxLimP    atomic.Pointer[rxLimits]
+	rxRateOwn atomic.Int32 // сессий приёма с одного ключа члена за rxRatePer
+	rxRateFor atomic.Int32 // с одного чужого ключа (закреплённого или с кодом) — каждая может открыть окно
+	rxIdle    atomic.Int64 // нс: без сообщений (кроме кусков текста) — сессия приёма закрывается
+	rxLife    atomic.Int64 // нс: сессия приёма живёт не дольше (M2 приёмки)
+	rxPartMax atomic.Int64 // байт: заявленный размер одновременно открытых .part всех сессий приёма
 )
+
+const rxRatePer = time.Minute // окно счёта частоты
+
+func init() {
+	rxLimP.Store(&rxLimits{File: 16 << 30, Total: 64 << 30, Items: 1000, Text: 1 << 20})
+	rxRateOwn.Store(10)
+	rxRateFor.Store(3)
+	rxIdle.Store(int64(2 * time.Minute))
+	rxLife.Store(int64(30 * time.Minute))
+	rxPartMax.Store(32 << 30)
+}
+
+func rxLim() rxLimits { return *rxLimP.Load() }
 
 const (
 	rxMaxSess = 4    // сессий приёма одновременно (все ключи)
@@ -98,6 +113,9 @@ type RecvReq struct {
 // rxState — сессия приёма (session.rx).
 type rxState struct {
 	own  bool              // ключ члена M (свой ПК): без окна
+	t0   time.Time         // начало: живёт не дольше life
+	idle time.Duration     // снимок rxIdle
+	life time.Duration     // снимок rxLife
 	pub  ed25519.PublicKey // доказанный ключ отправителя
 	from string            // кто — для окна и журнала: заявленные имя и ID (не доказаны) и отпечаток ключа
 	lim  rxLimits
@@ -110,9 +128,11 @@ type rxState struct {
 	nb    int64 // байт в принятых файлах
 	nt    int   // принято текстов
 
-	ask    sync.Mutex // окно «Принять?» — одно за раз в сессии
-	last   atomic.Int64
-	logged sync.Once
+	declined atomic.Bool
+	texting  atomic.Bool // идёт приём текста (один за раз)
+	ask      sync.Mutex  // окно «Принять?» — одно за раз в сессии
+	last     atomic.Int64
+	logged   sync.Once
 }
 
 func (r *rxState) touch() { r.last.Store(time.Now().UnixNano()) }
@@ -121,13 +141,16 @@ func (r *rxState) accepted() bool { r.mu.Lock(); defer r.mu.Unlock(); return r.o
 
 // rxWhy — текст отказа по коду (отправителю в "err"; окно отправителя покажет свой текст по коду).
 var rxWhy = map[string]string{
-	"size":   "файл больше потолка приёма",
-	"total":  "превышен объём приёма за сессию",
-	"count":  "слишком много файлов за сессию",
-	"denied": "получатель отклонил",
-	"gone":   "этот ПК больше не в пространстве получателя",
-	"text":   "текст пустой, больше 1 МБ или не UTF-8",
-	"clip":   "буфер обмена получателя недоступен",
+	"size":     "файл больше потолка приёма",
+	"total":    "превышен объём приёма за сессию",
+	"count":    "слишком много файлов за сессию",
+	"denied":   "получатель отклонил",
+	"gone":     "этот ПК больше не в пространстве получателя",
+	"text":     "текст пустой, больше 1 МБ или не UTF-8",
+	"clip":     "буфер обмена получателя недоступен",
+	"viewonly": "на том ПК включено «Только показ экрана»",
+	"disk":     "на том ПК мало места",
+	"io":       "ошибка приёма на том ПК",
 }
 
 // rxCount — ещё один файл размера size (text — текст) в сессии: потолки числа и объёма. "" — можно.
@@ -199,6 +222,13 @@ func (a *Agent) rxStart(s *session, rx *rxState, rate int) string {
 	if s.gone.Load() || len(a.recvs) >= rxMaxSess {
 		return "busy"
 	}
+	if !rx.own { // чужой ключ — не больше одной сессии сразу (M2 приёмки)
+		for o := range a.recvs {
+			if p := o.rx.Load(); p != nil && bytes.Equal(p.pub, rx.pub) {
+				return "busy"
+			}
+		}
+	}
 	fresh := func(l []time.Time) []time.Time {
 		var out []time.Time
 		for _, t := range l {
@@ -235,6 +265,7 @@ func (a *Agent) rxStart(s *session, rx *rxState, rate int) string {
 		a.recvs = map[*session]bool{}
 	}
 	a.recvs[s] = true
+	rx.t0, rx.idle, rx.life = now, time.Duration(rxIdle.Load()), time.Duration(rxLife.Load())
 	rx.touch()
 	s.rx.Store(rx)
 	return ""
@@ -242,15 +273,22 @@ func (a *Agent) rxStart(s *session, rx *rxState, rate int) string {
 
 // rxWatch — сессия приёма без единого сообщения rxIdle закрывается (отправитель ушёл, не закрыв соединение).
 func (a *Agent) rxWatch(ctx context.Context, s *session, rx *rxState) {
-	t := time.NewTicker(rxIdle / 4)
+	t := time.NewTicker(min(rx.idle, rx.life) / 4)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if time.Since(time.Unix(0, rx.last.Load())) > rxIdle {
-				log.Printf("приём от %s: нет данных %v — закрыт", rx.from, rxIdle)
+			why := ""
+			switch {
+			case time.Since(time.Unix(0, rx.last.Load())) > rx.idle:
+				why = fmt.Sprintf("нет данных %v", rx.idle)
+			case time.Since(rx.t0) > rx.life:
+				why = fmt.Sprintf("дольше %v", rx.life)
+			}
+			if why != "" {
+				log.Printf("приём от %s: %s — закрыт", rx.from, why)
 				s.pc.Close()
 				return
 			}
@@ -289,12 +327,16 @@ func (a *Agent) recvMember(ctx context.Context, s *session, m authMsg, keyOK boo
 		send(authMsg{T: "denied"})
 	case !bytes.Equal(m.Pub, me):
 		send(authMsg{T: "rx", Why: "notme"})
+	case a.viewOnlyHost(): // REQ-F-25: «Только показ экрана» — ни файлов, ни буфера
+		send(authMsg{T: "rx", Why: "viewonly"})
+	case a.LoginShut != nil && a.LoginShut(""): // решение 12 A: до сверки с членом ≠ поручитель состав не проверен (M3)
+		send(authMsg{T: "rx", Why: "wait"})
 	case a.SpaceSync == nil || !a.SpaceSync.SyncKey(st.pub): // исключили между connect и "b"
 		send(authMsg{T: "rx", Why: "gone"})
 	default:
 		id, name := rxClaim(m)
-		rx := &rxState{own: true, ok: true, pub: bytes.Clone(st.pub), from: rxLabel(id, name, st.pub), lim: rxLim}
-		if why := a.rxStart(s, rx, rxRateOwn); why != "" {
+		rx := &rxState{own: true, ok: true, pub: bytes.Clone(st.pub), from: rxLabel(id, name, st.pub), lim: rxLim()}
+		if why := a.rxStart(s, rx, int(rxRateOwn.Load())); why != "" {
 			send(authMsg{T: "rx", Why: why})
 			break
 		}
@@ -320,23 +362,24 @@ func (a *Agent) recvB(ctx context.Context, s *session, m authMsg, cur *cpace.Sta
 		reject("denied", "")
 		return
 	}
+	if a.viewOnlyHost() { // REQ-F-25: до кода — код не расходуется, неудач нет
+		reject("rx", "viewonly")
+		return
+	}
 	id, name := rxClaim(m)
 	me := a.Key.Public().(ed25519.PublicKey)
 	sig := pake.HostSign(a.Key, a.ID, fpc, fph)
 	if m.Key { // закреплённый ключ: без кода, первое принимаемое — окно «Принять?»
-		label, ok := "", false
+		pid, pname, ok := "", "", false
 		if a.RecvPinned != nil {
-			label, ok = a.RecvPinned(m.CPub)
+			pid, pname, ok = a.RecvPinned(m.CPub)
 		}
 		if !ok || a.RecvAsk == nil { // незнакомый ключ без кода — отказ без неудачи (ключ доказан, перебирать нечего)
 			reject("nokey", "none")
 			return
 		}
-		if label == "" {
-			label = name
-		}
-		rx := &rxState{pub: bytes.Clone(m.CPub), from: rxLabel(id, label, m.CPub), lim: rxLim}
-		if why := a.rxStart(s, rx, rxRateFor); why != "" {
+		rx := &rxState{pub: bytes.Clone(m.CPub), from: rxLabel(pid, pname, m.CPub), lim: rxLim()} // в окно — закреплённые ID и имя, не заявленные сейчас (B2)
+		if why := a.rxStart(s, rx, int(rxRateFor.Load())); why != "" {
 			reject("rx", why)
 			return
 		}
@@ -362,8 +405,8 @@ func (a *Agent) recvB(ctx context.Context, s *session, m authMsg, cur *cpace.Sta
 		reject("fail", "")
 		return
 	}
-	rx := &rxState{ok: true, pub: bytes.Clone(m.CPub), from: rxLabel(id, name, m.CPub), lim: rxLim}
-	why := a.rxStart(s, rx, rxRateFor)
+	rx := &rxState{ok: true, pub: bytes.Clone(m.CPub), from: rxLabel(id, name, m.CPub), lim: rxLim()}
+	why := a.rxStart(s, rx, int(rxRateFor.Load()))
 	if a.CodeUsed != nil { // разовый: израсходован и при отказе по частоте (его знает отправитель)
 		go a.codeUsed()
 	}
@@ -382,10 +425,10 @@ func (a *Agent) recvB(ctx context.Context, s *session, m authMsg, cur *cpace.Sta
 // rxConfirm — перед приёмом файла или текста: ключ члена ещё в составе (свой ПК); чужой — окно «Принять?» (текст —
 // всегда, файлы — один раз за сессию). "" — принимать; "denied" — сессия закрывается.
 func (a *Agent) rxConfirm(s *session, rx *rxState, q RecvReq) string {
+	if code := a.rxStill(rx); code != "" {
+		return code
+	}
 	if rx.own {
-		if a.SpaceSync == nil || !a.SpaceSync.SyncKey(rx.pub) { // исключили во время приёма (KeyGone)
-			return "gone"
-		}
 		return ""
 	}
 	if !q.IsText && rx.accepted() {
@@ -397,7 +440,8 @@ func (a *Agent) rxConfirm(s *session, rx *rxState, q RecvReq) string {
 		return ""
 	}
 	q.From = rx.from
-	if a.RecvAsk == nil || s.gone.Load() || !a.RecvAsk(q) {
+	if a.RecvAsk == nil || s.gone.Load() || rx.declined.Load() || !a.RecvAsk(q) {
+		rx.declined.Store(true) // ждавшие окна — отказ без второго окна
 		rx.touch()
 		log.Printf("приём от %s: отклонён на этом ПК", rx.from)
 		time.AfterFunc(500*time.Millisecond, func() { s.pc.Close() }) // дать дойти отказу
@@ -410,12 +454,52 @@ func (a *Agent) rxConfirm(s *session, rx *rxState, q RecvReq) string {
 	return ""
 }
 
+// rxStill — сессия приёма ещё вправе принимать: хост не «Только показ экрана», ключ члена в составе, ключ чужого
+// закреплён. "" — да.
+func (a *Agent) rxStill(rx *rxState) string {
+	switch {
+	case a.viewOnlyHost():
+		return "viewonly"
+	case rx.own && (a.SpaceSync == nil || !a.SpaceSync.SyncKey(rx.pub)):
+		return "gone"
+	case !rx.own && a.RecvPinned != nil:
+		if _, _, ok := a.RecvPinned(rx.pub); !ok {
+			return "denied"
+		}
+	}
+	return ""
+}
+
+// rxPrune — сессии приёма исключённых и откреплённых ключей и все при «Только показ экрана» — закрыть (DropRevoked).
+func (a *Agent) rxPrune() {
+	a.mu.Lock()
+	var l []*session
+	for s := range a.recvs {
+		l = append(l, s)
+	}
+	a.mu.Unlock()
+	for _, s := range l {
+		if rx := s.rx.Load(); rx != nil && a.rxStill(rx) != "" {
+			log.Printf("приём от %s: ключ исключён, откреплён или «Только показ экрана» — закрыт", rx.from)
+			s.pc.Close()
+		}
+	}
+}
+
 // receiveText — канал "text" сессии приёма: текст целиком, затем (окно «Принять?» у чужого) — в буфер обмена.
 func (a *Agent) receiveText(dc *webrtc.DataChannel, s *session, rx *rxState) {
 	var mu sync.Mutex
 	var buf []byte
-	size, done := int64(-1), false
+	size, done, mine := int64(-1), false, false
+	free := func() { // под mu: текст кончен (принят, отказ, обрыв) — место «один текст за раз» свободно
+		if mine {
+			mine, buf = false, nil
+			rx.texting.Store(false)
+		}
+	}
+	dc.OnClose(func() { mu.Lock(); free(); mu.Unlock() })
 	fail := func(code string) {
+		free()
 		done = true
 		sendJSON(dc, fileMsg{T: "err", Code: code, Msg: rxWhy[code]})
 		dc.Close()
@@ -426,8 +510,7 @@ func (a *Agent) receiveText(dc *webrtc.DataChannel, s *session, rx *rxState) {
 		if done {
 			return
 		}
-		rx.touch()
-		if !m.IsString {
+		if !m.IsString { // куски текста сессию не продлевают: текст ≤ 1 МБ приходит сразу (по капле — rxIdle)
 			if size < 0 || int64(len(buf)+len(m.Data)) > size {
 				fail("text")
 				return
@@ -435,6 +518,7 @@ func (a *Agent) receiveText(dc *webrtc.DataChannel, s *session, rx *rxState) {
 			buf = append(buf, m.Data...)
 			return
 		}
+		rx.touch()
 		var fm fileMsg
 		json.Unmarshal(m.Data, &fm)
 		switch {
@@ -443,19 +527,25 @@ func (a *Agent) receiveText(dc *webrtc.DataChannel, s *session, rx *rxState) {
 				fail("text")
 				return
 			}
+			if !rx.texting.CompareAndSwap(false, true) { // один текст за раз: память сессии — не больше lim.Text
+				fail("count")
+				return
+			}
+			mine = true
 			if code := rx.count(0, true); code != "" {
 				fail(code)
 				return
 			}
-			size, buf = fm.Size, make([]byte, 0, fm.Size)
+			size = fm.Size // память — по пришедшим данным, не по заявленному
 		case fm.T == "end" && size >= 0:
 			if int64(len(buf)) != size || !utf8.Valid(buf) {
 				fail("text")
 				return
 			}
 			done = true
-			text := string(buf)
+			text := rxClipText(string(buf))
 			go func() { // окно «Принять?» ждёт человека — не в цикле чтения SCTP
+				defer func() { mu.Lock(); free(); mu.Unlock() }()
 				if code := a.rxConfirm(s, rx, RecvReq{IsText: true, Text: text, Size: size}); code != "" {
 					sendJSON(dc, fileMsg{T: "err", Code: code, Msg: rxWhy[code]})
 					dc.Close()
@@ -481,6 +571,33 @@ func (a *Agent) receiveText(dc *webrtc.DataChannel, s *session, rx *rxState) {
 	})
 }
 
+// rxClipText — текст в буфер обмена: без управляющих C0/C1 (кроме \t \n \r) и форматных (U+202E и др.) — они
+// подменяют вид команды при вставке в терминал и порядок символов.
+func rxClipText(t string) string {
+	return strings.Map(func(c rune) rune {
+		if c == '\t' || c == '\n' || c == '\r' {
+			return c
+		}
+		if unicode.Is(unicode.Cc, c) || unicode.Is(unicode.Cf, c) {
+			return -1
+		}
+		return c
+	}, t)
+}
+
+// rxReserve — место под .part размера n в общем потолке rxPartMax; false — потолок (M4 приёмки). rxFree — вернуть.
+func (a *Agent) rxReserve(n int64) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if n < 0 || a.rxParts+n > rxPartMax.Load() {
+		return false
+	}
+	a.rxParts += n
+	return true
+}
+
+func (a *Agent) rxFree(n int64) { a.mu.Lock(); a.rxParts -= n; a.mu.Unlock() }
+
 // Ошибки SendTo (окно отправителя, Ч10.3–Ч10.5, показывает свой текст по ним).
 var (
 	ErrRecvOld    = errors.New("На том ПК старая версия AnyPC")
@@ -493,6 +610,12 @@ var (
 	ErrRecvRate   = errors.New("приём: слишком часто — попробуйте через минуту")
 	ErrRecvLimit  = errors.New("приём: превышен потолок")
 	ErrRecvGone   = errors.New("приём: этот ПК больше не в пространстве того ПК")
+	// ErrRecvViewOnly — на том ПК «Только показ экрана» (REQ-F-25): файлы и буфер не принимаются.
+	ErrRecvViewOnly = errors.New("приём: на том ПК включено «Только показ экрана»")
+	// ErrRecvWait — тот ПК ещё не сверил состав пространства (решение 12 A).
+	ErrRecvWait = errors.New("приём: тот ПК ещё не сверил состав пространства — попробуйте позже")
+	// ErrRecvKnown — чужой ПК без кода: нужен закреплённый ключ получателя (SendDial.Known).
+	ErrRecvKnown = errors.New("приём: ключ того ПК не закреплён — нужен разовый код")
 )
 
 // RecvError — отказ получателя по файлу или тексту: код из "err" (rxWhy).
@@ -508,6 +631,8 @@ func (e *RecvError) Unwrap() error {
 		return ErrRecvDenied
 	case "gone":
 		return ErrRecvGone
+	case "viewonly":
+		return ErrRecvViewOnly
 	}
 	return nil
 }
@@ -524,6 +649,10 @@ func rxErr(why string) error {
 		return ErrRecvGone
 	case "notme":
 		return ErrSpaceIDKey
+	case "viewonly":
+		return ErrRecvViewOnly
+	case "wait":
+		return ErrRecvWait
 	}
 	return fmt.Errorf("%w: %s", ErrSpaceRefused, why)
 }
@@ -567,6 +696,9 @@ func SendTo(ctx context.Context, d SendDial) (hostPub ed25519.PublicKey, err err
 
 func sendVia(ctx context.Context, server string, d SendDial) (ed25519.PublicKey, error) {
 	own := d.HostPub != nil
+	if !own && d.Code == "" && d.Known == "" { // без кода получатель ничем себя не докажет, кроме закреплённого ключа (M7)
+		return nil, ErrRecvKnown
+	}
 	req := connectReq{View: true} // как у вступления и пропуска (hostDial): хаб приём не отличит
 	var h2c []byte
 	if own {

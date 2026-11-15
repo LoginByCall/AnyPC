@@ -20,20 +20,23 @@ func TestRecvPins(t *testing.T) {
 	}
 	pub := func() []byte { p, _, _ := ed25519.GenerateKey(nil); return p }
 	k1 := pub()
-	if _, ok := c.recvPinned(k1); ok {
+	if _, _, ok := c.recvPinned(k1); ok {
 		t.Fatal("закреплён до закрепления")
 	}
 	c.recvPin(k1, "555666777", "Друг")
-	if l, ok := c.recvPinned(k1); !ok || l != "Друг" {
-		t.Fatalf("%q %v", l, ok)
+	if id, l, ok := c.recvPinned(k1); !ok || l != "Друг" || id != "555666777" {
+		t.Fatalf("%q %q %v", id, l, ok)
+	}
+	if p := recvPinNew.Load(); p == nil || p.Name != "Друг" {
+		t.Fatalf("нет события закрепления: %+v", p)
 	}
 	c.recvPin(k1, "12345", "<b>злой</b>") // негодные ID и имя не сохраняются, запись одна
 	if l := c.recvPinList(); len(l) != 1 || l[0].ID != "" || l[0].Name != "" {
 		t.Fatalf("%+v", l)
 	}
 	c.recvPin(k1, "555666777", "")
-	if l, ok := c.recvPinned(k1); !ok || l != "555666777" {
-		t.Fatalf("подпись по ID: %q", l)
+	if id, l, ok := c.recvPinned(k1); !ok || l != "" || id != "555666777" {
+		t.Fatalf("только ID: %q %q", id, l)
 	}
 	c.recvPin([]byte("short"), "555666777", "x")
 	for range maxRecvPins + 3 {
@@ -42,7 +45,7 @@ func TestRecvPins(t *testing.T) {
 	if n := len(c.recvPinList()); n != maxRecvPins {
 		t.Fatalf("закреплено %d", n)
 	}
-	if _, ok := c.recvPinned(k1); ok {
+	if _, _, ok := c.recvPinned(k1); ok {
 		t.Fatal("давний не ушёл")
 	}
 	// другой процесс (окно, CLI) закрепил и открепил — запущенная программа видит файл
@@ -52,13 +55,13 @@ func TestRecvPins(t *testing.T) {
 	}
 	k2 := pub()
 	other.recvPin(k2, "", "ПК 2")
-	if _, ok := c.recvPinned(k2); !ok {
+	if _, _, ok := c.recvPinned(k2); !ok {
 		t.Fatal("закрепление другого процесса не видно")
 	}
 	if ok, err := other.recvUnpin(k2); !ok || err != nil {
 		t.Fatal(ok, err)
 	}
-	if _, ok := c.recvPinned(k2); ok {
+	if _, _, ok := c.recvPinned(k2); ok {
 		t.Fatal("откреплённый действует")
 	}
 	if ok, _ := c.recvUnpin(k2); ok {
@@ -72,7 +75,7 @@ func TestRecvPins(t *testing.T) {
 	raw["recv_pins"] = []map[string]any{{"id": "x", "pub": k3}, {"pub": []byte("short")}, {"name": "a/b", "pub": k3}}
 	b, _ = json.Marshal(raw)
 	os.WriteFile(path, b, 0o600)
-	if _, ok := c.recvPinned(k3); ok || len(c.recvPinList()) != 0 {
+	if _, _, ok := c.recvPinned(k3); ok || len(c.recvPinList()) != 0 {
 		t.Fatal("негодная запись действует")
 	}
 	if b, _ := os.ReadFile(path); !strings.Contains(string(b), "recv_pins") {

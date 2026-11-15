@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"anypc/pake"
+
 	"github.com/pion/webrtc/v4"
 )
 
@@ -32,7 +34,15 @@ type recvRig struct {
 	answer func(RecvReq) bool
 	clips  []string
 	used   atomic.Int32 // CodeUsed
+	flip   atomic.Int32 // SyncKey годен ещё столько раз (keyFlip)
+	codeOn atomic.Bool  // CodeMode
 }
+
+// recvHostFP — отпечаток ключа последнего получателя recvHost: SendDial.Known чужого без кода (M7).
+var recvHostFP atomic.Value
+
+// ask — i-е окно «Принять?».
+func (r *recvRig) ask(i int) RecvReq { r.mu.Lock(); defer r.mu.Unlock(); return r.asks[i] }
 
 func (r *recvRig) askN() int { r.mu.Lock(); defer r.mu.Unlock(); return len(r.asks) }
 func (r *recvRig) clip() []string {
@@ -70,19 +80,21 @@ func recvHost(t *testing.T, url string, opt ...func(*recvRig)) *recvRig {
 	r := &recvRig{dir: t.TempDir(), member: member, pins: map[string]string{}, pinID: map[string]string{},
 		answer: func(RecvReq) bool { return true }}
 	r.sync = &fakeSync{m: []byte("M1"), gate: true, members: []ed25519.PublicKey{member.Public().(ed25519.PublicKey)}}
+	r.flip.Store(1 << 30)
+	r.codeOn.Store(true)
 	setClip = func(s string) error { r.mu.Lock(); r.clips = append(r.clips, s); r.mu.Unlock(); return nil }
 	t.Cleanup(func() { setClip = SetClipText })
 	r.spaceRig = spaceHost(t, url, "123456789", func(p *spaceRig) {
 		a := p.a
 		a.FileDir = r.dir
-		a.SpaceSync = r.sync
-		a.CodeMode = func() bool { return true }
+		a.SpaceSync = &keyFlip{fakeSync: r.sync, left: &r.flip}
+		a.CodeMode = r.codeOn.Load
 		a.CodeUsed = func() { r.used.Add(1) }
-		a.RecvPinned = func(pub []byte) (string, bool) {
+		a.RecvPinned = func(pub []byte) (string, string, bool) {
 			r.mu.Lock()
 			defer r.mu.Unlock()
 			n, ok := r.pins[string(pub)]
-			return n, ok
+			return r.pinID[string(pub)], n, ok
 		}
 		a.RecvPin = func(pub []byte, id, name string) {
 			r.mu.Lock()
@@ -101,6 +113,7 @@ func recvHost(t *testing.T, url string, opt ...func(*recvRig)) *recvRig {
 			f(r)
 		}
 	})
+	recvHostFP.Store(pake.KeyFingerprint(r.a.Key.Public().(ed25519.PublicKey)))
 	return r
 }
 
@@ -111,8 +124,12 @@ func (r *recvRig) own(url string, files []string, text string) SendDial {
 }
 
 func foreign(url string, key ed25519.PrivateKey, code string, files []string, text string) SendDial {
-	return SendDial{Server: url, ID: "123456789", Key: key, Code: code, From: "555666777", Name: "Чужой ПК",
+	d := SendDial{Server: url, ID: "123456789", Key: key, Code: code, From: "555666777", Name: "Чужой ПК",
 		Files: files, Text: text}
+	if code == "" {
+		d.Known, _ = recvHostFP.Load().(string)
+	}
+	return d
 }
 
 func sendT(t *testing.T, d SendDial) error {
@@ -209,9 +226,7 @@ func TestRecvOwnRefused(t *testing.T) {
 		t.Fatalf("принято: %v", r.files(t))
 	}
 	// исключение во время приёма: SyncKey годен для "b" и первого файла, дальше — нет
-	var n atomic.Int32
-	r.a.SpaceSync = &keyFlip{fakeSync: r.sync, left: &n}
-	n.Store(2)
+	r.flip.Store(3) // "b", окно файла, очередь файла
 	f2 := srcFile(t, "b.txt", []byte("y"))
 	if err := sendT(t, r.own(url, []string{f, f2}, "")); !errors.Is(err, ErrRecvGone) {
 		t.Fatalf("исключён во время приёма: %v", err)
@@ -248,11 +263,11 @@ func TestRecvForeignCode(t *testing.T) {
 	if fails != 0 || r.askN() != 0 {
 		t.Fatalf("незнакомый ключ: неудач %d, окон %d", fails, r.askN())
 	}
-	r.a.CodeMode = func() bool { return false } // вход паролем: разового кода нет, пароль чужим не годится
+	r.codeOn.Store(false) // вход паролем: разового кода нет, пароль чужим не годится
 	if err := sendT(t, foreign(url, fkey, "secret123", []string{f}, "")); !errors.Is(err, ErrRecvNoCode) {
 		t.Fatalf("без режима кода: %v", err)
 	}
-	r.a.CodeMode = func() bool { return true }
+	r.codeOn.Store(true)
 	for i := range 5 {
 		if err := sendT(t, foreign(url, fkey, "wrong-code", []string{f}, "")); !errors.Is(err, ErrRecvCode) {
 			t.Fatalf("неверный код %d: %v", i+1, err)
@@ -277,8 +292,8 @@ func TestRecvForeignCode(t *testing.T) {
 	if c := r.clip(); len(c) != 1 || c[0] != "привет" {
 		t.Fatalf("буфер: %q", c)
 	}
-	if r.askN() != 1 || !r.asks[0].IsText || r.asks[0].Text != "привет" || !strings.Contains(r.asks[0].From, "Чужой ПК") {
-		t.Fatalf("окна: %+v", r.asks)
+	if q := r.ask(0); r.askN() != 1 || !q.IsText || q.Text != "привет" || !strings.Contains(q.From, "Чужой ПК") {
+		t.Fatalf("окна: %+v", q)
 	}
 	pub := fkey.Public().(ed25519.PublicKey)
 	r.mu.Lock()
@@ -295,21 +310,21 @@ func TestRecvForeignCode(t *testing.T) {
 // TestRecvForeignPinned — закреплённый ключ без кода: «Принять?» один раз на файлы сессии; «Отклонить» и нет
 // ответа — отказ, файл не принят; текст «Отклонить» — в буфер не попал; откреплённый — снова нужен код.
 func TestRecvForeignPinned(t *testing.T) {
-	defer func(n int) { rxRateFor = n }(rxRateFor)
-	rxRateFor = 100
+	defer rxRateFor.Store(rxRateFor.Load())
+	rxRateFor.Store(100)
 	url := local(t)
 	r := recvHost(t, url)
 	_, fkey, _ := ed25519.GenerateKey(nil)
 	pub := fkey.Public().(ed25519.PublicKey)
 	r.mu.Lock()
-	r.pins[string(pub)] = "Друг"
+	r.pins[string(pub)], r.pinID[string(pub)] = "Друг", "555666777"
 	r.mu.Unlock()
 	f1, f2 := srcFile(t, "a.txt", []byte("x")), srcFile(t, "b.txt", []byte("y"))
 	if err := sendT(t, foreign(url, fkey, "", []string{f1, f2}, "")); err != nil {
 		t.Fatal(err)
 	}
-	if len(r.files(t)) != 2 || r.askN() != 1 || r.asks[0].Name != "a.txt" || !strings.Contains(r.asks[0].From, "Друг") {
-		t.Fatalf("файлы %v, окна %+v", r.files(t), r.asks)
+	if q := r.ask(0); len(r.files(t)) != 2 || r.askN() != 1 || q.Name != "a.txt" || !strings.Contains(q.From, "Друг (ID 555666777") {
+		t.Fatalf("файлы %v, окно %+v", r.files(t), q)
 	}
 	syncTamper.Store("client") // подпись не над этим соединением: ключ не доказан — закрепление не действует
 	err := sendT(t, foreign(url, fkey, "", []string{srcFile(t, "t.txt", []byte("t"))}, ""))
@@ -346,8 +361,9 @@ func TestRecvForeignPinned(t *testing.T) {
 
 // TestRecvLimits — потолки: размер файла, объём и число за сессию, размер текста, частота сессий с одного ключа.
 func TestRecvLimits(t *testing.T) {
-	defer func(l rxLimits, n int) { rxLim, rxRateOwn = l, n }(rxLim, rxRateOwn)
-	rxLim, rxRateOwn = rxLimits{File: 1000, Total: 1500, Items: 2, Text: 10}, 100
+	defer func(l *rxLimits, n int32) { rxLimP.Store(l); rxRateOwn.Store(n) }(rxLimP.Load(), rxRateOwn.Load())
+	rxLimP.Store(&rxLimits{File: 1000, Total: 1500, Items: 2, Text: 10})
+	rxRateOwn.Store(100)
 	url := local(t)
 	r := recvHost(t, url)
 	small := srcFile(t, "s.txt", bytes.Repeat([]byte{1}, 800))
@@ -371,7 +387,7 @@ func TestRecvLimits(t *testing.T) {
 			t.Fatalf("%s: %v", c.name, err)
 		}
 	}
-	rxLim.Total = 1 << 20
+	rxLimP.Store(&rxLimits{File: 1000, Total: 1 << 20, Items: 2, Text: 10})
 	err := sendT(t, r.own(url, []string{small, small2, srcFile(t, "s3.txt", []byte("3"))}, ""))
 	var re *RecvError
 	if !errors.As(err, &re) || re.Code != "count" {
@@ -384,7 +400,7 @@ func TestRecvLimits(t *testing.T) {
 	if len(r.clip()) != 0 {
 		t.Fatalf("буфер: %q", r.clip())
 	}
-	rxRateOwn = 2 // за минуту уже 4 сессии
+	rxRateOwn.Store(2) // за минуту уже 4 сессии
 	if err := sendT(t, r.own(url, []string{small}, "")); !errors.Is(err, ErrRecvRate) {
 		t.Fatalf("частота: %v", err)
 	}
@@ -523,7 +539,7 @@ func TestRecvOld(t *testing.T) {
 
 // TestRecvPreview — окно «Принять?»: текст обрезан, управляющие и форматные символы заменены.
 func TestRecvPreview(t *testing.T) {
-	p := recvPreview("a\u202Eb\x1b[31mc\n" + strings.Repeat("x\n", 20))
+	p, _ := recvPreview("a\u202Eb\x1b[31mc\n" + strings.Repeat("x\n", 20))
 	if strings.ContainsAny(p, "\u202E\x1b") || !strings.HasSuffix(p, "…") || strings.Count(p, "\n") != 12 {
 		t.Fatalf("%q", p)
 	}

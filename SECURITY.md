@@ -195,3 +195,36 @@ and for any account. More than 16 concurrent edits — the refused edits are kep
 PCs are not members), but no passes until an edit with the phrase on this PC or an incoming edit that merges them. A damaged list in the settings
 — no space on this PC (no passes, no sync): leave the space with the password and code and join again. The replies "another PC under this ID" and "clocks differ" are only shown in the window and change no
 decision. Retrying sync with an unreachable PC lasts at most an hour, then sync runs periodically and at start.
+
+Приём файлов и текста на этот ПК (Ч10.1, ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ: проверка ключа члена, разового кода и
+закреплённого ключа). Соединение приёма для хаба выглядит как сверка (свой ПК) или вступление (чужой ПК): поля
+подключения, отказы «занят»/«заблокирован» и ответы те же, назначение — только внутри шифрованного канала. Что хаб
+всё же видит: длительность соединения и объём трафика (через TURN), а свой ПК при заполненных местах входа получает
+offer, а не «занят», — как сверка. Сессия приёма не входит: ни экрана, ни ввода, ни буфера в обратную сторону, ни
+звука; принимаются только файлы (в «Загрузки») и текст (в буфер обмена). «Только показ экрана» запрещает и приём.
+Свой ПК: ключ члена состава доказан запечатанным полем подключения и подписью над отпечатками канала; ключ исключили —
+приём рвётся; до сверки нового ПК с членом ≠ поручитель приём закрыт. Чужой ПК: первый раз — разовый код с экрана
+получателя (тот же код и та же блокировка перебора, что у входа; код расходуется), затем ключ отправителя закреплён
+и дальше — окно «Принять?» без кода; незнакомый ключ без кода — отказ. Для владельца: один и тот же разовый код
+открывает и вход, и приём — не диктуйте его тому, кому не доверили бы и вход; свой ПК кладёт текст в буфер обмена
+молча, заменяя то, что там было; имя и ID, с которыми закреплён отправитель, заявляет он сам (доказан только ключ);
+«Принять» на первый файл принимает все файлы этой передачи (но не следующей); файлам от чужого ставится метка
+«из интернета» (Windows, macOS), на Linux её нет. Потолки: файл 16 ГБ, 64 ГБ и 1000 файлов за сессию, текст 1 МБ,
+4 сессии сразу, чужой ключ — одна сессия сразу и 3 в минуту, сессия — не дольше 30 минут.
+
+Receiving files and text on this PC (Ch10.1, NEEDS HUMAN REVIEW: member key, one-time code and pinned key checks).
+To the hub a receive connection looks like a sync (own PC) or a join (foreign PC): the connect fields, the
+"busy"/"locked" refusals and the answers are the same; the purpose is only inside the encrypted channel. What the hub
+still sees: the connection's duration and traffic volume (via TURN), and an own PC gets an offer rather than "busy"
+when the login slots are full, as a sync does. A receive session never logs in: no screen, no input, no clipboard
+back, no audio; only files (to Downloads) and text (to the clipboard). "View only" forbids receiving too. Own PC: the
+member key is proven by the sealed connect field and by a signature over the channel fingerprints; a removed key
+stops the receive; until a new PC has synced with a member other than its sponsor, receiving is closed. Foreign PC:
+the first time, the one-time code from the receiver's screen (the same code and the same brute-force lock as login;
+the code is used up), then the sender's key is pinned and later sends show an "Accept?" window without a code; an
+unknown key without a code is refused. For the owner: the same one-time code opens both login and receiving — do not
+give it to someone you would not let log in; an own PC replaces the clipboard silently; the name and ID a sender is
+pinned with are claimed by the sender (only the key is proven); "Accept" on the first file accepts all files of that
+transfer (not the next one); files from a foreign PC get the "from the internet" mark (Windows, macOS), Linux has none.
+Limits: 16 GB per file, 64 GB and 1000 files per session, 1 MB of text, 4 sessions at once, a foreign key — one
+session at a time and 3 per minute, a session lasts at most 30 minutes.

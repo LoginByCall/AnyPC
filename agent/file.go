@@ -121,6 +121,7 @@ type Receiver struct {
 	part, dst string
 	name      string
 	size, got int64
+	checked   int64 // got на последней проверке места (Write)
 	h         hash.Hash
 }
 
@@ -160,7 +161,8 @@ func (r *Receiver) Open(name string, size int64, id string) (offset int64, err e
 }
 
 // diskReserve — сколько места оставить на диске после приёма: заполненный диск ломает ОС и программы.
-const diskReserve = 1 << 30
+// diskCheck — через сколько принятых байт проверять запас снова (Write).
+const diskReserve, diskCheck = 1 << 30, 1 << 20
 
 // room — отказ до приёма, если файл (без уже принятой части) не помещается с запасом diskReserve.
 func (r *Receiver) room() error {
@@ -181,6 +183,12 @@ func (r *Receiver) room() error {
 func (r *Receiver) Write(b []byte) error {
 	if r.f == nil || r.got+int64(len(b)) > r.size {
 		return errors.New("лишние данные")
+	}
+	if r.got-r.checked >= diskCheck { // запас места — на каждом мегабайте: диск могли занять во время приёма
+		r.checked = r.got
+		if free, err := diskFree(r.dir); err == nil && int64(free) < diskReserve+int64(len(b)) {
+			return fmt.Errorf("мало места на диске: свободно %.1f ГБ (1 ГБ должен остаться)", float64(free)/(1<<30))
+		}
 	}
 	if _, err := r.f.Write(b); err != nil {
 		return err // например, нет места на диске
@@ -265,9 +273,14 @@ func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32, s *ses
 	var mu sync.Mutex
 	state := "new"  // new → wait → open → finished; в open занято место в active
 	var done func() // снять обрыв при переходе в просмотр
+	var held int64  // сессия приёма: место в общем потолке .part (rxReserve)
 	end := func() {
 		if state == "open" {
 			active.Add(-1)
+		}
+		if held > 0 {
+			a.rxFree(held)
+			held = 0
 		}
 		state = "finished"
 		if done != nil {
@@ -276,6 +289,12 @@ func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32, s *ses
 	}
 	failCode := func(code, msg string) {
 		log.Printf("файл %s: %s", name(), msg)
+		if rx != nil && !rx.own { // чужому — только код: ни путей, ни свободного места этого ПК (M5)
+			if rxWhy[code] == "" {
+				code = "io"
+			}
+			msg = rxWhy[code]
+		}
 		r.Abort(false)
 		end()
 		sendJSON(dc, fileMsg{T: "err", Msg: msg, Code: code})
@@ -349,6 +368,19 @@ func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32, s *ses
 					fail(viewFiles)
 					return
 				}
+				if rx != nil { // исключили или открепили, пока ждали места
+					if code := a.rxStill(rx); code != "" {
+						active.Add(-1)
+						failCode(code, rxWhy[code])
+						return
+					}
+					if !a.rxReserve(fm.Size) { // общий потолок открытых .part всех сессий приёма
+						active.Add(-1)
+						failCode("disk", "общий потолок частей приёма")
+						return
+					}
+					held = fm.Size
+				}
 				off, err := r.Open(fm.Name, fm.Size, fm.ID)
 				if err != nil {
 					active.Add(-1)
@@ -369,6 +401,9 @@ func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32, s *ses
 			}
 			end()
 			if rx != nil {
+				if !rx.own {
+					markForeign(dst) // метка происхождения: ОС спросит перед запуском (M8)
+				}
 				rx.mu.Lock()
 				rx.nf++
 				rx.nb += r.size
@@ -405,8 +440,9 @@ func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32, s *ses
 		mu.Lock()
 		defer mu.Unlock()
 		if state == "open" {
-			r.Abort(true)
-			log.Printf("файл %s: передача прервана, принято %d из %d байт — докачается при повторной отправке", name(), r.got, r.size)
+			keep := rx == nil || rx.own // часть от чужого не хранится (M4)
+			r.Abort(keep)
+			log.Printf("файл %s: передача прервана, принято %d из %d байт%s", name(), r.got, r.size, map[bool]string{true: " — докачается при повторной отправке"}[keep])
 		}
 		end()
 	})

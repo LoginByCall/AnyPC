@@ -114,11 +114,11 @@ type Agent struct {
 	// по пропуску — мимо. nil — не закрывать.
 	LoginShut func(user string) bool
 	// Ч10.1, приём на хосте (recv.go). CodeMode — запись по умолчанию сейчас — одноразовый код (режим «Спрашивать»):
-	// только тогда чужой ПК присылает разовым кодом; nil — нет. RecvPinned — ключ отправителя закреплён (label — имя
-	// и ID для окна); RecvPin — закрепить ключ после приёма разовым кодом (id, name — заявленные, очищены rxClaim);
+	// только тогда чужой ПК присылает разовым кодом; nil — нет. RecvPinned — ключ отправителя закреплён (id, name —
+	// закреплённые: только они идут в окно); RecvPin — закрепить ключ после приёма разовым кодом (id, name — заявленные, очищены rxClaim);
 	// RecvAsk — окно «Принять?» (AskRecv, не дольше AskTimeout). RecvPinned или RecvAsk nil — чужим без кода отказ.
 	CodeMode   func() bool
-	RecvPinned func(pub []byte) (label string, ok bool)
+	RecvPinned func(pub []byte) (id, name string, ok bool)
 	RecvPin    func(pub []byte, id, name string)
 	RecvAsk    func(q RecvReq) bool
 
@@ -145,9 +145,10 @@ type Agent struct {
 	offRejAt    time.Time
 	noOffMsg    bool // тест: хост старой версии — «снять» сообщением не объявляет
 
-	recvs  map[*session]bool      // Ч10.1: сессии приёма (recv.go, не больше rxMaxSess); вне pend и syncs
-	rxRate map[string][]time.Time // Ч10.1: ключ отправителя → начала его сессий приёма за rxRatePer
-	noRecv bool                   // тест: хост старой версии — приём не объявляет
+	recvs   map[*session]bool      // Ч10.1: сессии приёма (recv.go, не больше rxMaxSess); вне pend и syncs
+	rxRate  map[string][]time.Time // Ч10.1: ключ отправителя → начала его сессий приёма за rxRatePer
+	rxParts int64                  // Ч10.1: заявленный размер открытых .part сессий приёма (не больше rxPartMax)
+	noRecv  bool                   // тест: хост старой версии — приём не объявляет
 
 	syncs  map[string]*session  // Э4: ключ члена → его соединение сверки (одно; nil — пока шлётся offer), spsync.go
 	sxSeen map[string]time.Time // Э4в: соли открытых sx → до какого времени помнить (повтор хабом, spseal.go)
@@ -524,6 +525,7 @@ func (s *session) sendMode(m modeMsg) {
 // войдёт по тем данным, что были, и следующий вызов её разорвёт.
 func (a *Agent) DropRevoked() {
 	a.passPrune() // Э3: пропуска исключённых из M и при «Спрашивать» — вон сразу (pass.go)
+	a.rxPrune()   // Ч10.1: сессии приёма исключённых и откреплённых ключей (recv.go)
 	a.mu.Lock()
 	s := a.sess
 	a.mu.Unlock()
