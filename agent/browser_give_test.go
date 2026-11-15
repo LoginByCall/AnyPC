@@ -50,13 +50,28 @@ const extra = async () => ` + "`" + `
   await ev("document.getElementById('accback').click(); 1"); await sleep(200);
   // выкл — строки кода нет, код из разметки ушёл
   await ev("document.getElementById('giveon').click(); 1"); await sleep(400);
-  console.log('off2=' + await state() + '|' + await ev(meTxt + ".includes('333')"));
+  console.log('off2=' + await state() + '|' + await ev("['333 444', '333444', '741 902', '741902'].some(c => document.documentElement.outerHTML.includes(c))")); // M7: и из разметки, не только из текста
+  // M7: «Новый код» при выкл — отказ хоста словами, не «give_off»
+  await ev("document.getElementById('newcode').click(); 1"); await sleep(300);
+  console.log('err=' + await ev(txt('codemsg')));
+  // M2: выкл во время сессии — своя строка: новые по коду закрыты, идущая сессия живёт
+  await ev("st.session = 'c123456789012'; 1"); await sleep(1300);
+  console.log('sess=' + await ev("[" + shown('givesess') + ", " + shown('giveoff') + ", " + txt('givesess') + ", " + shown('incoming') + ", document.getElementById('giveon').getAttribute('aria-describedby')].join('|')"));
+  await ev("st.session = ''; 1"); await sleep(1300);
   await ev("document.getElementById('accgo').click(); 1"); await sleep(200);
   console.log('acc=' + accOn + '|' + await ev(txt('acccode')));
   await ev("document.getElementById('accback').click(); 1"); await sleep(200);
   // режим пароля (без вопросов, TOTP): кода нет вовсе — переключатель недоступен, сказано почему
   await ev("st.confirm = false; st.otp = true; 1"); await sleep(1300);
   console.log('pw=' + await ev("[document.getElementById('giveon').disabled, document.getElementById('giveon').checked, " + shown('givena') + ", " + shown('giveoff') + ", " + vis('codebox') + "].join('|')"));
+  // M4: тур в режиме пароля — шаг «код» пропущен
+  console.log('tour=' + await ev("TOURS.home.filter(x => tEls(x).length).map(x => x[1]).join(',')"));
+  // M3: ПК пространства — честный текст без ссылки на неактивное «Спрашивать», и в блоке «По коду»
+  await ev("st.space.in = true; 1"); await sleep(1300);
+  console.log('na=' + await ev(txt('givena') + " + '|' + " + txt('acccodeb')));
+  // M5: одна «Настроить» вне пространства
+  await ev("st.space.in = false; 1"); await sleep(1300);
+  console.log('one=' + await ev("[!document.getElementById('mnoneb'), [...document.querySelectorAll('#spmain button')].filter(b => b.checkVisibility() && b.textContent === 'Настроить').length].join('|')"));
   // «Настроить» в заголовке «Моё пространство» — во всех состояниях блока; открывает «Доступ к этому ПК»
   const states = { out: {}, in: { in: true }, wait: { in: true, wait: '444555666' }, damaged: { in: true, damaged: true }, comp: { in: true, compromised: true } };
   const res = [];
@@ -95,6 +110,11 @@ func TestBrowserGive(t *testing.T) {
 		"on=true|true|741 902|false|true|give:true|Новый код|true\n",
 		"new=333 444|give:true,new\n",
 		"off2=false|false||true|false|give:true,new,give:false|false\n",
+		"err=Код не выдан: включите «Разрешить управление». Если переключатель неактивен, этот ПК сейчас не принимает вход по коду.\n",
+		"sess=true|false|Новые подключения по коду выключены. Идущий сеанс продолжается — завершить: «Разорвать».|true|givesess\n",
+		"tour=tour_id,tour_pw,tour_add,tour_talk,tour_help\n",
+		"na=На ПК вашего пространства разовая помощь по коду пока недоступна. Можно самому подключиться к помощнику через «+» сверху или получить помощь на ПК вне пространства.|На ПК вашего пространства разовая помощь по коду пока недоступна: вход сюда — паролем и кодом из приложения.\n",
+		"one=true|1\n",
 		"acc=включено|выключено\n",
 		"pw=true|false|true|false|false\n",
 		"setup=out:true,true,true,true,Доступ к этому ПК;in:true,true,true,true,Доступ к этому ПК;wait:true,true,true,true,Доступ к этому ПК;damaged:true,true,true,true,Доступ к этому ПК;comp:true,true,true,true,Доступ к этому ПК\n",

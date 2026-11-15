@@ -474,7 +474,10 @@ func TestCodeConfig(t *testing.T) {
 		t.Fatal("без вопросов код меняется")
 	}
 	c.setConfirm(true)
-	if c.code() == "" || c.code() == stored || c.code() == before {
+	if c.giving() || c.code() != "" { // M1: переключатель выключился в режиме пароля и сам не включается
+		t.Fatalf("«Спрашивать» включили — переключатель %v, код %q без включения", c.giving(), c.code())
+	}
+	if giveOn(c).code() == "" || c.code() == stored || c.code() == before {
 		t.Fatalf("«Спрашивать» включили — код %q", c.code())
 	}
 }

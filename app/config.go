@@ -189,6 +189,15 @@ func (c *config) reload() {
 		f.migrate() // старая версия могла записать файл по-своему (откат и снова обновление)
 		c.settings = f
 	}
+	c.giveCheck() // режим сменил другой процесс (ключ CLI)
+}
+
+// giveCheck — под c.mu: вне режима «Спрашивать» «Разрешить управление» выключается само — при возврате в режим код
+// не действует, пока переключатель не включат снова (приёмка, M1). Зовут reload и save: через них идёт любая смена режима.
+func (c *config) giveCheck() {
+	if !c.codeModeLocked() {
+		c.give = false
+	}
 }
 
 // defaults — настройки до чтения файла.
@@ -197,6 +206,7 @@ func defaults() settings { return settings{Server: DefaultServer, Enc: "libx264"
 // save — через временный файл со своим именем (CreateTemp, 0600) и rename: CLI и запущенная программа могут писать
 // одновременно, общий .tmp давал ошибки и битый файл.
 func (c *config) save() error {
+	c.giveCheck()
 	b, _ := json.MarshalIndent(c, "", "  ")
 	if err := os.MkdirAll(filepath.Dir(c.path), 0o700); err != nil {
 		return err

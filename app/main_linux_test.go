@@ -100,8 +100,15 @@ func TestLocalAPI(t *testing.T) {
 	if code := call("newCode", `[]`); code != 400 || pend != 0 || cfg.code() != "" {
 		t.Errorf("↻ при выключенном переключателе: %d, DropPending %d, код %q", code, pend, cfg.code())
 	}
+	info := func() map[string]any { return hostInfo(cfg, &agent.Agent{}, true, "", "") } // окно читает give и code отсюда
+	if m := info(); m["give"] != false || m["code"] != "" {
+		t.Errorf("hostInfo при выкл: give %v, code %v", m["give"], m["code"])
+	}
 	if code := call("setGive", `[true]`); code != 200 || pend != 1 || len(cfg.code()) != 6 || drops != 4 { // сессию не рвёт
 		t.Errorf("setGive on: %d, DropPending %d, DropRevoked %d, код %q", code, pend, drops, cfg.code())
+	}
+	if m := info(); m["give"] != true || m["code"] != cfg.code() || cfg.code() == "" {
+		t.Errorf("hostInfo при вкл: give %v, code %v", m["give"], m["code"])
 	}
 	pollConfig(cfg, &agent.Agent{}, &last) // своё включение: входы уже закрыты
 	if pend != 1 || last != cfg.code() {
