@@ -198,7 +198,16 @@ func main() {
 	trayDone := make(chan struct{})
 	go func() {
 		defer close(trayDone)
-		runTray(ctx, cfg.ID, func() { w.Dispatch(func() { showMain(uintptr(w.Window())) }) }, w.Destroy)
+		show := func(js string) { // окно наверх и в нём js (ПК вкладкой, «Я тут» — trayJSPC, trayJSHere)
+			w.Dispatch(func() {
+				showMain(uintptr(w.Window()))
+				if js != "" {
+					w.Eval(js)
+				}
+			})
+		}
+		runTray(ctx, trayDeps{id: cfg.ID, state: func() trayState { return trayStateOf(cfg, a.PassMaster) }, quit: w.Destroy,
+			open: func() { show("") }, here: func() { show(trayJSHere) }, pc: func(id string) { show(trayJSPC(id)) }})
 	}()
 	startSpaceSync(ctx, cfg, a)
 	run.start(cfg.Server)

@@ -237,6 +237,9 @@ func sendInput(e event, m *Monitor) error {
 
 func hideWindow(*exec.Cmd) {}
 
+// Lang — язык интерфейса ОС (en, ru…; неизвестный — как есть или ""): подписи трея (app/tray.go).
+func Lang() string { return sysLang() }
+
 func sysLang() string {
 	for _, v := range []string{"LC_ALL", "LC_MESSAGES", "LANG"} {
 		if l := os.Getenv(v); len(l) >= 2 && l != "C" && l != "POSIX" {

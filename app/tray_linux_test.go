@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"net"
 	"net/http"
@@ -102,11 +104,17 @@ func (w *fakeWatcher) none(t *testing.T, why string) {
 	}
 }
 
+// testTrayDeps — трей вне пространства с подписями ru; первая строка — «имя ПК · 123 456 789».
+func testTrayDeps(open, quit func()) trayDeps {
+	return trayDeps{id: "123456789", open: open, quit: quit, tx: trayTextsFor("ru", "linux"),
+		state: func() trayState { return trayState{Self: "123456789"} }}
+}
+
 // startTestTray — serveTray на шине addr; open и quit — подменённые. Возвращает канал выхода serveTray.
 func startTestTray(t *testing.T, addr string, open, quit func()) <-chan error {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- serveTray(ctx, addr, trayMenu("host · 123 456 789", open, quit), open) }()
+	go func() { done <- serveTray(ctx, addr, testTrayDeps(open, quit)) }()
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -178,7 +186,7 @@ func TestTray(t *testing.T) {
 		}
 		labels = append(labels, p["label"].Value().(string))
 	}
-	if want := []string{"host · 123 456 789", "Помочь кому-то…", "Выйти"}; strings.Join(labels, "|") != strings.Join(want, "|") || seps != 1 {
+	if want := []string{trayTitle("123456789"), "Помочь кому-то…", "Выйти"}; strings.Join(labels, "|") != strings.Join(want, "|") || seps != 1 {
 		t.Errorf("меню: %q, разделителей %d", labels, seps)
 	}
 
@@ -253,6 +261,140 @@ func TestTrayFlood(t *testing.T) {
 	}
 }
 
+// trayLayoutLabels — подписи верхнего уровня меню (разделитель — «—»).
+func trayLayoutLabels(t *testing.T, menu dbus.BusObject) (uint32, string) {
+	t.Helper()
+	var rev uint32
+	var root trayLayout
+	if err := menu.Call(menuIface+".GetLayout", 0, int32(0), int32(-1), []string{}).Store(&rev, &root); err != nil {
+		t.Fatal("GetLayout: ", err)
+	}
+	var l []string
+	for _, c := range root.Children {
+		p := c.Value().([]any)[1].(map[string]dbus.Variant)
+		if p["type"].Value() == "separator" {
+			l = append(l, "—")
+		} else {
+			l = append(l, p["label"].Value().(string))
+		}
+	}
+	return rev, strings.Join(l, "|")
+}
+
+// TestTrayLive — меню следует за состоянием: вступили в пространство и «я тут» здесь — LayoutUpdated с новой
+// ревизией и пункты по макету; щелчок по ПК пространства зовёт pc с его ID; без перемен ревизия не растёт.
+func TestTrayLive(t *testing.T) {
+	setOpenGap(t, 0)
+	old := trayPoll
+	trayPoll = 20 * time.Millisecond
+	t.Cleanup(func() { trayPoll = old })
+	addr := privateBus(t)
+	w := newWatcher(t, addr)
+	var st atomic.Pointer[trayState]
+	st.Store(&trayState{Self: "123456789"})
+	pcs := make(chan string, 4)
+	d := trayDeps{id: "123456789", open: func() {}, quit: func() {}, tx: trayTextsFor("ru", "linux"),
+		state: func() trayState { return *st.Load() }, pc: func(id string) { pcs <- id }}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- serveTray(ctx, addr, d) }()
+	t.Cleanup(func() { cancel(); <-done })
+	name := w.next(t)
+	menu := w.conn.Object(name, menuPath)
+	rev0, l0 := trayLayoutLabels(t, menu)
+	if l0 != trayTitle("123456789")+"|Помочь кому-то…|—|Выйти" {
+		t.Errorf("вне пространства: %s", l0)
+	}
+	time.Sleep(100 * time.Millisecond) // несколько опросов без перемен
+	if rev, _ := trayLayoutLabels(t, menu); rev != rev0 {
+		t.Errorf("ревизия без перемен: %d → %d", rev0, rev)
+	}
+	sig := make(chan *dbus.Signal, 8)
+	w.conn.Signal(sig)
+	if err := w.conn.AddMatchSignal(dbus.WithMatchInterface(menuIface), dbus.WithMatchMember("LayoutUpdated")); err != nil {
+		t.Fatal(err)
+	}
+	st.Store(&trayState{Self: "123456789", In: true, Here: "123456789", PCs: []trayPC{{"200000001", "Офис"}, {"200000002", ""}}})
+	select {
+	case s := <-sig:
+		if len(s.Body) != 2 || s.Body[0].(uint32) <= rev0 || s.Body[1].(int32) != 0 {
+			t.Errorf("LayoutUpdated: %v", s.Body)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("нет LayoutUpdated")
+	}
+	h, _ := os.Hostname()
+	if rev, l := trayLayoutLabels(t, menu); rev <= rev0 || l != h+" · я тут|—|Офис|200 000 002|—|Помочь кому-то…|—|Выйти" {
+		t.Errorf("в пространстве: ревизия %d, %s", rev, l)
+	}
+	if err := menu.Call(menuIface+".Event", 0, int32(trayPC0+1), "clicked", dbus.MakeVariant(""), uint32(0)).Err; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case id := <-pcs:
+		if id != "200000002" {
+			t.Errorf("щелчок по ПК: %s", id)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("щелчок по ПК не открыл его")
+	}
+}
+
+// TestTrayNav — ПК и «Я тут» из трея: JS берёт ближайшая загрузка главного окна (не вкладки ПК), с хэшем в CSP,
+// один раз; просроченный — нет. Без Chrome AnyPC trayGo только открывает окно и оставляет JS странице.
+func TestTrayNav(t *testing.T) {
+	cfg, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
+	page, err := shimmed("wss://example/ws", "tok123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := handler("127.0.0.1:5000", "tok123", page, cfg, &agent.Agent{}, nil, func() map[string]any { return nil }, newFiles(t.TempDir()), nil)
+	get := func(path string) string {
+		r := httptest.NewRequest("GET", path, nil)
+		r.Host = "127.0.0.1:5000"
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w.Body.String()
+	}
+	if trayJSPC("12345") != "" || trayJSPC(`200000001"); x(1)//`) != "" {
+		t.Fatal("trayJSPC пропустил не ID")
+	}
+	js := "addEventListener('DOMContentLoaded', () => { " + trayJSPC("200000001") + " });"
+	sum := sha256.Sum256([]byte(js))
+	hash := "'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
+	t.Cleanup(func() { trayNavTake() })
+	trayNavSet(trayJSPC("200000001"))
+	if b := get("/?t=tok123&embed=200000002"); strings.Contains(b, js) {
+		t.Error("JS трея ушёл во вкладку ПК")
+	}
+	if b := get("/?t=tok123"); !strings.Contains(b, "<script>"+js+"</script>") || !strings.Contains(b, hash) {
+		t.Error("главное окно без JS трея или без хэша в CSP")
+	}
+	if b := get("/?t=tok123"); strings.Contains(b, js) {
+		t.Error("JS трея выполнен дважды")
+	}
+	trayNavSet(trayJSHere)
+	trayNav.Lock()
+	trayNav.at = time.Now().Add(-trayNavFor - time.Second)
+	trayNav.Unlock()
+	if b := get("/?t=tok123"); strings.Contains(b, "() => { "+trayJSHere) {
+		t.Error("просроченный JS трея выполнен")
+	}
+
+	oldRaise, oldWin := raiseWindow, pcWin
+	t.Cleanup(func() { raiseWindow, pcWin = oldRaise, oldWin })
+	raised := 0
+	raiseWindow, pcWin = func() { raised++ }, nil
+	trayGo(trayJSHere)
+	if raised != 1 || trayNavTake() != trayJSHere {
+		t.Errorf("trayGo без Chrome AnyPC: окно %d, JS для страницы не оставлен", raised)
+	}
+	trayGo("")
+	if raised != 2 || trayNavTake() != "" {
+		t.Error("trayGo без JS")
+	}
+}
+
 // trayHungWatcher — Watcher, который не отвечает.
 type trayHungWatcher struct{ block chan struct{} }
 
@@ -272,7 +414,7 @@ func TestTrayHungWatcher(t *testing.T) {
 	conn.RequestName(watcherName, dbus.NameFlagDoNotQueue)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- serveTray(ctx, addr, trayMenu("h", func() {}, func() {}), nil) }()
+	go func() { done <- serveTray(ctx, addr, trayDeps{open: func() {}, quit: func() {}}) }()
 	time.Sleep(300 * time.Millisecond)
 	cancel()
 	select {
@@ -304,7 +446,10 @@ func TestTrayNoBus(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", dir)
 	t.Setenv("DBUS_SESSION_BUS_ADDRESS", "")
 	ret := make(chan struct{})
-	go func() { runTray(context.Background(), "123456789", func() {}, func() {}); close(ret) }()
+	go func() {
+		runTray(context.Background(), trayDeps{id: "123456789", open: func() {}, quit: func() {}})
+		close(ret)
+	}()
 	select {
 	case <-ret:
 	case <-time.After(2 * time.Second):

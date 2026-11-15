@@ -104,6 +104,23 @@ func (a *Agent) passID(pub []byte) []byte {
 	return a.passes[string(pub)].id
 }
 
+// PassMaster — ключ мастера с живым пропуском на этом ПК (выдан последним; nil — нет): трей показывает «я тут» у
+// того члена M, чей это ключ (app/tray.go). Членство и соль записи не сверяются — это забота входа (passValid).
+func (a *Agent) PassMaster() []byte {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now, best := passNow(), ""
+	for pub, e := range a.passes {
+		if e.live(now) && (best == "" || e.exp.After(a.passes[best].exp)) {
+			best = pub
+		}
+	}
+	if best == "" {
+		return nil
+	}
+	return []byte(best)
+}
+
 // passDrop — снять пропуск ключа pub (был ли он); сессию, вошедшую по нему, рвёт DropRevoked.
 func (a *Agent) passDrop(pub []byte) bool {
 	a.mu.Lock()
