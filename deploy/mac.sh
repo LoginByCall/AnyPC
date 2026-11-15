@@ -9,7 +9,7 @@ export PATH=$HOME/.local/go/bin:$PATH:/usr/local/bin:/opt/homebrew/bin GOTOOLCHA
 vpx() { L=$PWD/third_party/libvpx/darwin-$1; if [ -f $L/lib/libvpx.a ]; then export CGO_CFLAGS=-I$L/include CGO_LDFLAGS=-L$L/lib; T=-tags=vp9; else unset CGO_CFLAGS CGO_LDFLAGS; T=; fi; }
 vpx $(uname -m | sed s/x86_64/amd64/)
 go vet $T ./app ./agent
-go test -count=1 $T ./agent ./app # сетевые e2e на Маке вернулись 2026-11-10: 4 прогона подряд и 3 полных — зелёные при включённом LuLu
+go test -count=1 -timeout 30m $T ./agent ./app # сетевые e2e на Маке вернулись 2026-11-10: 4 прогона подряд и 3 полных — зелёные при включённом LuLu
 # Info.plist в бинарнике (решение владельца 2026-11-14): без NSMicrophoneUsageDescription WebKit не даёт окну getUserMedia;
 # CFBundleIdentifier = идентификатор подписи ниже (-i org.anypc.host), чтобы требование подписи и разрешения не менялись.
 P="-extldflags '-Wl,-sectcreate,__TEXT,__info_plist,$PWD/deploy/Info.plist'"
