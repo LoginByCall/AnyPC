@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,8 +32,9 @@ type portal struct {
 	obj     dbus.BusObject
 	session dbus.ObjectPath
 	node    uint32
-	w, h    float64 // размер потока для NotifyPointerMotionAbsolute (логический × масштаб mutter, mutterScale)
+	w, h    float64 // размер потока по порталу (props size; у GNOME — логический) — граница его check_position
 	x, y    int32   // логическое положение потока (props position) — по нему ищем монитор в mutterScale
+	ptr     ptrMap  // пересчёт точки мыши в вызовы портала (pointer_linux.go)
 	fd      int
 	closed  atomic.Bool
 	wheelV  int32
@@ -142,10 +144,12 @@ func (p *portal) start() error {
 	if err := p.parseStream(res["streams"].Value()); err != nil {
 		return err
 	}
-	if k := mutterScale(p.conn, p.x, p.y); k != 1 {
-		log.Printf("портал: поток %.0f×%.0f логических, масштаб mutter %.3f — координаты мыши в %.0f×%.0f", p.w, p.h, k, p.w*k, p.h*k)
-		p.w, p.h = p.w*k, p.h*k
+	k, from := mutterScale(p.conn, p.x, p.y), "mutter"
+	if v, err := strconv.ParseFloat(os.Getenv("ANYPC_POINTER_SCALE"), 64); err == nil && v > 0 { // ручка калибровки
+		k, from = v, "ANYPC_POINTER_SCALE"
 	}
+	p.ptr = ptrMap{w: p.w, h: p.h, k: k, trace: os.Getenv("ANYPC_POINTER_LOG") != ""}
+	log.Print("портал: " + p.ptr.describe(from))
 	var fd dbus.UnixFD
 	if err := p.obj.Call(pSC+".OpenPipeWireRemote", 0, p.session, vmap{}).Store(&fd); err != nil {
 		return err
@@ -196,6 +200,7 @@ func (p *portal) parseStream(v any) error {
 // потока на масштаб (layout-mode «logical», по умолчанию в Wayland): портал сообщает логический размер потока
 // (1536×960), а NotifyPointerMotionAbsolute mutter считает в точках кадра (2560×1600 при 166 %) — без поправки курсор
 // хоста уходил к 60 % пути (канбан 2026-11-13, «указатели расползлись»; FINDINGS). Не GNOME (KDE) или ошибка — 1.
+// [mutter gnome-50, src/backends/meta-screen-cast-monitor-stream.c: transform_position — x = layout.x + stream_x / scale]
 func mutterScale(conn *dbus.Conn, x, y int32) float64 {
 	c := conn.Object("org.gnome.Mutter.DisplayConfig", "/org/gnome/Mutter/DisplayConfig").Call("org.gnome.Mutter.DisplayConfig.GetCurrentState", 0)
 	if c.Err != nil {
@@ -280,7 +285,15 @@ func (p *portal) input(e event, _ *Monitor) error {
 	}
 	switch f := e.flags; {
 	case f&mMove != 0:
-		return p.notify("NotifyPointerMotionAbsolute", p.node, float64(e.x)*p.w/65535, float64(e.y)*p.h/65535)
+		st := p.ptr.move(e.x, e.y)
+		if st.abs {
+			if err := p.notify("NotifyPointerMotionAbsolute", p.node, st.ax, st.ay); err != nil {
+				return err
+			}
+		}
+		if st.rel {
+			return p.notify("NotifyPointerMotion", st.dx, st.dy)
+		}
 	case f&mWheel != 0: // ось 0; положительные шаги — вниз, а у нас +120 — вверх
 		if steps := notches(&p.wheelV, e.data); steps != 0 {
 			return p.notify("NotifyPointerAxisDiscrete", uint32(0), -steps)
