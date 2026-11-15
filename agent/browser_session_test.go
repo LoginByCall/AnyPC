@@ -336,7 +336,7 @@ func TestBrowserSession(t *testing.T) {
 		// B1: после щелчка мышью по «Микрофону», кольцу передач, «Файлы → Передачи», повторного щелчка по кнопке меню, Esc
 		// в меню, открытом мышью (отпускание Esc не уходит), щелчка по подсказке полосы и по выключенной «Управляю» — набор уходит
 		`b1=mic:KeyAv,KeyA^|ring:true:KeyAv,KeyA^|xfopen:true:KeyAv,KeyA^|reclick:false:KeyAv,KeyA^|esc:false:v:KeyAv,KeyA^|strip:KeyAv,KeyA^|ctlm:false:KeyAv,KeyA^` + "\n",
-		`ups=v:|MetaLeftv,MetaLeft^` + "\n", // M3: ни Tab^, ни Enter^
+		`ups=v:|MetaLeftv,MetaLeft^` + "\n",                  // M3: ни Tab^, ни Enter^
 		`b2=:0:false|KeyAv,KeyAv,KeyAv,KeyAv,KeyA^:0` + "\n", // Esc с автоповтором в меню не уходит, зажатых нет; KeyA×4 + отпускание
 		`dlpos=true,true,true` + "\n",
 		`renclick=true|v|` + "\n", // щелчок мышью по «Переименовать ПК» — фокус в поле; Esc — отмена, фокус на картинке, ничего не ушло
