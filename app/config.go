@@ -683,8 +683,9 @@ func (c *config) savedSet(id, pw string) error {
 }
 
 // uiKeys — ключи localStorage окна, которые живут в config.json: «Мои ПК» (имена), имена записей для входа по ID
-// (не пароли: пароли — Saved), «Недавние», статистика, Турбо, TURN, тур, булавка панели. Секретов среди них нет.
-var uiKeys = []string{"mine", "users", "recent", "stats", "turbo", "turn", "tour_home", "tour_sess", "pinbar"}
+// (не пароли: пароли — Saved), «Недавние», статистика, Турбо, TURN, тур, булавка панели, «Не сейчас» вопроса «Это ваш
+// компьютер?» (mineno: [ID]). Секретов среди них нет.
+var uiKeys = []string{"mine", "users", "recent", "stats", "turbo", "turn", "tour_home", "tour_sess", "pinbar", "mineno"}
 
 const (
 	uiKeyMax   = 64 << 10  // значение одного ключа
@@ -702,8 +703,8 @@ func uiValid(k, v string) bool {
 		return !slices.ContainsFunc(l, func(e any) bool { _, ok := e.(string); return !ok })
 	}
 	switch x := x.(type) {
-	case []any: // mine: [{id, name}] или прежний формат — [ID] (разбирает страница, mineNorm); recent: [ID]
-		return k == "mine" || k == "recent" && all(x)
+	case []any: // mine: [{id, name}] или прежний формат — [ID] (разбирает страница, mineNorm); recent, mineno: [ID]
+		return k == "mine" || (k == "recent" || k == "mineno") && all(x)
 	case map[string]any: // users: ID → имя записи
 		return k == "users" && all(slices.Collect(maps.Values(x)))
 	case bool:

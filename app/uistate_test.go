@@ -33,6 +33,7 @@ func TestUIState(t *testing.T) {
 		{"recent", `5`}, {"recent", `[1]`}, {"recent", `null`}, {"mine", `{}`}, {"mine", `null`}, {"users", `[]`},
 		{"users", `{"123456789":5}`}, {"stats", `null`}, {"stats", `"true"`}, {"turbo", `2`}, {"turbo", `"1"`},
 		{"tour_home", `true`}, {"turn", `5`}, {"pinbar", `2`}, {"pinbar", `true`},
+		{"mineno", `[1]`}, {"mineno", `{}`}, {"mineno", `"123456789"`}, {"mineno", `null`}, // Ч7: «Не сейчас» — только [ID]
 	} {
 		if err := c.uiSet(bad[0], bad[1]); err == nil {
 			t.Errorf("принято %s=%.40s", bad[0], bad[1])
@@ -43,6 +44,9 @@ func TestUIState(t *testing.T) {
 		if err := c.uiSet(good[0], good[1]); err != nil {
 			t.Errorf("%s=%s: %v", good[0], good[1], err)
 		}
+	}
+	if c2, _ := loadConfig(filepath.Join(dir, "c2.json")); c2.uiSet("mineno", `["123456789"]`) != nil { // Ч7: «Не сейчас» (отдельный файл — не сбить счёт 256 КБ)
+		t.Error("mineno не принят")
 	}
 	if err := c.uiSet("mine", `["`+pad(uiKeyMax-4)+`"]`); err != nil { // ровно 64 КБ
 		t.Errorf("64 КБ: %v", err)

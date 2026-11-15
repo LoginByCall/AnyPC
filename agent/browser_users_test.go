@@ -38,8 +38,10 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   console.log('nopw=' + await state());
   await ev("document.getElementById('id').value='123456789'; document.getElementById('user').value='ivan'; document.getElementById('pw').value='secret123'; document.getElementById('go').click()");
   console.log('wrong=' + await until(s => s.includes('rror')));
-  await ev("document.getElementById('user').value=' Ivan'; document.getElementById('pw').value='ivan-pass1'; document.getElementById('remember').checked = true; document.getElementById('go').click()");
+  await ev("document.getElementById('user').value=' Ivan'; document.getElementById('pw').value='ivan-pass1'; document.getElementById('go').click()");
   console.log('ok=' + await until(s => s.endsWith('|true')));
+  // «Запомнить пароль» — теперь в вопросе шага 3 (веб-клиент: по ☆): пароль и имя записи
+  await ev("document.getElementById('starbtn').click(); document.getElementById('mineqr').checked = true; document.getElementById('mineqok').click(); 1"); await sleep(300);
   console.log('saved=' + await ev("localStorage.getItem('users')"));
   await ev("document.getElementById('bye').click()");
   await sleep(300);
@@ -53,8 +55,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await sleep(300);
   await ev("document.getElementById('pw').value = document.getElementById('user').value = ''; const i = document.getElementById('id'); i.value = '123456789'; i.dispatchEvent(new Event('input'))");
   await sleep(300);
-  console.log('fill=' + await ev("document.getElementById('user').value + '|' + document.getElementById('remember').checked"));
-  await ev("const r = document.getElementById('remember'); r.checked = false; r.dispatchEvent(new Event('change'))");
+  console.log('fill=' + await ev("document.getElementById('user').value + '|' + !document.getElementById('pwsrow').classList.contains('hidden')"));
+  await ev("document.getElementById('pwforget').click(); 1");
   await sleep(300);
   console.log('forgot=' + await ev("localStorage.getItem('users')"));
   // хост ответил «a» с чужим именем — подмена: клиент рвёт вход и CPace не начинает (выжившая мутация приёмки)
