@@ -78,7 +78,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   // панель: кнопки по макету, ничего прежнего не пропало
   const vis = (w, i) => "(e => !!e && e.checkVisibility())(" + w + ".document.getElementById('" + i + "'))";
   console.log('bar=' + await ev("(w => [...w.document.getElementById('bar').children].filter(e => e.checkVisibility()).map(e => e.id || e.firstElementChild?.id || e.className).join(','))(" + A + ")"));
-  console.log('ctl=' + await ev("(d => [d.getElementById('ctlm').textContent === t('ctl_on') + ' ▾', d.getElementById('ctlm').disabled].join())(" + A + ".document)"));
+  console.log('ctl=' + await ev("(d => [d.getElementById('ctlm').textContent === t('ctl_on') + ' ▾', d.getElementById('ctlm').getAttribute('aria-disabled') === 'true' && !!d.getElementById('ctlm').title].join())(" + A + ".document)"));
   // меню: щелчок открывает (фокус на первом пункте), Esc закрывает (фокус на кнопке), ↓ на кнопке открывает, End — последний
   const st = m => ev("(d => { const b = d.getElementById('" + m + "'), l = d.getElementById(b.getAttribute('aria-controls')); return [b.getAttribute('aria-expanded'), l.checkVisibility(), d.activeElement === b ? 'btn' : (d.activeElement?.dataset.keys || d.activeElement?.id || '-')].join(); })(" + A + ".document)");
   const key = (type, extra) => cmd('Input.dispatchKeyEvent', Object.assign({ type }, extra));
@@ -140,6 +140,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
       await shot('bar');
       await ev(A + ".document.getElementById('keysm').click(); 1"); await sleep(300); await shot('keys');
       await ev(A + ".document.getElementById('morem').click(); 1"); await sleep(300); await shot('more');
+      await fe(0, "menuShut(); dlShow(true); 1"); await sleep(300); await shot('xfers'); // передачи — от кольца, под панелью
       await ev(A + ".document.body.click(); 1"); await sleep(200);
     }
     await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] });
@@ -169,6 +170,60 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await ev(W + ".document.getElementById('morem').click(); 1"); await sleep(100);
   await combo('ArrowRight', 'ArrowRight', 39);
   console.log('frommenu=' + (await act() !== cur) + '|' + await ev(W + ".document.getElementById('moremenu').checkVisibility()") + '|arrows=' + /Arrow/.test((await take(0)) + (await take(1))));
+  // B1 (приёмка Ч8): после щелчка МЫШЬЮ по панели (Input.dispatchMouseEvent: detail=1, у .click() — 0) набор уходит на удалённый ПК
+  await ev("myPcAdd('" + ids[0] + "'); 1"); await sleep(400);
+  const AW = "document.querySelectorAll('#frames iframe')[myPcActive()].contentWindow";
+  const takeA = () => ev("(w => { const r = w.rec.join(','); w.rec.length = 0; return r; })(" + AW + ")");
+  const mouse = async (x, y, type) => cmd('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
+  const mclick = async (sel, top) => {
+    const xy = await ev(top ? "(e => { const r = e.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })(document.querySelector(\"" + sel + "\"))"
+      : "(w => { const r = w.frameElement.getBoundingClientRect(), e = w.document.querySelector(\"" + sel + "\").getBoundingClientRect(); return [r.left + e.left + e.width / 2, r.top + e.top + e.height / 2]; })(" + AW + ")");
+    await mouse(xy[0], xy[1], 'mousePressed'); await mouse(xy[0], xy[1], 'mouseReleased'); await sleep(250);
+  };
+  const typed = async () => { await press('KeyA', 'a', 65); await sleep(150); return takeA(); };
+  const b1 = [];
+  await takeA();
+  await ev(AW + ".document.getElementById('mic').classList.remove('hidden'); 1"); await mclick('#mic'); b1.push('mic:' + await typed()); await ev(AW + ".document.getElementById('mic').classList.add('hidden'); 1");
+  await mclick('#dlbtn'); b1.push('ring:' + await ev(AW + ".document.getElementById('dlpop').checkVisibility()") + ':' + await typed());
+  await mclick('#filesm'); await mclick('#xfopen'); b1.push('xfopen:' + await ev(AW + ".document.getElementById('dlpop').checkVisibility()") + ':' + await typed());
+  await mclick('#keysm'); await mclick('#keysm'); b1.push('reclick:' + await ev(AW + ".document.getElementById('keysmenu').checkVisibility()") + ':' + await typed());
+  await mclick('#morem'); await press('Escape', 'Escape', 27); b1.push('esc:' + await ev(AW + ".document.getElementById('moremenu').checkVisibility() + ':' + " + AW + ".document.activeElement.id") + ':' + await typed());
+  await mclick('#swhint', true); b1.push('strip:' + await typed());
+  await mclick('#ctlm'); b1.push('ctlm:' + await ev(AW + ".document.getElementById('ctlmenu').checkVisibility()") + ':' + await typed());
+  console.log('b1=' + b1.join('|'));
+  // M3: отпускание без нажатия не уходит — Tab с последней кнопки панели на картинку, Enter, выбравший пункт меню
+  await ev(AW + ".document.getElementById('bye').focus(); 1"); await press('Tab', 'Tab', 9);
+  const tabTo = await ev(AW + ".document.activeElement.id"), tabRec = await takeA();
+  await ev(AW + ".document.getElementById('keysm').focus(); 1"); await press('ArrowDown', 'ArrowDown', 40);
+  await key('keyDown', { code: 'Enter', key: 'Enter', windowsVirtualKeyCode: 13, text: '\r' }); await key('keyUp', { code: 'Enter', key: 'Enter', windowsVirtualKeyCode: 13 }); await sleep(200);
+  console.log('ups=' + tabTo + ':' + tabRec + '|' + await takeA());
+  // дыры мутаций приёмки: «Убрать» у члена пространства; × только на полосе окна вкладок; Ctrl+Alt+→ в поле ввода;
+  // панель в полном экране с открытым меню; отпускание зажатого при открытии меню; закрытие меню по blur
+  await ev("window.spMemberOf = id => id === '111111111'; 1");
+  await ev(AW + ".embedStar(); 1"); const memb = await ev("(d => [d.getElementById('mren').classList.contains('hidden'), d.getElementById('mdel').classList.contains('hidden')].join())(" + AW + ".document)");
+  await ev("delete window.spMemberOf; " + AW + ".embedStar(); 1");
+  const xs = await ev("[document.querySelectorAll('#hometabs .tabx').length, document.querySelectorAll('#tabs .tabx').length].join()");
+  const a5 = await act();
+  await ev("(d => { const i = d.createElement('input'); i.id = 'probe'; d.body.append(i); i.focus(); 1 })(" + AW + ".document)");
+  await combo('ArrowRight', 'ArrowRight', 39);
+  const inInput = (await act()) === a5;
+  await ev(AW + ".document.getElementById('probe').remove(); " + AW + ".document.getElementById('v').focus(); 1");
+  await mouse(600, 600, 'mouseMoved'); await sleep(100);
+  await ev("(d => { d.body.classList.add('fs'); d.getElementById('morem').click(); 1 })(" + AW + ".document)"); await sleep(400);
+  const fsOpen = await ev("getComputedStyle(" + AW + ".document.getElementById('bar')).transform");
+  await ev(AW + ".document.body.click(); 1"); await sleep(400);
+  const fsShut = await ev("getComputedStyle(" + AW + ".document.getElementById('bar')).transform");
+  await ev(AW + ".document.body.classList.remove('fs'); 1"); await takeA();
+  await ev("(w => { w.document.getElementById('v').focus(); w.document.dispatchEvent(new w.KeyboardEvent('keydown', { code: 'KeyB', key: 'b', bubbles: true })); w.document.getElementById('keysm').click(); 1 })(" + AW + ")");
+  const rel = await takeA();
+  await ev("(w => { w.document.body.click(); w.document.getElementById('morem').click(); w.dispatchEvent(new w.Event('blur')); 1 })(" + AW + ")");
+  const blurShut = await ev(AW + ".document.getElementById('moremenu').classList.contains('hidden')");
+  console.log('holes=' + memb + '|' + xs + '|' + inInput + '|' + (fsOpen === 'none') + ',' + (fsShut !== 'none') + '|' + rel + '|' + blurShut);
+  // M7: Ctrl+Alt+N — N-я ОТКРЫТАЯ вкладка полосы (закрытые ПК между ними не в счёт)
+  await ev("localStorage.setItem('mine', JSON.stringify([{ id: '111111111', name: 'Дом' }, { id: '333333333', name: 'Склад' }, { id: '222222222', name: 'Сервер' }])); myPcRender(); myPcAdd('" + ids[0] + "'); 1"); await sleep(400);
+  const n0 = await act(); await combo('Digit2', '2', 50); const n1 = await act(); await combo('Digit3', '3', 51); const n2 = await act();
+  console.log('digit=' + [n0, n1, n2].join(',') + '|' + await ev("[...document.querySelectorAll('#tabs .nm')].map(n => n.textContent).join('/')") + '|' + (await ev("document.getElementById('swhint').title") === await ev("t('sw_num_t')")));
+  await ev("localStorage.setItem('mine', JSON.stringify([{ id: '111111111', name: 'Дом' }, { id: '222222222', name: 'Сервер' }])); myPcRender(); 1");
   // сервер-ретранслятор — из «Ещё» (последним: смена сервера переподключает сессию)
   await ev("myPcAdd('" + ids[0] + "'); 1"); await sleep(400);
   await fe(0, "turns = ['aa.test', 'bb.test']; renderTurn(); 1");
@@ -259,6 +314,14 @@ func TestBrowserSession(t *testing.T) {
 		`switch=[1,0]|1,0,1,0|arrows=false|held=0,0`,
 		`frommenu=true|false|arrows=false`,
 		`turn=true,false:bb.test:bb.test`,
+		// B1: после щелчка мышью по «Микрофону», кольцу передач, «Файлы → Передачи», повторного щелчка по кнопке меню, Esc
+		// в меню, открытом мышью (отпускание Esc не уходит), щелчка по подсказке полосы и по выключенной «Управляю» — набор уходит
+		`b1=mic:KeyAv,KeyA^|ring:true:KeyAv,KeyA^|xfopen:true:KeyAv,KeyA^|reclick:false:KeyAv,KeyA^|esc:false:v:KeyAv,KeyA^|strip:KeyAv,KeyA^|ctlm:false:KeyAv,KeyA^` + "\n",
+		`ups=v:|MetaLeftv,MetaLeft^` + "\n", // M3: ни Tab^, ни Enter^
+		// член пространства — «Убрать» нет; × — только в окне вкладок; Ctrl+Alt+→ в поле не переключает; меню держит панель
+		// в полном экране; открытие меню отпускает зажатое; blur закрывает меню
+		`holes=false,true|0,2|true|true,true|KeyBv,KeyB^|true` + "\n",
+		`digit=1,0,0|Дом/Склад/Сервер|true`, // Ctrl+Alt+2 — «Сервер» (вторая открытая), Ctrl+Alt+3 — открытой третьей нет
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("нет %q", want)
