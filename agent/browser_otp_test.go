@@ -68,7 +68,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await ev("const i2 = document.getElementById('id'); i2.dispatchEvent(new Event('input')); 1"); await sleep(300); // снова подставить для «забыть»
   await ev("document.getElementById('pwforget').click(); 1");
   await sleep(300);
-  console.log('forgot=' + await ev("localStorage.getItem('pass') + '|' + document.getElementById('pwsrow').classList.contains('hidden')"));
+  console.log('forgot=' + await ev("localStorage.getItem('pass') + '|' + document.getElementById('pwsrow').classList.contains('hidden') + '|' + JSON.stringify(document.getElementById('pw').value)")); // забытый пароль не остаётся в поле
   // Enter (настоящая клавиша) в поле с подставленным паролем входит с ним, а не с пустым
   await ev("localStorage.setItem('pass', JSON.stringify({ '123456789': 'secret123' })); document.getElementById('pw').value = ''; const i3 = document.getElementById('id'); i3.dispatchEvent(new Event('input')); 1");
   await sleep(300);
@@ -93,7 +93,7 @@ func TestBrowserOTP(t *testing.T) {
 		"fill=secret123|true",
 		"eye=password|true",
 		`edit=""|false`,
-		"forgot={}|true",
+		`forgot={}|true|""`,
 		"redial=password|true|true",
 		"enter=|true|false",
 	} {

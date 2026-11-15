@@ -36,7 +36,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await call('Page.enable', {});
   await call('Page.addScriptToEvaluateOnNewDocument', { source: ` + "`" + `(() => {
     if (window.parent !== window) return;
-    localStorage.setItem('tour_home', '1'); localStorage.setItem('tour_sess', '1');
+    localStorage.setItem('tour_home', '1'); // тур сессии — не отключён: проверяется, что он не идёт поверх шага 3
     window.st = { id: '987654321', confirm: false, otp: true, hasPass: true, users: [], keys: [], space: { in: false, members: [] } };
     window.hostInfo = async () => JSON.parse(JSON.stringify(st));
     const kv = n => [async id => JSON.parse(localStorage.getItem(n) || '{}')[id] || '', async (id, v) => { const k = JSON.parse(localStorage.getItem(n) || '{}'); if (v) k[id] = v; else delete k[id]; localStorage.setItem(n, JSON.stringify(k)); }];
@@ -53,9 +53,10 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const typeOtp = d => ev("(o => { o.value = " + JSON.stringify(d) + "; o.dispatchEvent(new Event('input')); return 1; })(document.getElementById('otp'))");
   const login = async (hid, pw) => { await ev("document.getElementById('id').value = '" + hid + "'; document.getElementById('pw').value = '" + pw + "'; document.getElementById('go').click(); 1"); };
   const bye = async () => { await ev("document.getElementById('bye').click(); 1"); await sleep(400); };
-  // вопрос шага 3: виден, вариант (key — вход ключом, pw — без него), галочка «Запомнить пароль» видна и стоит, ☆ видна
-  const q = () => ev("(() => { const d = i => document.getElementById(i), on = d('mineq').checkVisibility(), b = d('mineqb').textContent; return [on, !on ? '-' : b === t('c3_b_key') ? 'key' : b === t('c3_b') ? 'pw' : '?', d('mineqrl').checkVisibility(), d('mineqrl').checkVisibility() && d('mineqr').checked, d('starbtn').checkVisibility()].join(','); })()");
+  // вопрос шага 3: виден, вариант (key — ключ включим, pw — без ключа, on — ключ уже есть, np — вход без пароля), галочка «Запомнить пароль» видна и стоит, ☆ видна
+  const q = () => ev("(() => { const d = i => document.getElementById(i), on = d('mineq').checkVisibility(), b = d('mineqb').textContent; return [on, !on ? '-' : b === t('c3_b_key') ? 'key' : b === t('c3_b') ? 'pw' : b === t('c3_b_on') ? 'on' : b === t('c3_b_np') ? 'np' : '?', d('mineqrl').checkVisibility(), d('mineqrl').checkVisibility() && d('mineqr').checked, d('starbtn').checkVisibility()].join(','); })()");
   const ls = k => ev("localStorage.getItem('" + k + "')");
+  const tourOn = () => ev("!document.getElementById('tour').classList.contains('hidden')");
 
   // 1. ПК с TOTP и входом по ключу: шаг 2, пять цифр — ждёт, шестая — отправка; шаг 3 «key»
   await login('123456789', 'secret123');
@@ -66,15 +67,40 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await typeOtp(c);
   console.log('ok1=' + await until(s => s.endsWith('|true')));
   await sleep(300);
-  console.log('q1=' + await q());
-  await ev("document.getElementById('mineqn').value = 'Работа'; document.getElementById('mineqok').click(); 1");
+  await sleep(900); // тур сессии (первая сессия) ждёт ответа на вопрос
+  console.log('q1=' + await q() + '|tour=' + await tourOn());
+  // «–» свернуть: вопрос — в ☆, «Не сейчас» не записан, тур сессии пошёл; ☆ — тот же вопрос с набранным именем
+  await ev("document.getElementById('mineqn').value = 'Работа'; document.getElementById('mineqmin').click(); 1"); await sleep(600);
+  console.log('min=' + await q() + '|' + await ls('mineno') + '|tour=' + await tourOn());
+  await ev("tourEnd(); document.getElementById('starbtn').click(); 1");
+  console.log('unmin=' + await q() + '|' + await ev("document.getElementById('mineqn').value"));
+  // клавиши на карточке не уходят на удалённый ПК (ни нажатие, ни отпускание); Enter с модификатором или в наборе IME — не «Добавить»
+  await ev("(() => { window.kk = []; const o = dc.send.bind(dc); dc.send = x => { if (JSON.parse(x).t === 'k') kk.push(x); return o(x); }; const b = document.getElementById('mineqok'); b.focus(); for (const ty of ['keydown', 'keyup']) b.dispatchEvent(new KeyboardEvent(ty, { code: 'KeyA', key: 'a', bubbles: true })); const n = document.getElementById('mineqn'); n.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true })); n.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true })); return 1; })()");
+  console.log('keys=' + await ev("kk.length + ',' + held.size") + '|' + await q());
+  await ev("document.getElementById('mineqok').click(); 1");
   console.log('re1=' + await until(s => s.startsWith('2|')) + '|' + await ls('mine'));
+  // приёмка B1: «Отмена» повторного входа — trust не переживает попытку: следующий вход паролем (ПК убран из списка)
+  // ключ не добавляет, на шаге 2 нет «нужен новый код», вопрос задан снова; пароль сессии в скрытом поле не остался
+  await ev("document.getElementById('ccancel').click(); 1"); await sleep(300);
+  console.log('cancel1=' + await state() + '|' + JSON.stringify(await ev("document.getElementById('pw').value")));
+  await ev("myPcs.del('123456789'); 1");
+  await login('123456789', 'secret123');
+  console.log('s2b=' + await until(s => s.startsWith('2|')));
+  await typeOtp(await code());
+  console.log('again1=' + await until(s => s.endsWith('|true')) + '|' + await ev("JSON.stringify(Object.values(JSON.parse(localStorage.getItem('ck') || '{}')).map(v => JSON.parse(v).login))") + '|' + await q() + '|' + await ls('mine'));
+  await ev("document.getElementById('mineqn').value = 'Работа'; document.getElementById('mineqok').click(); 1");
+  await until(s => s.startsWith('2|'));
   await typeOtp(await code());
   console.log('key1=' + await until(s => s.endsWith('|true')) + '|' + await ev("JSON.stringify(Object.values(JSON.parse(localStorage.getItem('ck') || '{}')).map(v => JSON.parse(v).login))") + '|' + await q());
   await bye();
-  await login('123456789', ''); // по ключу: пароль не нужен, только код; вопроса нет — ПК уже в списке
+  // по ключу: пароль не нужен, только код; вопроса нет (ok с key сам кладёт ПК в «mine» — до проверки шага 3)
+  await login('123456789', '');
   await until(s => s.startsWith('2|')); await typeOtp(await code());
+  await sleep(300);
   console.log('bykey=' + await until(s => s.endsWith('|true')) + '|' + await q());
+  await ev("document.getElementById('starbtn').click(); document.getElementById('starbtn').click(); 1"); // ★ снять, ☆: ключ уже есть — свой текст, без галочки
+  console.log('bykeystar=' + await q());
+  await ev("document.getElementById('mineqn').value = 'Работа'; document.getElementById('mineqok').click(); 1"); await sleep(300);
   await bye();
 
   // 2. ПК без TOTP: шага 2 нет; шаг 3 «pw» с галочкой «Запомнить пароль» (снята); «Не сейчас» — больше не спрашивать
@@ -82,8 +108,14 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const seen2 = []; for (let i = 0; i < 60; i++) { const s = await state(); if (!seen2.includes(s.split('|')[0])) seen2.push(s.split('|')[0]); if (s.endsWith('|true')) break; await sleep(100); }
   await sleep(300);
   console.log('nos2=' + seen2.includes('2') + '|' + await q());
-  await ev("document.getElementById('mineqno').click(); 1"); await sleep(300);
-  console.log('no=' + await q() + '|' + await ls('mineno') + '|' + await ls('mine'));
+  // конец сессии без ответа — вопрос убран и не считается отказом: следующий вход спрашивает снова
+  await bye();
+  console.log('byeq=' + await ev("document.getElementById('mineq').classList.contains('hidden')"));
+  await login('222333444', 'secret123'); await until(s => s.endsWith('|true')); await sleep(500);
+  console.log('askagain=' + await q());
+  // «Не сейчас» при полном списке (200): новый ID — первым, длина — 200; кнопки ответившего вопроса больше ничего не делают
+  await ev("localStorage.setItem('mineno', JSON.stringify(Array.from({ length: 200 }, (_, i) => String(100000000 + i)))); document.getElementById('mineqno').click(); document.getElementById('mineqok').click(); 1"); await sleep(300);
+  console.log('no=' + await q() + '|' + await ev("(l => l.length + ',' + l[0] + ',' + l.includes('100000199'))(JSON.parse(localStorage.getItem('mineno')))") + '|' + await ls('mine'));
   await bye();
   await login('222333444', 'secret123'); await until(s => s.endsWith('|true')); await sleep(500);
   console.log('noagain=' + await q());
@@ -112,6 +144,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   console.log('ok4=' + await until(s => s.endsWith('|true')));
   await sleep(500);
   console.log('code=' + await q());
+  await ev("document.getElementById('starbtn').click(); 1"); // ☆ после кода разовой помощи: пароля нет — без галочки, свой текст
+  console.log('codestar=' + await q());
   await bye();
   // отмена ожидания: «Отмена» — к шагу 1
   await login('333444555', 'secret123'); await until(s => s.startsWith('w|'));
@@ -173,12 +207,21 @@ func TestBrowserConnect(t *testing.T) {
 		"tour1=true\n",
 		"five=2||false\n",
 		"ok1=1||true\n",
-		"q1=true,key,false,false,false\n", // сам, поверх сессии; ключ — без галочки «Запомнить»; ☆ спрятана
+		"q1=true,key,false,false,false|tour=false\n", // сам, поверх сессии; ключ — без галочки «Запомнить»; ☆ спрятана; тур ждёт
+		"min=false,-,false,false,true|null|tour=true\n",
+		"unmin=true,key,false,false,false|Работа\n",
+		"keys=0,0|true,key,false,false,false\n",
+		`cancel1=1||false|""` + "\n",
+		"s2b=2||false\n",
+		"again1=1||true|[null]|true,key,false,false,false|[]\n",
 		`re1=2|A new code is needed: the previous one has already been used.|false|[{"id":"123456789","name":"Работа"}]` + "\n",
 		"key1=1||true|[true]|false,-,false,false,true\n",
 		"bykey=1||true|false,-,false,false,true\n",
+		"bykeystar=true,on,false,false,false\n",
 		"nos2=false|true,pw,true,false,false\n",
-		`no=false,-,false,false,true|["222333444"]|[{"id":"123456789","name":"Работа"}]` + "\n",
+		"byeq=true\n",
+		"askagain=true,pw,true,false,false\n",
+		`no=false,-,false,false,true|200,222333444,false|[{"id":"123456789","name":"Работа"}]` + "\n",
 		"noagain=false,-,false,false,true\n",
 		"star=true,pw,true,false,false\n",
 		`add=[{"id":"123456789","name":"Работа"},{"id":"222333444","name":"222333444"}]|null|★ In My space` + "\n",
@@ -186,6 +229,7 @@ func TestBrowserConnect(t *testing.T) {
 		"member=false,-,false,false,true|★ In My space,true\n",
 		"ok4=1||true\n",
 		"code=false,-,false,false,true\n",
+		"codestar=true,np,false,false,false\n",
 		"cancel=1||false|true\n",
 	} {
 		if !strings.Contains(out, want) {

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -33,7 +34,9 @@ func TestUIState(t *testing.T) {
 		{"recent", `5`}, {"recent", `[1]`}, {"recent", `null`}, {"mine", `{}`}, {"mine", `null`}, {"users", `[]`},
 		{"users", `{"123456789":5}`}, {"stats", `null`}, {"stats", `"true"`}, {"turbo", `2`}, {"turbo", `"1"`},
 		{"tour_home", `true`}, {"turn", `5`}, {"pinbar", `2`}, {"pinbar", `true`},
-		{"mineno", `[1]`}, {"mineno", `{}`}, {"mineno", `"123456789"`}, {"mineno", `null`}, // Ч7: «Не сейчас» — только [ID]
+		{"mineno", `[1]`}, {"mineno", `{}`}, {"mineno", `"123456789"`}, {"mineno", `null`}, // Ч7: «Не сейчас» — только [ID из 9 цифр]
+		{"mineno", `["12345678"]`}, {"mineno", `["1234567890"]`}, {"mineno", `["12345678x"]`}, {"mineno", `["１２３４５６７８９"]`},
+		{"mineno", `[` + strings.TrimSuffix(strings.Repeat(`"123456789",`, mineNoMax+1), ",") + `]`}, // больше 200
 	} {
 		if err := c.uiSet(bad[0], bad[1]); err == nil {
 			t.Errorf("принято %s=%.40s", bad[0], bad[1])
@@ -45,7 +48,7 @@ func TestUIState(t *testing.T) {
 			t.Errorf("%s=%s: %v", good[0], good[1], err)
 		}
 	}
-	if c2, _ := loadConfig(filepath.Join(dir, "c2.json")); c2.uiSet("mineno", `["123456789"]`) != nil { // Ч7: «Не сейчас» (отдельный файл — не сбить счёт 256 КБ)
+	if c2, _ := loadConfig(filepath.Join(dir, "c2.json")); c2.uiSet("mineno", `["123456789"]`) != nil || c2.uiSet("mineno", `[`+strings.TrimSuffix(strings.Repeat(`"123456789",`, mineNoMax), ",")+`]`) != nil { // Ч7: «Не сейчас» (отдельный файл — не сбить счёт 256 КБ)
 		t.Error("mineno не принят")
 	}
 	if err := c.uiSet("mine", `["`+pad(uiKeyMax-4)+`"]`); err != nil { // ровно 64 КБ
@@ -139,5 +142,8 @@ func TestUIKeysMatchPage(t *testing.T) {
 	}
 	if !slices.Equal(page, uiKeys) {
 		t.Errorf("UID страницы %v ≠ uiKeys %v", page, uiKeys)
+	}
+	if n := regexp.MustCompile(`const MINENO_MAX = (\d+);`).FindSubmatch(b); n == nil || string(n[1]) != strconv.Itoa(mineNoMax) {
+		t.Errorf("MINENO_MAX страницы ≠ mineNoMax %d", mineNoMax) // длиннее — Go отверг бы запись «Не сейчас»
 	}
 }
