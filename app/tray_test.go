@@ -83,6 +83,22 @@ func TestTrayPick(t *testing.T) {
 	}
 }
 
+// TestTrayPickHelp: «Помочь кому-то…» с d.help — экран «Другой ПК» (trayJSHelp), не просто окно; дроссель тот же.
+func TestTrayPickHelp(t *testing.T) {
+	var opened, helped int
+	d := trayDeps{open: func() { opened++ }, help: func() { helped++ }, quit: func() {}}
+	rows := trayRows(trayState{Self: "123456789"}, "h", trayTextsFor("ru", "linux"))
+	if f := trayPick(trayHelp, rows, func() bool { return true }, d); f != nil {
+		f()
+	}
+	if trayPick(trayHelp, rows, func() bool { return false }, d) != nil {
+		t.Error("«Помочь» мимо дросселя")
+	}
+	if helped != 1 || opened != 0 {
+		t.Errorf("«Помочь»: экран подключения %d, окно %d", helped, opened)
+	}
+}
+
 // trayLabels — меню строкой: подписи через «|», разделитель — «—».
 func trayLabels(rows []trayRow) string {
 	var l []string

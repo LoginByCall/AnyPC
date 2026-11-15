@@ -235,6 +235,7 @@ type trayDeps struct {
 	open  func()          // главное окно
 	here  func()          // главное окно у кнопки «Я тут» (ввод пароля и кода — там, не в трее)
 	pc    func(id string) // ПК id вкладкой главного окна — как «Открыть» плитки
+	help  func()          // главное окно на экране «Другой ПК» (форма подключения, «+» главного экрана)
 	quit  func()
 	tx    trayTexts // пустые — язык ОС (agent.Lang)
 }
@@ -261,13 +262,15 @@ func (d trayDeps) rows() []trayRow {
 
 // trayPick — что делать по пункту id меню rows: «Выйти» — всегда, окно — не чаще gate; прочее (0 — меню закрыто
 // мимо, разделитель, пункт не из rows) — nil.
-// TODO(ui): «Помочь кому-то…» — главное окно, пока в ui/index.html нет адреса экрана подключения.
+// «Помочь кому-то…» — экран «Другой ПК» (d.help), без него — просто окно.
 func trayPick(id int, rows []trayRow, gate func() bool, d trayDeps) func() {
 	if id == trayQuit {
 		return d.quit
 	}
 	var f func()
 	switch i := slices.IndexFunc(rows, func(r trayRow) bool { return r.ID == id }); {
+	case id == trayHelp && d.help != nil:
+		f = d.help
 	case id == trayOpen || id == trayHelp:
 		f = d.open
 	case i < 0:
@@ -296,8 +299,12 @@ func trayJSPC(id string) string {
 	return `window.myPcAdd && myPcAdd("` + id + `")`
 }
 
-// trayJSHere — в главном окне к полю пароля «Я тут» (ввод пароля и кода — там).
-const trayJSHere = `(e => { if (e) { e.scrollIntoView({block: 'center'}); e.focus(); } })(document.getElementById('shpw'))`
+// trayJSHere — в главном окне к полю пароля «Я тут» (ввод пароля и кода — там): сначала на главный экран (myPcHome —
+// из вкладки ПК, «Другого ПК», «Настроек», «Доступа»); false — в окне идёт своя сессия: окно только поднято, фокус не трогаем.
+const trayJSHere = `(e => { if (window.myPcHome && myPcHome() === false) return; if (e) { e.scrollIntoView({block: 'center'}); e.focus(); } })(document.getElementById('shpw'))`
+
+// trayJSHelp — «Помочь кому-то…»: экран «Другой ПК» с фокусом в поле ID (connGo — «+» главного экрана, ui/index.html).
+const trayJSHelp = `window.connGo && connGo()`
 
 // trayOpenGap — окно открывается не чаще; лишние щелчки (или поток вызовов от любого клиента шины) — мимо.
 var trayOpenGap = time.Second
