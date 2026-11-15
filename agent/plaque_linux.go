@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"errors"
 	"log"
+	"os"
 	"os/exec"
 	"strings"
 	"sync/atomic"
@@ -16,11 +17,12 @@ import (
 // plaqueGJS — плашка сессии на Linux: узкая полоса «AnyPC: удалённая сессия <кто> · … [Разорвать]», как на Windows и
 // Маке. gjs + GTK 3 — части GNOME (gnome-shell зависит от gjs), ничего не ставим; лицензии не наши (системные программы).
 // X11: правый нижний угол рабочей области основного монитора, поверх всех окон, на всех рабочих столах, фокус не берёт.
-// Wayland: место, «поверх» и фокус решает mutter (протокола нет) — полосу можно утащить мышью за фон (FINDINGS).
+// Wayland: при XWayland (есть DISPLAY) — то же через GDK_BACKEND=x11 (в GTK 3 на Wayland keep_above, stick, move и
+// accept_focus пустые — приёмка M1); без XWayland — место, «поверх» и фокус решает mutter, полосу можно утащить за фон.
 // Кнопка без фокуса: Enter/пробел оператора, попавшие в плашку, сессию не рвут; закрытие окна (Alt+F4) — рвёт.
 // stdout: «ready» — окно на экране (иначе запасной путь — zenity).
 const plaqueGJS = `imports.gi.versions.Gtk = '3.0';
-const { Gtk, Gdk } = imports.gi;
+const { Gtk, Gdk, GLib } = imports.gi;
 Gtk.init(null);
 const [label, btn, title] = ARGV;
 const w = new Gtk.Window({ title: title, decorated: false, resizable: false, accept_focus: false, focus_on_map: false });
@@ -48,6 +50,11 @@ if (m && d.constructor.$gtype.name.indexOf('X11') >= 0) { // на Wayland move �
   w.move(a.x + a.width - W - 8, a.y + a.height - H - 8);
 }
 print('ready');
+switch (GLib.getenv('ANYPC_PLAQUE_PROBE')) { // только тесты: кнопка, закрытие окна, фокус — без человека
+case 'click': GLib.idle_add(0, () => { b.clicked(); return false; }); break;
+case 'close': GLib.idle_add(0, () => { w.close(); return false; }); break;
+case 'focus': if (b.get_can_focus() || b.get_focus_on_click() || w.get_accept_focus() || w.get_focus_on_map()) imports.system.exit(3); break;
+}
 Gtk.main();`
 
 // plaqueReady — сколько ждать окна gjs, прежде чем перейти на zenity; plaqueEnv — окружение gjs (nil — своё; тест и
@@ -80,6 +87,9 @@ func gjsPlaque(lang, cid string, mode plaqueMode, onUserClose func()) (func(), e
 	title, _ := plaqueText(lang, cid, 0)
 	cmd := exec.Command(bin, "-c", plaqueGJS, label, btn, title)
 	cmd.Env = plaqueEnv
+	if cmd.Env == nil && Wayland && os.Getenv("DISPLAY") != "" {
+		cmd.Env = append(os.Environ(), "GDK_BACKEND=x11") // XWayland: угол, поверх всех, без фокуса
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL} // AnyPC упал — плашка не висит сиротой
 	var errb strings.Builder
 	cmd.Stderr = &errb

@@ -82,9 +82,22 @@ func LinuxCapture(enc string) func(ctx context.Context, c Cap) (*exec.Cmd, error
 }
 
 func init() {
+	endInput = forgetPointer
 	clipOnCopy.Store(Wayland)
 	if !Wayland { // Wayland: курсор рисует портал (cursor_mode 2), отдельно его не отдать
 		cursorInfo = x11Cursor
+	}
+}
+
+// forgetPointer — конец сессии: портал (он живёт между сессиями) забывает положение мыши и зажатые кнопки (приёмка B1).
+func forgetPointer() {
+	deskMu.Lock()
+	p, _ := desk.(*portal)
+	deskMu.Unlock()
+	if p != nil {
+		p.mu.Lock()
+		p.ptr.forget()
+		p.mu.Unlock()
 	}
 }
 

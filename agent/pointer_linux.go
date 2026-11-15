@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"os"
+	"strconv"
+	"time"
 )
 
 // ptrMap — точка мыши клиента (0..65535 по картинке монитора) → вызовы портала RemoteDesktop.
@@ -27,10 +30,33 @@ type ptrMap struct {
 	k     float64 // координаты потока = логические точки × k (mutterScale; 1 — портал и mutter в одних единицах)
 	trace bool    // ANYPC_POINTER_LOG: каждое движение в журнал (для калибровки у владельца)
 
-	lx, ly float64 // где курсор хоста по нашим расчётам, логические точки от угла монитора
-	known  bool    // lx, ly известны (было хоть одно движение)
-	relLog bool    // строка «довод относительным» уже в журнале
+	lx, ly float64   // где курсор хоста по нашим расчётам, логические точки от угла монитора
+	known  bool      // lx, ly известны (было хоть одно движение)
+	relLog bool      // строка «довод относительным» уже в журнале
+	at     time.Time // прошлое движение
+	held   uint32    // зажатые кнопки (portal.input): в перетаскивании якорь не ставим — лишняя точка ушла бы в окно
 }
+
+// ptrIdle — пауза оператора, после которой счёт положения не доверяем (человек за хостом мог сдвинуть мышь; портал
+// живёт между сессиями): движение вне зоны идёт заново от якоря — абсолютное к краю зоны + довод.
+const ptrIdle = 300 * time.Millisecond
+
+var ptrNow = time.Now
+
+// newPtrMap — пересчёт для потока w×h (по порталу) при масштабе mutter k; ANYPC_POINTER_SCALE=<k> — ручка калибровки
+// (1 — как до 2026-11-13), ANYPC_POINTER_LOG=1 — каждое движение в журнал. Строка журнала — describe.
+func newPtrMap(w, h, k float64) ptrMap {
+	from := "mutter"
+	if v, err := strconv.ParseFloat(os.Getenv("ANYPC_POINTER_SCALE"), 64); err == nil && v > 0 {
+		k, from = v, "ANYPC_POINTER_SCALE"
+	}
+	m := ptrMap{w: w, h: h, k: k, trace: os.Getenv("ANYPC_POINTER_LOG") != ""}
+	log.Print("портал: " + m.describe(from))
+	return m
+}
+
+// forget — конец сессии: положение и зажатые кнопки не переносятся в следующую (портал живёт между сессиями).
+func (m *ptrMap) forget() { m.known, m.held = false, 0 }
 
 // ptrStep — что отправить порталу: абсолютное движение (координаты потока) и/или относительное (логические точки).
 type ptrStep struct {
@@ -53,10 +79,11 @@ func (m *ptrMap) target(x, y int32) (tx, ty float64) {
 func (m *ptrMap) move(x, y int32) (st ptrStep) {
 	tx, ty := m.target(x, y)
 	sx, sy := tx*m.k, ty*m.k
+	now := ptrNow()
 	switch lx, ly := lim(m.w), lim(m.h); {
 	case sx <= lx && sy <= ly:
 		st = ptrStep{abs: true, ax: sx, ay: sy}
-	case m.known:
+	case m.known && (m.held != 0 || now.Sub(m.at) < ptrIdle):
 		st = ptrStep{rel: true, dx: tx - m.lx, dy: ty - m.ly}
 	default:
 		ax, ay := math.Min(sx, lx), math.Min(sy, ly)
@@ -69,7 +96,7 @@ func (m *ptrMap) move(x, y int32) (st ptrStep) {
 	if m.trace {
 		log.Printf("мышь: цель (%.1f, %.1f) лог. → abs %v (%.1f, %.1f) rel %v (%.2f, %.2f)", tx, ty, st.abs, st.ax, st.ay, st.rel, st.dx, st.dy)
 	}
-	m.lx, m.ly, m.known = tx, ty, true
+	m.lx, m.ly, m.known, m.at = tx, ty, true, now
 	return st
 }
 
