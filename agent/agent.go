@@ -759,8 +759,9 @@ func (a *Agent) byCID(cid string) *session {
 	return nil
 }
 
-// proxy — прокси из окружения (HTTPS_PROXY…); переменная — для теста. proxyWait — сколько ждать WebSocket через
-// прокси, прежде чем идти напрямую (зависший прокси иначе съедал весь срок дозвона, у вступления — spaceDialWait).
+// proxy — прокси из окружения (HTTPS_PROXY…); переменная — для теста. proxyWait — сколько служебное соединение
+// (hostDial → dialWait) ждёт WebSocket через прокси, прежде чем идти напрямую: зависший прокси иначе съедал весь
+// spaceDialWait. Регистрация ПК (dial) живой прокси не обходит.
 var (
 	proxy     = http.ProxyFromEnvironment
 	proxyWait = 4 * time.Second
@@ -768,7 +769,12 @@ var (
 
 // dial — сигнализация через прокси из окружения, а если он не отвечает — напрямую:
 // забытый мёртвый HTTPS_PROXY не должен отрезать ПК от сети (так было на ПК владельца, 2026-11-06).
-func dial(ctx context.Context, u string) (*websocket.Conn, error) {
+func dial(ctx context.Context, u string) (*websocket.Conn, error) { return dialWait(ctx, u, 0) }
+
+// dialWait — как dial; wait > 0 — ждать WebSocket через прокси не дольше wait, затем напрямую. Только служебным
+// соединениям (hostDial): срок дозвона короткий, а WebRTC следом всё равно идёт мимо прокси. Регистрация ПК на хабе
+// (a.run) живой прокси не обходит, сколько бы он ни отвечал: напрямую — только если с прокси не соединиться.
+func dialWait(ctx context.Context, u string, wait time.Duration) (*websocket.Conn, error) {
 	via := func(p func(*http.Request) (*url.URL, error)) *websocket.DialOptions {
 		t := http.DefaultTransport.(*http.Transport).Clone()
 		t.Proxy = p
@@ -776,8 +782,8 @@ func dial(ctx context.Context, u string) (*websocket.Conn, error) {
 	}
 	pctx, pcancel := ctx, context.CancelFunc(func() {})
 	if r, _ := http.NewRequest("GET", strings.Replace(strings.Replace(u, "wss://", "https://", 1), "ws://", "http://", 1), nil); r != nil {
-		if pu, _ := proxy(r); pu != nil { // Ч12, приёмка: зависший прокси — не дольше proxyWait, остаток срока — прямому пути
-			pctx, pcancel = context.WithTimeout(ctx, proxyWait)
+		if pu, _ := proxy(r); pu != nil && wait > 0 { // Ч12, приёмка: зависший прокси — не дольше proxyWait, остаток срока — прямому пути
+			pctx, pcancel = context.WithTimeout(ctx, wait)
 		}
 	}
 	c, _, err := websocket.Dial(pctx, u, via(proxy))
@@ -786,7 +792,7 @@ func dial(ctx context.Context, u string) (*websocket.Conn, error) {
 		log.Printf("прокси из окружения не отвечает (%v) — подключаюсь напрямую", op.Err)
 		c, _, err = websocket.Dial(ctx, u, via(nil))
 	} else if err != nil && pctx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
-		log.Printf("прокси из окружения не ответил за %v — подключаюсь напрямую", proxyWait)
+		log.Printf("прокси из окружения не ответил за %v — подключаюсь напрямую", wait)
 		c, _, err = websocket.Dial(ctx, u, via(nil))
 	}
 	if err != nil {

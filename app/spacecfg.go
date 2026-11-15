@@ -458,7 +458,6 @@ func (c *config) spaceEnterAsk(ctx context.Context, hostID, password, code, phra
 			if err != nil {
 				return nil, err
 			}
-			stage("save")
 			r := &result{view: m, shown: shown}
 			if half { // полу-вступление (С1): P уже сохранил нас — принять его верхушки как есть
 				for _, h := range heads {

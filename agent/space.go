@@ -153,6 +153,22 @@ var (
 	spaceDialWait = 10 * time.Second
 )
 
+// linkState — состояние служебного соединения (hostDial): соединилось — срок соединения снят; failed до
+// соединения — нет связи (why: nolink или noudp), после — оборвалось (closed).
+func linkState(st webrtc.PeerConnectionState, linked *atomic.Bool, noLink *time.Timer, finish func(error), why func() error) {
+	switch st {
+	case webrtc.PeerConnectionStateConnected:
+		linked.Store(true)
+		noLink.Stop()
+	case webrtc.PeerConnectionStateFailed:
+		if linked.Load() {
+			finish(ErrSpaceClosed)
+		} else {
+			finish(why())
+		}
+	}
+}
+
 // hostDialBeforeAnswer — тест: пауза между SetLocalDescription и answer (кандидаты собираются раньше answer)
 var hostDialBeforeAnswer func()
 
@@ -370,7 +386,7 @@ func hostDial(ctx context.Context, server, id string, req connectReq, setup func
 		return err
 	}
 	dctx, dcancel := context.WithTimeout(lctx, spaceDialWait)
-	ws, err := dial(dctx, server)
+	ws, err := dialWait(dctx, server, proxyWait)
 	dcancel()
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrSpaceOffline, err)
@@ -430,19 +446,7 @@ func hostDial(ctx context.Context, server, id string, req connectReq, setup func
 		}
 		return ErrSpaceNoLink
 	}
-	pc.OnConnectionStateChange(func(st webrtc.PeerConnectionState) {
-		switch st {
-		case webrtc.PeerConnectionStateConnected:
-			linked.Store(true)
-			noLink.Stop()
-		case webrtc.PeerConnectionStateFailed:
-			if linked.Load() {
-				finish(ErrSpaceClosed)
-			} else {
-				finish(noLinkWhy())
-			}
-		}
-	})
+	pc.OnConnectionStateChange(func(st webrtc.PeerConnectionState) { linkState(st, &linked, noLink, finish, noLinkWhy) })
 	pc.SCTP().OnClose(func(error) { // хост закрыл сессию (authWait, отказ) или связь оборвалась
 		time.AfterFunc(spaceLinkClosedDelay, func() { finish(ErrSpaceClosed) })
 	})

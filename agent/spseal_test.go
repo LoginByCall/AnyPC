@@ -281,6 +281,16 @@ func TestSpaceSyncConnect(t *testing.T) {
 		defer r.a.mu.Unlock()
 		return len(r.a.syncs), len(r.a.pend)
 	}
+	// waitPlaces — хост кладёт сессию в pend/syncs после отправки offer (гонка теста, а не хоста): ждать нужного числа
+	waitPlaces := func(ws, wp int) (s, p int) {
+		for i := 0; i < 50; i++ {
+			if s, p = places(); s == ws && p == wp {
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		return
+	}
 	drop := func() { // освободить места обычных входов (maxPending)
 		r.a.DropPending()
 		for i := 0; i < 50; i++ {
@@ -301,7 +311,7 @@ func TestSpaceSyncConnect(t *testing.T) {
 			t.Errorf("%s: %s", name, a)
 		}
 	}
-	if s, p := places(); s != 0 || p != 3 {
+	if s, p := waitPlaces(0, 3); s != 0 || p != 3 {
 		t.Errorf("постороннему: мест сверки %d, обычных %d", s, p)
 	}
 	plain := offer
@@ -317,7 +327,7 @@ func TestSpaceSyncConnect(t *testing.T) {
 	if a := connect(req(hold)); a != "offer " { // место занято (offer без ответа)
 		t.Fatalf("член: %s", a)
 	}
-	if s, p := places(); s != 1 || p != 0 {
+	if s, p := waitPlaces(1, 0); s != 1 || p != 0 {
 		t.Fatalf("член: мест сверки %d, обычных %d", s, p)
 	}
 	if !slices.Equal(offer, plain) || !slices.Contains(offer, "rtt") {
@@ -330,7 +340,7 @@ func TestSpaceSyncConnect(t *testing.T) {
 	if a := connect(req(again)); a != "offer " {
 		t.Errorf("второе на занятое место: %s", a)
 	}
-	if s, p := places(); s != 1 || p != 2 {
+	if s, p := waitPlaces(1, 2); s != 1 || p != 2 {
 		t.Errorf("повтор и второе: мест сверки %d, обычных %d", s, p)
 	}
 	if _, err := SpaceSync(ctx, d); !errors.Is(err, ErrSpaceRefused) {

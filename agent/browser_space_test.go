@@ -204,6 +204,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await ev(val('spepw', 'owner-pass') + val('specd', '654321')); await click('spego'); await sleep(300);
   await ev("[...document.querySelectorAll('#spop button')].find(b => b.textContent === 'Confirm').click(); 1"); await sleep(1300);
   console.log('joined=' + await calls() + '|' + await ev("[" + txt('spop') + ", " + vis('spenter') + ", document.getElementById('speph').value, " + vis('spin') + ", [...document.querySelectorAll('#spbars .banner')].map(b => b.textContent).join(';')].join('|')"));
+  console.log('how2=' + await ev(vis('sphow'))); // «Как добавить ПК» — и при двух ПК (добавлять можно через любой член)
   // M4: запоздавший ответ spaceOp с confirm не рисует кнопки, если операция уже кончилась
   await ev("setOp({ kind: 'enter', state: 'confirm', result: null, preview: { members: [], gone: [] } }); 1"); await sleep(1300);
   const nb = () => ev("document.querySelectorAll('#spop button').length");
@@ -322,6 +323,7 @@ func TestBrowserSpace(t *testing.T) {
 		"answer=0\n",
 		"refused=enter:444555666:owner-pass:654321:" + ph + ",confirm:false||true|Joining stoppedJoining cancelledWhat to do: to join, press “Join” again." +
 			"The password and code were cleared — enter them again; everything else is kept.\n",
+		"how2=true\n",
 		"joined=enter:444555666:owner-pass:654321:" + ph + ",confirm:true|✓ This PC has joined the space." +
 			"Password sign-in and “I'm here” open after a check with another PC of yours: it runs by itself when that PC is online, or press “Check now”." + // сначала сверка, потом «Я тут»
 			"Next: on the main screen, in the “My space” block, enter the space password and code and press “I'm here” — your PCs open from here without a password." +
