@@ -114,7 +114,7 @@ const extra = async () => ` + "`" + `
   await ev("document.getElementById('tabhome')?.click(); 1"); await sleep(200);
   const offv = await ev(vis('shoff'));
   await ev("document.getElementById('shoff').click(); 1"); await sleep(1300);
-  console.log('off=' + offv + '|' + await ev("calls.join(',')") + '|' + await ev(txt('shres')) + '|' + await ev(vis('shoff')) + '|' + await tabs());
+  console.log('off=' + offv + '|' + await ev("calls.join(',')") + '|' + await ev(txt('shres')) + '|' + await ev(vis('shoff')) + '|' + await tabs() + '|' + await ev("document.querySelector('#sptiles .sptile[data-id=\"444555666\"] .tag').textContent"));
   // разметка в имени из mine и в итоге — только текстом
   await ev("localStorage.setItem('mine', JSON.stringify([{ id: '777888999', name: '<i id=xss1>X</i>' }])); window.op = { kind: 'workHere', state: 'done', result: [{ id: '777888999', state: 'refused', err: '<i id=xss2>' }] }; st.space.op = { kind: 'workHere', state: 'done' }; 1");
   await sleep(1300);
@@ -163,7 +163,7 @@ func TestBrowserMain(t *testing.T) {
 	defer cancel()
 	out := string(runCDP(t, ctx, chrome, cdpMain, srv.URL+"/"))
 	for _, want := range []string{
-		"tabs=This PCI'm here;Office;777 888 999code needed;+\n",
+
 		"give=Hand over control of this PC|true|true\n",
 		"nolock=true|true|Screen lock on this PC is not tracked — no pass is issued (password and code work as usual)\n",
 		"lock=false|false\n",
@@ -179,14 +179,18 @@ func TestBrowserMain(t *testing.T) {
 		"nopassa=0|false|Error: no pass on that PC — sign in with password|false,false,false\n",
 		"otpbypass=0|false|Error: no pass on that PC — sign in with password|false,false,false\n",
 		"okpass=false|Error: the remote PC could not be verified — connection may be intercepted\n",
-		"off=true|here:wrong:123456,here:owner-pass:654321,off|Passes are taken off.|false|This PC;Officecode needed;777 888 999code needed;+\n",
+		// вкладка Office открыта (хаб молчит) — в полосе её состояние; пропуск снят — в плитке «нужен код»
+		"off=true|here:wrong:123456,here:owner-pass:654321,off|Passes are taken off.|false|This PC;Officeconnecting…;777 888 999code needed;+|code needed\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("нет %q", want)
 		}
 	}
-	if !regexp.MustCompile(`tiles=Officeno password until \d\d:\d\d[^;|]*444 555 666Open\|;777 888 999code needed777 888 999Sign in\|Code from the app\n`).MatchString(out) {
+	if !regexp.MustCompile(`tiles=Officeuntil \d\d:\d\d[^;|]*sign-in without password · 444 555 666Open\|;777 888 999code neededsign-in without password · 777 888 999Sign in\|Code from the app\n`).MatchString(out) {
 		t.Error("плитки не те")
+	}
+	if !regexp.MustCompile(`tabs=This PCI'm here;Officeno password until \d\d:\d\d[^;]*;777 888 999code needed;\+\n`).MatchString(out) {
+		t.Error("полоса ПК не та")
 	}
 }
 
