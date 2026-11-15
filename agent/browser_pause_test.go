@@ -58,16 +58,17 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   }
   console.log('connected=' + await pcState());
   // A активна (вкладка 1), B — в фоне (старый хост). Оба хоста шлют видео: у A активна, у B — фон, но старый хост не паузит.
-  await ev("myPcKey('Digit1'); 1"); await sleep(1200);
+  const to = i => ev("myPcKey('Digit' + (myPcOrder().indexOf(" + i + ") + 1)); 1"); // вкладка i (порядок открытия) — её номер в полосе
+  await to(0); await sleep(1200);
   console.log('active=' + await ev("myPcActive()"));
   const dA1 = await delta(ids[0], 2500), dB1 = await delta(ids[1], 2500);
   console.log('phase1=A' + dA1 + '|B' + dB1); // A активна — идёт; B старый в фоне — тоже идёт
   // Увести A в фон: вкладка 2 (B) активна. Новый хост A получает pause:true → его видео останавливается.
-  await ev("myPcKey('Digit2'); 1"); await sleep(1500);
+  await to(1); await sleep(1500);
   const dA2 = await delta(ids[0], 2500), dB2 = await delta(ids[1], 2500);
   console.log('phase2=A' + dA2 + '|B' + dB2); // A в фоне — пауза (≈0); B активна — идёт
   // Вернуть A: вкладка 1. pause:false → видео A идёт снова (IDR).
-  await ev("myPcKey('Digit1'); 1"); await sleep(1500);
+  await to(0); await sleep(1500);
   const dA3 = await delta(ids[0], 2500);
   console.log('phase3=A' + dA3); // A вернулась — идёт
   console.log('preq=A' + (await (await fetch(url + 'preq?id=' + ids[0])).text()) + '|B' + (await (await fetch(url + 'preq?id=' + ids[1])).text()));

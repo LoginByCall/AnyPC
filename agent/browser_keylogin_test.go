@@ -45,7 +45,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const trust = async () => {
     await ev("document.getElementById('pw').value='secret123'; document.getElementById('go').click()");
     await otp(); await until(s => s.endsWith('|true'));
-    if (await ev("document.getElementById('starbtn').getAttribute('aria-pressed')") === 'true') await ev("document.getElementById('starbtn').click(); 1");
+    if (await ev("document.getElementById('starbtn').getAttribute('aria-pressed')") === 'true') await ev("document.getElementById('morem').click(); document.getElementById('mdel').click(); 1"); // Ч8: снять — «Ещё ▾ → Убрать»
     await ev("document.getElementById('starbtn').click(); 1");
     const q = await ev("[document.getElementById('mineq').checkVisibility(), document.getElementById('mineqb').textContent === t('c3_b_key'), document.getElementById('mineqrl').checkVisibility(), " + login + "].join(',')");
     await ev("document.getElementById('mineqn').value = 'Работа'; document.getElementById('mineqok').click(); 1");

@@ -267,7 +267,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const st = () => ev("[!document.getElementById('modebtn').classList.contains('hidden'), document.getElementById('modebtn').textContent, document.body.classList.contains('view'), document.getElementById('modebtn').disabled, document.getElementById('modemsg').textContent].join('|')");
   const sess = "!document.getElementById('sess').classList.contains('hidden')";
   const login = async h => { await ev("document.getElementById('id').value='" + h + "'; document.getElementById('pw').value='secret123'; document.getElementById('go').click()"); return until(sess); };
-  const click = () => ev("document.getElementById('modebtn').click(); 1");
+  const click = () => ev("document.getElementById('ctlm').click(); document.getElementById('modebtn').click(); 1"); // Ч8: «Управляю ▾ → Только просмотр / Управление»
   await sleep(1000);
   console.log('session=' + await login('123456789'));
   await sleep(500);
