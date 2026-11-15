@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -171,8 +172,17 @@ func cliEnv(home string) []string {
 // TestCLI — ключи командной строки: --version печатает версию из -ldflags, --id — ID из настроек, --help — список ключей;
 // ни один не запускает хост.
 func TestCLI(t *testing.T) {
+	// проверка обновлений запущенного ниже хоста — на свой сервер, не на боевые хабы (updateBase)
+	var verHits atomic.Int32
+	vsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/download/VERSION" {
+			verHits.Add(1)
+		}
+		io.WriteString(w, "v0.0.1\n")
+	}))
+	defer vsrv.Close()
 	bin := filepath.Join(t.TempDir(), "anypc")
-	if out, err := exec.Command("go", "build", "-ldflags=-X main.version=v9.9.9", "-o", bin, ".").CombinedOutput(); err != nil {
+	if out, err := exec.Command("go", "build", "-ldflags=-X main.version=v9.9.9 -X main.updateBase="+vsrv.URL, "-o", bin, ".").CombinedOutput(); err != nil {
 		t.Fatalf("сборка: %v\n%s", err, out)
 	}
 	home := t.TempDir() // свои ~/.config и ~/.cache: не трогать настройки разработчика
@@ -349,6 +359,12 @@ func TestCLI(t *testing.T) {
 	}
 	if w != nil {
 		w.next(t)
+	}
+	for i := 0; i < 50 && verHits.Load() == 0; i++ { // проверка обновлений при запуске — дошла до своего сервера
+		time.Sleep(100 * time.Millisecond)
+	}
+	if verHits.Load() == 0 {
+		t.Error("хост не спросил VERSION у адреса сборки: проверка обновлений идёт мимо updateBase (на боевые хабы?)")
 	}
 	c.Process.Kill()
 	c.Wait()

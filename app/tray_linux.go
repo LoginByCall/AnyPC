@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -30,25 +32,52 @@ const (
 
 // runTray — значок, пока жив ctx. Нет сессионной шины (служба без графического сеанса) — молча ничего.
 // Адрес только из переменной: godbus без неё запустил бы dbus-launch.
-func runTray(ctx context.Context, id string, open, quit func()) {
+func runTray(ctx context.Context, d trayDeps) {
 	addr := os.Getenv("DBUS_SESSION_BUS_ADDRESS")
 	if addr == "" {
 		return
 	}
-	if err := serveTray(ctx, addr, trayMenu(trayTitle(id), open, quit), open); err != nil {
+	if err := serveTray(ctx, addr, d); err != nil {
 		log.Printf("трей: %v — значка не будет, окно — как обычно", err)
 	}
 }
 
-func trayMenu(title string, open, quit func()) *trayItem {
-	return &trayItem{children: []*trayItem{
-		{id: trayOpen, label: title, act: open},
-		// TODO(space): «я тут», «Рядом со мной», «Отправить ›» — когда будет ядро пространства (UI-REDESIGN.md, «Модель»).
-		// TODO(ui): в ui/index.html нет адреса экрана подключения к другому ПК — пока открывается главное окно.
-		{id: trayHelp, label: "Помочь кому-то…", act: open},
-		{id: 3, sep: true},
-		{id: trayQuit, label: "Выйти", act: quit},
-	}}
+// trayPoll — как часто трей перечитывает состояние (состав пространства, «я тут»): как окно опрашивает hostInfo.
+var trayPoll = time.Second
+
+// trayTree — дерево dbusmenu из пунктов rows.
+func trayTree(rows []trayRow) *trayItem {
+	root := &trayItem{}
+	for _, r := range rows {
+		root.children = append(root.children, &trayItem{id: int32(r.ID), label: trayText(r, " · "), sep: r.Label == ""})
+	}
+	return root
+}
+
+// trayMenuState — текущее меню: пункты, дерево и номер ревизии (растёт при каждой смене — LayoutUpdated).
+type trayMenuState struct {
+	mu   sync.Mutex
+	rev  uint32
+	rows []trayRow
+	root *trayItem
+}
+
+// set — новые пункты; true — меню изменилось (ревизия выросла).
+func (s *trayMenuState) set(rows []trayRow) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.root != nil && slices.Equal(rows, s.rows) {
+		return false
+	}
+	s.rev++
+	s.rows, s.root = rows, trayTree(rows)
+	return true
+}
+
+func (s *trayMenuState) get() (uint32, []trayRow, *trayItem) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.rev, s.rows, s.root
 }
 
 type vmap = map[string]dbus.Variant
@@ -60,13 +89,12 @@ type trayLayout struct {
 	Children []dbus.Variant
 }
 
-// trayItem — пункт меню; дерево неизменно после создания (блокировки не нужны).
+// trayItem — пункт меню; дерево неизменно после создания (смена меню — новое дерево, trayMenuState).
 type trayItem struct {
 	id       int32
 	label    string
 	sep      bool
 	children []*trayItem
-	act      func()
 }
 
 func (it *trayItem) props() vmap {
@@ -108,16 +136,18 @@ func (it *trayItem) find(id int32) *trayItem {
 
 // trayMenuObj — com.canonical.dbusmenu; gate — общий с traySNI предел открытий окна.
 type trayMenuObj struct {
-	root *trayItem
+	st   *trayMenuState
 	gate func() bool
+	d    trayDeps
 }
 
 func (m trayMenuObj) GetLayout(parent, depth int32, names []string) (uint32, trayLayout, *dbus.Error) {
-	it := m.root.find(parent)
+	rev, _, root := m.st.get()
+	it := root.find(parent)
 	if it == nil {
 		return 0, trayLayout{}, dbus.MakeFailedError(fmt.Errorf("no item %d", parent))
 	}
-	return 1, it.layout(depth), nil
+	return rev, it.layout(depth), nil
 }
 
 type trayIDProps struct {
@@ -127,8 +157,9 @@ type trayIDProps struct {
 
 func (m trayMenuObj) GetGroupProperties(ids []int32, names []string) ([]trayIDProps, *dbus.Error) {
 	out := []trayIDProps{}
+	_, _, root := m.st.get()
 	for _, id := range ids {
-		if it := m.root.find(id); it != nil {
+		if it := root.find(id); it != nil {
 			out = append(out, trayIDProps{id, it.props()})
 		}
 	}
@@ -136,7 +167,8 @@ func (m trayMenuObj) GetGroupProperties(ids []int32, names []string) ([]trayIDPr
 }
 
 func (m trayMenuObj) GetProperty(id int32, name string) (dbus.Variant, *dbus.Error) {
-	if it := m.root.find(id); it != nil {
+	_, _, root := m.st.get()
+	if it := root.find(id); it != nil {
 		if v, ok := it.props()[name]; ok {
 			return v, nil
 		}
@@ -170,8 +202,12 @@ func (m trayMenuObj) AboutToShowGroup(ids []int32) ([]int32, []int32, *dbus.Erro
 }
 
 func (m trayMenuObj) event(id int32, ev string) {
-	if it := m.root.find(id); ev == "clicked" && it != nil && it.act != nil && (it.id == trayQuit || m.gate()) {
-		go it.act() // не держать обработчик шины (открытие окна запускает процесс)
+	if ev != "clicked" {
+		return
+	}
+	_, rows, _ := m.st.get()
+	if f := trayPick(int(id), rows, m.gate, m.d); f != nil {
+		go f() // не держать обработчик шины (открытие окна запускает процесс)
 	}
 }
 
@@ -196,7 +232,8 @@ var trayN atomic.Int32 // номер значка в имени на шине (�
 // serveTray — подключиться к шине addr, выставить значок и меню и держать их до ctx.Done. Watcher может
 // отсутствовать (GNOME без расширения AppIndicator) и пропадать (блокировка экрана, измерено) — тогда ждём
 // его появления по NameOwnerChanged и регистрируемся заново.
-func serveTray(ctx context.Context, addr string, root *trayItem, open func()) error {
+// Меню перечитывается раз в trayPoll; сменилось — LayoutUpdated.
+func serveTray(ctx context.Context, addr string, d trayDeps) error {
 	conn, err := dbus.Connect(addr, dbus.WithContext(ctx)) // отмена ctx закрывает соединение и рвёт ждущие вызовы
 	if err != nil {
 		return err
@@ -209,11 +246,13 @@ func serveTray(ctx context.Context, addr string, root *trayItem, open func()) er
 		return o.CallWithContext(c, method, 0, args...)
 	}
 	gate := trayGate(trayOpenGap)
-	m := trayMenuObj{root, gate}
+	st := &trayMenuState{}
+	st.set(d.rows())
+	m := trayMenuObj{st, gate, d}
 	if err := conn.Export(m, menuPath, menuIface); err != nil {
 		return err
 	}
-	if err := conn.Export(traySNI{open, gate}, sniPath, sniIface); err != nil {
+	if err := conn.Export(traySNI{d.open, gate}, sniPath, sniIface); err != nil {
 		return err
 	}
 	ro := func(v any) *prop.Prop { return &prop.Prop{Value: v, Emit: prop.EmitFalse} }
@@ -245,7 +284,8 @@ func serveTray(ctx context.Context, addr string, root *trayItem, open func()) er
 	}}), sniPath, "org.freedesktop.DBus.Introspectable")
 	conn.Export(introspect.NewIntrospectable(&introspect.Node{Name: string(menuPath), Interfaces: []introspect.Interface{
 		introspect.IntrospectData, prop.IntrospectData,
-		{Name: menuIface, Methods: introspect.Methods(m), Properties: mprops.Introspection(menuIface)},
+		{Name: menuIface, Methods: introspect.Methods(m), Properties: mprops.Introspection(menuIface),
+			Signals: []introspect.Signal{{Name: "LayoutUpdated", Args: []introspect.Arg{{Name: "revision", Type: "u"}, {Name: "parent", Type: "i"}}}}},
 	}}), menuPath, "org.freedesktop.DBus.Introspectable")
 
 	name := fmt.Sprintf("org.kde.StatusNotifierItem-%d-%d", os.Getpid(), trayN.Add(1))
@@ -283,10 +323,17 @@ func serveTray(ctx context.Context, addr string, root *trayItem, open func()) er
 	} else {
 		log.Printf("трей: нет %s (GNOME без расширения AppIndicator?) — значка не будет, окно — как обычно", watcherName)
 	}
+	tick := time.NewTicker(trayPoll)
+	defer tick.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-tick.C:
+			if d.state != nil && st.set(d.rows()) { // состав пространства или «я тут» сменились
+				rev, _, _ := st.get()
+				conn.Emit(menuPath, menuIface+".LayoutUpdated", rev, int32(0))
+			}
 		case s, ok := <-sig:
 			if !ok {
 				if ctx.Err() != nil {

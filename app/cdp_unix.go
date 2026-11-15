@@ -483,7 +483,7 @@ func (w *chromeWin) openMain(ctx context.Context) error {
 			w.main, w.mainS = tid, s.SessionID
 		}
 		w.mu.Unlock()
-		err = c.call(ctx, s.SessionID, "Page.navigate", map[string]any{"url": w.base + "/?n=" + w.issue()}, nil)
+		err = c.call(ctx, s.SessionID, "Page.navigate", map[string]any{"url": w.base + "/?n=" + w.issue() + trayNavQuery()}, nil) // метка trayGo — главному окну
 	}
 	if err == nil { // страница с токеном и привязками: код принят (живой, свой uid — peer_linux.go)
 		err = c.until(ctx, s.SessionID, "typeof hostInfo === 'function'")
@@ -498,6 +498,25 @@ func (w *chromeWin) openMain(ctx context.Context) error {
 		return fmt.Errorf("%w: %v", errNoWindow, err)
 	}
 	return nil
+}
+
+// evalMain — в открытом главном окне выполнить take() (трей: ПК вкладкой, «Я тут»; "" — страница уже взяла его при
+// загрузке). Главного окна нет (окно — в браузере пользователя) — errNoWindow, take не зовётся: js возьмёт страница.
+func (w *chromeWin) evalMain(ctx context.Context, take func() string) error {
+	w.mu.Lock()
+	c, tid, sid := w.c, w.main, w.mainS
+	w.mu.Unlock()
+	if c == nil || !c.alive() || tid == "" || sid == "" {
+		return errNoWindow
+	}
+	if err := c.until(ctx, sid, "typeof myPcAdd === 'function'"); err != nil {
+		return err
+	}
+	js := take()
+	if js == "" {
+		return nil
+	}
+	return c.eval(ctx, sid, js, false, nil)
 }
 
 // pageIDs — окна (цели page) Chrome AnyPC.
