@@ -13,7 +13,7 @@ int anypcOpen(const char *url, const char *title, int monitor, int main, const c
 void anypcEval(int win, const char *body, int seq);
 void anypcClose(int win);
 char *anypcScreens(void);
-void anypcTray(const char *title, const char *help, const char *quit);
+void anypcTray(const char *tip, const char *items);
 void anypcTrayOff(void);
 */
 import "C"
@@ -27,6 +27,8 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -225,32 +227,66 @@ func (macWins) screens(context.Context) ([]screenInfo, error) {
 
 var tray struct {
 	sync.Mutex
-	open, quit func()
+	d    trayDeps
+	rows []trayRow
+	gate func() bool
 }
 
-// macTray — значок в строке меню до конца ctx; пункты — как в трее Linux (trayMenu).
-func macTray(ctx context.Context, id string, open, quit func()) {
+// trayItems — пункты для anypcTray: строки «номер\tподпись»; разделитель — номер без подписи.
+func trayItems(rows []trayRow) string {
+	var b strings.Builder
+	for _, r := range rows {
+		fmt.Fprintf(&b, "%d\t%s\n", r.ID, strings.ReplaceAll(trayText(r, " · "), "\n", " "))
+	}
+	return b.String()
+}
+
+// macTray — значок в строке меню до конца ctx; пункты — как в трее Linux (trayRows), перечитываются раз в trayPoll.
+func macTray(ctx context.Context, d trayDeps) {
 	if !uiStart() {
 		return
 	}
+	set := func(rows []trayRow) {
+		tray.Lock()
+		same := tray.rows != nil && slices.Equal(tray.rows, rows)
+		tray.rows = rows
+		tray.Unlock()
+		if same {
+			return
+		}
+		t, it := C.CString(trayTitle(d.id)), C.CString(trayItems(rows))
+		C.anypcTray(t, it)
+		C.free(unsafe.Pointer(t))
+		C.free(unsafe.Pointer(it))
+	}
 	tray.Lock()
-	tray.open, tray.quit = open, quit
+	tray.d, tray.gate = d, trayGate(trayOpenGap)
 	tray.Unlock()
-	t, h, q := C.CString(trayTitle(id)), C.CString("Помочь кому-то…"), C.CString("Выйти")
-	C.anypcTray(t, h, q)
-	C.free(unsafe.Pointer(t))
-	C.free(unsafe.Pointer(h))
-	C.free(unsafe.Pointer(q))
-	<-ctx.Done()
-	C.anypcTrayOff()
+	set(d.rows())
+	tick := time.NewTicker(trayPoll)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			C.anypcTrayOff()
+			return
+		case <-tick.C:
+			if d.state != nil { // состав пространства или «я тут» сменились — новое меню
+				set(d.rows())
+			}
+		}
+	}
 }
+
+// trayPoll — как часто меню перечитывает состояние (как окно опрашивает hostInfo).
+var trayPoll = time.Second
 
 //export goTrayClick
 func goTrayClick(tag C.int) {
 	tray.Lock()
-	f := tray.open
-	if tag == trayQuit {
-		f = tray.quit
+	var f func()
+	if tray.gate != nil { // меню без macTray не бывает
+		f = trayPick(int(tag), tray.rows, tray.gate, tray.d)
 	}
 	tray.Unlock()
 	if f != nil {
@@ -261,7 +297,7 @@ func goTrayClick(tag C.int) {
 //export goQuit
 func goQuit() {
 	tray.Lock()
-	f := tray.quit
+	f := tray.d.quit
 	tray.Unlock()
 	if f == nil {
 		f = func() { os.Exit(0) }

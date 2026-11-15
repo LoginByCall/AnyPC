@@ -500,6 +500,25 @@ func (w *chromeWin) openMain(ctx context.Context) error {
 	return nil
 }
 
+// evalMain — в открытом главном окне выполнить take() (трей: ПК вкладкой, «Я тут»; "" — страница уже взяла его при
+// загрузке). Главного окна нет (окно — в браузере пользователя) — errNoWindow, take не зовётся: js возьмёт страница.
+func (w *chromeWin) evalMain(ctx context.Context, take func() string) error {
+	w.mu.Lock()
+	c, tid, sid := w.c, w.main, w.mainS
+	w.mu.Unlock()
+	if c == nil || !c.alive() || tid == "" || sid == "" {
+		return errNoWindow
+	}
+	if err := c.until(ctx, sid, "typeof myPcAdd === 'function'"); err != nil {
+		return err
+	}
+	js := take()
+	if js == "" {
+		return nil
+	}
+	return c.eval(ctx, sid, js, false, nil)
+}
+
 // pageIDs — окна (цели page) Chrome AnyPC.
 func pageIDs(ctx context.Context, c *cdpConn) ([]string, error) {
 	var tg struct {

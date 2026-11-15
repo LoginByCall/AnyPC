@@ -183,7 +183,8 @@ func hostMain() {
 		go startLock(ctx, func() { go passes.offAll(context.WithoutCancel(ctx)) }, passes.lockAlive) // SIGTERM не рвёт летящее «снять»
 	}
 	if startTray != nil { // значок в трее (Linux) или строке меню (Мак): окно — повторно, каждый раз новым одноразовым кодом
-		go startTray(ctx, cfg.ID, trayOpen, trayQuit)
+		go startTray(ctx, trayDeps{id: cfg.ID, state: func() trayState { return trayStateOf(cfg, a.PassMaster) }, open: trayOpen, quit: trayQuit,
+			here: func() { trayGo(trayJSHere) }, pc: func(id string) { trayGo(trayJSPC(id)) }})
 	}
 	srv := cfg.Server
 	code := cfg.code()
@@ -199,9 +200,56 @@ func hostMain() {
 	cancel()
 }
 
-// startTray — значок в трее до конца ctx (tray_linux.go, на Маке — в строке меню, window_darwin.go): id — ID этого ПК,
-// open — окно, quit — выход.
-var startTray func(ctx context.Context, id string, open, quit func())
+// startTray — значок в трее до конца ctx (tray_linux.go, на Маке — в строке меню, window_darwin.go): что показывать
+// и делать — d (tray.go).
+var startTray func(ctx context.Context, d trayDeps)
+
+// trayNav — JS для главного окна, открытого из трея (trayJSPC, trayJSHere): страница берёт его при загрузке
+// (handler, withScript), а уже открытое окно Chrome AnyPC получает его eval. Годен trayNavFor: потом окно,
+// открытое иначе, его не выполнит.
+var trayNav struct {
+	sync.Mutex
+	js string
+	at time.Time
+}
+
+const trayNavFor = 30 * time.Second
+
+func trayNavSet(js string) {
+	trayNav.Lock()
+	trayNav.js, trayNav.at = js, time.Now()
+	trayNav.Unlock()
+}
+
+// trayNavTake — JS, если он ещё годен (и больше его нет); "" — нечего.
+func trayNavTake() string {
+	trayNav.Lock()
+	defer trayNav.Unlock()
+	js := trayNav.js
+	trayNav.js = ""
+	if time.Since(trayNav.at) > trayNavFor {
+		return ""
+	}
+	return js
+}
+
+// trayGo — из трея: главное окно и в нём js. Окно новое (браузер, WKWebView, Chrome AnyPC при первом открытии) —
+// js придёт со страницей; окно Chrome AnyPC уже было (страницу не грузит) — eval в нём.
+func trayGo(js string) {
+	if js == "" {
+		raiseWindow()
+		return
+	}
+	trayNavSet(js)
+	raiseWindow()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if pcWin != nil {
+		if err := pcWin.evalMain(ctx, trayNavTake); err != nil && !errors.Is(err, errNoWindow) {
+			log.Printf("трей: окно AnyPC: %s", scrub(err.Error()))
+		}
+	}
+}
 
 // raiseWindow — показать окно AnyPC (открыто — поднять, иначе открыть новым одноразовым кодом); задаёт setupWindows,
 // зовёт API showWindow (вторая копия).
@@ -406,7 +454,13 @@ func handler(addr, token string, page []byte, cfg *config, a *agent.Agent, run *
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Header().Set("Cache-Control", "no-store")
-			w.Write(withUI(page, cfg.uiGet()))
+			out := withUI(page, cfg.uiGet())
+			if !r.URL.Query().Has("embed") { // вкладка ПК в главном окне — не главное окно
+				if js := trayNavTake(); js != "" { // из трея: ПК вкладкой или «Я тут» (trayGo)
+					out = withScript(out, "addEventListener('DOMContentLoaded', () => { "+js+" });")
+				}
+			}
+			w.Write(out)
 		default:
 			files.ServeHTTP(w, r)
 		}
@@ -444,7 +498,11 @@ window.ANYPC = {ws: %s, clipPoll: %t};
 // имя ПК «</script>» из скрипта не выйдет.
 func withUI(page []byte, ui map[string]string) []byte {
 	j, _ := json.Marshal(ui)
-	js := "window.ANYPC_UI = " + string(j) + ";"
+	return withScript(page, "window.ANYPC_UI = "+string(j)+";")
+}
+
+// withScript — встроенный скрипт js перед первым <script> страницы; CSP пускает его по хэшу.
+func withScript(page []byte, js string) []byte {
 	sum := sha256.Sum256([]byte(js))
 	s := strings.Replace(string(page), "script-src 'self'", "script-src 'self' 'sha256-"+base64.StdEncoding.EncodeToString(sum[:])+"'", 1)
 	return []byte(strings.Replace(s, "<script>", "<script>"+js+"</script>\n<script>", 1))
