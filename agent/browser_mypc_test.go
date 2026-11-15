@@ -88,7 +88,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   let drops = 0, maxSw = 0;
   for (let n = 0; n < 20; n++) {
     const i = n % 3;
-    const dt = await ev("(() => { const t0 = performance.now(); myPcKey('Digit" + (i + 1) + "'); return [performance.now() - t0, myPcActive()]; })()");
+    const dt = await ev("(() => { const t0 = performance.now(); myPcKey('Digit" + (i + 1) + "'); return [performance.now() - t0, myPcActive() === myPcOrder()[" + i + "] ? " + i + " : -1]; })()");
     maxSw = Math.max(maxSw, dt[0]);
     if (dt[1] !== i) drops++;
     if (JSON.parse(await pcState()).some(s => s !== 'connected')) drops++;
@@ -109,11 +109,11 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await key('keyUp', { modifiers: 1, code: 'AltLeft', key: 'Alt', windowsVirtualKeyCode: 18 });
   await key('keyUp', { modifiers: 0, code: 'ControlLeft', key: 'Control', windowsVirtualKeyCode: 17 });
   await sleep(400);
-  console.log('keyactive=' + await ev("myPcActive()"));
+  console.log('keyactive=' + await ev("myPcActive() === myPcOrder()[1]")); // вторая в полосе
   console.log('stillconnected=' + await pcState());
   console.log('held=' + await ev("JSON.stringify([...document.querySelectorAll('#frames iframe')].map(f => { try { return f.contentWindow.sessHeld(); } catch { return -1; } }))"));
   // буфер/звук — только у активной вкладки (активна вторая: Ctrl+Alt+2)
-  console.log('active=' + await ev("JSON.stringify([...document.querySelectorAll('#frames iframe')].map(f => { try { return f.contentWindow.sessActive(); } catch { return 'x'; } }))"));
+  console.log('active=' + await ev("(fr => JSON.stringify(myPcOrder().map(i => { try { return fr[i].contentWindow.sessActive(); } catch { return 'x'; } })))([...document.querySelectorAll('#frames iframe')])")); // в порядке полосы (Ч8)
   // 📌 во вкладке: закрепила — у соседних вкладок панель тоже закреплена (общий localStorage, событие storage), открепила — снова прячется
   console.log('pinsync=' + await ev("(async fr => { const p = i => fr[i].contentWindow.document, z = () => new Promise(r => setTimeout(r, 300)); p(1).getElementById('pinbtn').click(); await z(); const a = p(0).body.classList.contains('pinbar') + ',' + p(1).body.classList.contains('pinbar'); p(1).getElementById('pinbtn').click(); await z(); return a + ',' + p(0).body.classList.contains('pinbar'); })([...document.querySelectorAll('#frames iframe')])"));
   // переименование в списке «Мои ПК» (⌂): Enter сохраняет, Esc отменяет, пробелы — снова ID, длинное — до 40 символов
@@ -132,7 +132,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const f2 = "document.querySelectorAll('#frames iframe')[2].contentWindow.document";
   const star = () => ev(f2 + ".getElementById('starbtn').getAttribute('aria-pressed')");
   const s0 = await star();
-  await ev(f2 + ".getElementById('starbtn').click(); 1");
+  await ev(f2 + ".getElementById('morem').click(); " + f2 + ".getElementById('mdel').click(); 1"); // Ч8: «Ещё ▾ → Убрать из моего пространства»
   const s1 = await star(), m1 = await mine();
   await ev(f2 + ".getElementById('starbtn').click(); 1");
   const edit = await ev(f2 + ".getElementById('mineq').checkVisibility() && !" + f2 + ".getElementById('mineqrl').checkVisibility() && !" + f2 + ".getElementById('starbtn').checkVisibility()");
@@ -140,7 +140,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   console.log('star=' + [s0, s1, JSON.stringify(m1), await star(), edit].join('|'));
   console.log('starlabel=' + await ev(f2 + ".getElementById('starnm').textContent"));
   console.log('names2=' + await names());
-  console.log('tabnames=' + await ev("JSON.stringify([...document.querySelectorAll('#tabs .tab .nm')].map(n => n.textContent))"));
+  console.log('tabnames=' + await ev("JSON.stringify([...document.querySelectorAll('#tabs .tab .nm')].sort((a, b) => a.dataset.id.localeCompare(b.dataset.id)).map(n => n.textContent))")); // полоса — в порядке списка, сверяем по ID
   // обрыв ("bye" от хоста) метит вкладку «разорвано» за ≤ 1 с — ждём по событию (poll 20 мс), не sleep
   const t0 = Date.now(); await fetch(url + 'bye?id=' + ids[2]);
   let bms = -1; for (let k = 0; k < 60; k++) { const st = JSON.parse(await tabState()); if (st[2] === 'broken') { bms = Date.now() - t0; break; } await sleep(20); }
@@ -314,7 +314,7 @@ func TestBrowserMyPC(t *testing.T) {
 		`authed=["ok","ok","ok"]`,
 		`mine=["111111111","222222222","333333333"]`, // вход по ключу пополнил «Мои ПК» (m.key)
 		`clickactive=0`,
-		`keyactive=1`,          // Ctrl+Alt+2 переключил на вторую вкладку
+		`keyactive=true`,       // Ctrl+Alt+2 переключил на вторую вкладку полосы
 		`switch=true|drops=0|`, // 20 переключений: 0 обрывов/переподключений, мгновенно
 		`stillconnected=["connected","connected","connected"]`,
 		`held=[0,0,0]`,                                // залипших клавиш не осталось

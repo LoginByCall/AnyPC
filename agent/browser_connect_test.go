@@ -103,7 +103,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await until(s => s.startsWith('2|')); await typeOtp(await code());
   await sleep(300);
   console.log('bykey=' + await until(s => s.endsWith('|true')) + '|' + await q());
-  await ev("document.getElementById('starbtn').click(); document.getElementById('starbtn').click(); 1"); // ★ снять, ☆: ключ уже есть — свой текст, без галочки
+  await ev("document.getElementById('morem').click(); document.getElementById('mdel').click(); document.getElementById('starbtn').click(); 1"); // ★ снять («Ещё ▾ → Убрать»), ☆: ключ уже есть — свой текст, без галочки
   console.log('bykeystar=' + await q());
   await ev("document.getElementById('mineqn').value = 'Работа'; document.getElementById('mineqok').click(); 1"); await sleep(300);
   await bye();
@@ -130,7 +130,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await ev("document.getElementById('mineqok').click(); 1"); await sleep(300);
   console.log('add=' + await ls('mine') + '|' + await ls('sv') + '|' + await ev("document.getElementById('starbtn').textContent"));
   // ★ снять, ☆ — «Добавить» с галочкой: пароль запомнен (как прежде — savedSet)
-  await ev("document.getElementById('starbtn').click(); document.getElementById('starbtn').click(); document.getElementById('mineqn').value = 'Дача'; document.getElementById('mineqr').checked = true; document.getElementById('mineqok').click(); 1"); await sleep(300);
+  await ev("document.getElementById('morem').click(); document.getElementById('mdel').click(); document.getElementById('starbtn').click(); document.getElementById('mineqn').value = 'Дача'; document.getElementById('mineqr').checked = true; document.getElementById('mineqok').click(); 1"); await sleep(300);
   console.log('rem=' + await ls('sv') + '|' + await ls('mine'));
   await bye();
 
@@ -221,8 +221,8 @@ func TestBrowserConnect(t *testing.T) {
 		"s2b=2||false\n",
 		"again1=1||true|[null]|true,key,false,false,false|[]\n",
 		`re1=2|A new code is needed: the previous one has already been used.|false|[{"id":"123456789","name":"Работа"}]` + "\n",
-		"key1=1||true|[true]|false,-,false,false,true\n",
-		"bykey=1||true|false,-,false,false,true\n",
+		"key1=1||true|[true]|false,-,false,false,false\n", // Ч8: ПК свой — ☆ на панели нет (переименовать/убрать — «Ещё ▾»)
+		"bykey=1||true|false,-,false,false,false\n",
 		"bykeystar=true,on,false,false,false\n",
 		"nos2=false|true,pw,true,false,false\n",
 		"byeq=true\n",
@@ -232,7 +232,7 @@ func TestBrowserConnect(t *testing.T) {
 		"star=true,pw,true,false,false\n",
 		`add=[{"id":"123456789","name":"Работа"},{"id":"222333444","name":"222333444"}]|null|★ In My space` + "\n",
 		`rem={"222333444":"secret123"}|[{"id":"123456789","name":"Работа"},{"id":"222333444","name":"Дача"}]` + "\n",
-		"member=false,-,false,false,true|★ In My space,true\n",
+		"member=false,-,false,false,false|★ In My space,true\n",
 		"ok4=1||true\n",
 		"code=false,-,false,false,true\n",
 		"codestar=true,np,false,false,false\n",

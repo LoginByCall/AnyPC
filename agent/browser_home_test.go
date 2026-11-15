@@ -74,7 +74,7 @@ const extra = async () => ` + "`" + `
   // вкладка к ПК «по паролю» без запомненного пароля и ключа: во фрейме карточка входа — пароль есть куда ввести
   const fr = "document.querySelector('#frames iframe').contentWindow.document";
   for (let k = 0; k < 50 && await ev(fr + "?.body?.classList.contains('needpw')") !== true; k++) await sleep(100);
-  console.log('framepw=' + await ev("(() => { const d = " + fr + "; return [d.body.classList.contains('needpw'), ...['connect', 'remote', 'pw', 'go'].map(i => d.getElementById(i).checkVisibility()), ...['home', 'connhead'].map(i => d.getElementById(i).checkVisibility()), [...document.querySelectorAll('#tabs .tab .stt')].map(e => e.textContent).join(',')].join('|'); })()"));
+  console.log('framepw=' + await ev("(() => { const d = " + fr + "; return [d.body.classList.contains('needpw'), ...['connect', 'remote', 'pw', 'go'].map(i => d.getElementById(i).checkVisibility()), ...['home', 'connhead'].map(i => d.getElementById(i).checkVisibility()), [...document.querySelectorAll('#tabs .tabg .stt')].map(e => e.textContent).join(',')] /* Ч8: в полосе и закрытые ПК — метка открытой вкладки */.join('|'); })()"));
   await shot('frame-nopw');
   // myPcHome (трей): из вкладки ПК — на главный, вкладка жива
   console.log('pchome=' + await ev("[myPcHome(), " + shown('home') + ", " + shown('mypc') + ", document.querySelectorAll('#frames iframe').length].join('|')"));

@@ -86,6 +86,10 @@ const extra = async () => ` + "`" + `
   await ev("window.op = null; st.space.op = null; 1");
   await tile('444555666', 'button'); await sleep(300);
   console.log('open=' + await ev("[...document.querySelectorAll('#frames iframe')].map(f => new URL(f.src).searchParams.get('embed')).join(',') + '|' + " + vis('home')));
+  // Ч8: полоса ПК окна вкладок в программе — «This PC» (к главному), открытая вкладка с ×, «+», подсказка Ctrl+Alt+← →
+  console.log('sessstrip=' + await ev("[...document.getElementById('tabs').children].map(e => e.id || (e.querySelector('.nm') ? e.querySelector('.nm').dataset.id + (e.classList.contains('sel') ? '*' : '') + ':' + !!e.querySelector('.tabx') : e.className)).join(',') + '|' + document.querySelectorAll('#hometabs .tabx').length")); // на полосе главного × нет
+  if (process.env.ANYPC_SHOT) { await call('Emulation.setDeviceMetricsOverride', { width: 1200, height: 760, deviceScaleFactor: 1, mobile: false }); await sleep(300);
+    const r = await call('Page.captureScreenshot', { format: 'png' }); require('fs').writeFileSync(process.env.ANYPC_SHOT, Buffer.from(r.result.data, 'base64')); }
   await ev("document.getElementById('tabhome').click(); 1"); await sleep(200);
   const ho = "document.querySelector('#sptiles .sptile[data-id=\"777888999\"] input')";
   const nfr = () => ev("document.querySelectorAll('#frames iframe').length");
@@ -94,7 +98,7 @@ const extra = async () => ` + "`" + `
   const f1 = "[...document.querySelectorAll('#frames iframe')].find(f => f.src.includes('embed=777888999')).contentWindow";
   const frame = async () => { for (let k = 0; k < 50 && await ev("typeof " + f1 + "?.embedCode") !== 'function'; k++) await sleep(100); await sleep(500); };
   const homeTab = async () => { await ev("document.getElementById('tabhome').click(); 1"); await sleep(200); };
-  const closeHo = async () => { await ev("[...document.querySelectorAll('#tabs .tab')].find(b => b.querySelector('.nm')?.dataset.id === '777888999').querySelector('.tabx').click(); 1"); await sleep(300); };
+  const closeHo = async () => { await ev("document.querySelector('#tabs .tabg[data-id=\"777888999\"] .tabx').click(); 1"); await sleep(300); };
   await ev(ho + ".value = '135790'; 1"); await tile('777888999', '.tact button'); await frame(); // фрейм с запомненным паролем ждёт хост
   await ev("myPcState('777888999', 'code'); 1"); await sleep(300);
   const got = await ev(f1 + ".document.getElementById('otp').value") + '|' + await ev("myPcCodeWanted()");
@@ -171,6 +175,7 @@ func TestBrowserMain(t *testing.T) {
 		"here=Office · 444 555 666 — open777 888 999 — refused: Wrong password or code|\n", // итог по ПК; пароль и код из полей стёрты
 		"other=Office · 444 555 666 — open777 888 999 — refused: Wrong password or code\n",
 		"open=444555666|false\n",
+		"sessstrip=tabhome,444555666*:true,777888999:false,tabadd,grow,swhint|0\n", // «This PC» — к главному; открытая — с ×; закрытый ПК — без
 		"short=1|true\n",           // код не из 6 цифр: вкладки нет, фокус в поле
 		"code=135790||777888999\n", // код из плитки — во фрейм на первый запрос; второй запрос — в общую строку кода
 		"stale=|777888999||777888999\n",
@@ -209,7 +214,7 @@ const extra = async () => {
   const waitSt = async (...want) => { for (let k = 0; k < 100 && !want.includes(await st0()); k++) await sleep(150); return st0(); };
   const msg = () => ev("document.querySelector('#frames iframe').contentWindow.document.getElementById('msg').textContent");
   const open = () => tile('123456789', 'button');
-  const close = async () => { await ev("document.querySelector('#tabs .tab .tabx').click(); 1"); await sleep(1500); };
+  const close = async () => { await ev("document.querySelector('#tabs .tabg .tabx').click(); 1"); await sleep(1500); };
   await open();
   console.log('opened=' + await waitSt('ok') + '|' + await ev("document.querySelector('#frames iframe').contentWindow.sessState()"));
   await close();
