@@ -126,7 +126,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   // переименование в списке освежило имя на панели сессии открытой вкладки (родитель → embedStar)
   console.log('renstar=' + await ev("document.querySelectorAll('#frames iframe')[1].contentWindow.document.getElementById('starnm').textContent"));
   console.log('listnames=' + await ev(tileNames + ".sort())"));
-  // ★ на панели сессии третьего ПК: снять — ушёл из списка; поставить — вернулся и сразу поле имени
+  // ★ на панели сессии третьего ПК: снять — ушёл из списка; ☆ — вопрос шага 3 «Это ваш компьютер?» (вход ключом уже
+  // есть: без галочки «Запомнить пароль» и без повторного входа), «Добавить» с именем — вернулся
   await tabClick(ids[2]); await sleep(200);
   const f2 = "document.querySelectorAll('#frames iframe')[2].contentWindow.document";
   const star = () => ev(f2 + ".getElementById('starbtn').getAttribute('aria-pressed')");
@@ -134,8 +135,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await ev(f2 + ".getElementById('starbtn').click(); 1");
   const s1 = await star(), m1 = await mine();
   await ev(f2 + ".getElementById('starbtn').click(); 1");
-  const edit = await ev("!!" + f2 + ".querySelector('#bar input.nmedit')");
-  await ev(nmKey(f2, 'Дом', 'Enter'));
+  const edit = await ev(f2 + ".getElementById('mineq').checkVisibility() && !" + f2 + ".getElementById('mineqrl').checkVisibility() && !" + f2 + ".getElementById('starbtn').checkVisibility()");
+  await ev(f2 + ".getElementById('mineqn').value = 'Дом'; " + f2 + ".getElementById('mineqn').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); 1"); await sleep(300);
   console.log('star=' + [s0, s1, JSON.stringify(m1), await star(), edit].join('|'));
   console.log('starlabel=' + await ev(f2 + ".getElementById('starnm').textContent"));
   console.log('names2=' + await names());
@@ -187,8 +188,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     await sleep(100);
   }
   console.log('pwlogin=' + JSON.parse(await tabState())[0] + '|' + await ev(f0 + ".document.body.classList.contains('needpw')") + '|' + await ev(f0 + ".sessState()"));
-  // снятие «Доверять» у второго ПК (его фрейм) — забыть ключ, но из «Моих ПК» не убирать
-  await ev("const f = document.querySelectorAll('#frames iframe')[1]; const d = f.contentWindow.document; const c = d.getElementById('keylogin'); c.checked = false; c.dispatchEvent(new Event('change')); 1");
+  // «Забыть» вход ключом у второго ПК (его фрейм, «Параметры») — забыть ключ, но из «Моих ПК» не убирать
+  await ev("document.querySelectorAll('#frames iframe')[1].contentWindow.document.getElementById('keyforget').click(); 1");
   for (let k = 0; k < 40 && await ev("!!JSON.parse(localStorage.getItem('ckeys'))['" + ids[1] + "']"); k++) await sleep(100);
   console.log('afteruntrust=' + JSON.stringify(await mine()) + '|key=' + await ev("!!JSON.parse(localStorage.getItem('ckeys'))['" + ids[1] + "']"));
   // явное удаление: × в списке «Мои ПК»
@@ -325,7 +326,7 @@ func TestBrowserMyPC(t *testing.T) {
 		`names={"111111111":"` + strings.Repeat("A", 40) + `","222222222":"Офис","333333333":"333333333"}`,
 		// плитка: имя (без имени — ID) и «по паролю · ID» (сортировка: порядок входов не задан)
 		`listnames=["333 333 333|by password · 333 333 333","` + strings.Repeat("A", 40) + `|by password · 111 111 111","Офис|by password · 222 222 222"]`,
-		`star=true|false|["111111111","222222222"]|true|true`, // ★ снял — ушёл; поставил — вернулся, поле имени сразу
+		`star=true|false|["111111111","222222222"]|true|true`, // ★ снял — ушёл; ☆ — вопрос шага 3, «Добавить» — вернулся с именем
 		`starlabel=Дом ✎`,
 		`names2={"111111111":"` + strings.Repeat("A", 40) + `","222222222":"Офис","333333333":"Дом"}`,
 		`tabnames=["` + strings.Repeat("A", 40) + `","Офис","Дом"]`, // на вкладках — имена

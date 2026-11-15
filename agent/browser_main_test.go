@@ -213,11 +213,12 @@ const extra = async () => {
   await open();
   console.log('opened=' + await waitSt('ok') + '|' + await ev("document.querySelector('#frames iframe').contentWindow.sessState()"));
   await close();
-  // с главной по ID с набранным (неверным) паролем и «Запомнить»: вход по пропуску пароль не проверял — не запоминать
-  await ev("document.getElementById('id').value = '123456789'; document.getElementById('pw').value = 'WRONG-password'; document.getElementById('remember').checked = true; document.getElementById('go').click(); 1");
+  // с главной по ID с набранным (неверным) паролем, запомненным для этого ID (remId — как подставил fillSaved): вход по
+  // пропуску пароль не проверял — не запоминать; и вопрос «Это ваш компьютер?» не задавать (не вход паролем)
+  await ev("document.getElementById('id').value = '123456789'; document.getElementById('pw').value = 'WRONG-password'; remId = '123456789'; document.getElementById('go').click(); 1");
   for (let k = 0; k < 100 && await ev("sessState()") !== 'connected'; k++) await sleep(150);
   await sleep(500);
-  console.log('mainpw=' + await ev("sessState()") + '|' + await ev("savedGet('123456789')") + '|' + await ev("again?.pw"));
+  console.log('mainpw=' + await ev("sessState()") + '|' + await ev("savedGet('123456789')") + '|' + await ev("again?.pw") + '|' + await ev("document.getElementById('mineq').classList.contains('hidden')"));
   await ev("end(''); 1"); await sleep(1500);
   const mem = "st.space.members.find(m => m.id === '123456789')";
   await ev("window.fp0 = " + mem + ".fp; " + mem + ".fp = 'WRONG'; 1"); await open(); // ключ хоста не тот, что в M
@@ -301,7 +302,7 @@ func TestBrowserPassOpen(t *testing.T) {
 		"reopen=ok\n",
 		"afteroff=broken\n",
 		"offopen=pw|Error: no pass on that PC — sign in with password\n",
-		"mainpw=connected||\n",
+		"mainpw=connected|||true\n", // и вопроса шага 3 нет
 		"calls=sign:123456789,sign:123456789,sign:123456789,sign:123456789,sign:123456789,off,sign:123456789\n",
 	} {
 		if !strings.Contains(out, want) {
