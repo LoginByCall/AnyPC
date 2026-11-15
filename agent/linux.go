@@ -266,6 +266,24 @@ func AskAccept(cid, peer string) Answer {
 	})
 }
 
+// AskRecv — окно «Принять?» (Ч10.1, recv.go): как AskControl; без ответа AskTimeout или без zenity → отказ.
+func AskRecv(q RecvReq) bool {
+	if fakeDesktop {
+		return true
+	}
+	lang := sysLang()
+	title, text, yes, no, _ := recvAskText(lang, q, true)
+	return askLoop(func(left time.Duration, again bool) Answer {
+		t := text
+		if again {
+			t = "⚠ " + recvAsksOf(lang)[9] + "\n\n" + text
+		}
+		err := exec.Command("zenity", "--question", "--default-cancel", "--width=460", "--title="+title, "--text="+pangoEscape(t),
+			"--ok-label="+yes, "--cancel-label="+no, "--timeout="+strconv.Itoa(int(left.Seconds()))).Run()
+		return map[bool]Answer{true: Allow}[err == nil]
+	}) == Allow
+}
+
 // AskControl — окно «Разрешить управление?» (смена режима сессии «Спрашивать»): как AskAccept, без «Только просмотр».
 func AskControl(cid, peer string) bool {
 	if fakeDesktop {
