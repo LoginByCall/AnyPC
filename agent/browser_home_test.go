@@ -19,7 +19,7 @@ import (
 const cdpHome = `
 const extra = async () => ` + "`" + `
   Object.defineProperty(navigator, 'languages', { get: () => ['ru'] });
-  Object.assign(st, { confirm: true, code: '741902', online: true, version: '0.3.1', fp: 'ab12 cd34', users: [{ name: 'anna', view: true, otp: true }] });
+  Object.assign(st, { confirm: true, give: true, code: '741902', online: true, version: '0.3.1', fp: 'ab12 cd34', users: [{ name: 'anna', view: true, otp: true }] });
   st.space.members.push({ id: '482113907', fp: 'OF', pub: 'b2Y=', self: false, passUntil: Date.now() + 3 * 3600e3 },
     { id: '730554218', fp: 'HO', pub: 'aG8=', self: false, passUntil: 0 });
   st.space.members[0].passUntil = Date.now() + 3600e3;

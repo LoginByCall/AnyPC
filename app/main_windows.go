@@ -66,7 +66,8 @@ func main() {
 		return
 	}
 	defer unlock()
-	cfg.codeUsed() // режим «Спрашивать»: новый код при запуске — программа могла кончиться посреди сессии (REQ-S-23)
+	// кода при запуске не меняем: «Разрешить управление» после запуска выключено — код из файла не действует, включение
+	// выдаст новый (REQ-S-23)
 	// FFmpeg — в фоне: окно и сигнализация работают сразу, захват — когда загрузится (повтор раз в 30 с без сети).
 	var ffMu sync.Mutex
 	ff, ffState := "", "0" // путь к ffmpeg.exe; ffState — проценты загрузки, "err" или "" (готов)
@@ -161,6 +162,7 @@ func main() {
 	w.Bind("otpEnable", func(s, code, user string) error { return dropAfter(a, cfg.otpEnable(s, code, user)) })
 	w.Bind("otpOff", cfg.otpOff)
 	w.Bind("newCode", func() (string, error) { return newCode(cfg, a) })
+	w.Bind("setGive", func(on bool) (string, error) { return setGive(cfg, a, on) }) // «Разрешить управление»
 	w.Bind("userSet", func(name, pw, rights string) error { return dropAfter(a, cfg.setUser(name, pw, rights)) })
 	w.Bind("userDel", func(name string) error { return dropAfter(a, cfg.delUser(name)) })
 	w.Bind("keyDel", func(name, fp string) error { return dropAfter(a, cfg.keyDel(name, fp)) }) // REQ-S-24: его сессия рвётся

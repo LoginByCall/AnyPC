@@ -149,3 +149,44 @@ func TestDropPending(t *testing.T) {
 	e2eGood = "-" // ждём отказ
 	e2e(t, local(t), "123456789", false, FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000}), "secret123")
 }
+
+// TestGiveOffKeepsSession — «Разрешить управление» выключили во время сессии по коду (app/config.go setGive: соль
+// кода та же, секрет записи по умолчанию — случайный, никому не известный): идущая сессия DropRevoked не рвётся
+// (её кончает «Разорвать»), а новый вход тем же кодом — отказ, как неверному коду.
+func TestGiveOffKeepsSession(t *testing.T) {
+	var off, alive atomic.Bool
+	kdf := pake.KDF("111111", salt)
+	rnd := pake.KDF("случайный-секрет-выключенного", salt) // в config.go — 32 байта crypto/rand
+	e2eAgent = func(a *Agent) {
+		a.Secret = func(u string) ([]byte, []byte, bool) {
+			if u != "" {
+				return nil, nil, false
+			}
+			if off.Load() {
+				return salt, rnd, false
+			}
+			return salt, kdf, false
+		}
+		a.Unattended = func() bool { return false }
+		a.Confirm = func(string, string) Answer { return Allow }
+	}
+	e2eInput = func(t *testing.T, a *Agent) {
+		off.Store(true) // выключили переключатель
+		a.DropRevoked() // правка из окна / опрос настроек
+		time.Sleep(500 * time.Millisecond)
+		a.DropRevoked()
+		a.mu.Lock()
+		alive.Store(a.sess != nil)
+		a.mu.Unlock()
+	}
+	defer e2eReset()
+	ff := FFArgs("test", "libx264", Cap{FPS: 30, Kbps: 1000})
+	e2eGood = "111111"
+	e2e(t, local(t), "123456789", false, ff, "111111")
+	if !alive.Load() {
+		t.Fatal("выключение «Разрешить управление» разорвало идущую сессию по коду")
+	}
+	e2eInput = nil
+	e2eGood = "222222"                                 // при выключенном не подходит никакой код
+	e2e(t, local(t), "123456789", false, ff, "111111") // тот же код после выключения — отказ
+}
