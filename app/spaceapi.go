@@ -283,7 +283,7 @@ func previewJSON(p spacePreview) map[string]any {
 	}
 	m["members"] = pcs
 	m["gone"] = append([]string{}, p.Gone...) // отпечатки исключённых
-	delete(m, "fresh") // до сверки — всегда false
+	delete(m, "fresh")                        // до сверки — всегда false
 	return m
 }
 

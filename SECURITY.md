@@ -60,7 +60,7 @@ and the target's reply; it can drop "off" selectively — the master then repeat
 тут», — подписью ключом этого ПК над отпечатками этого соединения (привязка spaceSign); ключ цели окно сверяет с
 составом пространства. spaceSign — оракул подписи ключом этого ПК для страниц окна, включая вкладки «Моих ПК» (они
 берут привязки у окна через embed.js). Новой границы это не создаёт: процесс того же пользователя ОС и так читает ключ
-из config.json (0600). Подпись выдаётся только для цели — члена состава с живым пропуском. Режима и записи в подписи
+из config.json (0600). Но для скрипта, исполнившегося в окне, граница новая: раньше ему нужны были пароль и код, теперь на ПК с живым пропуском он входит без них. Подпись выдаётся только для цели — члена состава с живым пропуском. Режима и записи в подписи
 нет: окно с токеном может на этом соединении сверх входа послать «снять» и «b» паролем с ключом этого ПК как cpub;
 пока у мастера жив пропуск на цель (passUntil), пароль так можно перебирать мимо блокировки перебора (код TOTP
 по-прежнему нужен). Отдельный домен подписи не вводим: цели v0.2.0 его не примут.
@@ -68,7 +68,7 @@ Login by pass from the window (NEEDS HUMAN REVIEW): the program window logs in t
 the "I'm here" PC — a signature by this PC's key over the fingerprints of this connection (the spaceSign binding); the
 window checks the target key against the space members. spaceSign is a signing oracle with this PC's key for the window
 pages, including the "My PCs" tabs (they take the bindings from the window via embed.js). This adds no new boundary: a
-process of the same OS user can read the key from config.json (0600) anyway. A signature is given only for a target that
+process of the same OS user can read the key from config.json (0600) anyway. For a script running in the window, though, this is a new boundary: it used to need the password and code, now it logs in without them to a PC with a live pass. A signature is given only for a target that
 is a member with a live pass. The signature covers neither the mode nor the account: a window with the token can, on
 that connection, also send "off" and a password "b" with this PC's key as cpub; while the master holds a live pass for
 the target (passUntil), passwords can be guessed this way past the brute-force lockout (the TOTP code is still needed).
