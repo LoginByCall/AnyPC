@@ -20,9 +20,18 @@ import (
 	"anypc/totp"
 )
 
+// giveOn — «Разрешить управление» включено без смены кода (тесты кода: действует код из файла).
+func giveOn(c *config) *config {
+	c.mu.Lock()
+	c.give = true
+	c.mu.Unlock()
+	return c
+}
+
 func TestConfig(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "AnyPC", "config.json")
 	c, err := loadConfig(p)
+	giveOn(c)
 	if err != nil || !hub.IsHostID(c.ID) {
 		t.Fatalf("первый запуск: %v %+v", err, c)
 	}
@@ -51,7 +60,7 @@ func TestConfig(t *testing.T) {
 	if err != nil || c2.ID != c.ID || !bytes.Equal(h, pake.KDF("пароль-123", salt)) || bytes.Equal(h, pake.KDF("пароль-124", salt)) {
 		t.Fatalf("перезагрузка: %v %+v", err, c2)
 	}
-	if s, h, _ := c2.secret(""); bytes.Equal(h, pake.KDF("пароль-123", s)) || c2.code() != c.code() { // пароль хранится, но не действует
+	if s, h, _ := giveOn(c2).secret(""); bytes.Equal(h, pake.KDF("пароль-123", s)) || c2.code() != c.code() { // пароль хранится, но не действует
 		t.Fatal("в режиме «Спрашивать» действует постоянный пароль или код не пережил перезапуск")
 	}
 }
@@ -425,6 +434,7 @@ func TestUsersConfig(t *testing.T) {
 // соль та же; включение «Спрашивать» — новый код; без вопросов (TOTP) — пароль и записи, как раньше, код не меняется.
 func TestCodeConfig(t *testing.T) {
 	c, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
+	giveOn(c)
 	c.setPassword("пароль-123")
 	c.setUser("ivan", "пароль-ивана", "full")
 	code := c.code()
@@ -441,7 +451,7 @@ func TestCodeConfig(t *testing.T) {
 		rotate()
 		code = c.code()
 		s, h, _ := c.secret("")
-		if c2, _ := loadConfig(c.path); code == old || c2.code() != code || !bytes.Equal(s, s0) || !bytes.Equal(h, pake.KDF(code, s)) || bytes.Equal(h, oldH) {
+		if c2, _ := loadConfig(c.path); code == old || giveOn(c2).code() != code || !bytes.Equal(s, s0) || !bytes.Equal(h, pake.KDF(code, s)) || bytes.Equal(h, oldH) {
 			t.Fatalf("смена кода: %q → %q", old, code)
 		}
 		h0 = h
@@ -464,7 +474,10 @@ func TestCodeConfig(t *testing.T) {
 		t.Fatal("без вопросов код меняется")
 	}
 	c.setConfirm(true)
-	if c.code() == "" || c.code() == stored || c.code() == before {
+	if c.giving() || c.code() != "" { // M1: переключатель выключился в режиме пароля и сам не включается
+		t.Fatalf("«Спрашивать» включили — переключатель %v, код %q без включения", c.giving(), c.code())
+	}
+	if giveOn(c).code() == "" || c.code() == stored || c.code() == before {
 		t.Fatalf("«Спрашивать» включили — код %q", c.code())
 	}
 }
@@ -504,7 +517,7 @@ func TestCodeMode(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.json")
 	os.WriteFile(p, []byte(`{"id":"123456789","salt":"AAAA","hash":"AAAA","confirm":false}`), 0o600)
 	c, _ := loadConfig(p)
-	if c.confirm() || !c.codeMode() || len(c.code()) != 6 {
+	if giveOn(c).confirm() || !c.codeMode() || len(c.code()) != 6 {
 		t.Fatalf("без TOTP с выключенным подтверждением: режим кода %v, код %q", c.codeMode(), c.code())
 	}
 	seen, first := map[string]bool{}, map[byte]bool{}

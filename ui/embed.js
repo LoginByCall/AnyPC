@@ -8,7 +8,7 @@ if (window.parent !== window) try {
   const p = window.parent;
   for (const n of ['hostInfo', 'pakeRespond', 'hostVerify', 'clientSign', 'knownGet', 'knownSet',
     'ckeyGet', 'ckeySet', 'savedGet', 'savedSet', 'setPassword', 'setConfirm', 'setViewOnly', 'setNode',
-    'otpNew', 'otpEnable', 'otpOff', 'newCode', 'userSet', 'userDel', 'keyDel', 'hostDisconnect',
+    'otpNew', 'otpEnable', 'otpOff', 'newCode', 'setGive', 'userSet', 'userDel', 'keyDel', 'hostDisconnect',
     'quit', 'minimize', 'fullscreen', 'openUpdate', 'openSite', 'getClip', 'setClip',
     'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort', 'audioAnswer', 'audioMic', 'uiGet', 'uiSet',
     'spaceSign']) // Ч4: вход по пропуску во вкладке — подпись ключом этого ПК (app/spaceapi.go)

@@ -46,8 +46,8 @@ func runCLI(cfg *config) (done bool, err error) {
 			return true, err
 		}
 		msg := "окно «Разрешить»: " + *cliConfirm + map[bool]string{true: " (второй фактор TOTP отключён)", false: " (второй фактор TOTP включён)"}[*cliConfirm == "on"]
-		if c := cfg.code(); c != "" { // режим «Спрашивать»: вход — по одноразовому коду (REQ-S-23)
-			msg += "; одноразовый код: " + spaced(c) + " (меняется после каждой сессии)"
+		if cfg.codeMode() { // режим «Спрашивать»: вход — по одноразовому коду (REQ-S-23); код — только в окне по переключателю
+			msg += "; одноразовый код — в окне AnyPC после «Разрешить управление»"
 		}
 		fmt.Println(msg + "; запущенный AnyPC подхватит настройку за 2 с") // опрос настроек (pollConfig)
 	case *cliView != "":
@@ -80,8 +80,8 @@ func runCLI(cfg *config) (done bool, err error) {
 		}
 		fmt.Printf("AnyPC %s\nID: %s\nКлюч хоста: %s\nПароль задан: %s\nОкно «Разрешить»: %s\nВторой фактор (TOTP): %s\nТолько показ экрана: %s\nУзел: %s (хабы AnyPC запасными: %s)\nАвтозапуск: %s\n",
 			version, cfg.ID, cfg.fingerprint(), yesNo(cfg.hasPass()), onOff(cfg.confirm() || !cfg.otpSet()), yesNo(cfg.otpSet()), onOff(cfg.viewOnly()), node, yesNo(public), serviceState())
-		if c := cfg.code(); c != "" {
-			fmt.Println("Одноразовый код:", spaced(c), "(пароль в режиме «Спрашивать»; постоянный пароль и учётные записи не действуют)")
+		if cfg.codeMode() { // переключатель живёт в запущенной программе (только в памяти) — CLI кода не знает
+			fmt.Println("Одноразовый код: в окне AnyPC после «Разрешить управление» (пароль в режиме «Спрашивать»; постоянный пароль и учётные записи не действуют)")
 		}
 		fmt.Print("Учётные записи (кроме по умолчанию):")
 		us := cfg.users()

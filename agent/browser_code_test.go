@@ -26,7 +26,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const ev = async x => { const r = (await call("Runtime.evaluate", { expression: x, awaitPromise: true, returnByValue: true })).result; return r?.exceptionDetails ? "EXC " + JSON.stringify(r.exceptionDetails.exception?.description) : r?.result?.value; };
   await call('Page.enable', {});
   await call('Page.addScriptToEvaluateOnNewDocument', { source: ` + "`" + `
-    window.st = { id: '123456789', confirm: true, otp: false, hasPass: true, code: '482913', users: [] }; window.calls = [];
+    window.st = { id: '123456789', confirm: true, otp: false, give: true, hasPass: true, code: '482913', users: [] }; window.calls = [];
     window.hostInfo = async () => ({ ...st });
     window.newCode = async () => { calls.push('new'); st.code = '111222'; return st.code; };
   ` + "`" + ` });

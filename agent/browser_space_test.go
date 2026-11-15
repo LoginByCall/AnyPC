@@ -79,7 +79,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   })();` + "`" + ` });
   await call('Page.navigate', { url }); await sleep(1500);
   await click('accgo');
-  console.log('nav=' + await ev("[" + vis('access') + ", " + vis('home') + ", " + txt('accsum') + ", " + txt('acccode') + ", " + vis('spcard') + ", " + vis('spout') + ", " + vis('spin') + "].join('|')"));
+  console.log('nav=' + await ev("[" + vis('access') + ", " + vis('home') + ", " + txt('acccode') + ", " + vis('spcard') + ", " + vis('spout') + ", " + vis('spin') + "].join('|')"));
   await click('spnew'); // «Спрашивать» включено — создать нельзя
   console.log('hint=' + await ev(txt('spmsg') + " + '|' + " + vis('spcreate')));
   await ev("st.confirm = false; 1"); await sleep(1200);
@@ -203,7 +203,7 @@ func TestBrowserSpace(t *testing.T) {
 	const ph = "able baker cable delta eagle fable gable habit ideal jewel"
 	for _, want := range []string{
 		"web=false|false|false\n", // веб-клиент без привязок: ни карточки хоста, ни экрана доступа, ни блока пространства
-		"nav=true|false|your PCs in the space: 0 · guests: 1|on|true|true|false\n",
+		"nav=true|false|off|true|true|false\n",
 		"hint=First set a password and TOTP for this PC (untick “Ask before each connection”)|false\n",
 		"old=true|true|false\n", // прежние элементы на месте: пароль, гости, «Спрашивать»
 		"badpw=Wrong password|false\n",
