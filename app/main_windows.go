@@ -213,7 +213,7 @@ func main() {
 			return trayStateOf(cfg, a.PassMaster)
 		}
 		runTray(ctx, trayDeps{id: cfg.ID, state: state, quit: w.Destroy,
-			open: func() { show("") }, here: func() { show(trayJSHere) }, pc: func(id string) { show(trayJSPC(id)) }})
+			open: func() { show("") }, here: func() { show(trayJSHere) }, pc: func(id string) { show(trayJSPC(id)) }, help: func() { show(trayJSHelp) }})
 	}()
 	startSpaceSync(ctx, cfg, a)
 	run.start(cfg.Server)

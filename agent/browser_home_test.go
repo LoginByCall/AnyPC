@@ -79,6 +79,15 @@ const extra = async () => ` + "`" + `
   await ev("myPcAdd('915020664'); 1"); await sleep(200);
   // узкое окно: плиток в ряд меньше трёх, колонка «Передать управление» под ними
   await ev("document.getElementById('tabhome').click(); 1");
+  // N1: в плитке «нужен код» 6 цифр видны целиком при 1100 и 900 px; «···» — в строке имени, в ряду — поле и «Войти»
+  const fit = async w => { await call('Emulation.setDeviceMetricsOverride', { width: w, height: 760, deviceScaleFactor: 1, mobile: false }); await sleep(300);
+    return ev("(d => { const i = d.querySelector('input'); i.value = '123456'; const r = [i.scrollWidth <= i.clientWidth, [...d.querySelectorAll('.tact > *')].map(e => e.tagName + (e.className ? '.' + e.className : '')).join('+'), !!d.querySelector('.hd .mpcmore')].join(','); i.value = ''; return r; })(document.querySelector('#sptiles .sptile[data-id=\"730554218\"]'))"); };
+  const f1100 = await fit(1100); await shot('1100');
+  console.log('codefit=' + f1100 + '|' + await fit(900));
+  // «···» в строке имени: меню открывается вниз от неё и помещается в плитке по ширине
+  await ev("document.querySelector('#sptiles .sptile[data-id=\"730554218\"] .hd .mpcmore').click(); 1");
+  console.log('hdmenu=' + await ev("(d => { const b = d.querySelector('.hd .mpcmore').getBoundingClientRect(), m = d.querySelector('.tmenu').getBoundingClientRect(); return [m.top >= b.bottom, m.right <= d.getBoundingClientRect().right + 1].join(','); })(document.querySelector('#sptiles .sptile[data-id=\"730554218\"]'))"));
+  await ev("document.body.click(); 1");
   await call('Emulation.setDeviceMetricsOverride', { width: 640, height: 900, deviceScaleFactor: 1, mobile: false }); await sleep(300);
   console.log('narrow=' + await ev("(() => { const t = [...document.querySelectorAll('#sptiles .sptile')].map(d => d.getBoundingClientRect().top); const s = document.getElementById('side').getBoundingClientRect(), m = document.getElementById('spmain').getBoundingClientRect(); return (new Set(t).size > 1) + ',' + (s.top >= m.bottom) + ',' + (document.documentElement.scrollWidth <= 640); })()"));
   await call('Emulation.setDeviceMetricsOverride', { width: 1200, height: 760, deviceScaleFactor: 1, mobile: false }); await sleep(300);
@@ -116,6 +125,12 @@ const extra = async () => ` + "`" + `
   // конец сессии, начатой с «Другого ПК», — снова «Другой ПК» (там причина разрыва), не главный
   await ev("show(true); show(false); document.getElementById('msg').textContent = 'reason'; 1");
   console.log('tour=' + tHome + '|' + tAll + '|' + tOn + '|' + tConn + '|' + tOff + '|end=' + await ev("[" + shown('connect') + ", " + shown('home') + ", " + shown('msg') + "].join(',')"));
+  // рамка шага «Параметры» — по строке summary, не по всему <details>; «Показать подсказки снова» сбрасывает и тур «Другого ПК»
+  const tOpt = await ev("tEls(TOURS.connect[1]).map(e => e.tagName + '#' + e.id).join(',')");
+  await ev("document.getElementById('helpbtn').click(); 1"); await sleep(200);
+  await ev("[...document.querySelectorAll('#helpbody button')].find(b => b.textContent === t('help_tour')).click(); 1"); await sleep(300);
+  console.log('tour2=' + tOpt + '|' + await ev("[localStorage.getItem('tour_connect'), localStorage.getItem('tour_home'), tour?.kind].join('|')"));
+  await ev("tourEnd(); 1");
   // имя записи из запомненного входа не прячется в свёрнутых «Параметрах»
   await ev("{ const d = document.getElementById('id'); d.value = '111222333'; d.dispatchEvent(new Event('input')); } 1"); await sleep(400);
   console.log('user=' + await ev("[document.getElementById('copts').open, " + shown('user') + ", document.getElementById('user').value].join('|')"));
@@ -162,6 +177,9 @@ func TestBrowserHome(t *testing.T) {
 		"colors=rgb(180, 35, 24)|rgb(180, 35, 24)|rgb(29, 78, 216)|rgb(180, 35, 24)\n",
 		"tour=tour_id,tour_code,tour_pw,tour_add,tour_talk,tour_help||true:home|tour_go,tour_opts|false|end=true,false,true\n",
 		"user=true|true|anna\n",
+		"codefit=true,INPUT+BUTTON.main,true|true,INPUT+BUTTON.main,true\n", // N1
+		"hdmenu=true,true\n",
+		"tour2=SUMMARY#coptsum|1|0|connect\n", // на «Другом ПК»: сброшены все, начат тур «Другого ПК»
 		"myPcHome=true:true:false|true:true:false|function,true\n",
 		"incoming=true|settings/true|me\n",
 		"menu=true|true|Переименовать/Убрать из «Моего пространства»|Мамин|Мамин|true\n",

@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="ru">
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-5hhxvHHumbQhtMThDeHGVgRR0dwoLTdyAar0u7X8KRc=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Tg4tf1OzlhFYmxI1nbRWRLDbGZsJZkTF6oGHfxLd4S0=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AnyPC</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26'><style>.a{stroke:%2317181c}.b{fill:%23d2452d}@media(prefers-color-scheme:dark){.a{stroke:%23eceae4}.b{fill:%23ef6a52}}</style><rect class='a' x='1.5' y='3' width='15' height='11' rx='2' fill='none' stroke-width='2.6'/><rect class='b' x='10' y='12' width='15' height='11' rx='2'/></svg>">
@@ -59,7 +59,7 @@
   .sptile .tact { flex-wrap: nowrap; } .sptile .tact input { flex: 1; min-width: 0; width: auto; } .sptile .tact > button:first-child { flex: 1; }
   .sptile .mpcmore { min-width: 44px; font-weight: 700; } .sptile input.nmedit { width: auto; flex: 1; min-width: 0; min-height: 0; }
   .tmenu { position: absolute; right: 14px; bottom: 62px; z-index: 4; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px #0003; padding: 4px; }
-  .tmenu button { border: 0; text-align: left; }
+  .tmenu button { border: 0; text-align: left; } .sptile .hd { position: relative; flex-wrap: nowrap; } .tmenu.down { top: calc(100% + 4px); bottom: auto; right: 0; }
   #me .big { font-size: 30px; font-family: inherit; } #mycode { letter-spacing: 3px; } #me p { margin: 0; } #codebox { display: flex; flex-direction: column; gap: 8px; }
   #codebox.hidden { display: none; } .sep { height: 1px; background: var(--line); }
   #mystate::before { content: ''; display: inline-block; width: 8px; height: 8px; border-radius: 4px; background: currentColor; margin-right: 8px; vertical-align: middle; }
@@ -181,7 +181,7 @@
     <div id="msg"></div>
     <div id="otpbox" class="row hidden"><input id="otp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" data-tp="otp_code_p"><button id="otpgo" class="main" data-t="otp_send"></button></div>
     <div class="row"><button id="trust" class="hidden" data-t="trust"></button></div>
-    <details id="copts"><summary class="mut small" data-t="c_more"></summary>
+    <details id="copts"><summary id="coptsum" class="mut small" data-t="c_more"></summary>
       <div class="opts">
         <button id="userlink" class="lnk mut" data-t="user_l"></button>
         <input id="user" class="hidden" data-tp="user_p" maxlength="32" autocomplete="off">
@@ -676,7 +676,7 @@ const scrGo = k => { if (scr === 'access' && k !== 'access') spCreateX(); scr = 
 const accShow = on => scrGo(on ? 'access' : 'home'); // экран 2 «Доступ к этому ПК»
 $('accgo').onclick = () => accShow(true); $('accback').onclick = () => accShow(false);
 $('setgo').onclick = () => scrGo('settings'); $('setback').onclick = $('connback').onclick = () => scrGo('home');
-const connGo = () => { if (APP && !EMBED) scrGo('connect'); $('id').focus(); }; // «+»: в веб-клиенте форма и так на главной
+const connGo = window.connGo = () => { if (APP && !EMBED) scrGo('connect'); $('id').focus(); }; // window.connGo — и для трея («Помочь кому-то…», app/tray.go trayJSHelp) // «+»: в веб-клиенте форма и так на главной
 const spVis = (id, on) => $(id).classList.toggle('hidden', !on);
 const spErr = e => { const m = String(e?.message ?? e).match(/space:(\w+)(?::(\d+))?/); return m ? t('sp_e_' + m[1]).replace('%s', m[2] || '') : t('err') + e; };
 const spMsg = e => { $('spmsg').textContent = e ? spErr(e) : ''; };
@@ -815,12 +815,12 @@ function homeRender() { // полоса сверху и плитки; без п�
   $('hometabs').replaceChildren(...strip);
   const typed = {}; for (const i of document.querySelectorAll('#sptiles .sptile input:not(.nmedit)')) typed[i.closest('.sptile').dataset.id] = i.value; // перерисовка не стирает набранный код
   const tile = (id, sub, tag, need, ...acts) => {
-    const d = spEl('div', '', 'sptile'), th = spEl('div', '', 'thumb'), h = spEl('div', '', 'row'), r = spEl('div', '', 'row tact'), x = tabOf(id);
+    const d = spEl('div', '', 'sptile'), th = spEl('div', '', 'thumb'), h = spEl('div', '', 'row hd'), r = spEl('div', '', 'row tact'), x = tabOf(id);
     d.dataset.id = id; if (x?.th) th.style.backgroundImage = 'url(' + x.th + ')';
     h.append(spEl('b', myPcs.label(id), 'grow nm')); if (tag) h.append(spEl('span', tag, 'tag' + (need ? ' need' : '')));
     r.append(...acts); d.append(th, h, spEl('div', sub + ' · ' + grp(id), 'mut sub'), r); return d;
   };
-  const more = (d, id, canDel) => { // «···»: переименовать; «убрать» — только у ПК из `mine` (член пространства исключается на «Доступе»)
+  const more = (d, id, canDel, head) => { // «···»: переименовать; «убрать» — только у ПК из `mine` (член пространства исключается на «Доступе»); head — в строке имени (ряд действий занят полем кода)
     const b = spEl('button', '···', 'mpcmore'), menu = spEl('div', '', 'tmenu hidden'), ren = spEl('button', t('mine_ren_t'), 'mpcren');
     b.title = t(canDel ? 'm_more' : 'mine_ren_t'); b.setAttribute('aria-label', b.title + ': ' + myPcs.label(id)); b.setAttribute('aria-expanded', 'false'); b.setAttribute('aria-haspopup', 'menu');
     const shut = () => { menu.classList.add('hidden'); b.setAttribute('aria-expanded', 'false'); };
@@ -828,7 +828,8 @@ function homeRender() { // полоса сверху и плитки; без п�
     menu.onkeydown = e => { if (e.key === 'Escape') { shut(); b.focus(); } };
     ren.onclick = () => { shut(); editName(d.querySelector('.nm'), id); }; menu.append(ren);
     if (canDel) { const del = spEl('button', t('mine_del_t'), 'mpcdel'); del.onclick = () => { shut(); myPcs.del(id); }; menu.append(del); }
-    d.querySelector('.tact').append(b); d.append(menu); return d;
+    if (head) { menu.classList.add('down'); d.querySelector('.hd').append(b, menu); } else { d.querySelector('.tact').append(b); d.append(menu); }
+    return d;
   };
   const tiles = mem.map(m => {
     if (passLive(m)) { const o = spBtn('m_open', () => mOpen(m.id)); o.className = 'main'; return more(tile(m.id, t('m_nopw'), t('m_until').replace('%s', until(m)), false, o), m.id, false); }
@@ -836,7 +837,7 @@ function homeRender() { // полоса сверху и плитки; без п�
     i.setAttribute('aria-label', t('m_code_p') + ': ' + myPcs.label(m.id));
     const b = spBtn('m_in', () => { const c = i.value.replace(/\D/g, ''); if (c.length !== 6) return i.focus(); mOpen(m.id, c); }); b.className = 'main'; // код — 6 цифр
     i.onkeydown = e => e.key === 'Enter' && b.click();
-    return more(tile(m.id, t('m_nopw'), t('st_need'), true, i, b), m.id, false);
+    return more(tile(m.id, t('m_nopw'), t('st_need'), true, i, b), m.id, false, true); // как в макете: в ряду — только поле и «Войти»
   });
   for (const p of own) { // бывшие «Мои ПК»: имя (✎) и «убрать» — в меню «···»
     const x = tabOf(p.id), o = spBtn('m_open', () => mOpen(p.id)); o.className = 'mpcopen';
@@ -1819,8 +1820,8 @@ let eatEsc = false; // keyup от Esc, закрывшего справку, не
 function openHelp() {
   if (!$('helpbody').childElementCount) {
     const again = Object.assign(document.createElement('button'), { textContent: t('help_tour') });
-    again.onclick = () => { for (const k of ['home', 'sess']) { toured[k] = 0; store.set('tour_' + k, 0); }
-      closeHelp(); startTour($('sess').classList.contains('hidden') ? 'home' : 'sess', true); };
+    again.onclick = () => { for (const k of ['home', 'connect', 'sess']) { toured[k] = 0; store.set('tour_' + k, 0); }
+      closeHelp(); startTour(!$('sess').classList.contains('hidden') ? 'sess' : scr === 'connect' ? 'connect' : 'home', true); };
     const row = document.createElement('div'); row.className = 'row'; row.append(again);
     $('helpbody').append(...HELP.flatMap(([h, ...p]) => [mkEl('h3', t(h)), ...p.map(k => mkEl('p', t(k)))]), mkEl('p', t('help_site')), row);
     $('helpx').setAttribute('aria-label', t('help_x'));
@@ -1844,8 +1845,8 @@ var tour = null; // var — show() может прийти раньше этой
 const toured = {}; // показан в этой загрузке страницы — на случай недоступного localStorage
 const TOURS = {
   // главный: в программе форма — на экране «Другой ПК» (шаг «+», там свой тур), в веб-клиенте — на главном
-  home: [[['myid'], 'tour_id'], [['codebox'], 'tour_code'], [['accgo'], 'tour_pw'], [['hadd'], 'tour_add'], [['id', 'pw', 'go'], 'tour_go'], [['copts'], 'tour_opts'], [['helpbtn'], 'tour_talk'], [['helpbtn'], 'tour_help']],
-  connect: [[['id', 'pw', 'go'], 'tour_go'], [['copts'], 'tour_opts']],
+  home: [[['myid'], 'tour_id'], [['codebox'], 'tour_code'], [['accgo'], 'tour_pw'], [['hadd'], 'tour_add'], [['id', 'pw', 'go'], 'tour_go'], [['coptsum'], 'tour_opts'], [['helpbtn'], 'tour_talk'], [['helpbtn'], 'tour_help']],
+  connect: [[['id', 'pw', 'go'], 'tour_go'], [['coptsum'], 'tour_opts']], // рамка — по строке «Параметры», не по раскрытому блоку
   sess: [[['bye'], 'tour_bye'], [['fsbtn'], 'tour_fs'], [['mic'], 'tour_mic'], [['fsend', 'fget', 'dl'], 'tour_files']], // 🎤 скрыта — шаг пропускается (старый хост без звука)
 };
 const tbox = id => { const e = $(id); return e?.closest('label') || e; }; // галочка — вместе с подписью

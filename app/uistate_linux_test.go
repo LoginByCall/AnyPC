@@ -64,7 +64,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await f.ev("myPcs.add('111111111'); 1"); await sleep(500);
   await g.ev("myPcs.add('222222222'); 1"); await sleep(500);
   await f.ev("dispatchEvent(new Event('focus')); 1"); await sleep(500);
-  console.log('F=' + await f.ev("myPcs.get().map(p => p.id).join() + '|' + document.getElementById('mine').textContent.includes('222 222 222')"));
+  console.log('F=' + await f.ev("myPcs.get().map(p => p.id).join() + '|' + document.getElementById('sptiles').textContent.includes('222 222 222')"));
   await g.ev("store.set('turn', 'x'.repeat(70000)); 1"); await sleep(500);
   console.log('Gerr=' + await g.ev("document.getElementById('msg').textContent.length > 0 && localStorage.getItem('turn').length > 70000"));
   const w = await win(); await w.go(base2 + '/blank'); await w.hide(); const n0 = w.loads();
@@ -117,7 +117,7 @@ func TestBrowserUIState(t *testing.T) {
 	pl.Close()
 	prof, _ := os.MkdirTemp("", "anypc-chrome-")
 	defer os.RemoveAll(prof)
-	ch := exec.CommandContext(ctx, chrome, "--headless=new", "--disable-gpu", "--remote-debugging-port="+port, "--user-data-dir="+prof, "about:blank")
+	ch := exec.CommandContext(ctx, chrome, "--headless=new", "--disable-gpu", "--no-proxy-server", "--disable-background-networking", "--remote-debugging-port="+port, "--user-data-dir="+prof, "about:blank")
 	if err := ch.Start(); err != nil {
 		t.Fatal(err)
 	}

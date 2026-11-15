@@ -190,7 +190,7 @@ func runCDP(t *testing.T, ctx context.Context, chrome, script, url string, flags
 	l.Close()
 	prof, _ := os.MkdirTemp("", "anypc-chrome-") // не t.TempDir: дочерние процессы Chrome пишут в профиль и после Kill
 	defer os.RemoveAll(prof)
-	ch := exec.CommandContext(ctx, chrome, append([]string{"--headless=new", "--disable-gpu", "--lang=en-US",
+	ch := exec.CommandContext(ctx, chrome, append([]string{"--headless=new", "--disable-gpu", "--lang=en-US", "--no-proxy-server", "--disable-background-networking",
 		"--remote-debugging-port=" + port, "--user-data-dir=" + prof}, append(flags, "about:blank")...)...)
 	if err := ch.Start(); err != nil {
 		t.Fatal(err)

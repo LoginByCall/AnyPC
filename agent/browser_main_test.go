@@ -89,24 +89,24 @@ const extra = async () => ` + "`" + `
   await ev("document.getElementById('tabhome').click(); 1"); await sleep(200);
   const ho = "document.querySelector('#sptiles .sptile[data-id=\"777888999\"] input')";
   const nfr = () => ev("document.querySelectorAll('#frames iframe').length");
-  await ev(ho + ".value = '123'; 1"); await tile('777888999', 'button'); // не 6 цифр — вкладка не открывается
+  await ev(ho + ".value = '123'; 1"); await tile('777888999', '.tact button'); // не 6 цифр — вкладка не открывается
   console.log('short=' + await nfr() + '|' + await ev("document.activeElement === " + ho));
   const f1 = "[...document.querySelectorAll('#frames iframe')].find(f => f.src.includes('embed=777888999')).contentWindow";
   const frame = async () => { for (let k = 0; k < 50 && await ev("typeof " + f1 + "?.embedCode") !== 'function'; k++) await sleep(100); await sleep(500); };
   const homeTab = async () => { await ev("document.getElementById('tabhome').click(); 1"); await sleep(200); };
   const closeHo = async () => { await ev("[...document.querySelectorAll('#tabs .tab')].find(b => b.querySelector('.nm')?.dataset.id === '777888999').querySelector('.tabx').click(); 1"); await sleep(300); };
-  await ev(ho + ".value = '135790'; 1"); await tile('777888999', 'button'); await frame(); // фрейм с запомненным паролем ждёт хост
+  await ev(ho + ".value = '135790'; 1"); await tile('777888999', '.tact button'); await frame(); // фрейм с запомненным паролем ждёт хост
   await ev("myPcState('777888999', 'code'); 1"); await sleep(300);
   const got = await ev(f1 + ".document.getElementById('otp').value") + '|' + await ev("myPcCodeWanted()");
   await ev("myPcState('777888999', 'code'); 1"); await sleep(100);
   console.log('code=' + got + '|' + await ev("myPcCodeWanted()"));
   // код устарел: вход попросил пароль — код плитки стёрт; вкладку закрыли до запроса — тоже
   await closeHo(); await homeTab();
-  await ev(ho + ".value = '246802'; 1"); await tile('777888999', 'button'); await frame();
+  await ev(ho + ".value = '246802'; 1"); await tile('777888999', '.tact button'); await frame();
   await ev("myPcState('777888999', 'pw'); myPcState('777888999', 'code'); 1"); await sleep(300);
   const st1 = await ev(f1 + ".document.getElementById('otp').value") + '|' + await ev("myPcCodeWanted()");
   await closeHo(); await homeTab();
-  await ev(ho + ".value = '112233'; 1"); await tile('777888999', 'button'); await closeHo();
+  await ev(ho + ".value = '112233'; 1"); await tile('777888999', '.tact button'); await closeHo();
   await ev("myPcAdd('777888999'); 1"); await frame();
   await ev("myPcState('777888999', 'code'); 1"); await sleep(300);
   console.log('stale=' + st1 + '|' + await ev(f1 + ".document.getElementById('otp').value") + '|' + await ev("myPcCodeWanted()"));
@@ -186,7 +186,7 @@ func TestBrowserMain(t *testing.T) {
 			t.Errorf("нет %q", want)
 		}
 	}
-	if !regexp.MustCompile(`tiles=Officeuntil \d\d:\d\d[^;|]*sign-in without password · 444 555 666Open···Rename\|;777 888 999code neededsign-in without password · 777 888 999Sign in···Rename\|Code from the app\n`).MatchString(out) {
+	if !regexp.MustCompile(`tiles=Officeuntil \d\d:\d\d[^;|]*sign-in without password · 444 555 666Open···Rename\|;777 888 999code needed···Renamesign-in without password · 777 888 999Sign in\|Code from the app\n`).MatchString(out) {
 		t.Error("плитки не те")
 	}
 	if !regexp.MustCompile(`tabs=This PCI'm here;Officeno password until \d\d:\d\d[^;]*;777 888 999code needed;\+\n`).MatchString(out) {
