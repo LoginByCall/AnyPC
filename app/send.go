@@ -10,20 +10,25 @@ package main
 // (тот ПК должен был закрепить этот ПК раньше — иначе send:nokey). ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ (A13): выбор доказательства.
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io/fs"
 	"log"
 	"os"
+	"path/filepath"
 	"sync"
+	"time"
 
 	"anypc/agent"
 	"anypc/hub"
 	"anypc/pake"
 )
 
-var sendNames = []string{"sendStart", "sendState", "sendCancel", "sendClear", "sendTargets"}
+var sendNames = []string{"sendPick", "sendStart", "sendState", "sendCancel", "sendClear", "sendTargets"}
 
 var (
 	errSendRunning = errors.New("отправка: уже идёт другая")
@@ -32,17 +37,35 @@ var (
 	errSendSelf    = errors.New("отправка: это этот ПК")
 	errSendBoth    = errors.New("отправка: текст или буфер обмена — что-то одно")
 	errSendArgs    = errors.New("отправка: неверный запрос")
+	errSendPick    = errors.New("отправка: выбор устарел — выберите файл или папку снова")
 )
 
-// sendReq — sendStart окна: кому (id, code — разовый код чужого ПК) и что.
+// sendReq — sendStart окна: кому (id, code — разовый код чужого ПК) и что: picks — метки sendPick (пути страница не
+// передаёт: решение координатора, A13 — страница с XSS не отправит произвольный файл ПК), текст, буфер.
 type sendReq struct {
 	ID    string   `json:"id"`
 	Code  string   `json:"code"`
-	Files []string `json:"files"`
-	Dirs  []string `json:"dirs"`
+	Picks []string `json:"picks"`
 	Text  string   `json:"text"`
 	Clip  bool     `json:"clip"`
+	Files []string `json:"-"` // из picks (sendOpRun.resolve)
+	Dirs  []string `json:"-"`
 }
+
+// sendPicked — выбранное человеком в окне ОС (sendPick): путь живёт только здесь, у страницы — метка.
+type sendPicked struct {
+	path string
+	dir  bool
+	at   time.Time
+}
+
+const (
+	sendPickTTL = time.Hour // метка живёт
+	sendPickMax = 256       // меток сразу; больше — давние уходят
+)
+
+// sendPickFile, sendPickDir — окно выбора ОС (подмена — в тестах).
+var sendPickFile, sendPickDir = agent.PickFile, agent.PickDir
 
 // sendCodes — ошибка → код окна (первое совпадение по errors.Is).
 var sendCodes = []struct {
@@ -50,8 +73,8 @@ var sendCodes = []struct {
 	code string
 }{
 	{errSendRunning, "running"}, {errSendNoOp, "noop"}, {errSendID, "id"}, {errSendSelf, "self"}, {errSendBoth, "both"},
-	{errSendArgs, "args"}, {agent.ErrSendEmpty, "empty"}, {agent.ErrSendClip, "clip"}, {agent.ErrSendNotFile, "notfile"},
-	{agent.ErrSendMany, "many"}, {agent.ErrRecvOld, "old"}, {agent.ErrRecvOldDirs, "olddirs"}, {agent.ErrRecvCode, "code"},
+	{errSendArgs, "args"}, {errSendPick, "pick"}, {agent.ErrSendEmpty, "empty"}, {agent.ErrSendClip, "clip"}, {agent.ErrSendNotFile, "notfile"},
+	{agent.ErrSendMany, "many"}, {agent.ErrSendRoot, "root"}, {agent.ErrRecvOld, "old"}, {agent.ErrRecvOldDirs, "olddirs"}, {agent.ErrRecvCode, "code"},
 	{agent.ErrRecvLocked, "locked"}, {agent.ErrRecvNoKey, "nokey"}, {agent.ErrRecvNoCode, "nocode"},
 	{agent.ErrRecvDenied, "denied"}, {agent.ErrRecvBusy, "busy"}, {agent.ErrRecvRate, "rate"}, {agent.ErrRecvLimit, "limit"},
 	{agent.ErrRecvGone, "gone"}, {agent.ErrRecvViewOnly, "viewonly"}, {agent.ErrRecvWait, "wait"},
@@ -91,6 +114,7 @@ type sendOpState struct {
 type sendOpRun struct {
 	mu      sync.Mutex
 	cur     *sendOpState
+	picks   map[string]sendPicked // метка → выбор (sendPick); расходуется sendStart
 	watches []func(map[string]any)
 	wg      sync.WaitGroup // тест: дождаться конца
 }
@@ -156,6 +180,9 @@ func sendDial(c *config, q sendReq) (agent.SendDial, string, error) {
 
 // start — отправка в фоне; идёт другая — errSendRunning; кончившаяся заменяется.
 func (r *sendOpRun) start(c *config, q sendReq) error {
+	if err := r.resolve(&q); err != nil {
+		return err
+	}
 	d, kind, err := sendDial(c, q)
 	if err != nil {
 		return err
@@ -164,6 +191,9 @@ func (r *sendOpRun) start(c *config, q sendReq) error {
 	if r.cur != nil && r.cur.state == "run" {
 		r.mu.Unlock()
 		return errSendRunning
+	}
+	for _, t := range q.Picks { // отправка началась — метки израсходованы
+		delete(r.picks, t)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	o := &sendOpState{id: q.ID, kind: kind, state: "run", cancel: cancel}
@@ -183,7 +213,9 @@ func (r *sendOpRun) start(c *config, q sendReq) error {
 	r.wg.Go(func() {
 		defer cancel()
 		res, err := sendRun(ctx, d)
-		if err == nil && kind == "code" && c.knownGet(d.ID) == "" && len(res.HostPub) > 0 { // ключ доказан и кодом
+		// ключ доказан и кодом (HostPub — только после проверки подписи, кода и Known) — запомнить и при отказе
+		// после "rx" (потолок, старый хост без папок): код уже израсходован, иначе закрепление сгорело бы (M3 приёмки)
+		if kind == "code" && len(res.HostPub) > 0 && c.knownGet(d.ID) == "" {
 			c.knownSet(d.ID, pake.KeyFingerprint(res.HostPub))
 		}
 		r.mu.Lock()
@@ -199,6 +231,63 @@ func (r *sendOpRun) start(c *config, q sendReq) error {
 		}
 		r.notify()
 	})
+	return nil
+}
+
+// pick — окно выбора ОС: kind "file" | "dir"; итог — {token, name, dir} или nil (отмена). Путь странице не отдаётся.
+func (r *sendOpRun) pick(kind string) (any, error) {
+	f := map[string]func(context.Context) (string, bool){"file": sendPickFile, "dir": sendPickDir}[kind]
+	if f == nil {
+		return nil, errSendArgs
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	p, ok := f(ctx)
+	if !ok {
+		return nil, nil
+	}
+	b := make([]byte, 16)
+	rand.Read(b)
+	tok := hex.EncodeToString(b)
+	now := time.Now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.picks == nil {
+		r.picks = map[string]sendPicked{}
+	}
+	for t, x := range r.picks {
+		if now.Sub(x.at) > sendPickTTL {
+			delete(r.picks, t)
+		}
+	}
+	for len(r.picks) >= sendPickMax { // давние уходят
+		old := ""
+		for t, x := range r.picks {
+			if old == "" || x.at.Before(r.picks[old].at) {
+				old = t
+			}
+		}
+		delete(r.picks, old)
+	}
+	r.picks[tok] = sendPicked{path: p, dir: kind == "dir", at: now}
+	return map[string]any{"token": tok, "name": filepath.Base(p), "dir": kind == "dir"}, nil
+}
+
+// resolve — метки q.Picks → q.Files, q.Dirs; неизвестная или устаревшая — errSendPick (метки не расходуются).
+func (r *sendOpRun) resolve(q *sendReq) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, t := range q.Picks {
+		x, ok := r.picks[t]
+		if !ok || time.Since(x.at) > sendPickTTL {
+			return errSendPick
+		}
+		if x.dir {
+			q.Dirs = append(q.Dirs, x.path)
+		} else {
+			q.Files = append(q.Files, x.path)
+		}
+	}
 	return nil
 }
 
@@ -242,7 +331,7 @@ func (r *sendOpRun) snapLocked() map[string]any {
 	if o.err != nil {
 		m["err"] = sendErrCode(o.err)
 	}
-	if o.state == "done" {
+	if o.state != "run" { // и после ошибки/отмены: сколько уже доставлено
 		m["files"], m["bytes"], m["text"] = o.res.Files, o.res.Bytes, o.res.Text
 	}
 	if o.state != "run" {
@@ -286,11 +375,22 @@ func sendCall(c *config, name string, args []json.RawMessage) (any, error) {
 	switch name {
 	case "sendStart":
 		var q sendReq
-		if len(args) < 1 || json.Unmarshal(args[0], &q) != nil {
+		var dec *json.Decoder
+		if len(args) > 0 {
+			dec = json.NewDecoder(bytes.NewReader(args[0]))
+			dec.DisallowUnknownFields() // "files", "dirs" строками путей — отказ
+		}
+		if dec == nil || dec.Decode(&q) != nil {
 			err = errSendArgs
 		} else {
 			err = sendOps.start(c, q)
 		}
+	case "sendPick":
+		var kind string
+		if len(args) > 0 {
+			json.Unmarshal(args[0], &kind)
+		}
+		res, err = sendOps.pick(kind)
 	case "sendState":
 		res = sendOps.snap()
 	case "sendCancel":

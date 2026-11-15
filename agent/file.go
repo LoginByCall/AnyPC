@@ -89,7 +89,8 @@ func relBidi(r rune) bool { return r >= 0x202A && r <= 0x202E || r >= 0x2066 && 
 // Отказ (errRel): пусто, длиннее relMaxLen, не UTF-8; "\" и ":" где угодно (UNC, \\?\, «C:», потоки NTFS «a:b»);
 // меньше двух или больше relMaxDepth составляющих; пустая составляющая (абсолютный путь, «//»), «.», «..», только
 // точки и пробелы, длиннее relMaxComp; управляющие C0, DEL, C1; подмены направления; имена устройств Windows (CON,
-// NUL.txt, COM1…); папка «.anypc-…» (место частей докачки). Запрещённые в Windows «<>"|?*» → «_», точки и пробелы в
+// NUL.txt, COM1…); папка «.anypc-…» в любом регистре (место частей докачки). Запрещённые в Windows «<>"|?*», прочие
+// форматные (Cf: U+200B, U+200E/F, U+061C, U+FEFF…) и разделители строк U+2028/2029 → «_», точки и пробелы в
 // конце составляющей отбрасываются (Windows их срезает сам — имена совпали бы иначе молча: совпадения — «(1)»).
 func safeRel(p string) ([]string, error) {
 	if p == "" || len(p) > relMaxLen || !utf8.ValidString(p) || strings.ContainsAny(p, `\:`) {
@@ -109,12 +110,12 @@ func safeRel(p string) ([]string, error) {
 			}
 		}
 		c = strings.TrimRight(strings.Map(func(r rune) rune {
-			if strings.ContainsRune(`<>"|?*`, r) {
+			if strings.ContainsRune(`<>"|?*`, r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) { // как safeName: U+200B, U+200E/F, U+061C, U+FEFF, U+2028/9
 				return '_'
 			}
 			return r
 		}, c), ". ")
-		if c == "" || reserved.MatchString(strings.ToUpper(strings.SplitN(c, ".", 2)[0])) || i == 0 && strings.HasPrefix(c, ".anypc-") {
+		if c == "" || reserved.MatchString(strings.ToUpper(strings.SplitN(c, ".", 2)[0])) || i == 0 && strings.HasPrefix(strings.ToLower(c), ".anypc-") {
 			return nil, errRel
 		}
 		parts[i] = c
@@ -182,7 +183,7 @@ func placeIn(dir, part string, rel []string) (string, error) {
 			n = fmt.Sprintf("%s (%d)%s", stem, i, ext)
 		}
 		dst := filepath.Join(sub, n)
-		err := root.Link(part, dst)
+		err := rootLink(root, part, dst)
 		if err == nil {
 			root.Remove(part) // не удалилась — уберёт cleanParts
 			return filepath.Join(dir, dst), nil
@@ -190,12 +191,42 @@ func placeIn(dir, part string, rel []string) (string, error) {
 		if errors.Is(err, os.ErrExist) {
 			continue
 		}
-		if _, e := root.Lstat(dst); !errors.Is(e, os.ErrNotExist) { // FAT/exFAT без жёстких ссылок: Rename — только на свободное
+		// FAT/exFAT, SMB без жёстких ссылок: файл — новый (O_EXCL: одноимённый, появившийся сейчас, не перезаписать), копия части
+		switch err := copyExcl(root, part, dst); {
+		case err == nil:
+			root.Remove(part)
+			return filepath.Join(dir, dst), nil
+		case errors.Is(err, os.ErrExist):
 			continue
+		default:
+			return "", err
 		}
-		return filepath.Join(dir, dst), root.Rename(part, dst)
 	}
 	return "", errors.New("нет свободного имени")
+}
+
+// rootLink — жёсткая ссылка внутри root (подмена — в тестах: ФС без жёстких ссылок).
+var rootLink = func(r *os.Root, oldname, newname string) error { return r.Link(oldname, newname) }
+
+// copyExcl — part → новый dst (O_EXCL; есть — os.ErrExist), внутри root; ошибка копии — dst удалён.
+func copyExcl(root *os.Root, part, dst string) error {
+	src, err := root.Open(part)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	out, err := root.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(out, src)
+	if e := out.Close(); err == nil {
+		err = e
+	}
+	if err != nil {
+		root.Remove(dst)
+	}
+	return err
 }
 
 // freePath — dir/name, а если занято — "name (1).ext", "name (2).ext"…
@@ -213,19 +244,9 @@ func freePath(dir, name string) string {
 
 // place переносит part в свободное имя dir/name. Link, в отличие от Rename, не перезаписывает файл,
 // появившийся между проверкой freePath и переносом (другой приём, пользователь): занято → следующее имя.
+// Часть лежит в dir; перенос — placeIn (os.Root dir; без жёстких ссылок — копия в новый файл O_EXCL, не Rename поверх).
 func place(part, dir, name string) (string, error) {
-	for range 100 {
-		dst := freePath(dir, name)
-		err := os.Link(part, dst)
-		if err == nil {
-			os.Remove(part) // не удалилась — уберёт cleanParts
-			return dst, nil
-		}
-		if !errors.Is(err, os.ErrExist) { // FAT/exFAT, SMB без жёстких ссылок — как раньше
-			return dst, os.Rename(part, dst)
-		}
-	}
-	return "", errors.New("нет свободного имени")
+	return placeIn(dir, filepath.Base(part), []string{name})
 }
 
 func (a *Agent) fileDir() string {

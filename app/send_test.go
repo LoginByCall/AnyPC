@@ -83,14 +83,57 @@ func TestSendAPI(t *testing.T) {
 	var events []map[string]any
 	sendOps.watch(func(m map[string]any) { mu.Lock(); events = append(events, m); mu.Unlock() })
 	last := func() agent.SendDial { mu.Lock(); defer mu.Unlock(); return got[len(got)-1] }
+	picked := "/секрет/путь.txt"
+	sendPickFile = func(context.Context) (string, bool) { return picked, picked != "" }
+	sendPickDir = func(context.Context) (string, bool) { return "/секрет/Папка", true }
+	defer func() { sendPickFile, sendPickDir = agent.PickFile, agent.PickDir }()
+	pick := func(kind string) string {
+		t.Helper()
+		v, err := callSend(n, "sendPick", kind)
+		m, _ := v.(map[string]any)
+		j, _ := json.Marshal(v)
+		if err != nil || m["token"] == nil || strings.Contains(string(j), "секрет/") {
+			t.Fatalf("выбор %s: %s %v", kind, j, err)
+		}
+		return m["token"].(string)
+	}
 
-	// свой ПК: ключ из M, без кода и known
-	if _, err := callSend(n, "sendStart", map[string]any{"id": p.id(), "files": []string{"/секрет/путь.txt"}, "code": "лишний"}); err != nil {
+	// пути строкой страница не передаёт (решение координатора, A13)
+	for _, req := range []map[string]any{{"id": p.id(), "files": []string{"/etc/passwd"}}, {"id": p.id(), "dirs": []string{"/home"}}} {
+		if _, err := callSend(n, "sendStart", req); err == nil || err.Error() != "send:args" {
+			t.Fatalf("путь строкой %v: %v", req, err)
+		}
+	}
+	if _, err := callSend(n, "sendStart", map[string]any{"id": p.id(), "picks": []string{"00112233445566778899aabbccddeeff"}}); err == nil || err.Error() != "send:pick" {
+		t.Fatalf("чужая метка: %v", err)
+	}
+	if v, err := callSend(n, "sendPick", "x"); err == nil || v != nil {
+		t.Fatalf("вид выбора: %v %v", v, err)
+	}
+	picked = ""
+	if v, err := callSend(n, "sendPick", "file"); err != nil || v != nil {
+		t.Fatalf("отмена выбора: %v %v", v, err)
+	}
+	picked = "/секрет/путь.txt"
+	n.knownSet(p.id(), "старый отпечаток") // свой ПК — ключ из M, known не передаётся
+
+	// свой ПК: ключ из M, без кода и known; метки → пути; метка израсходована
+	ft, dt := pick("file"), pick("dir")
+	if _, err := callSend(n, "sendStart", map[string]any{"id": "111222333", "picks": []string{ft}}); err == nil || err.Error() != "send:known" {
+		t.Fatal(err)
+	}
+	if _, err := callSend(n, "sendStart", map[string]any{"id": p.id(), "picks": []string{ft, dt}, "code": "лишний"}); err != nil {
 		t.Fatal(err)
 	}
 	sendIdle(t)
 	if d := last(); !bytes.Equal(d.HostPub, cfgPub(p)) || d.Code != "" || d.Known != "" || d.From != n.id() || !bytes.Equal(d.Key, n.key()) {
 		t.Fatalf("свой ПК: %+v", d)
+	}
+	if d := last(); len(d.Files) != 1 || d.Files[0] != picked || len(d.Dirs) != 1 || d.Dirs[0] != "/секрет/Папка" {
+		t.Fatalf("метки: %q %q", d.Files, d.Dirs)
+	}
+	if _, err := callSend(n, "sendStart", map[string]any{"id": p.id(), "picks": []string{ft}}); err == nil || err.Error() != "send:pick" {
+		t.Fatalf("метка второй раз: %v", err)
 	}
 	st, _ := callSend(n, "sendState")
 	m := st.(map[string]any)
@@ -126,9 +169,9 @@ func TestSendAPI(t *testing.T) {
 		req  map[string]any
 		code string
 	}{
-		{map[string]any{"id": "111222333", "files": []string{"a"}}, "send:known"},
-		{map[string]any{"id": n.id(), "files": []string{"a"}}, "send:self"},
-		{map[string]any{"id": "12", "files": []string{"a"}}, "send:id"},
+		{map[string]any{"id": "111222333", "text": "a"}, "send:known"},
+		{map[string]any{"id": n.id(), "text": "a"}, "send:self"},
+		{map[string]any{"id": "12", "text": "a"}, "send:id"},
 		{map[string]any{"id": fid}, "send:empty"},
 		{map[string]any{"id": fid, "text": "a", "clip": true}, "send:both"},
 	} {
@@ -175,6 +218,48 @@ func TestSendAPI(t *testing.T) {
 		t.Fatalf("журнал:\n%s", s)
 	}
 	close(block)
+
+	// свой ПК без known: ключ из M в known не пишется (запоминается только доказанный кодом)
+	n.knownSet(p.id(), "")
+	if _, err := callSend(n, "sendStart", map[string]any{"id": p.id(), "text": "т"}); err != nil {
+		t.Fatal(err)
+	}
+	sendIdle(t)
+	if k := n.knownGet(p.id()); k != "" {
+		t.Fatalf("known своего ПК: %q", k)
+	}
+
+	// код при уже запомненном ключе: Known передаётся (другой ключ — отказ ядра), запись не перезаписывается
+	n.knownSet(fid, "свой отпечаток")
+	if _, err := callSend(n, "sendStart", map[string]any{"id": fid, "code": "1", "text": "т"}); err != nil {
+		t.Fatal(err)
+	}
+	sendIdle(t)
+	if d := last(); d.Known != "свой отпечаток" || n.knownGet(fid) != "свой отпечаток" {
+		t.Fatalf("код при known: %+v, known %q", d, n.knownGet(fid))
+	}
+	// отказ после доказательства (HostPub есть) — ключ запомнен, итог с доставленным; без доказательства — нет
+	sendRun = func(ctx context.Context, d agent.SendDial) (agent.SendResult, error) {
+		res := agent.SendResult{Files: 2, Bytes: 7}
+		if d.Text == "доказан" {
+			res.HostPub = other.Public().(ed25519.PublicKey)
+		}
+		return res, fmt.Errorf("%w: /home/секрет/x", agent.ErrRecvOldDirs)
+	}
+	for _, c := range []struct{ id, text, known string }{{"222333444", "доказан", fp}, {"333444555", "нет", ""}} {
+		if _, err := callSend(n, "sendStart", map[string]any{"id": c.id, "code": "1", "text": c.text}); err != nil {
+			t.Fatal(err)
+		}
+		sendIdle(t)
+		st, _ := callSend(n, "sendState")
+		m := st.(map[string]any)
+		if n.knownGet(c.id) != c.known || m["state"] != "err" || m["err"] != "olddirs" || m["files"] != 2 || m["bytes"] != int64(7) {
+			t.Fatalf("%s: known %q, %v", c.text, n.knownGet(c.id), m)
+		}
+	}
+	if s := logs.String(); strings.Contains(s, "секрет") || !strings.Contains(s, "ошибка olddirs") {
+		t.Fatalf("журнал ошибки:\n%s", s)
+	}
 }
 
 // TestSendErrCode — ошибки ядра → коды окна.
@@ -188,6 +273,7 @@ func TestSendErrCode(t *testing.T) {
 		&agent.RecvError{Code: "denied"}:            "denied",
 		fmt.Errorf("x: %w", os.ErrNotExist):         "nofile",
 		agent.ErrRecvKnown:                          "known",
+		agent.ErrSendRoot:                           "root",
 		context.Canceled:                            "cancel",
 		errors.New("open /home/секрет: что-то ещё"): "other",
 	} {

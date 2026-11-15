@@ -41,7 +41,23 @@ func openClip() error {
 func ClipSeq() uint32 { r, _, _ := pClipSeq.Call(); return uint32(r) }
 
 // ClipText — текст из буфера обмена ("" — текста нет).
-func ClipText() (string, error) {
+func ClipText() (string, error) { return clipTextN(ClipMax + 1) }
+
+// errClipLong — буфер длиннее предела «Отправить» (1 МБ): не обрезать молча.
+var errClipLong = errors.New("буфер обмена больше 1 МБ")
+
+// clipReadFull — буфер целиком для «Отправить» (send.go): до 1 Мi знаков UTF-16, больше — errClipLong.
+func clipReadFull() (string, error) {
+	const lim = 1 << 20
+	s, err := clipTextN(lim + 1)
+	if err == nil && len(syscall.StringToUTF16(s))-1 > lim {
+		return "", errClipLong
+	}
+	return s, err
+}
+
+// clipTextN — текст буфера, не больше lim знаков UTF-16.
+func clipTextN(lim int) (string, error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	if err := openClip(); err != nil {
@@ -58,7 +74,7 @@ func ClipText() (string, error) {
 	}
 	defer pGUnlock.Call(h)
 	size, _, _ := pGSize.Call(h) // текст без NUL (его кладёт любое приложение) — не читать за блоком
-	n, lim := 0, min(ClipMax+1, int(size/2))
+	n, lim := 0, min(lim, int(size/2))
 	for n < lim && *(*uint16)(unsafe.Add(ptr(p), n*2)) != 0 {
 		n++
 	}
