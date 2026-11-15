@@ -113,6 +113,14 @@ type Agent struct {
 	// членом ≠ поручитель ещё не было): "b" паролем — "denied" с why "wait" без счёта неудач. Сверка, вход ключом и
 	// по пропуску — мимо. nil — не закрывать.
 	LoginShut func(user string) bool
+	// Ч10.1, приём на хосте (recv.go). CodeMode — запись по умолчанию сейчас — одноразовый код (режим «Спрашивать»):
+	// только тогда чужой ПК присылает разовым кодом; nil — нет. RecvPinned — ключ отправителя закреплён (id, name —
+	// закреплённые: только они идут в окно); RecvPin — закрепить ключ после приёма разовым кодом (id, name — заявленные, очищены rxClaim);
+	// RecvAsk — окно «Принять?» (AskRecv, не дольше AskTimeout). RecvPinned или RecvAsk nil — чужим без кода отказ.
+	CodeMode   func() bool
+	RecvPinned func(pub []byte) (id, name string, ok bool)
+	RecvPin    func(pub []byte, id, name string)
+	RecvAsk    func(q RecvReq) bool
 
 	mu          sync.Mutex
 	ice         []webrtc.ICEServer
@@ -136,6 +144,11 @@ type Agent struct {
 	offRej      int                    // Э3: отказов «снять» через хаб с offRejAt (журнал раз в минуту, pass.go)
 	offRejAt    time.Time
 	noOffMsg    bool // тест: хост старой версии — «снять» сообщением не объявляет
+
+	recvs   map[*session]bool      // Ч10.1: сессии приёма (recv.go, не больше rxMaxSess); вне pend и syncs
+	rxRate  map[string][]time.Time // Ч10.1: ключ отправителя → начала его сессий приёма за rxRatePer
+	rxParts int64                  // Ч10.1: заявленный размер открытых .part сессий приёма (не больше rxPartMax)
+	noRecv  bool                   // тест: хост старой версии — приём не объявляет
 
 	syncs  map[string]*session  // Э4: ключ члена → его соединение сверки (одно; nil — пока шлётся offer), spsync.go
 	sxSeen map[string]time.Time // Э4в: соли открытых sx → до какого времени помнить (повтор хабом, spseal.go)
@@ -205,8 +218,9 @@ type session struct {
 	stateAt   time.Time             // когда state последний раз уходил клиенту (повтор — repeatState)
 	twcc      atomic.Bool           // от клиента пришёл первый отчёт TWCC (в журнал — один раз)
 
-	sy   atomic.Pointer[spSync] // Э4: соединение сверки (syncConnect, spsync.go); nil — нет
-	seal *sxSeal                // Э4в: ответ в "sx" первого "a" (spseal.go); nil — случайные байты
+	sy   atomic.Pointer[spSync]  // Э4: соединение сверки (syncConnect, spsync.go); nil — нет
+	rx   atomic.Pointer[rxState] // Ч10.1: сессия приёма (recv.go); nil — нет. Не входит: authed не ставится
+	seal *sxSeal                 // Э4в: ответ в "sx" первого "a" (spseal.go); nil — случайные байты
 }
 
 // monitor — выбранный монитор для пересчёта координат мыши (nil — мониторов не знаем).
@@ -301,6 +315,14 @@ type authMsg struct {
 	// Why — причина отказа: в "nokey" — "none" (ключа нет в списке входа без пароля этой записи: на хосте его
 	// отзывать незачем; старый хост поле не шлёт); в "denied" — "wait" (LoginShut).
 	Why string `json:"why,omitempty"`
+
+	// Ч10.1, приём (recv.go): recv — в первом "a" хост понимает приём, в "b" — соединение приёма; from, name — в "b"
+	// заявленные ID и имя отправителя; в "rx" хоста: ask — первое принимаемое спросит «Принять?», lim — потолки.
+	Recv bool      `json:"recv,omitempty"`
+	From string    `json:"from,omitempty"`
+	Name string    `json:"name,omitempty"`
+	Ask  bool      `json:"ask,omitempty"`
+	Lim  *rxLimits `json:"lim,omitempty"`
 }
 
 // ctlMsg — канал "ctl": {"t":"clip","text":"…"} — буфер обмена в обе стороны (REQ-F-11);
@@ -465,6 +487,9 @@ func (a *Agent) Disconnect() {
 // панель сам, старый клиент остаётся с кнопками, но ввод хост не принимает. Ещё не вошедшую не трогать — accept сам
 // выставит ей просмотр.
 func (a *Agent) ViewOnlyChanged(on bool) {
+	if on {
+		a.rxPrune() // Ч10.1: «Только показ экрана» рвёт и сессии приёма (Windows — без опроса настроек)
+	}
 	a.mu.Lock()
 	s := a.sess
 	a.mu.Unlock()
@@ -505,6 +530,7 @@ func (s *session) sendMode(m modeMsg) {
 // войдёт по тем данным, что были, и следующий вызов её разорвёт.
 func (a *Agent) DropRevoked() {
 	a.passPrune() // Э3: пропуска исключённых из M и при «Спрашивать» — вон сразу (pass.go)
+	a.rxPrune()   // Ч10.1: сессии приёма исключённых и откреплённых ключей (recv.go)
 	a.mu.Lock()
 	s := a.sess
 	a.mu.Unlock()
@@ -656,8 +682,12 @@ func (a *Agent) release(s *session) {
 	}
 	delete(a.pend, s)
 	delete(a.offs, s)
+	delete(a.recvs, s)
 	a.syncDrop(s)
 	a.mu.Unlock()
+	if rx := s.rx.Load(); rx != nil {
+		rx.end()
+	}
 	if used && a.CodeUsed != nil {
 		go a.codeUsed()
 	}
@@ -717,6 +747,11 @@ func (a *Agent) byCID(cid string) *session {
 	}
 	for _, s := range a.syncs {
 		if s != nil && s.cid == cid {
+			return s
+		}
+	}
+	for s := range a.recvs {
+		if s.cid == cid {
 			return s
 		}
 	}
@@ -1343,7 +1378,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		st, view, s.salt = state, v, salt
 		s.mu.Unlock()
 		send(authMsg{T: "a", Salt: salt, Msg: msgA, Users: true, Keys: a.KeyLogin != nil, Space: a.SpaceGet != nil, Pass: a.SpaceMember != nil, Sync: a.SpaceSync != nil,
-			SX: s.seal.answer(fpClient, fpHost)}) // Э4в: у каждой сессии, у сверки — статус (spseal.go)
+			SX: s.seal.answer(fpClient, fpHost), Recv: !a.noRecv}) // Э4в: sx у каждой сессии, у сверки — статус (spseal.go); Ч10.1: приём (recv.go)
 	})
 	ch.OnMessage(func(msg webrtc.DataChannelMessage) {
 		var m authMsg
@@ -1391,7 +1426,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 			}
 			return
 		}
-		if !bad && m.T == "sp" && s.sy.Load() != nil { // Э4: обмен сверки после "b" (spsync.go)
+		if !bad && m.T == "sp" && s.sy.Load() != nil && s.rx.Load() == nil { // Э4: обмен сверки после "b" (spsync.go)
 			a.syncMsg(s, msg.Data, func(v any) { b, _ := json.Marshal(v); ch.SendText(string(b)) })
 			return
 		}
@@ -1404,11 +1439,20 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		}
 		// Э4: соединение сверки — только доказательство ключей (spsync.go)
 		if s.sy.Load() != nil {
-			a.syncB(s, m, pake.ClientVerify(m.CPub, m.CSig, a.ID, fpc, fph), fpc, fph, func(v any) { b, _ := json.Marshal(v); ch.SendText(string(b)) })
+			keyOK, send := pake.ClientVerify(m.CPub, m.CSig, a.ID, fpc, fph), func(v any) { b, _ := json.Marshal(v); ch.SendText(string(b)) }
+			if m.Recv && !a.noRecv { // Ч10.1: приём со своего ПК (recv.go)
+				a.recvMember(ctx, s, m, keyOK, fpc, fph, send)
+			} else {
+				a.syncB(s, m, keyOK, fpc, fph, send)
+			}
 			return
 		}
 		keyOK := pake.ClientVerify(m.CPub, m.CSig, a.ID, fpc, fph) // клиент владеет ключом cpub
-		if m.Off || s.offOnly {                                    // Э3: «снять» — не вход: ни счёта неудач, ни блокировки; соединение «снять» входа не даёт
+		if m.Recv && !a.noRecv && !s.offOnly {                     // Ч10.1: приём с чужого ПК — не вход (recv.go)
+			a.recvB(ctx, s, m, cur, keyOK, user, fpc, fph, send)
+			return
+		}
+		if m.Off || s.offOnly { // Э3: «снять» — не вход: ни счёта неудач, ни блокировки; соединение «снять» входа не даёт
 			a.passOff(s, m, keyOK, fpc, fph, send)
 			return
 		}
@@ -1623,7 +1667,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		}()
 	})
 	time.AfterFunc(authWait, func() {
-		if !s.authed.Load() && !s.asking.Load() {
+		if !s.authed.Load() && !s.asking.Load() && s.rx.Load() == nil { // приём закрывает rxWatch
 			s.pc.Close()
 		}
 	})
@@ -1733,7 +1777,14 @@ const (
 // clientChannel — канал, открытый клиентом: только файлы и только после входа. В «только просмотр» — внятный отказ:
 // клиенты ≤ v0.1.15 кнопку файлов не прячут, а молча закрытый канал они показывали как обрыв «отправьте ещё раз».
 func (a *Agent) clientChannel(s *session, dc *webrtc.DataChannel, recv *atomic.Int32) {
+	rx := s.rx.Load()
 	switch {
+	case rx != nil && dc.Label() == "file": // Ч10.1: сессия приёма — только файлы и текст (recv.go)
+		a.receiveFile(dc, recv, s)
+	case rx != nil && dc.Label() == "text":
+		a.receiveText(dc, s, rx)
+	case rx != nil:
+		dc.OnOpen(func() { dc.Close() })
 	case dc.Label() == "file" && s.control():
 		a.receiveFile(dc, recv, s)
 	case dc.Label() == "file" && s.authed.Load():
