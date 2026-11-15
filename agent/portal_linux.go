@@ -6,11 +6,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,9 +30,10 @@ type portal struct {
 	obj     dbus.BusObject
 	session dbus.ObjectPath
 	node    uint32
-	w, h    float64 // размер потока по порталу (props size; у GNOME — логический) — граница его check_position
-	x, y    int32   // логическое положение потока (props position) — по нему ищем монитор в mutterScale
-	ptr     ptrMap  // пересчёт точки мыши в вызовы портала (pointer_linux.go)
+	w, h    float64                                // размер потока по порталу (props size; у GNOME — логический) — граница его check_position
+	x, y    int32                                  // логическое положение потока (props position) — по нему ищем монитор в mutterScale
+	ptr     ptrMap                                 // пересчёт точки мыши в вызовы портала (pointer_linux.go)
+	call    func(method string, args ...any) error // тесты: вместо D-Bus
 	fd      int
 	closed  atomic.Bool
 	wheelV  int32
@@ -144,12 +143,7 @@ func (p *portal) start() error {
 	if err := p.parseStream(res["streams"].Value()); err != nil {
 		return err
 	}
-	k, from := mutterScale(p.conn, p.x, p.y), "mutter"
-	if v, err := strconv.ParseFloat(os.Getenv("ANYPC_POINTER_SCALE"), 64); err == nil && v > 0 { // ручка калибровки
-		k, from = v, "ANYPC_POINTER_SCALE"
-	}
-	p.ptr = ptrMap{w: p.w, h: p.h, k: k, trace: os.Getenv("ANYPC_POINTER_LOG") != ""}
-	log.Print("портал: " + p.ptr.describe(from))
+	p.ptr = newPtrMap(p.w, p.h, mutterScale(p.conn, p.x, p.y))
 	var fd dbus.UnixFD
 	if err := p.obj.Call(pSC+".OpenPipeWireRemote", 0, p.session, vmap{}).Store(&fd); err != nil {
 		return err
@@ -266,6 +260,9 @@ func gstTail(c Cap) string {
 
 // notify — ввод через портал; без ожидания ответа, порядок сохраняется соединением D-Bus.
 func (p *portal) notify(method string, args ...any) error {
+	if p.call != nil {
+		return p.call(method, args...)
+	}
 	return p.obj.Call(pRD+"."+method, dbus.FlagNoReplyExpected, append([]any{p.session, vmap{}}, args...)...).Err
 }
 
@@ -305,9 +302,11 @@ func (p *portal) input(e event, _ *Monitor) error {
 	default:
 		for i, btn := range []int32{0x110, 0x112, 0x111} { // BTN_LEFT, BTN_MIDDLE, BTN_RIGHT — как btnFlags
 			if f&btnFlags[i][1] != 0 {
+				p.ptr.held |= 1 << i
 				return p.notify("NotifyPointerButton", btn, uint32(1))
 			}
 			if f&btnFlags[i][0] != 0 {
+				p.ptr.held &^= 1 << i
 				return p.notify("NotifyPointerButton", btn, uint32(0))
 			}
 		}
