@@ -104,6 +104,8 @@ func TestTrustCtl(t *testing.T) {
 		{name: "Спрашивать во время", user: "ivan", key: e2eSeed(), mid: func() { unatt.Store(false); ks.mu.Lock(); ks.ask = true; ks.mu.Unlock() }, okTrust: true, send: []string{trust, trust}, want: []string{"ask", "again"}},
 		{name: "исключён", user: "ivan", key: e2eSeed(), mid: func() { gone.Store(true) }, okTrust: true, send: []string{trust}, want: []string{"gone"}},
 		{name: "не добавился", user: "ivan", key: e2eSeed(), mid: func() { refuse.Store(true) }, okTrust: true, send: []string{trust}, want: []string{"gone"}, added: 1},
+		{name: "ключ у другой записи", user: "ivan", key: e2eSeed(), mid: func() { refuse.Store(true); ks.mu.Lock(); ks.keys[""] = [][]byte{pub}; ks.mu.Unlock() }, okTrust: true, send: []string{trust}, want: []string{"gone"}, added: 1},
+		{name: "вход ключом выключен после KeyTrust", user: "ivan", key: e2eSeed(), mid: func() { ks.mu.Lock(); ks.ask = true; ks.mu.Unlock() }, okTrust: true, send: []string{trust}, want: []string{"gone"}, added: 1, keyAfter: true},
 		{name: "хост без ключей", user: "ivan", key: e2eSeed(), noKeys: true, send: []string{trust}, want: []string{"rights"}},
 	}
 	for _, c := range cases {
@@ -225,5 +227,96 @@ func TestTrustCtlLog(t *testing.T) {
 	}
 	if l := logs.String(); !strings.Contains(l, "ключ "+got[0].FP[:9]+" во входе без пароля") || strings.Contains(l, "ivan-pass1") || strings.Contains(l, ivan.secret) {
 		t.Errorf("журнал:\n%s", l)
+	}
+}
+
+// TestTrustCtlMore — сценарии приёмки Ч7б: пароль сменили и TOTP сняли во время сессии; «Только показ экрана» и
+// запись «просмотр» trust не запрещают (как в "b"); cpub "" — не тот ключ, null — как без поля; журнал — только
+// отказы после «одного на сессию» (поток отказов до него журнал не засоряет).
+func TestTrustCtlMore(t *testing.T) {
+	k, _ := pake.ClientSignB64(e2eSeed(), "", "", "")
+	pub, _ := base64.StdEncoding.DecodeString(k["pub"])
+	ivan := &otpHost{secret: totp.NewSecret()}
+	hosts := usersHost(map[string]testUser{"": {pass: "secret123", otp: &otpHost{secret: totp.NewSecret()}}, "ivan": {pass: "ivan-pass1", otp: ivan, view: true}})
+	defer func() { e2eReset(); e2eCtl, e2eNoVideo = nil, false }()
+	e2eNoVideo = true
+	var pwChanged, noTOTP, viewOnly atomic.Bool
+	ks := &keyStore{}
+	many, manyW := make([]string, 300), make([]string, 300)
+	for i := range many {
+		many[i], manyW[i] = `{"t":"trust","cpub":"AAAA"}`, "key"
+	}
+	for _, c := range []struct {
+		name string
+		mid  func()
+		send []string
+		want []string
+		in   bool
+		logs int // строк журнала «отказ (»
+	}{
+		{name: "пароль сменили", mid: func() { pwChanged.Store(true) }, send: []string{`{"t":"trust"}`, `{"t":"trust"}`}, want: []string{"gone", "again"}, logs: 1},
+		{name: "TOTP сняли", mid: func() { noTOTP.Store(true) }, send: []string{`{"t":"trust"}`}, want: []string{"ask"}, logs: 1},
+		{name: "Только показ экрана и запись просмотр", mid: func() { viewOnly.Store(true) }, send: []string{`{"t":"trust"}`}, want: []string{"ok"}, in: true},
+		{name: "cpub пустой, null", send: []string{`{"t":"trust","cpub":""}`, `{"t":"trust","cpub":null}`}, want: []string{"key", "ok"}, in: true},
+		{name: "поток отказов", send: many, want: manyW},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			pwChanged.Store(false)
+			noTOTP.Store(false)
+			viewOnly.Store(false)
+			ks.set("ivan")
+			var logs syncBuf
+			log.SetOutput(&logs)
+			defer log.SetOutput(os.Stderr)
+			e2eAgent = func(a *Agent) {
+				hosts(a)
+				sec := a.Secret
+				a.Secret = func(n string) ([]byte, []byte, bool) {
+					s, h, v := sec(n)
+					if pwChanged.Load() {
+						s = []byte("another-salt-012")
+					}
+					return s, h, v
+				}
+				otp := a.OTP
+				a.OTP = func(n, code string) (bool, bool) {
+					if noTOTP.Load() {
+						return false, false
+					}
+					return otp(n, code)
+				}
+				a.ViewOnly = viewOnly.Load
+				a.Unattended = func() bool { return true }
+				a.Confirm = func(string, string) Answer { return Allow }
+				a.KeyLogin, a.KeyTrust = ks.login, ks.add
+			}
+			e2eUser, e2eGood, e2eKey = "ivan", "ivan-pass1", e2eSeed()
+			e2eOTP = func(int) string { ivan.mu.Lock(); ivan.last = 0; ivan.mu.Unlock(); return ivan.code() }
+			var got []trustMsg
+			e2eCtl = func(t *testing.T, dc *webrtc.DataChannel, _ chan ctlMsg) {
+				if c.mid != nil {
+					c.mid()
+				}
+				got = trustSend(t, dc, c.send...)
+			}
+			e2e(t, local(t), "123456789", false, nil, "ivan-pass1")
+			if len(got) != len(c.want) {
+				t.Fatalf("ответов %d: %+v", len(got), got)
+			}
+			for i, w := range c.want {
+				if g := got[i]; w == "ok" && !g.OK || w != "ok" && (g.OK || g.Why != w) {
+					t.Errorf("ответ %d: %+v, ждали %q", i, g, w)
+				}
+			}
+			if in := ks.in(pub, "ivan"); in != c.in {
+				t.Errorf("ключ во входе: %v, ждали %v", in, c.in)
+			}
+			if ks.in(pub, "") {
+				t.Error("ключ попал в запись по умолчанию")
+			}
+			if n := strings.Count(logs.String(), "отказ ("); n != c.logs {
+				t.Errorf("строк журнала об отказе %d, ждали %d", n, c.logs)
+			}
+		})
 	}
 }

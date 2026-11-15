@@ -116,6 +116,26 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   console.log('nonekey=' + await until(s => s.includes('rror')) + '|' + await ev(login));
   // Ч7б: хост с trust в «ok» — «Добавить» шлёт ctl trust в этой же сессии: ни разрыва, ни нового кода
   await ev("stripTrust = false; 1");
+  const star = async () => {
+    if (await ev("document.getElementById('starbtn').getAttribute('aria-pressed')") === 'true') await ev("document.getElementById('starbtn').click(); 1");
+    await ev("document.getElementById('starbtn').click(); 1");
+  };
+  const card = "[document.getElementById('mineq').checkVisibility(), document.getElementById('mineqb').textContent === t('c3_b') ? 'pw' : document.getElementById('mineqb').textContent === t('c3_b_on') ? 'on' : '?', document.getElementById('mineqrl').checkVisibility(), document.getElementById('mineqn').value, document.getElementById('mineqw').checkVisibility() ? document.getElementById('mineqw').textContent : '-'].join(',')";
+  const fake = r => "onCtl({ data: JSON.stringify(" + r + ") }, pc); 1";
+  // ответ trust до входа (шаг кода, authed нет) — ключ не включается; отказ хоста — карточка вариантом «Запомнить
+  // пароль» с тем же именем и причиной, ключ не включён; ☆ после отказа — тоже «Запомнить пароль»
+  await ev("document.getElementById('pw').value='secret123'; document.getElementById('go').click()");
+  await until(s => s.includes('|true|'));
+  await ev(fake("{ t: 'trust', ok: true }")); await sleep(300);
+  console.log('preauth=' + await ev(login));
+  await otp(); await until(s => s.endsWith('|true'));
+  await star();
+  await ev("window.so0 = ctl.send.bind(ctl); ctl.send = x => JSON.parse(x).t === 'trust' ? undefined : so0(x); document.getElementById('mineqn').value = 'Дом'; document.getElementById('mineqok').click(); 1");
+  await ev(fake("{ t: 'trust', why: 'ask' }")); await sleep(300);
+  console.log('refused=' + await ev(card) + '|' + await ev(login) + '|' + await ev("pc.mq.key"));
+  await ev("document.getElementById('mineqno').click(); 1"); await star();
+  console.log('refstar=' + await ev(card));
+  await ev("document.getElementById('bye').click()"); await sleep(300);
   await ev("document.getElementById('pw').value='secret123'; document.getElementById('go').click()");
   await otp(); await until(s => s.endsWith('|true'));
   if (await ev("document.getElementById('starbtn').getAttribute('aria-pressed')") === 'true') await ev("document.getElementById('starbtn').click(); 1");
@@ -124,6 +144,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await ev("window.p0 = pc; window.ts = []; const so = ctl.send.bind(ctl); ctl.send = x => { ts.push(JSON.parse(x).t); return so(x); }; document.getElementById('mineqn').value = 'Дом'; document.getElementById('mineqok').click(); 1");
   await sleep(1500);
   console.log('ctltrust=' + cq + '|' + await state() + '|' + await ev("pc === p0") + '|' + await ev("ts.join()") + '|' + await ev(login) + '|' + await ev(keyOn));
+  await star();
+  console.log('okstar=' + await ev(card) + '|' + await ev("pc.mq.key")); // после ключа ☆ — «уже включён», не «can»
   await ev("document.getElementById('bye').click()"); await sleep(300);
   await ev(go);
   console.log('ctlask=' + await until(s => s.includes('|true|')));
@@ -208,6 +230,10 @@ func TestBrowserKeyLogin(t *testing.T) {
 		"nopw=Enter the password|false|false",
 		"nonekey=Error: this PC’s key was not accepted: it was revoked, or the remote PC has no TOTP code or has “Ask before each connection” on — sign in with the password|false|false|[]\n",
 		"ctltrust=true,Next time — one click, no password, only the code from the app.,[[null,null]]||false|true|true|trust|[[true,\"\"]]|true\n", // сессия та же, кода не просили, ключ — один раз
+		"preauth=[[null,null]]\n", // trust до входа — мимо
+		"refused=true,pw,true,Дом,Sign-in without a password was not turned on: that PC now asks before each connection or has no app code.|[[null,null]]|\n",
+		"refstar=true,pw,true,,-\n",
+		"okstar=true,on,false,,-|on\n",
 		"ctlask=|true|false\n", // дальше — ключом: только код
 		"ctlkey=|false|true\n",
 	} {
