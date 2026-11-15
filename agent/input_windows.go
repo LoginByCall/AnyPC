@@ -141,6 +141,33 @@ func askMessageBox(cid, peer string) Answer {
 	})
 }
 
+// AskRecv — окно «Принять?» (Ч10.1, recv.go): как AskControl; запасное — MessageBox «Да / Нет» (Enter — «Нет»).
+func AskRecv(q RecvReq) bool {
+	lang := uiLang()
+	title, text, yes, no, _ := recvAskText(lang, q, false)
+	a, err := askTaskDialog(title, text, yes, no, "", AskTimeout, AskDelay, 0)
+	if err == nil {
+		return a == Allow
+	}
+	log.Printf("окно «Принять»: %v — запасное окно MessageBox", err)
+	p := user32.NewProc("MessageBoxTimeoutW")
+	if p.Find() != nil {
+		return false
+	}
+	title, text, _, _, hint := recvAskText(lang, q, true)
+	t, _ := syscall.UTF16PtrFromString(title)
+	const flags = 0x4 | 0x20 | 0x100 | 0x1000 | 0x10000 | 0x40000 // YESNO | ICONQUESTION | DEFBUTTON2 (Enter = «Нет») | SYSTEMMODAL | SETFOREGROUND | TOPMOST
+	return askLoop(func(left time.Duration, again bool) Answer {
+		body := text
+		if again {
+			body = "⚠ " + recvAsksOf(lang)[9] + "\n\n" + text
+		}
+		m, _ := syscall.UTF16PtrFromString(body + "\n\n" + hint)
+		r, _, _ := p.Call(0, uintptr(unsafe.Pointer(m)), uintptr(unsafe.Pointer(t)), flags, 0, uintptr(left/time.Millisecond))
+		return map[bool]Answer{true: Allow}[r == 6] // IDYES
+	}) == Allow
+}
+
 // AskControl — окно «Разрешить управление?» (смена режима сессии «Спрашивать»): как AskAccept, без «Только просмотр»;
 // запасное — MessageBox «Да / Нет» (Enter — «Нет»).
 func AskControl(cid, peer string) bool {
