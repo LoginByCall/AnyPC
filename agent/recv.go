@@ -741,16 +741,16 @@ type SendDial struct {
 
 // Испытательные подмены приёма (agent/recv_test.go); в рабочем пути — nil.
 var (
-	recvTestDC func(*webrtc.DataChannel)          // каналы хоста, кроме "auth" ("input", "ctl")
-	recvTestPC func(*webrtc.PeerConnection) error // после "rx" — вместо файлов и текста
-	sendNoFit  bool                               // не проверять план по lim: потолки проверяет хост
-	rxTestRx   func(m *authMsg, fpc, fph string)  // порча "rx" хоста (ключ, подпись, подтверждение кода)
+	recvTestDC func(*webrtc.DataChannel)                         // каналы хоста, кроме "auth" ("input", "ctl")
+	recvTestPC func(*webrtc.PeerConnection) error                // после "rx" — вместо файлов и текста
+	sendNoFit  bool                                              // не проверять план по lim: потолки проверяет хост
+	rxTestRx   atomic.Pointer[func(m *authMsg, fpc, fph string)] // порча "rx" хоста (ключ, подпись, подтверждение кода)
 )
 
 // rxTest — "rx" хоста через подмену rxTestRx (тесты проверок отправителя); в рабочем пути — как есть.
 func rxTest(m authMsg, fpc, fph string) authMsg {
-	if rxTestRx != nil {
-		rxTestRx(&m, fpc, fph)
+	if f := rxTestRx.Load(); f != nil && *f != nil {
+		(*f)(&m, fpc, fph)
 	}
 	return m
 }

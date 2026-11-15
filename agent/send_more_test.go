@@ -32,7 +32,7 @@ func TestSendHostProof(t *testing.T) {
 	r.mu.Unlock()
 	f := srcFile(t, "a.txt", []byte("x"))
 	_, other, _ := ed25519.GenerateKey(nil)
-	defer func() { rxTestRx = nil }()
+	defer rxTestRx.Store(nil)
 	flip := func(b []byte) []byte { b = bytes.Clone(b); b[0] ^= 1; return b }
 	cases := []struct {
 		name string
@@ -47,7 +47,7 @@ func TestSendHostProof(t *testing.T) {
 		}},
 	}
 	for _, c := range cases {
-		rxTestRx = c.hook
+		rxTestRx.Store(&c.hook)
 		res, err := SendTo(t.Context(), c.d)
 		if !errors.Is(err, ErrSpaceHostKey) || len(res.HostPub) != 0 || res.Files != 0 || len(r.files(t)) != 0 {
 			t.Errorf("%s: %v, ключ %x, файлов %d %v", c.name, err, res.HostPub, res.Files, r.files(t))
