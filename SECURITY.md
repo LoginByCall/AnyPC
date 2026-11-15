@@ -256,3 +256,23 @@ files per session, 1 MB of text, 4 sessions at once; an own PC — 10 sessions p
 session at a time and 3 per minute. A session is closed after 2 minutes without messages (not while an "Accept?" window is
 open), and after 30 minutes as soon as bytes stop flowing or flow slower than 64 KB/s over 2 minutes (a long file
 that is moving is not cut; speed is not checked during the first 30 minutes — small files over a slow link).
+
+Переключатель «Разрешить управление» (2026-11-15, ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ: путь входа записи по умолчанию). Одноразовый
+код режима «Спрашивать» действует только при включённом переключателе на главном экране; после запуска программы он
+выключен (не хранится в файле) и сам выключается при уходе из режима «Спрашивать» (пароль + TOTP, пространство).
+Выключен — код не показывается в окне, CLI (`--status`, `--confirm on`) его не печатает, а запись по умолчанию
+отвечает солью кода и случайным 32-байтным секретом, который никто не знает (новый при каждом выключении): вход и
+приём файлов любым кодом получают тот же отказ "fail", что неверный код, с тем же счётом неудач и блокировкой; ответа
+«пароля нет» нет, так что посторонний не узнаёт, выключено ли. Включение выдаёт новый код (код прошлого запуска не
+действует). Выключение не рвёт идущую сессию по коду (соль та же) — её кончает «Разорвать»; незавершённые входы
+закрываются. Вход паролем + TOTP, записями, ключом и пропуском своего ПК переключатель не затрагивает.
+
+"Allow control" switch (2026-11-15, NEEDS HUMAN REVIEW: default-record login path). The one-time code of the "Ask"
+mode works only while the switch on the main screen is on; after the program starts it is off (not stored in the
+file) and it turns itself off when the PC leaves the "Ask" mode (password + TOTP, space). While off, the code is not
+shown in the window, the CLI (`--status`, `--confirm on`) does not print it, and the default record answers with the
+code salt and a random 32-byte secret nobody knows (new on every switch-off): login and file receiving with any code
+get the same "fail" as a wrong code, with the same failure count and lockout; there is no "no password" answer, so a
+stranger cannot tell whether it is off. Turning it on issues a new code (the code of a previous run does not work).
+Turning it off does not end a running code session (same salt) — "Disconnect" does; pending logins are closed. Login
+with password + TOTP, accounts, a key or an own PC's pass is not affected by the switch.
