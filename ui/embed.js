@@ -10,7 +10,8 @@ if (window.parent !== window) try {
     'ckeyGet', 'ckeySet', 'savedGet', 'savedSet', 'setPassword', 'setConfirm', 'setViewOnly', 'setNode',
     'otpNew', 'otpEnable', 'otpOff', 'newCode', 'userSet', 'userDel', 'keyDel', 'hostDisconnect',
     'quit', 'minimize', 'fullscreen', 'openUpdate', 'openSite', 'getClip', 'setClip',
-    'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort', 'audioAnswer', 'audioMic', 'uiGet', 'uiSet'])
+    'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort', 'audioAnswer', 'audioMic', 'uiGet', 'uiSet',
+    'spaceSign']) // Ч4: вход по пропуску во вкладке — подпись ключом этого ПК (app/spaceapi.go)
     if (typeof p[n] === 'function') window[n] = p[n];
   if (p.ANYPC) window.ANYPC = p.ANYPC;
 } catch {}

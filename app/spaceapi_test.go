@@ -5,7 +5,9 @@ package main
 // Этап «окна пространства», Ч2: API окна (spaceapi.go) и фоновая операция (spaceops.go) через handler — как окно.
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -15,12 +17,14 @@ import (
 	"log"
 	"os"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"anypc/agent"
+	"anypc/pake"
 	"anypc/totp"
 )
 
@@ -491,6 +495,97 @@ func TestSpaceOpBusy(t *testing.T) {
 	}
 	if op := opWait(t, call, "err"); op["err"] != "notin" {
 		t.Errorf("сверка вне пространства: %v", op)
+	}
+}
+
+// TestSpaceSign — вход «b» по пропуску из окна (Ч4): подпись ключом этого хоста над отпечатками сессии окна — только
+// члену M (не себе, не чужому ID) с живым пропуском; seed в ответе нет; подпись проходит pake.ClientVerify цели
+// именно для этой сессии и этого ID, а для другой сессии (другие DTLS-отпечатки) или другой цели — нет. Без токена — 403.
+func TestSpaceSign(t *testing.T) {
+	c, keys, _ := passSpace(t, totp.NewSecret(), "200000001", "200000002")
+	call := apiHandler(c)
+	passes.mu.Lock()
+	oldCfg, oldIssued := passes.cfg, passes.issued
+	passes.cfg, passes.issued = c, map[string]passIssued{"200000001": {keys["200000001"], time.Now(), nil}}
+	passes.mu.Unlock()
+	t.Cleanup(func() {
+		passes.mu.Lock()
+		passes.cfg, passes.issued = oldCfg, oldIssued
+		passes.mu.Unlock()
+	})
+	sdp := func(b byte) string {
+		return "v=0\r\na=fingerprint:sha-256 " + strings.Repeat(fmt.Sprintf("%02X:", b), 31) + fmt.Sprintf("%02X", b) + "\r\n"
+	}
+	local, remote := sdp(1), sdp(2)
+	for _, x := range []struct{ id, l, r, err string }{
+		{"999999999", local, remote, "space:nomember"}, // не член M
+		{c.id(), local, remote, "space:nomember"},      // себе
+		{"200000002", local, remote, "space:nopass"},   // член без пропуска
+		{"200000001", "v=0", remote, "space:sdp"},      // нет отпечатка окна
+		{"200000001", local, "v=0", "space:sdp"},       // нет отпечатка цели
+	} {
+		if code, res, e := call("spaceSign", x.id, x.l, x.r); e != x.err || res != nil || code == 200 {
+			t.Errorf("spaceSign(%s): %d %v %q, ждали %s", x.id, code, res, e, x.err)
+		}
+	}
+	code, res, e := call("spaceSign", "200000001", local, remote)
+	if code != 200 {
+		t.Fatalf("spaceSign: %d %s", code, e)
+	}
+	r := res.(map[string]any)
+	if len(r) != 2 || r["seed"] != nil {
+		t.Errorf("в ответе лишнее: %v", r)
+	}
+	pub, _ := base64.StdEncoding.DecodeString(r["pub"].(string))
+	sig, _ := base64.StdEncoding.DecodeString(r["sig"].(string))
+	if !bytes.Equal(pub, cfgPub(c)) {
+		t.Error("pub — не ключ этого хоста")
+	}
+	fp := pake.Fingerprint
+	if !pake.ClientVerify(pub, sig, "200000001", fp(local), fp(remote)) {
+		t.Error("цель не примет подпись своей сессии")
+	}
+	for _, x := range []struct{ id, l, r string }{
+		{"200000001", sdp(3), remote}, {"200000001", local, sdp(3)}, {"200000001", remote, local}, {"200000002", local, remote},
+	} {
+		if pake.ClientVerify(pub, sig, x.id, fp(x.l), fp(x.r)) {
+			t.Errorf("подпись подошла к другой сессии или цели: %+v", x)
+		}
+	}
+	// пропуск выдан другому ключу под тем же ID (не ключу цели из M) — не годится
+	other, _, _ := ed25519.GenerateKey(nil)
+	passes.mu.Lock()
+	passes.issued["200000002"] = passIssued{other, time.Now(), nil}
+	passes.mu.Unlock()
+	if _, _, e := call("spaceSign", "200000002", local, remote); e != "space:nopass" {
+		t.Errorf("пропуск чужого ключа: %q", e)
+	}
+	// этот ПК не член M (состав чужой) и испорченные записи пространства
+	n := spaceCfg(t, spacePass, totp.NewSecret())
+	c.mu.Lock()
+	m := c.spaceLocked()
+	c.mu.Unlock()
+	setSpace(t, n, m)
+	if _, _, e := apiHandler(n)("spaceSign", "200000001", local, remote); e != "space:notin" {
+		t.Errorf("не член M: %q", e)
+	}
+	n.mu.Lock()
+	n.Space = []byte("испорчено")
+	err := n.save()
+	n.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, e := apiHandler(n)("spaceSign", "200000001", local, remote); e != "space:damaged" {
+		t.Errorf("испорчено: %q", e)
+	}
+	h := handler(apiAddr, apiTok, nil, c, &agent.Agent{}, nil, func() map[string]any { return nil }, newFiles(t.TempDir()), nil)
+	req := httptest.NewRequest("POST", "/api/spaceSign", strings.NewReader(`["200000001",`+strconv.Quote(local)+`,`+strconv.Quote(remote)+`]`))
+	req.Host = apiAddr
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 403 || strings.Contains(w.Body.String(), "sig") {
+		t.Errorf("без токена: %d %s", w.Code, w.Body)
 	}
 }
 
