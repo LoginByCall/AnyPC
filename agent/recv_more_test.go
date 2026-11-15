@@ -28,11 +28,22 @@ func (r *recvRig) addMember() ed25519.PrivateKey {
 // recvCount — сессий приёма на хосте.
 func (r *recvRig) recvCount() int { r.a.mu.Lock(); defer r.a.mu.Unlock(); return len(r.a.recvs) }
 
-// hold — recvTestPC держит n сессий, пока не закроют release.
+// hold — recvTestPC держит n сессий, пока не закроют release; лишняя сессия (мутант: места не считаются) — ошибка
+// errExtra сразу, без паники и без ожидания.
+var errExtra = errors.New("лишняя сессия приёма")
+
 func hold(t *testing.T, n int) (started *sync.WaitGroup, release chan struct{}) {
 	started, release = &sync.WaitGroup{}, make(chan struct{})
 	started.Add(n)
-	recvTestPC = func(*webrtc.PeerConnection) error { started.Done(); <-release; return nil }
+	var c atomic.Int32
+	recvTestPC = func(*webrtc.PeerConnection) error {
+		if c.Add(1) > int32(n) {
+			return errExtra
+		}
+		started.Done()
+		<-release
+		return nil
+	}
 	t.Cleanup(func() { recvTestPC = nil })
 	return started, release
 }
@@ -94,9 +105,10 @@ func TestRecvSlots(t *testing.T) {
 	}
 }
 
-// TestRecvIdleLife — без сообщений rxIdle — сессия закрыта; по капле данных файла — не дольше rxLife.
+// TestRecvIdleLife — без сообщений rxIdle — сессия закрыта; байты по капле (медленнее rxMinRate за окно) — закрыта;
+// дольше rxLife без продвижения байт (сообщения есть, байтов нет) — закрыта.
 func TestRecvIdleLife(t *testing.T) {
-	defer func(i, l int64) { rxIdle.Store(i); rxLife.Store(l) }(rxIdle.Load(), rxLife.Load())
+	defer func(i, l, w int64) { rxIdle.Store(i); rxLife.Store(l); rxSlowWin.Store(w) }(rxIdle.Load(), rxLife.Load(), rxSlowWin.Load())
 	rxIdle.Store(int64(600 * time.Millisecond))
 	url := local(t)
 	r := recvHost(t, url)
@@ -112,7 +124,7 @@ func TestRecvIdleLife(t *testing.T) {
 		t.Fatal("сессия без сообщений жива дольше rxIdle")
 	}
 	rxIdle.Store(int64(time.Minute))
-	rxLife.Store(int64(time.Second))
+	rxSlowWin.Store(int64(time.Second))
 	recvTestPC = func(pc *webrtc.PeerConnection) error {
 		c, err := accFile(pc, "big.bin", 1<<20)
 		if err != nil {
@@ -130,7 +142,26 @@ func TestRecvIdleLife(t *testing.T) {
 	}
 	sendT(t, r.own(url, nil, ""))
 	if life.Load() != 0 {
-		t.Fatal("сессия жива дольше rxLife")
+		t.Fatal("сессия по капле байт жива")
+	}
+	rxSlowWin.Store(int64(time.Hour))
+	rxLife.Store(int64(time.Second))
+	life.Store(-1)
+	recvTestPC = func(pc *webrtc.PeerConnection) error {
+		for range 12 { // сообщения без байт: отказы по размеру — простоя нет, продвижения нет
+			c, err := accFile(pc, "x", -1)
+			if err != nil {
+				break
+			}
+			c.wait(time.Second)
+			time.Sleep(150 * time.Millisecond)
+		}
+		life.Store(int32(r.recvCount()))
+		return nil
+	}
+	sendT(t, r.own(url, nil, ""))
+	if life.Load() != 0 {
+		t.Fatal("сессия без продвижения байт жива дольше rxLife")
 	}
 }
 
@@ -293,3 +324,49 @@ func TestRecvParts(t *testing.T) {
 }
 
 func parseFM(b []byte) fileMsg { var fm fileMsg; json.Unmarshal(b, &fm); return fm }
+
+// TestRecvViewOnlyMid — «Только показ экрана» включили посреди сессии приёма: следующий файл — отказ, а
+// ViewOnlyChanged (галочка в окне, Windows без опроса настроек) рвёт сессию сразу.
+func TestRecvViewOnlyMid(t *testing.T) {
+	url := local(t)
+	r := recvHost(t, url)
+	var next string
+	var alive atomic.Int32
+	recvTestPC = func(pc *webrtc.PeerConnection) error {
+		if err := rawFile(pc, "a.txt", []byte("ok")); err != nil {
+			return err
+		}
+		r.view.Store(true)
+		c, err := accFile(pc, "b.txt", 2)
+		if err != nil {
+			return err
+		}
+		next = c.wait(3 * time.Second)
+		r.a.ViewOnlyChanged(true)
+		time.Sleep(time.Second)
+		alive.Store(int32(r.recvCount()))
+		return nil
+	}
+	defer func() { recvTestPC = nil }()
+	sendT(t, r.own(url, nil, ""))
+	if next != "err:viewonly" || alive.Load() != 0 || len(r.files(t)) != 1 {
+		t.Fatalf("после «Только показ экрана»: %q, сессий %d, файлов %v", next, alive.Load(), r.files(t))
+	}
+}
+
+// TestRecvPartsFree — место частей возвращается после файла: два файла подряд в потолке на один проходят.
+func TestRecvPartsFree(t *testing.T) {
+	defer rxPartMax.Store(rxPartMax.Load())
+	rxPartMax.Store(15)
+	url := local(t)
+	r := recvHost(t, url)
+	f1, f2 := srcFile(t, "a.bin", make([]byte, 10)), srcFile(t, "b.bin", make([]byte, 10))
+	if err := sendT(t, r.own(url, []string{f1, f2}, "")); err != nil {
+		t.Fatal(err)
+	}
+	r.a.mu.Lock()
+	defer r.a.mu.Unlock()
+	if r.a.rxParts != 0 || len(r.files(t)) != 2 {
+		t.Fatalf("занято частей %d, файлов %v", r.a.rxParts, r.files(t))
+	}
+}

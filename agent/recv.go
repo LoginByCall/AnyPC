@@ -78,7 +78,9 @@ var (
 	rxRateOwn atomic.Int32 // сессий приёма с одного ключа члена за rxRatePer
 	rxRateFor atomic.Int32 // с одного чужого ключа (закреплённого или с кодом) — каждая может открыть окно
 	rxIdle    atomic.Int64 // нс: без сообщений (кроме кусков текста) — сессия приёма закрывается
-	rxLife    atomic.Int64 // нс: сессия приёма живёт не дольше (M2 приёмки)
+	rxLife    atomic.Int64 // нс: после стольких — сессия закрывается, как только байты перестали идти (N2 приёмки)
+	rxSlowWin atomic.Int64 // нс: окно скорости — байты шли, но меньше rxMinRate за окно — сессия закрывается
+	rxMinRate atomic.Int64 // байт/с
 	rxPartMax atomic.Int64 // байт: заявленный размер одновременно открытых .part всех сессий приёма
 )
 
@@ -90,6 +92,8 @@ func init() {
 	rxRateFor.Store(3)
 	rxIdle.Store(int64(2 * time.Minute))
 	rxLife.Store(int64(30 * time.Minute))
+	rxSlowWin.Store(int64(2 * time.Minute))
+	rxMinRate.Store(64 << 10)
 	rxPartMax.Store(32 << 30)
 }
 
@@ -112,13 +116,16 @@ type RecvReq struct {
 
 // rxState — сессия приёма (session.rx).
 type rxState struct {
-	own  bool              // ключ члена M (свой ПК): без окна
-	t0   time.Time         // начало: живёт не дольше life
-	idle time.Duration     // снимок rxIdle
-	life time.Duration     // снимок rxLife
-	pub  ed25519.PublicKey // доказанный ключ отправителя
-	from string            // кто — для окна и журнала: заявленные имя и ID (не доказаны) и отпечаток ключа
-	lim  rxLimits
+	own   bool              // ключ члена M (свой ПК): без окна
+	t0    time.Time         // начало: живёт не дольше life
+	idle  time.Duration     // снимок rxIdle
+	life  time.Duration     // снимок rxLife
+	win   time.Duration     // снимок rxSlowWin
+	rate  int64             // снимок rxMinRate
+	moved atomic.Int64      // принято байт (файлы и текст): продвижение для rxWatch
+	pub   ed25519.PublicKey // доказанный ключ отправителя
+	from  string            // кто — для окна и журнала: заявленные имя и ID (не доказаны) и отпечаток ключа
+	lim   rxLimits
 
 	mu    sync.Mutex
 	ok    bool  // файлы — без окна: свой ПК, разовый код или уже «Принять» в этой сессии
@@ -129,6 +136,7 @@ type rxState struct {
 	nt    int   // принято текстов
 
 	declined atomic.Bool
+	pinning  atomic.Bool // приём разовым кодом: ключ закрепляется (RecvPin) — rxStill закрепления ещё не требует
 	texting  atomic.Bool // идёт приём текста (один за раз)
 	ask      sync.Mutex  // окно «Принять?» — одно за раз в сессии
 	last     atomic.Int64
@@ -266,27 +274,37 @@ func (a *Agent) rxStart(s *session, rx *rxState, rate int) string {
 	}
 	a.recvs[s] = true
 	rx.t0, rx.idle, rx.life = now, time.Duration(rxIdle.Load()), time.Duration(rxLife.Load())
+	rx.win, rx.rate = time.Duration(rxSlowWin.Load()), rxMinRate.Load()
 	rx.touch()
 	s.rx.Store(rx)
 	return ""
 }
 
-// rxWatch — сессия приёма без единого сообщения rxIdle закрывается (отправитель ушёл, не закрыв соединение).
+// rxWatch — когда закрыть сессию приёма (N2 приёмки): без единого сообщения rxIdle (отправитель ушёл, не закрыв
+// соединение); байты шли, но медленнее rate за окно win (держит место по капле); дольше life — как только байты
+// перестали идти (длинный файл, который идёт, не рвётся).
 func (a *Agent) rxWatch(ctx context.Context, s *session, rx *rxState) {
-	t := time.NewTicker(min(rx.idle, rx.life) / 4)
+	t := time.NewTicker(min(rx.idle, rx.life, rx.win) / 4)
 	defer t.Stop()
+	winAt, winMoved, last := rx.t0, int64(0), int64(-1)
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
-			why := ""
+		case now := <-t.C:
+			m, why := rx.moved.Load(), ""
 			switch {
-			case time.Since(time.Unix(0, rx.last.Load())) > rx.idle:
+			case now.Sub(time.Unix(0, rx.last.Load())) > rx.idle:
 				why = fmt.Sprintf("нет данных %v", rx.idle)
-			case time.Since(rx.t0) > rx.life:
-				why = fmt.Sprintf("дольше %v", rx.life)
+			case now.Sub(winAt) >= rx.win:
+				if d := m - winMoved; d > 0 && float64(d) < float64(rx.rate)*now.Sub(winAt).Seconds() {
+					why = fmt.Sprintf("медленнее %d байт/с за %v", rx.rate, rx.win)
+				}
+				winAt, winMoved = now, m
+			case now.Sub(rx.t0) > rx.life && m == last:
+				why = fmt.Sprintf("дольше %v без данных", rx.life)
 			}
+			last = m
 			if why != "" {
 				log.Printf("приём от %s: %s — закрыт", rx.from, why)
 				s.pc.Close()
@@ -406,6 +424,7 @@ func (a *Agent) recvB(ctx context.Context, s *session, m authMsg, cur *cpace.Sta
 		return
 	}
 	rx := &rxState{ok: true, pub: bytes.Clone(m.CPub), from: rxLabel(id, name, m.CPub), lim: rxLim()}
+	rx.pinning.Store(true) // до RecvPin ключ ещё не закреплён: rxPrune (опрос настроек) сессию не трогает
 	why := a.rxStart(s, rx, int(rxRateFor.Load()))
 	if a.CodeUsed != nil { // разовый: израсходован и при отказе по частоте (его знает отправитель)
 		go a.codeUsed()
@@ -417,6 +436,7 @@ func (a *Agent) recvB(ctx context.Context, s *session, m authMsg, cur *cpace.Sta
 	if a.RecvPin != nil { // после принятого кода — закрепить ключ отправителя (решение A)
 		a.RecvPin(m.CPub, id, name)
 	}
+	rx.pinning.Store(false)
 	log.Printf("приём от %s: разовый код верный, ключ закреплён", rx.from)
 	send(authMsg{T: "rx", Conf: conf, Pub: me, Sig: sig, Lim: &rx.lim})
 	go a.rxWatch(ctx, s, rx)
@@ -462,7 +482,7 @@ func (a *Agent) rxStill(rx *rxState) string {
 		return "viewonly"
 	case rx.own && (a.SpaceSync == nil || !a.SpaceSync.SyncKey(rx.pub)):
 		return "gone"
-	case !rx.own && a.RecvPinned != nil:
+	case !rx.own && !rx.pinning.Load() && a.RecvPinned != nil:
 		if _, _, ok := a.RecvPinned(rx.pub); !ok {
 			return "denied"
 		}
@@ -516,6 +536,7 @@ func (a *Agent) receiveText(dc *webrtc.DataChannel, s *session, rx *rxState) {
 				return
 			}
 			buf = append(buf, m.Data...)
+			rx.moved.Add(int64(len(m.Data)))
 			return
 		}
 		rx.touch()
@@ -578,7 +599,7 @@ func rxClipText(t string) string {
 		if c == '\t' || c == '\n' || c == '\r' {
 			return c
 		}
-		if unicode.Is(unicode.Cc, c) || unicode.Is(unicode.Cf, c) {
+		if unicode.Is(unicode.Cc, c) || c >= 0x202A && c <= 0x202E || c >= 0x2066 && c <= 0x2069 {
 			return -1
 		}
 		return c

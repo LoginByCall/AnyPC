@@ -160,13 +160,16 @@ func (r *Receiver) Open(name string, size int64, id string) (offset int64, err e
 	return n, nil
 }
 
+// freeSpace — свободно на диске каталога (подмена — в тестах).
+var freeSpace = diskFree
+
 // diskReserve — сколько места оставить на диске после приёма: заполненный диск ломает ОС и программы.
 // diskCheck — через сколько принятых байт проверять запас снова (Write).
 const diskReserve, diskCheck = 1 << 30, 1 << 20
 
 // room — отказ до приёма, если файл (без уже принятой части) не помещается с запасом diskReserve.
 func (r *Receiver) room() error {
-	free, err := diskFree(r.dir)
+	free, err := freeSpace(r.dir)
 	if err != nil {
 		return nil // не узнали — не мешаем; Write всё равно остановится на ошибке записи
 	}
@@ -186,7 +189,7 @@ func (r *Receiver) Write(b []byte) error {
 	}
 	if r.got-r.checked >= diskCheck { // запас места — на каждом мегабайте: диск могли занять во время приёма
 		r.checked = r.got
-		if free, err := diskFree(r.dir); err == nil && int64(free) < diskReserve+int64(len(b)) {
+		if free, err := freeSpace(r.dir); err == nil && int64(free) < diskReserve+int64(len(b)) {
 			return fmt.Errorf("мало места на диске: свободно %.1f ГБ (1 ГБ должен остаться)", float64(free)/(1<<30))
 		}
 	}
@@ -319,6 +322,8 @@ func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32, s *ses
 				fail("данные до meta")
 			} else if err := r.Write(m.Data); err != nil {
 				fail(err.Error())
+			} else if rx != nil {
+				rx.moved.Add(int64(len(m.Data)))
 			}
 			return
 		}
@@ -380,6 +385,9 @@ func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32, s *ses
 						return
 					}
 					held = fm.Size
+				}
+				if rx != nil && !rx.own { // часть чужого не хранится — и id частей других отправителей ему не открывать
+					fm.ID = ""
 				}
 				off, err := r.Open(fm.Name, fm.Size, fm.ID)
 				if err != nil {

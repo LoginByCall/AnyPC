@@ -485,6 +485,9 @@ func (a *Agent) Disconnect() {
 // панель сам, старый клиент остаётся с кнопками, но ввод хост не принимает. Ещё не вошедшую не трогать — accept сам
 // выставит ей просмотр.
 func (a *Agent) ViewOnlyChanged(on bool) {
+	if on {
+		a.rxPrune() // Ч10.1: «Только показ экрана» рвёт и сессии приёма (Windows — без опроса настроек)
+	}
 	a.mu.Lock()
 	s := a.sess
 	a.mu.Unlock()
