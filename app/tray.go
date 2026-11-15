@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,15 +23,22 @@ import (
 
 // Номера пунктов меню; одинаковы на всех ОС. Разделители — traySep, traySep1, traySep2.
 const (
-	trayOpen = 1   // первая строка: этот ПК или ПК с «я тут» — главное окно
-	trayHelp = 2   // «Помочь кому-то…»
-	traySep  = 3   // перед «Выйти»
-	trayQuit = 4   // «Выйти»: единственный, кто не открывает окно
-	trayHere = 5   // «Я тут — управлять с <этот ПК>» (живой «Я тут» на другом ПК): главное окно у кнопки «Я тут»
-	traySep1 = 6   // после первой строки (в пространстве)
-	traySep2 = 7   // после списка ПК пространства
-	trayPC0  = 100 // ПК пространства: trayPC0 + номер в списке
+	trayOpen = 1       // первая строка: этот ПК или ПК с «я тут» — главное окно
+	trayHelp = 2       // «Помочь кому-то…»
+	traySep  = 3       // перед «Выйти»
+	trayQuit = 4       // «Выйти»: единственный, кто не открывает окно
+	trayHere = 5       // «Я тут — управлять с <этот ПК>» (живой «Я тут» на другом ПК): главное окно у кнопки «Я тут»
+	traySep1 = 6       // после первой строки (в пространстве)
+	traySep2 = 7       // после списка ПК пространства
+	trayPC0  = 1 << 30 // ПК пространства: trayPC0 + его ID числом (до 2^31: int32 dbusmenu) — см. trayPCID
 )
+
+// trayPCID — номер пункта ПК id: из самого ID, а не из места в списке — щелчок по меню, открытому до смены состава,
+// откроет тот ПК, что был под мышью (или ничего, если его уже нет в M), а не соседа.
+func trayPCID(id string) int {
+	n, _ := strconv.Atoi(id) // id — 9 цифр (trayIDre): < 10^9 < 2^30
+	return trayPC0 + n
+}
 
 // trayPC — член M (кроме этого ПК): ID и имя из «Моих ПК» окна ("" — имени нет).
 type trayPC struct{ ID, Name string }
@@ -43,12 +51,12 @@ type trayState struct {
 	PCs  []trayPC // члены M, кроме этого ПК, в порядке состава
 }
 
-// trayStateOf — состояние трея из настроек (перечитываются, как hostInfo окна) и пропусков: выданных этим ПК
-// (passes, pass.go) и выданных ему мастером (master). Имена — из «Моих ПК» окна (config.json, ключ ui.mine).
+// trayStateOf — состояние трея из настроек в памяти (файл не перечитывается: правки других процессов подхватывает
+// опрос настроек раз в 2 с, pollConfig и окно) и пропусков: выданных этим ПК (passes, pass.go) и выданных ему
+// мастером (master). Имена — из «Моих ПК» окна (config.json, ключ ui.mine).
 // master — ключ мастера с живым пропуском на этом ПК (Agent.PassMaster; nil — не спрашивать).
 func trayStateOf(c *config, master func() []byte) trayState {
 	c.mu.Lock()
-	c.reload()
 	m := c.spaceLocked()
 	self := ed25519.PrivateKey(c.Key).Public().(ed25519.PublicKey)
 	s := trayState{Self: c.ID, In: m != nil}
@@ -211,8 +219,8 @@ func trayRows(s trayState, host string, tx trayTexts) []trayRow {
 	}
 	rows = append(rows, trayRow{ID: traySep1})
 	// TODO(Ч11): заголовок «Рядом со мной» и флажки «рядом»/«слева»/«стол N» у ПК — здесь, когда будет Ч11 (макет: курсор за край)
-	for i, p := range pcs {
-		rows = append(rows, trayRow{ID: trayPC0 + i, Label: name(p), PC: p.ID})
+	for _, p := range pcs {
+		rows = append(rows, trayRow{ID: trayPCID(p.ID), Label: name(p), PC: p.ID})
 	}
 	if len(pcs) > 0 {
 		rows = append(rows, trayRow{ID: traySep2})
@@ -231,9 +239,12 @@ type trayDeps struct {
 	tx    trayTexts // пустые — язык ОС (agent.Lang)
 }
 
+// trayLang — язык ОС один раз: на Маке без LANG agent.Lang запускает `defaults read`, а меню перечитывается раз в 1 с.
+var trayLang = sync.OnceValue(agent.Lang)
+
 func (d trayDeps) texts() trayTexts {
 	if d.tx.help == "" {
-		return trayTextsFor(agent.Lang(), runtime.GOOS)
+		return trayTextsFor(trayLang(), runtime.GOOS)
 	}
 	return d.tx
 }

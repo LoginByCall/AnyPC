@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"os"
 	"slices"
 	"strings"
@@ -97,7 +98,7 @@ func trayLabels(rows []trayRow) string {
 
 // TestTrayRows — пункты по экрану 6 макета: вне пространства — как раньше; в пространстве с двумя членами — этот ПК
 // и они по именам (без имени — ID группами); «я тут» здесь — подпись у первой строки; «я тут» на другом ПК — он
-// первой строкой и ниже «Я тут — управлять с <этот>». Номера: первая — trayOpen, ПК — trayPC0+i с их ID.
+// первой строкой и ниже «Я тут — управлять с <этот>». Номера: первая — trayOpen, ПК — trayPCID(своего ID).
 func TestTrayRows(t *testing.T) {
 	ru := trayTextsFor("ru", "linux")
 	pcs := []trayPC{{"200000001", "Офис"}, {"200000002", ""}}
@@ -125,7 +126,7 @@ func TestTrayRows(t *testing.T) {
 				t.Errorf("%s: номер %d дважды", c.name, r.ID)
 			}
 			ids[r.ID] = true
-			if r.ID >= trayPC0 && !trayIDre.MatchString(r.PC) || r.ID < trayPC0 && r.PC != "" {
+			if r.ID >= trayPC0 && (!trayIDre.MatchString(r.PC) || r.ID != trayPCID(r.PC)) || r.ID < trayPC0 && r.PC != "" {
 				t.Errorf("%s: пункт %d с ПК %q", c.name, r.ID, r.PC)
 			}
 		}
@@ -147,7 +148,7 @@ func TestTrayPickPC(t *testing.T) {
 	s := trayState{Self: "123456789", In: true, Here: "200000001", PCs: []trayPC{{"200000001", "Офис"}, {"200000002", ""}, {"200000003", "Дом"}}}
 	rows := trayRows(s, "Ноутбук", trayTextsFor("ru", "linux"))
 	yes := func() bool { return true }
-	for _, id := range []int{trayOpen, trayHere, trayPC0, trayPC0 + 1, trayPC0 + 2, traySep1, traySep2} {
+	for _, id := range []int{trayOpen, trayHere, trayPCID("200000001"), trayPCID("200000002"), trayPCID("200000003"), traySep1, traySep2, trayPC0} {
 		if f := trayPick(id, rows, yes, d); f != nil {
 			f()
 		}
@@ -157,7 +158,7 @@ func TestTrayPickPC(t *testing.T) {
 	}
 	got = nil
 	bare := trayDeps{open: d.open, quit: d.quit}
-	for _, id := range []int{trayHere, trayPC0} {
+	for _, id := range []int{trayHere, trayPCID("200000002")} {
 		if f := trayPick(id, rows, yes, bare); f != nil {
 			f()
 		}
@@ -165,8 +166,46 @@ func TestTrayPickPC(t *testing.T) {
 	if strings.Join(got, "|") != "open|open" {
 		t.Errorf("без here и pc: %q", got)
 	}
-	if trayPick(trayPC0, rows, func() bool { return false }, d) != nil {
+	if trayPick(trayPCID("200000002"), rows, func() bool { return false }, d) != nil {
 		t.Error("ПК мимо дросселя")
+	}
+
+	// меню открыто до смены состава (Линукс и Мак перестраивают его раз в 1 с): щелчок по пункту старого меню —
+	// тот же ПК при новом порядке, ничего — если его больше нет в M
+	shown := trayRows(s, "Ноутбук", trayTextsFor("ru", "linux"))
+	click := shown[slices.IndexFunc(shown, func(r trayRow) bool { return r.PC == "200000003" })].ID
+	now := s
+	now.PCs = []trayPC{{"200000003", "Дом"}, {"200000002", ""}} // 200000001 исключён, порядок другой
+	got = nil
+	if f := trayPick(click, trayRows(now, "Ноутбук", trayTextsFor("ru", "linux")), yes, d); f != nil {
+		f()
+	}
+	if strings.Join(got, "|") != "pc 200000003" {
+		t.Errorf("щелчок по старому меню после смены порядка: %q", got)
+	}
+	now.PCs = []trayPC{{"200000002", ""}}
+	if trayPick(click, trayRows(now, "Ноутбук", trayTextsFor("ru", "linux")), yes, d) != nil {
+		t.Error("щелчок по ПК, которого уже нет в M, что-то открыл")
+	}
+	if trayPCID("999999999") > 1<<31-1 || trayPCID("000000001") <= traySep2 {
+		t.Error("номер пункта ПК вне int32 или среди служебных")
+	}
+}
+
+// TestUILogOnce — испорченное поле ui перечитывается раз в 1–2 с: одна и та же строка в журнал один раз, новая — снова.
+func TestUILogOnce(t *testing.T) {
+	var buf strings.Builder
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+	uiLogLast.Store("")
+	var m uiMap
+	for range 3 {
+		m.UnmarshalJSON([]byte(`{"mine": 5}`))
+	}
+	m.UnmarshalJSON([]byte(`{"recent": 5}`))
+	m.UnmarshalJSON([]byte(`{"recent": 5}`))
+	if n := strings.Count(buf.String(), "отброшены негодные ключи"); n != 2 {
+		t.Errorf("строк в журнале %d, ждали 2:\n%s", n, buf.String())
 	}
 }
 

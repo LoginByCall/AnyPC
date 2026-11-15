@@ -411,6 +411,13 @@ func TestPassMaster(t *testing.T) {
 	if got := a.PassMaster(); !bytes.Equal(got, k1) {
 		t.Errorf("после снятия второго: %x", got)
 	}
+	var view atomic.Bool
+	a.ViewOnly = view.Load
+	view.Store(true)
+	if a.PassMaster() != nil {
+		t.Error("«Только показ экрана» — мастер есть (пропуск там не пускает)")
+	}
+	view.Store(false)
 	defer passSkew.Store(0)
 	passSkew.Store(int64(PassTTL + time.Second))
 	if a.PassMaster() != nil {

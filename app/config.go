@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -715,6 +716,16 @@ func uiValid(k, v string) bool {
 	return false
 }
 
+// uiLogLast — последняя строка журнала о поле ui: файл перечитывается раз в 1–2 с (окно, опрос настроек), та же
+// порча — одна строка, а не строка в секунду.
+var uiLogLast atomic.Value
+
+func uiLog(s string) {
+	if old, _ := uiLogLast.Swap(s).(string); old != s {
+		log.Print(s)
+	}
+}
+
 // uiMap — поле ui в файле. Испорченное (правка руками, чужая версия) не мешает запуску: негодные ключи отбрасываются
 // с одной строкой в журнал, остальные настройки грузятся.
 type uiMap map[string]string
@@ -722,7 +733,7 @@ type uiMap map[string]string
 func (m *uiMap) UnmarshalJSON(b []byte) error {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(b, &raw); err != nil {
-		log.Printf("настройки: поле ui испорчено — отброшено: %v", err)
+		uiLog(fmt.Sprintf("настройки: поле ui испорчено — отброшено: %v", err))
 		*m = nil
 		return nil
 	}
@@ -737,7 +748,7 @@ func (m *uiMap) UnmarshalJSON(b []byte) error {
 	}
 	if len(bad) > 0 {
 		slices.Sort(bad)
-		log.Printf("настройки: в ui отброшены негодные ключи %q", bad)
+		uiLog(fmt.Sprintf("настройки: в ui отброшены негодные ключи %q", bad))
 	}
 	*m = out
 	return nil

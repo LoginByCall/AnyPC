@@ -206,7 +206,13 @@ func main() {
 				}
 			})
 		}
-		runTray(ctx, trayDeps{id: cfg.ID, state: func() trayState { return trayStateOf(cfg, a.PassMaster) }, quit: w.Destroy,
+		state := func() trayState { // только при открытии меню (опроса нет): перечитать файл — правки CLI и других копий
+			cfg.mu.Lock()
+			cfg.reload()
+			cfg.mu.Unlock()
+			return trayStateOf(cfg, a.PassMaster)
+		}
+		runTray(ctx, trayDeps{id: cfg.ID, state: state, quit: w.Destroy,
 			open: func() { show("") }, here: func() { show(trayJSHere) }, pc: func(id string) { show(trayJSPC(id)) }})
 	}()
 	startSpaceSync(ctx, cfg, a)

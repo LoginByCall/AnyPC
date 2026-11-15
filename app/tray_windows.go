@@ -228,23 +228,39 @@ func (t *winTray) menu(h uintptr, x, y int32) {
 	}
 	defer pDestroyMenu.Call(m)
 	rows := t.d.rows()
-	for _, r := range rows {
+	for i, r := range rows {
 		if r.Label == "" {
 			pAppendMenu.Call(m, 0x800, 0, 0) // MF_SEPARATOR
 			continue
+		}
+		id := r.ID
+		if id >= trayPC0 { // номер ПК больше 16 бит (номера пунктов меню Windows — WORD): в этом меню — 0x1000 + место
+			id = trayWinPC + i
 		}
 		// «&» — мнемоника; табуляция — подпись «я тут» прижата вправо (как в макете)
 		s, err := syscall.UTF16PtrFromString(strings.ReplaceAll(trayText(r, "\t"), "&", "&&"))
 		if err != nil { // NUL в имени ПК
 			continue
 		}
-		pAppendMenu.Call(m, 0, uintptr(r.ID), uintptr(unsafe.Pointer(s))) // MF_STRING
+		pAppendMenu.Call(m, 0, uintptr(id), uintptr(unsafe.Pointer(s))) // MF_STRING
 	}
 	pDefaultItem.Call(m, trayOpen, 0) // жирным — то, что делает левый щелчок
 	pSetForeground.Call(h)
 	cmd, _, _ := pTrackMenu.Call(m, tpmFlags, uintptr(x), uintptr(y), 0, h, 0)
 	pPostMsg.Call(h, wmNull, 0, 0)
-	t.run(int(cmd), rows)
+	t.run(trayWinCmd(int(cmd), rows), rows)
+}
+
+// trayWinPC — номера пунктов ПК в меню Windows: trayWinPC + место в rows того же меню (меню строится и
+// выбирается из одних rows — смена состава между ними невозможна).
+const trayWinPC = 0x1000
+
+// trayWinCmd — номер пункта trayRows по ответу TrackPopupMenu.
+func trayWinCmd(cmd int, rows []trayRow) int {
+	if i := cmd - trayWinPC; i >= 0 && i < len(rows) {
+		return rows[i].ID
+	}
+	return cmd
 }
 
 // trayHIcon — значок из ресурсов exe (сейчас их нет: build.sh не кладёт .syso), иначе нарисованный, как на Linux,
