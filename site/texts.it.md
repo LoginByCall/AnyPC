@@ -16,7 +16,7 @@
 - `f4t`: Fluido e reattivo
 - `f4d`: Video VP9 (o H.264) fino a 1080p a 30 fps; bitrate e frequenza dei fotogrammi si adattano alla connessione al volo, senza pause; statistiche di connessione in tempo reale.
 - `f10t`: I tuoi PC in schede
-- `f10d`: I computer a cui accedi con «Fidati di questo PC» si aprono come schede in un’unica finestra: passa dall’uno all’altro con un clic, senza eseguire di nuovo l’accesso. Il video di una scheda inattiva va in pausa e risparmia banda.
+- `f10d`: I computer che aggiungi con «Aggiungi al mio spazio» si aprono come schede in un’unica finestra: passa dall’uno all’altro con un clic, senza eseguire di nuovo l’accesso. Il video di una scheda inattiva va in pausa e risparmia banda.
 - `getT`: Scarica AnyPC
 - `tab_win`: Windows
 - `tab_lin`: Linux
@@ -28,7 +28,7 @@
 - `w1`: Avvia il file AnyPC.exe scaricato: non serve installarlo e il programma mostra subito l’ID di questo computer. Al primo avvio scarica una sola volta il componente FFmpeg (circa 40 MB).
 - `w2`: Se compare «PC protetto da Windows», fai clic su «Ulteriori informazioni» → «Esegui comunque»: il programma non è ancora firmato.
 - `w3`: Se Windows Firewall chiede l’accesso alla rete, consentilo; altrimenti la connessione diretta potrebbe non riuscire e il traffico passerà dal server relay.
-- `w4`: Per consentire le connessioni a questo computer, imposta una password nella sezione «Questo computer».
+- `w4`: Per consentire le connessioni a questo computer, imposta una password: «Accesso a questo PC» → «Configura» nella schermata principale.
 - `w5`: Se FFmpeg non si scarica da solo (la finestra mostra un errore di download), scarica l’archivio manualmente — [ffmpeg-9.0.2-essentials_build.zip](https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip) (~115 MB) — e mettilo, senza decomprimerlo, nella cartella Download o accanto ad AnyPC.exe. Il programma lo trova entro 30 secondi e ne verifica il checksum.
 - `wchk`: Verifica il file (PowerShell): il checksum deve coincidere con quello indicato sopra:
 - `l1`: Installa le dipendenze, che variano in base alla sessione grafica:

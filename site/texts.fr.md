@@ -16,7 +16,7 @@
 - `f4t`: Fluide et réactif
 - `f4d`: Vidéo VP9 (ou H.264) jusqu’en 1080p à 30 i/s ; le débit et la cadence s’adaptent à la connexion à la volée, sans pause ; statistiques de connexion en temps réel.
 - `f10t`: Vos PC en onglets
-- `f10d`: Les ordinateurs auxquels vous vous connectez avec « Faire confiance à ce PC » s’ouvrent en onglets dans une seule fenêtre : passez de l’un à l’autre d’un clic, sans vous reconnecter. La vidéo d’un onglet inactif se met en pause et économise la bande passante.
+- `f10d`: Les ordinateurs que vous ajoutez avec « Ajouter à Mon espace » s’ouvrent en onglets dans une seule fenêtre : passez de l’un à l’autre d’un clic, sans vous reconnecter. La vidéo d’un onglet inactif se met en pause et économise la bande passante.
 - `getT`: Télécharger AnyPC
 - `tab_win`: Windows
 - `tab_lin`: Linux
@@ -28,7 +28,7 @@
 - `w1`: Lancez le fichier AnyPC.exe téléchargé : aucune installation n’est nécessaire, le programme affiche aussitôt l’ID de cet ordinateur. Au premier lancement, il télécharge une seule fois le composant FFmpeg (environ 40 Mo).
 - `w2`: Si le message « Windows a protégé votre ordinateur » s’affiche, cliquez sur « Informations complémentaires » → « Exécuter quand même » : le programme n’est pas encore signé.
 - `w3`: Si le pare-feu Windows demande l’accès au réseau, autorisez-le ; sinon, la connexion directe risque d’échouer et le trafic passera par le serveur relais.
-- `w4`: Pour que l’on puisse se connecter à cet ordinateur, définissez un mot de passe dans la section « Cet ordinateur ».
+- `w4`: Pour que l’on puisse se connecter à cet ordinateur, définissez un mot de passe : « Accès à ce PC » → « Configurer » sur l’écran principal.
 - `w5`: Si FFmpeg ne se télécharge pas tout seul (la fenêtre affiche une erreur de téléchargement), téléchargez l’archive manuellement — [ffmpeg-9.0.2-essentials_build.zip](https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip) (~115 Mo) — et placez-la, sans la décompresser, dans le dossier Téléchargements ou à côté d’AnyPC.exe. Le programme la détecte en 30 secondes et vérifie sa somme de contrôle.
 - `wchk`: Vérifier le fichier (PowerShell) — la somme doit correspondre à celle indiquée ci-dessus :
 - `l1`: Installez les dépendances ; elles varient selon votre session graphique :
