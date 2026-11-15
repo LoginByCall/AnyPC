@@ -60,8 +60,9 @@ Gtk.main();`
 // plaqueReady — сколько ждать окна gjs, прежде чем перейти на zenity; plaqueEnv — окружение gjs (nil — своё; тест и
 // снимок ставят своё окно broadway, чтобы не выводить плашку на экран человека).
 var (
-	plaqueReady = 5 * time.Second
-	plaqueEnv   []string
+	plaqueReady   = 5 * time.Second
+	plaqueEnv     []string
+	plaqueSpawned = func(pid int) {} // тесты: PID процесса gjs (убивать по PID, не по шаблону)
 )
 
 // showIndicator — плашка REQ-F-15: полоса gjs; нет gjs/GTK 3 — окно zenity, как раньше. Закрыл человек → разорвать.
@@ -78,6 +79,18 @@ func showIndicator(cid string, mode plaqueMode, onUserClose func()) (func(), err
 	return zenityPlaque(lang, cid, mode, onUserClose)
 }
 
+// gjsEnv — окружение gjs: своё у тестов (plaqueEnv); Wayland с XWayland (есть DISPLAY) — GDK_BACKEND=x11 (угол,
+// поверх всех, без фокуса; приёмка M1); иначе — окружение AnyPC (nil).
+func gjsEnv(wayland bool, display string) []string {
+	if plaqueEnv != nil {
+		return plaqueEnv
+	}
+	if wayland && display != "" {
+		return append(os.Environ(), "GDK_BACKEND=x11")
+	}
+	return nil
+}
+
 func gjsPlaque(lang, cid string, mode plaqueMode, onUserClose func()) (func(), error) {
 	bin, err := exec.LookPath("gjs")
 	if err != nil {
@@ -86,10 +99,7 @@ func gjsPlaque(lang, cid string, mode plaqueMode, onUserClose func()) (func(), e
 	label, btn := plaqueBar(lang, cid, mode)
 	title, _ := plaqueText(lang, cid, 0)
 	cmd := exec.Command(bin, "-c", plaqueGJS, label, btn, title)
-	cmd.Env = plaqueEnv
-	if cmd.Env == nil && Wayland && os.Getenv("DISPLAY") != "" {
-		cmd.Env = append(os.Environ(), "GDK_BACKEND=x11") // XWayland: угол, поверх всех, без фокуса
-	}
+	cmd.Env = gjsEnv(Wayland, os.Getenv("DISPLAY"))
 	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL} // AnyPC упал — плашка не висит сиротой
 	var errb strings.Builder
 	cmd.Stderr = &errb
@@ -100,6 +110,7 @@ func gjsPlaque(lang, cid string, mode plaqueMode, onUserClose func()) (func(), e
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
+	plaqueSpawned(cmd.Process.Pid)
 	ready := make(chan bool, 1)
 	go func() {
 		sc := bufio.NewScanner(out)
