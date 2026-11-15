@@ -1321,6 +1321,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 				for _, e := range s.keys.release() { // не оставить зажатый Ctrl/кнопку на хосте
 					sendInput(e, nil)
 				}
+				endInput()
 				s.mu.Lock()
 				if s.closeInd != nil {
 					s.closeInd()
@@ -1930,6 +1931,9 @@ func (s *session) dropControl() {
 		f()
 	}
 }
+
+// endInput — конец сессии для бэкенда ввода (Linux-портал забывает положение мыши и зажатые кнопки).
+var endInput = func() {}
 
 // indicator — показать плашку сессии; переменная — для тестов.
 var indicator = showIndicator
