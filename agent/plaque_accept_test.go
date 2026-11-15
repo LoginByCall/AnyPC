@@ -14,47 +14,44 @@ import (
 	"time"
 )
 
-func acceptCount(pat string) int {
-	out, _ := exec.Command("pgrep", "-fc", pat).Output()
-	n := 0
-	fmt.Sscan(strings.TrimSpace(string(out)), &n)
-	return n
-}
-
 // AnyPC убит (SIGKILL) — плашка gjs не остаётся сиротой.
 func TestAcceptPlaqueOrphan(t *testing.T) {
 	if os.Getenv("ACCEPT_HELPER") == "1" {
 		plaqueEnv = scrubDisplay([]string{"GDK_BACKEND=broadway", "BROADWAY_DISPLAY=:41"})
-		if _, err := gjsPlaque("ru", os.Getenv("ACCEPT_CID"), 0, func() {}); err != nil {
+		var pid int
+		plaqueSpawned = func(p int) { pid = p }
+		if _, err := gjsPlaque("ru", "c-accept", 0, func() {}); err != nil {
 			fmt.Println("err", err)
 			return
 		}
-		fmt.Println("up")
+		fmt.Println("up", pid)
 		time.Sleep(time.Minute)
 		return
 	}
 	env := broadwayEnv(t, ":41")
-	cid := fmt.Sprintf("c-accept-%d", os.Getpid())
 	h := exec.Command(os.Args[0], "-test.run=TestAcceptPlaqueOrphan")
-	h.Env = append(env, "ACCEPT_HELPER=1", "ACCEPT_CID="+cid)
+	h.Env = append(env, "ACCEPT_HELPER=1")
 	out, _ := h.StdoutPipe()
 	if err := h.Start(); err != nil {
 		t.Fatal(err)
 	}
 	sc := bufio.NewScanner(out)
-	if !sc.Scan() || sc.Text() != "up" {
+	var pid int
+	if !sc.Scan() || !strings.HasPrefix(sc.Text(), "up ") {
+		h.Process.Kill()
+		h.Wait()
 		t.Fatalf("помощник: %q", sc.Text())
 	}
-	pat := "gjs -c .* " + cid
-	if n := acceptCount(pat); n != 1 {
-		t.Fatalf("gjs до убийства: %d", n)
+	fmt.Sscan(strings.TrimPrefix(sc.Text(), "up "), &pid)
+	if !pidAlive(pid) {
+		t.Fatalf("gjs до убийства не жив (PID %d)", pid)
 	}
 	h.Process.Signal(syscall.SIGKILL)
 	h.Wait()
 	time.Sleep(500 * time.Millisecond)
-	if n := acceptCount(pat); n != 0 {
-		exec.Command("pkill", "-f", pat).Run()
-		t.Errorf("AnyPC убит, а gjs жив: %d", n)
+	if pidAlive(pid) {
+		syscall.Kill(pid, syscall.SIGKILL)
+		t.Errorf("AnyPC убит, а gjs жив (PID %d)", pid)
 	}
 }
 

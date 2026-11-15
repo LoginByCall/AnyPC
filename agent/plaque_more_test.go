@@ -7,10 +7,35 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
+
+// spawnedPID — PID следующего процесса gjs (plaqueSpawned); после теста он убит, если ещё жив.
+func spawnedPID(t *testing.T) *int {
+	pid := new(int)
+	plaqueSpawned = func(p int) { *pid = p }
+	t.Cleanup(func() {
+		plaqueSpawned = func(int) {}
+		if *pid != 0 && pidAlive(*pid) {
+			syscall.Kill(*pid, syscall.SIGKILL)
+		}
+	})
+	return pid
+}
+
+// pidAlive — процесс есть и не зомби.
+func pidAlive(pid int) bool {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if pid <= 0 || err != nil {
+		return false
+	}
+	i := strings.LastIndexByte(string(b), ')')
+	return i > 0 && i+2 < len(b) && b[i+2] != 'Z'
+}
 
 // waitClosed — ждать onUserClose до d.
 func waitClosed(n *atomic.Int32, d time.Duration) {
@@ -30,8 +55,8 @@ func TestGjsPlaqueProbe(t *testing.T) {
 	}{{"click", true}, {"close", true}, {"focus", false}} {
 		plaqueEnv = append(append([]string{}, base...), "ANYPC_PLAQUE_PROBE="+c.probe)
 		var closed atomic.Int32
-		cid := fmt.Sprintf("c-probe-%s-%d", c.probe, os.Getpid())
-		stop, err := gjsPlaque("ru", cid, 0, func() { closed.Add(1) })
+		pid := spawnedPID(t)
+		stop, err := gjsPlaque("ru", "c-probe-"+c.probe, 0, func() { closed.Add(1) })
 		if err != nil {
 			t.Fatalf("%s: %v", c.probe, err)
 		}
@@ -41,9 +66,9 @@ func TestGjsPlaqueProbe(t *testing.T) {
 		}
 		stop()
 		time.Sleep(300 * time.Millisecond)
-		if n := acceptCount("gjs -c .* " + cid); n != 0 {
-			exec.Command("pkill", "-f", "gjs -c .* "+cid).Run()
-			t.Errorf("%s: после stop gjs жив (%d)", c.probe, n)
+		if pidAlive(*pid) {
+			syscall.Kill(*pid, syscall.SIGKILL)
+			t.Errorf("%s: после stop gjs жив (PID %d)", c.probe, *pid)
 		}
 	}
 }
@@ -51,7 +76,7 @@ func TestGjsPlaqueProbe(t *testing.T) {
 // fakeBin — каталог для PATH с исполняемыми скриптами name → тело.
 func fakeBin(t *testing.T, files map[string]string) string {
 	d := t.TempDir()
-	for _, b := range []string{"pgrep", "pkill", "sleep", "touch"} { // PATH подменён — свои утилиты тестов
+	for _, b := range []string{"sleep", "touch"} { // PATH подменён — свои утилиты тестов
 		if p, err := exec.LookPath(b); err == nil {
 			files[b] = `exec "` + p + `" "$@"`
 		}
@@ -78,8 +103,8 @@ func TestShowIndicatorGjs(t *testing.T) {
 	fd := fakeDesktop
 	fakeDesktop = false
 	defer func() { plaqueEnv, fakeDesktop = nil, fd }()
-	cid := fmt.Sprintf("c-show-%d", os.Getpid())
-	stop, err := showIndicator(cid, 0, func() {})
+	pid := spawnedPID(t)
+	stop, err := showIndicator("c-show", 0, func() {})
 	if err != nil {
 		t.Fatalf("плашка: %v", err)
 	}
@@ -88,8 +113,8 @@ func TestShowIndicatorGjs(t *testing.T) {
 	if _, err := os.Stat(mark); err == nil {
 		t.Errorf("при работающем gjs позвали zenity")
 	}
-	if n := acceptCount("gjs -c .* " + cid); n != 1 {
-		t.Errorf("процессов gjs с плашкой: %d", n)
+	if cmd, _ := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", *pid)); *pid == 0 || !pidAlive(*pid) || !strings.Contains(string(cmd), "c-show") {
+		t.Errorf("плашка gjs не запущена (PID %d)", *pid)
 	}
 }
 
@@ -100,11 +125,12 @@ func TestGjsPlaqueHang(t *testing.T) {
 	r := plaqueReady
 	plaqueReady = 300 * time.Millisecond
 	defer func() { plaqueReady = r }()
+	pid := spawnedPID(t)
 	if _, err := gjsPlaque("en", "c-hang", 0, func() {}); err == nil {
 		t.Fatal("без ready — ждали ошибку")
 	}
-	if n := acceptCount("sleep 6007"); n != 0 {
-		exec.Command("pkill", "-f", "sleep 6007").Run()
-		t.Errorf("зависший gjs не убит: %d", n)
+	if pidAlive(*pid) {
+		syscall.Kill(*pid, syscall.SIGKILL)
+		t.Errorf("зависший gjs не убит (PID %d)", *pid)
 	}
 }

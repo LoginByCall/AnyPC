@@ -3,11 +3,11 @@
 package agent
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -55,11 +55,11 @@ func TestGjsPlaque(t *testing.T) {
 		t.Errorf("закрыли мы — onUserClose не нужен")
 	}
 
-	cid := fmt.Sprintf("c-test-%d", os.Getpid())
-	if _, err := gjsPlaque("en", cid, 0, func() { closed.Add(1) }); err != nil {
+	pid := spawnedPID(t)
+	if _, err := gjsPlaque("en", "c-test-c", 0, func() { closed.Add(1) }); err != nil {
 		t.Fatalf("плашка: %v", err)
 	}
-	exec.Command("pkill", "-f", "gjs -c .* "+cid).Run() // «закрыл человек»
+	syscall.Kill(*pid, syscall.SIGTERM) // «закрыл человек»
 	for i := 0; i < 30 && closed.Load() == 0; i++ {
 		time.Sleep(100 * time.Millisecond)
 	}
