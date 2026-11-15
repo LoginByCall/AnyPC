@@ -36,13 +36,21 @@ type recvRig struct {
 	used   atomic.Int32 // CodeUsed
 	flip   atomic.Int32 // SyncKey годен ещё столько раз (keyFlip)
 	codeOn atomic.Bool  // CodeMode
+	view   atomic.Bool  // ViewOnly («Только показ экрана»)
 }
 
 // recvHostFP — отпечаток ключа последнего получателя recvHost: SendDial.Known чужого без кода (M7).
 var recvHostFP atomic.Value
 
 // ask — i-е окно «Принять?».
-func (r *recvRig) ask(i int) RecvReq { r.mu.Lock(); defer r.mu.Unlock(); return r.asks[i] }
+func (r *recvRig) ask(i int) RecvReq {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if i >= len(r.asks) { // окна не было — пустой запрос (тест упадёт на сравнении, а не паникой)
+		return RecvReq{}
+	}
+	return r.asks[i]
+}
 
 func (r *recvRig) askN() int { r.mu.Lock(); defer r.mu.Unlock(); return len(r.asks) }
 func (r *recvRig) clip() []string {
@@ -89,6 +97,7 @@ func recvHost(t *testing.T, url string, opt ...func(*recvRig)) *recvRig {
 		a.FileDir = r.dir
 		a.SpaceSync = &keyFlip{fakeSync: r.sync, left: &r.flip}
 		a.CodeMode = r.codeOn.Load
+		a.ViewOnly = r.view.Load
 		a.CodeUsed = func() { r.used.Add(1) }
 		a.RecvPinned = func(pub []byte) (string, string, bool) {
 			r.mu.Lock()
@@ -188,8 +197,9 @@ func TestRecvOwn(t *testing.T) {
 	if r.askN() != 0 || r.used.Load() != 0 {
 		t.Fatalf("окно «Принять?» %d, код израсходован %d", r.askN(), r.used.Load())
 	}
-	s := waitLog(t, &logs, "приём от Ноутбук (ID 987654321")
-	if strings.Count(s, "приём от") != 1 || !strings.Contains(s, "файлов 2, 100022 байт, текстов 1") {
+	me := "приём от " + rxLabel("987654321", "Ноутбук", r.member.Public().(ed25519.PublicKey)) // строки прошлых тестов — мимо
+	s := waitLog(t, &logs, me)
+	if strings.Count(s, me) != 1 || !strings.Contains(s, me+" (свой ПК): файлов 2, 100022 байт, текстов 1") {
 		t.Fatalf("журнал:\n%s", s)
 	}
 	if strings.Contains(s, "секрет") {

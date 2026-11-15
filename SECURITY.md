@@ -209,8 +209,13 @@ offer, а не «занят», — как сверка. Сессия приём�
 открывает и вход, и приём — не диктуйте его тому, кому не доверили бы и вход; свой ПК кладёт текст в буфер обмена
 молча, заменяя то, что там было; имя и ID, с которыми закреплён отправитель, заявляет он сам (доказан только ключ);
 «Принять» на первый файл принимает все файлы этой передачи (но не следующей); файлам от чужого ставится метка
-«из интернета» (Windows, macOS), на Linux её нет. Потолки: файл 16 ГБ, 64 ГБ и 1000 файлов за сессию, текст 1 МБ,
-4 сессии сразу, чужой ключ — одна сессия сразу и 3 в минуту, сессия — не дольше 30 минут.
+«из интернета» (Windows — Zone.Identifier, macOS — com.apple.quarantine; не проверено на Windows и Маке, V2), на
+Linux её нет. Текст перед буфером обмена очищается от управляющих символов (кроме табуляции и переводов строки) и
+от подмен направления письма (U+202A–202E, U+2066–2069); соединители (эмодзи, персидский) и мягкий перенос остаются.
+Потолки: файл 16 ГБ, 64 ГБ и 1000 файлов за сессию, текст 1 МБ, 4 сессии сразу; свой ПК — 10 сессий в минуту с
+одного ключа, чужой ключ — одна сессия сразу и 3 в минуту. Сессия закрывается без сообщений 2 минуты, если байты
+идут медленнее 64 КБ/с за 2 минуты, и после 30 минут — как только байты перестали идти (длинный файл, который
+идёт, не обрывается).
 
 Receiving files and text on this PC (Ch10.1, NEEDS HUMAN REVIEW: member key, one-time code and pinned key checks).
 To the hub a receive connection looks like a sync (own PC) or a join (foreign PC): the connect fields, the
@@ -225,6 +230,10 @@ the code is used up), then the sender's key is pinned and later sends show an "A
 unknown key without a code is refused. For the owner: the same one-time code opens both login and receiving — do not
 give it to someone you would not let log in; an own PC replaces the clipboard silently; the name and ID a sender is
 pinned with are claimed by the sender (only the key is proven); "Accept" on the first file accepts all files of that
-transfer (not the next one); files from a foreign PC get the "from the internet" mark (Windows, macOS), Linux has none.
-Limits: 16 GB per file, 64 GB and 1000 files per session, 1 MB of text, 4 sessions at once, a foreign key — one
-session at a time and 3 per minute, a session lasts at most 30 minutes.
+transfer (not the next one); files from a foreign PC get the "from the internet" mark (Windows — Zone.Identifier,
+macOS — com.apple.quarantine; not verified on Windows and Mac, V2), Linux has none. Text is cleaned before the
+clipboard: control characters (except tab and line breaks) and writing-direction overrides (U+202A–202E,
+U+2066–2069) are removed; joiners (emoji, Persian) and soft hyphens stay. Limits: 16 GB per file, 64 GB and 1000
+files per session, 1 MB of text, 4 sessions at once; an own PC — 10 sessions per minute per key, a foreign key — one
+session at a time and 3 per minute. A session is closed after 2 minutes without messages, if bytes flow slower than
+64 KB/s over 2 minutes, and after 30 minutes as soon as bytes stop flowing (a long file that is moving is not cut).
