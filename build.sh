@@ -35,7 +35,7 @@ else
 fi
 rm -f bin/AnyPC-macos
 if [ "${ANYPC_MAC:-}" ]; then # macOS: сборка на самом Маке по ssh (Go в ~/.local/go) — deploy/mac.sh
-  git ls-files -co --exclude-standard | grep -vE '^(bin|\.claude)/' | { cat; printf 'ui/pake.wasm\nui/wasm_exec.js\n'; } | rsync -a --files-from=- ./ "$ANYPC_MAC:anypc-src/"
+  git -c core.quotePath=false ls-files -co --exclude-standard | grep -vE '^(bin|\.claude|design|Pics)/' | { cat; printf 'ui/pake.wasm\nui/wasm_exec.js\n'; } | rsync -a --files-from=- ./ "$ANYPC_MAC:anypc-src/"
   ssh "$ANYPC_MAC" "anypc-src/deploy/mac.sh $V"
   scp "$ANYPC_MAC:anypc-src/AnyPC-macos" bin/
 fi
