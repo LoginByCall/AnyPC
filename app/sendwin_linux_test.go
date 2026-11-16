@@ -82,6 +82,15 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await ev("[...document.querySelectorAll('#sndst button')].find(b => /ещё/.test(b.textContent)).click(); 1");
   await until(txt('sndst') + " === ''");
   console.log('tray=' + tr1 + '|' + await ev("document.querySelectorAll('#sndpicks .sndpk').length"));
+  // устаревший выбор (send:pick до начала): выбор очищен, «Выбор сохранён» не пишется
+  await fetch(base + '/expire');
+  await ev("document.getElementById('sndsend').click(); 1");
+  await until("/Выбор устарел/.test(" + txt('sndst') + ")");
+  console.log('stale=' + await ev("[document.querySelectorAll('#sndpicks .sndpk').length, /сохранён/.test(" + txt('sndst') + ")].join('|')"));
+  // итог с израсходованными метками: ни байта и ни файла — «устарел»; файл нулевого размера доставлен — «часть ушла»
+  console.log('expired=' + await ev("(() => { const r = []; for (const x of [{ done: 0, files: 0 }, { done: 0, files: 1 }]) { snd.last = ''; sndRender({ id: '777888999', state: 'err', err: 'gone', kept: false, ...x }); r.push(/Выбор устарел \\(больше часа\\)/.test(" + txt('sndst') + ") + ',' + /Часть уже ушла/.test(" + txt('sndst') + ")); } snd.last = ''; sndRender(hostS.send); return r.join('|'); })()"));
+  await ev("document.getElementById('sndpick').click(); 1");
+  await until("document.querySelectorAll('#sndpicks .sndpk').length === 1");
   await ev("{ const i = document.getElementById('sndid'); i.value = '777 888 999'; i.dispatchEvent(new Event('input')); } 1");
   console.log('needcode=' + await ev("[" + txt('sndhint') + ", document.getElementById('sndsend').disabled, " + vis('sndaddfav') + "].join('|')"));
   await ev("{ const c = document.getElementById('sndcode'); c.value = '000000'; c.dispatchEvent(new Event('input')); } 1");
@@ -191,7 +200,7 @@ func TestBrowserSend(t *testing.T) {
 	addr := l.Addr().String()
 	page, _ := shimmed("ws://127.0.0.1:1/ws", "tokui") // хабов нет: страница не выходит в сеть
 	info := func() map[string]any {
-		return map[string]any{"id": cfg.ID, "users": []any{}, "keys": []any{}, "version": "test", "online": true,
+		return map[string]any{"id": cfg.id(), "users": []any{}, "keys": []any{}, "version": "test", "online": true,
 			"space": spaceInfo(cfg), "send": sendOps.snap(), "recvNew": recvPinNewJSON(cfg)}
 	}
 	h := handler(addr, "tokui", page, cfg, &agent.Agent{}, nil, info, newFiles(t.TempDir()), nil)
@@ -199,6 +208,11 @@ func TestBrowserSend(t *testing.T) {
 	mux.Handle("/", h)
 	mux.HandleFunc("/release", func(http.ResponseWriter, *http.Request) { close(release) })
 	mux.HandleFunc("/tray", func(http.ResponseWriter, *http.Request) { sendOps.startTray(cfg, p.id()) })
+	mux.HandleFunc("/expire", func(http.ResponseWriter, *http.Request) { // метки окна устарели (как через час)
+		sendOps.mu.Lock()
+		clear(sendOps.picks)
+		sendOps.mu.Unlock()
+	})
 	sendNotice = func(string, string) {} // уведомления рабочего стола в тесте не показывать
 	mux.HandleFunc("/pin", func(http.ResponseWriter, *http.Request) {
 		k := ed25519.PublicKey(make([]byte, 32))
@@ -249,7 +263,7 @@ func TestBrowserSend(t *testing.T) {
 		"ready=Договор.pdf → Офис|Всё готово — нажмите «Отправить».|false|true\n",
 		"favs=Ноутбук мамыспросит «Принять?»,444 555 666первый раз — нужен код\n",
 		"run=Отправляю на «Офис»…Файл 1 из 1 · 977 KB из 2.4 MBОстановить можно кнопкой «Остановить»; уже принятое на том ПК останется.|Остановить|true\n", // своему — без строки про «Принять?»
-		"runask=banner info|true\n", "tray=1|1\n",
+		"runask=banner info|true\n", "tray=1|1\n", "stale=0|false\n", "expired=true,false|false,true\n",
 		"done=✓ Отправлено на «Офис»файлов: 1 · 2.4 MBФайлы — в папке «Загрузки» того ПК", "|0\n",
 		"needcode=Первый раз этому ПК: введите 6 цифр кода с его экрана.|true|true\n",
 		"fail=Не отправлено на «777 888 999»Неверный код. Что делать: введите код", "Выбор сохранён: исправьте и нажмите «Отправить» снова.Понятно|1\n",
