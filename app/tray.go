@@ -323,7 +323,6 @@ func trayPick(id int, rows []trayRow, gate func() bool, d trayDeps) func() {
 	var f func()
 	rows = trayFlat(rows)
 	switch i := slices.IndexFunc(rows, func(r trayRow) bool { return r.ID == id }); {
-	case id == traySend: // сам пункт подменю
 	case id == traySWin && d.swin != nil:
 		f = d.swin
 	case id == traySWin:
