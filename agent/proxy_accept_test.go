@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -56,7 +57,8 @@ func slowProxy(t *testing.T, delay time.Duration) (*url.URL, *atomic.Int32) {
 // приёмка Ч12, круг 2: живой, но медленный прокси (дольше proxyWait) — каким путём идёт регистрация ПК на хабе
 // (dial из a.run) и каким — служебное соединение вступления (hostDial).
 func TestAcceptSlowLiveProxy(t *testing.T) {
-	pu, fwd := slowProxy(t, 1500*time.Millisecond)
+	const slow = 3 * time.Second
+	pu, fwd := slowProxy(t, slow)
 	oldP, oldW := proxy, proxyWait
 	proxy, proxyWait = func(*http.Request) (*url.URL, error) { return pu, nil }, 500*time.Millisecond
 	t.Cleanup(func() { proxy, proxyWait = oldP, oldW })
@@ -70,12 +72,17 @@ func TestAcceptSlowLiveProxy(t *testing.T) {
 	if c != nil {
 		c.CloseNow()
 	}
-	time.Sleep(1500 * time.Millisecond) // брошенная попытка через прокси догорела
+	time.Sleep(slow) // брошенная попытка через прокси догорела
 	fwd.Store(0)
 	t0 = time.Now()
 	err = hostDial(ctx, hubURL, "123456789", connectReq{View: true}, func(*webrtc.PeerConnection, func(error)) {})
 	t.Logf("ВСТУПЛЕНИЕ (hostDial): err=%v, через прокси=%d, за %v", err, fwd.Load(), time.Since(t0).Round(100*time.Millisecond))
 	if want := true; (reg > 0) != want { // живой прокси регистрацию не обходит (TZ.md, TestDeadProxy)
 		t.Errorf("регистрация через прокси: %v, ждали %v", reg > 0, want)
+	}
+	// вступление — не через прокси: прокси пересылает не раньше slow, а обмен (хаб, offer, ICE, закрытие хостом) кончился
+	// раньше — значит, WebSocket шёл напрямую после proxyWait (брошенная попытка может досчитаться в fwd позже)
+	if el := time.Since(t0); !errors.Is(err, ErrSpaceClosed) || el >= slow {
+		t.Errorf("вступление: %v за %v — ждали closed быстрее %v (напрямую, мимо медленного прокси)", err, el, slow)
 	}
 }

@@ -62,6 +62,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     window.spaceEnter = async (id, pw, code, ph) => {
       calls.push('enter:' + [id, pw, code, ph].join(':'));
       if (window.enterRun) return void setOp({ kind: 'enter', state: 'run', stage: 'link', result: null });
+      if (window.enterFail) throw 'space:' + window.enterFail; // сам вызов отказал (другая операция идёт)
       if (window.enterErr) return void setOp({ kind: 'enter', state: 'err', err: window.enterErr, result: null }); // быстрая ошибка до сети
       setOp({ kind: 'enter', state: 'confirm', result: null, preview: { members: [{ id: '444555666', fp: 'OFFICE-FP' }, { id: '123456789', fp: 'SELF-FP' }], password: true, code: true, trusted: 2, keyLogin: 1, ask: true, already: false, gone: ['GONE-FP1', 'GONE-FP2'] } });
       return null;
@@ -189,7 +190,10 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await ev("enterRun = false; enterErr = 'phrase'; 1");
   for (let i = 0; i < 2; i++) { await ev(val('spepw', 'owner-pass') + val('specd', '654321')); await click('spego'); await sleep(1300); }
   console.log('err2=' + await calls() + '|' + await ev([vis('speerr'), "document.getElementById('spepw').value", "document.getElementById('specd').value", txt('speerr')].join(" + '|' + ")));
-  await ev("enterErr = ''; setOp(null); 1"); await sleep(1300); await click('spex');
+  await ev("enterErr = ''; setOp(null); enterFail = 'busy'; 1"); await sleep(1300); await calls();
+  await ev(val('spepw', 'owner-pass') + val('specd', '654321')); await click('spego'); await sleep(300);
+  console.log('callfail=' + await calls() + '|' + await ev([vis('speerr'), "document.getElementById('spepw').value", "document.getElementById('specd').value", txt('speerr')].join(" + '|' + ")));
+  await ev("enterFail = ''; 1"); await click('spex');
   // вступление в два шага: превью → отказ → снова → подтверждение
   await click('spjoin');
   await ev(val('speid', '444 555 666') + val('spepw', 'owner-pass') + val('specd', '654321') + val('speph', 'able baker cable delta eagle fable gable habit ideal jewel')); await click('spego'); await sleep(300);
@@ -266,7 +270,7 @@ func TestBrowserSpace(t *testing.T) {
 		"foreign=Wrong space phrase\n",
 		"created=|false|false|true|false|This PCID 123 456 789key: SELF-FP|create:owner-pass,createok:able baker,createok:" + ph + "\n",
 		"next=true|false|✓ The space is created. This PC is the first one in it.Next: add another PC of yours" +
-			"On the other PC open AnyPC → “Access to this PC” → “Join” and enter:This PC’s ID123 456 789📋Space passwordthe same password you use to sign in to the PCs of the space" +
+			"On the other PC open AnyPC → “My space” → “Set up” → “Join” and enter:This PC’s ID123 456 789📋Space passwordthe same password you use to sign in to the PCs of the space" +
 			"Authenticator app code6 digits from the app entry you use to sign in to the PCs of the space: “AnyPC” with the ID of the PC where the space was created, or “AnyPC пространство” if the code was changed" +
 			"Space phrasethe 10 words you wrote downWhile the other PC joins, this one must be on and online.Got it\n",
 		"gotit=false|true\n", "how=true|false|true\n",
@@ -313,6 +317,8 @@ func TestBrowserSpace(t *testing.T) {
 		"stsave=Step 3 of 3;Saving the join…|true|true|false\n",
 		"err2=enter:444555666:owner-pass:654321:" + ph + ",enter:444555666:owner-pass:654321:" + ph + "|true|||Could not joinWrong space phrase" +
 			"What to do: compare the phrase with your note — 10 words in Latin letters separated by spaces, then “Join”.The password and code were cleared — enter them again; everything else is kept.\n",
+		"callfail=enter:444555666:owner-pass:654321:" + ph + "|true|||Could not joinAnother operation is in progress — wait for it to finish" +
+			"What to do: wait until the current space operation on this PC ends and press “Join” again.The password and code were cleared — enter them again; everything else is kept.\n",
 		"cancelled=cancel|Joining stoppedCancelledWhat to do: to join, press “Join” again.The password and code were cleared — enter them again; everything else is kept.|true\n",
 		"preview=enter:444555666:owner-pass:654321:" + ph + "|Step 3 of 3;Are these all your PCs?;Check the list. All yours — “Confirm”. A PC that is not yours — “Refuse”.;" +
 			"OfficeID 444 555 666key: OFFICE-FP;This PCID 123 456 789key: SELF-FP;" +

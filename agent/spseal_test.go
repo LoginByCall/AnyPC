@@ -319,7 +319,7 @@ func TestSpaceSyncConnect(t *testing.T) {
 	if a := connect(req(old)); a != "offer " {
 		t.Errorf("часы: %s", a)
 	}
-	if s, _ := places(); s != 0 {
+	if s, _ := waitPlaces(0, 1); s != 0 { // дождаться места в pend: иначе drop() пройдёт раньше, чем хост его займёт
 		t.Error("место сверки при сбитых часах")
 	}
 	drop()
