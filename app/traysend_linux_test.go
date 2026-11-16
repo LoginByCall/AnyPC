@@ -21,7 +21,7 @@ func TestTrayTreeSub(t *testing.T) {
 
 // TestNoticeEsc — замечание 5 приёмки: тело notify-send — разметка (KDE, dunst): & < > экранируются.
 func TestNoticeEsc(t *testing.T) {
-	if got := noticeEsc("a<b>&c.txt"); got != "a&lt;b&gt;&amp;c.txt" {
+	if got := noticeEsc(`a<b>&c "d" 'e'.txt`); got != `a&lt;b&gt;&amp;c "d" 'e'.txt` {
 		t.Fatal(got)
 	}
 }

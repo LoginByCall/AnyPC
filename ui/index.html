@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="ru">
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-4AV2Mhm+rtuBkc0dwyYCOalR76KLplk31d9f820TDEw=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-eoCQ3s+j8gg9JtCBhlwKaZHL4rAAFa3TKZweDxp3WL4=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AnyPC</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26'><style>.a{stroke:%2317181c}.b{fill:%23d2452d}@media(prefers-color-scheme:dark){.a{stroke:%23eceae4}.b{fill:%23ef6a52}}</style><rect class='a' x='1.5' y='3' width='15' height='11' rx='2' fill='none' stroke-width='2.6'/><rect class='b' x='10' y='12' width='15' height='11' rx='2'/></svg>">
@@ -955,7 +955,7 @@ function sndRender(o) { // ход, итог, ошибка — каждое со�
     if (gone) { snd.picks = []; sndWhatRender(); } // метки израсходованы (байты ушли) или срок истёк — выбрать снова
     const row = spEl('div', '', 'row'); row.append(spBtn('snd_ok', () => sendClear().then(() => { snd.last = ''; sndRender(null); })));
     st.replaceChildren(sndBox('bad', t(o.err === 'cancel' ? 'snd_cancel_h' : 'snd_fail_h').replace('%s', who), sndErr(o.err), o.files ? t('snd_part').replace('%s', t('snd_n_files').replace('%s', o.files)) : '',
-      kept ? t('snd_kept') : gone ? t(o.done > 0 ? 'snd_lost' : 'snd_expired') : '', row));
+      kept ? t('snd_kept') : gone ? t(o.done > 0 || o.files > 0 ? 'snd_lost' : 'snd_expired') : '', row));
   }
   if (!$('send').classList.contains('hidden')) st.scrollIntoView({ block: 'nearest' }); // итог и ошибка — на виду, не под краем окна
   sndReady();

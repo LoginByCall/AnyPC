@@ -54,7 +54,8 @@ type sendReq struct {
 	Files []string          `json:"-"`    // из picks (sendOpRun.resolve)
 	Dirs  []string          `json:"-"`
 	tray  bool              // из трея (startTray): итог — уведомлением
-	began func(kind string) // трей: отправка принята (до фона — уведомление «Отправляю» раньше итога)
+	began func(kind string) // трей: отправка принята (уведомление «Отправляю» — в своей горутине)
+	after chan struct{}     // трей: итог — после уведомления «Отправляю» (закрывает began)
 }
 
 // sendPicked — выбранное человеком в окне ОС (sendPick): путь живёт только здесь, у страницы — метка.
@@ -272,6 +273,9 @@ func (r *sendOpRun) start(c *config, q sendReq) error {
 		}
 		r.notify()
 		if o.tray {
+			if q.after != nil { // «Отправляю…» — раньше итога (notify-send ограничен 5 с)
+				<-q.after
+			}
 			sendNotice("AnyPC", sendNoticeText(trayLang(), sendTargetName(c, d.ID), o.what, err))
 		}
 	})
@@ -288,8 +292,11 @@ func (r *sendOpRun) startTray(c *config, id string) {
 		return
 	}
 	who, what := sendTargetName(c, id), filepath.Base(p)
-	began := func(kind string) { sendNotice("AnyPC", sendNoticeRun(trayLang(), who, what, kind != "own")) } // окна нет — сказать, что началось
-	if err := r.start(c, sendReq{ID: id, Files: []string{p}, tray: true, began: began}); err != nil {
+	shown := make(chan struct{})
+	began := func(kind string) { // окна нет — сказать, что началось; зависший сервер уведомлений не задерживает старт
+		go func() { defer close(shown); sendNotice("AnyPC", sendNoticeRun(trayLang(), who, what, kind != "own")) }()
+	}
+	if err := r.start(c, sendReq{ID: id, Files: []string{p}, tray: true, began: began, after: shown}); err != nil {
 		sendNotice("AnyPC", sendNoticeText(trayLang(), who, what, err))
 	}
 }

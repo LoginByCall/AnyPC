@@ -4,10 +4,10 @@ package main
 
 import (
 	"context"
-	"html"
 	"log"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -32,5 +32,6 @@ func noticeOS(title, body string) {
 	}
 }
 
-// noticeEsc — тело для notify-send: & < > (и кавычки) — сущностями разметки.
-func noticeEsc(s string) string { return html.EscapeString(s) }
+// noticeEsc — тело для notify-send: только & < > — сущностями (GNOME Shell понимает лишь amp, quot, apos, lt, gt —
+// &#39; и &#34; от html.EscapeString показал бы как есть).
+var noticeEsc = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace
