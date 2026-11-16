@@ -216,6 +216,11 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await ev("enterErr = ''; enterRun = true; 1"); await ev(val('spepw', 'owner-pass') + val('specd', '654321')); await click('spego'); await sleep(1300);
   console.log('pwpath=' + await calls() + '|' + await stp());
   await ev("setOp(null); enterRun = false; 1"); await sleep(1300);
+  // другой поручитель на шаге 1 — снова без пароля
+  await ev("enterErr = 'needpw'; 1"); await ev(val('specd', '654321')); await click('spego'); await sleep(1300); await calls();
+  await ev("document.querySelector('#spj3 .spjback').click(); 1"); await sleep(200); await ev("document.querySelector('#spj2 .spjback').click(); 1"); await sleep(200);
+  await ev(val('speid', '777 888 999')); await click('spj1go'); await click('spj2go');
+  console.log('pwreset=' + await jstep());
   await ev("enterFail = ''; enterErr = ''; 1"); await ev("document.querySelector('#spj3 .spex').click(); 1"); await sleep(250);
   // вступление в два шага: превью → отказ → снова → подтверждение
   await click('spjoin');
@@ -344,6 +349,7 @@ func TestBrowserSpace(t *testing.T) {
 		"showback=true|false|true||false|createno\n",
 		"back=false|true|true\n",
 		// Ч12б: шаги ID → фраза → код, ожидание «Разрешить» с отсчётом, отказы и запасной путь с паролем
+		"pwreset=false,false,true,false,false|Step 3 of 5;Authenticator code;The code goes last: it changes every 30 seconds. After “Join” this PC connects to that one, it checks the code and the phrase, and you will need to press “Allow” on it.|specd\n",
 		"j1=true,false,false,false,false|Step 1 of 5;Details of your PC that is already in the space;Any of your PCs in the space shows them: “My space” → “Set up” → “How to add a PC”.|speid\n",
 		"j1self=true,false,false,false,true|Could not join;Step 1 of 5;Details of your PC that is already in the space;Any of your PCs in the space shows them: “My space” → “Set up” → “How to add a PC”.|speid|Could not joinWrong PC IDWhat to do: enter the 9-digit ID of your other PC (not this one).The code was cleared — enter a fresh one; the ID and phrase are kept.\n",
 		"j2=false,true,false,false,false|Step 2 of 5;Space phrase;Enter the 10 words you wrote down when creating the space. The phrase does not go over the network: this PC proves it to that PC with a signature.|speph\n",
@@ -381,7 +387,7 @@ func TestSpaceCodesUI(t *testing.T) {
 		}
 	}
 	// Ч12, приёмка M2: у каждой ошибки вступления — свой «что делать» (sw_a_<код>; синонимы — SP_ADV в окне)
-	for _, c := range []string{"needpw", "badcode", "badphrase", "declined", "noanswer", "later", "nospace", "waitthere", "noudp", "nolink", "offline", "closed", "auth", "ask", "old", "phrase", "id", "busythere", "lockedthere", "nopassthere",
+	for _, c := range []string{"needpw", "badcode", "badphrase", "declined", "noanswer", "nowin", "later", "nospace", "waitthere", "noudp", "nolink", "offline", "closed", "auth", "ask", "old", "phrase", "id", "busythere", "lockedthere", "nopassthere",
 		"hostkey", "badid", "clock", "change", "other", "busy", "in", "compromised", "over", "damaged", "again", "retry"} {
 		if n := strings.Count(string(html), " sw_a_"+c+": "); n != 7 {
 			t.Errorf("sw_a_%s: в словарях %d раз из 7", c, n)

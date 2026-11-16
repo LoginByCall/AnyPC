@@ -49,7 +49,7 @@ type spMsg struct {
 }
 
 // spaceCtl — хост: ответ на "sp" вошедшей сессии.
-func (a *Agent) spaceCtl(s *session, data []byte, reply func(spMsg)) {
+func (a *Agent) spaceCtl(ctx context.Context, s *session, data []byte, reply func(spMsg)) {
 	var m spMsg
 	if json.Unmarshal(data, &m) != nil {
 		return
@@ -81,7 +81,12 @@ func (a *Agent) spaceCtl(s *session, data []byte, reply func(spMsg)) {
 			reply(spMsg{T: "sp", Err: "key"})
 		case s.admitting.CompareAndSwap(false, true): // второй запрос, пока окно открыто, — без ответа
 			go func() { // окно ждёт человека до AdmitTimeout — не в потоке SCTP
-				ok, why := a.admitAsk(s, AdmitReq{FP: pake.KeyFingerprint(cpub)}, cpub)
+				s.admitBlock.Store(true) // вошедшая сессия сама «Разрешить» не нажмёт: ввод выключен на время окна
+				for _, e := range s.keys.release() {
+					sendInput(e, nil)
+				}
+				ok, why := a.admitAsk(ctx, s, AdmitReq{FP: pake.KeyFingerprint(cpub)})
+				s.admitBlock.Store(false)
 				if !ok {
 					reply(spMsg{T: "sp", Err: "admit_" + why})
 					return
@@ -174,6 +179,7 @@ var (
 	ErrSpaceBadPhrase = errors.New("пространство: фраза не подошла тому ПК")     // и errors.Is(ErrSpaceAuth)
 	ErrSpaceDeclined  = errors.New("пространство: на том ПК нажали «Отклонить»") // и errors.Is(ErrSpaceRefused)
 	ErrSpaceNoAnswer  = errors.New("пространство: на том ПК не ответили в окне «Пустить?»")
+	ErrSpaceNoWindow  = errors.New("пространство: на том ПК не смогло появиться окно «Пустить?»")
 	ErrSpaceLater     = errors.New("пространство: тот ПК недавно отказал этому ПК — повторите позже")
 	ErrSpaceNotThere  = errors.New("пространство: тот ПК сейчас не пускает в пространство")
 	ErrSpaceWaitThere = errors.New("пространство: тот ПК ещё не сверился с другим членом после своего вступления") // и errors.Is(ErrSpaceAuth)
@@ -190,6 +196,8 @@ func joinRefusal(t, why string) error {
 		return fmt.Errorf("%w (%w)", ErrSpaceDeclined, ErrSpaceRefused)
 	case t == "denied" && why == "timeout":
 		return fmt.Errorf("%w (%w)", ErrSpaceNoAnswer, ErrSpaceRefused)
+	case t == "denied" && why == "nowin":
+		return fmt.Errorf("%w (%w)", ErrSpaceNoWindow, ErrSpaceRefused)
 	case t == "denied" && why == "wait": // и errors.Is(ErrSpaceAuth) с «denied», как было до Ч12б
 		return fmt.Errorf("%w (%w: denied)", ErrSpaceWaitThere, ErrSpaceAuth)
 	case t == "later":
@@ -212,9 +220,16 @@ func joinRefusal(t, why string) error {
 
 // joinSigHook — тест: подменить доказательство фразы перед отправкой (перенос в другое соединение, чужой домен);
 // joinFP — тест: отпечатки этого соединения перед подписью (клиента, хоста).
+// joinAsUser — тест: вступающий сначала называет запись по имени; spEarlyM — тест: после входа паролем шлёт состав без
+// запроса; joinBadCSig — тест: подпись ключа клиента в «b» вступления испорчена.
 var (
 	joinSigHook func(sig []byte) []byte
 	joinFP      func(fc, fh string)
+	joinAsUser  string
+	spEarlyM    []byte
+	joinBadCSig atomic.Bool
+	// joinCodeHook — тест: перед отправкой кода вступления (блокировка во время ожидания кода).
+	joinCodeHook func()
 )
 
 // spaceDupM — испытательная подмена: хост шлёт состав дважды (agent/space_test.go); в рабочем пути — нет.
@@ -258,7 +273,7 @@ const spaceLinkClosedDelay = 300 * time.Millisecond
 // не было: тогда состояние P неизвестно, повтор безопасен — второй раз P ответит "bad" на дубль ПК).
 func SpaceJoin(ctx context.Context, d SpaceDial) ([]byte, error) {
 	wait := spaceWait + d.Confirm
-	if d.Password == "" { // Ч12б: и окно «Пустить?» на том ПК
+	if d.Password == "" || d.OwnerKey != nil { // Ч12б: и окно «Пустить?» на том ПК
 		wait += admitWait
 	}
 	ctx, cancel := context.WithTimeout(ctx, wait)
@@ -297,6 +312,11 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 		askM := func() { // под mu: вход есть и ctl открыт — запросить M один раз
 			if authed && ctl != nil && !asked {
 				asked = true
+				if spEarlyM != nil { // тест: состав без запроса (до «Разрешить» при входе паролем)
+					b, _ := json.Marshal(spMsg{T: "sp", M: spEarlyM})
+					ctl.SendText(string(b))
+					return
+				}
 				ctl.SendText(`{"t":"sp"}`)
 			}
 		}
@@ -309,6 +329,7 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 				join := d.Password == "" // Ч12б: вступление без пароля (admit.go)
 				var cpub []byte          // свой ключ из "b"
 				salted := false          // соль ключа владельца пришла (один раз)
+				named := false           // тест joinAsUser: запись названа, ждём второе «a»
 				sendA := func(v authMsg) { b, _ := json.Marshal(v); dc.SendText(string(b)) }
 				hostOK := func(am authMsg) bool { // хост доказал пароль (conf) и ключ (подпись над DTLS-отпечатками)
 					fc, fh := fps()
@@ -325,6 +346,23 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 					}
 					switch am.T {
 					case "a":
+						sendJoinB := func() {
+							k, sig, err := signB(d.Key, d.ID, pc)
+							if err != nil {
+								finish(err)
+								return
+							}
+							if joinBadCSig.Load() {
+								sig[0] ^= 1
+							}
+							cpub = k
+							sendA(authMsg{T: "b", Join: true, CPub: k, CSig: sig, From: d.Self, Name: d.Name})
+						}
+						if named && am.User != "" && !first { // тест: хост принял имя записи
+							named = false
+							sendJoinB()
+							return
+						}
 						if !first || am.User != "" {
 							finish(errSpaceProtocol)
 							return
@@ -334,19 +372,21 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 							finish(ErrSpaceOld)
 							return
 						}
+						if !join && am.Join && d.OwnerKey != nil && d.Self != "" { // пароль ввели, а поручитель новый: без пароля, с окном
+							join = true
+						}
 						if join && (!am.Join || d.OwnerKey == nil) { // поручитель ≤ v0.3.1: только путь с паролем
 							finish(ErrSpaceNeedPass)
 							return
 						}
 						stage("auth")
 						if join {
-							k, sig, err := signB(d.Key, d.ID, pc)
-							if err != nil {
-								finish(err)
+							if joinAsUser != "" { // тест: вступление в запись по имени
+								named = true
+								sendA(authMsg{T: "a", User: joinAsUser})
 								return
 							}
-							cpub = k
-							sendA(authMsg{T: "b", Join: true, CPub: k, CSig: sig, From: d.Self, Name: d.Name})
+							sendJoinB()
 							return
 						}
 						fc, fh := fps()
@@ -371,6 +411,9 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 						if !knownOK(am) { // код — только запомненному P
 							finish(ErrSpaceHostKey)
 							return
+						}
+						if join && joinCodeHook != nil {
+							joinCodeHook()
 						}
 						sendA(authMsg{T: "otp", Code: d.Code})
 					case "join": // Ч12б: соль ключа владельца — доказать фразу над этим соединением

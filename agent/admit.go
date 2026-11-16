@@ -10,20 +10,23 @@ package agent
 //
 // Протокол — только добавления (канал "auth"; хост объявляет join:true в первом "a", старый хост поля не шлёт):
 //
-//	клиент → {"t":"b","join":true,cpub,csig,from,name}  ключ клиента доказан (clientMsg), ID и имя — заявленные
+//	клиент → {"t":"b","join":true,cpub,csig,from,name}  ключ клиента доказан (clientMsg), ID (обязателен) и имя — заявленные
 //	хост   → {"t":"otp","join":true,pub,sig}            ключ хоста (identityMsg): код — только этому хосту
-//	клиент → {"t":"otp",code}                           код TOTP записи по умолчанию (один на сессию)
+//	клиент → {"t":"otp",code}                           код TOTP записи по умолчанию (один на сессию, до authWait)
 //	хост   → {"t":"join",salt:osalt}                    код верный, хост — ПК пространства: соль ключа владельца
 //	клиент → {"t":"join",sig}                           pake.SpaceJoinSign(ключ из фразы и osalt, это соединение, cpub)
 //	хост   → {"t":"admit"}                              фраза верна — окно «Пустить?» открыто (до AdmitTimeout)
 //	хост   → {"t":"ok","join":true,pub,sig}             «Разрешить»: сессия вступления (только ctl "sp", без экрана)
 //
-// Отказы: "fail" why code|phrase (неудача входа: счёт как у пароля, REQ-S-04/S-22, окна нет); "denied" why no
-// («Отклонить») | timeout (нет ответа) | wait (LoginShut, решение 12 A); "later" — окно этому ID или ключу уже
-// показывали меньше admitEvery назад; "nojoin" why none|ask|rights — хост сейчас не пускает в пространство;
-// "locked", "busy" — как у входа. Вход паролем (клиенты ≤ v0.3.1): то же окно до выдачи состава (spaceCtl).
+// Отказы: "fail" why code|phrase (неудача вступления — своя лестница, как у пароля: 5 подряд — 1 мин, дальше
+// удвоение до 1 ч; вход владельца она не запирает; окна нет); "denied" why no («Отклонить») | timeout (нет ответа) |
+// nowin (окно не смогло появиться) | wait (LoginShut, решение 12 A); "later" — окно уже открыто или после отказа
+// ещё не прошла пауза (общая по хосту, растёт); "nojoin" why none|ask|rights|id — хост сейчас не пускает (или ID не
+// заявлен); "locked" — лестница вступления заперта; "busy" — как у входа. Вход паролем (клиенты ≤ v0.3.1): то же
+// окно до выдачи состава (spaceCtl), ввод этой сессии на время окна выключен.
 
 import (
+	"context"
 	"crypto/ed25519"
 	"fmt"
 	"log"
@@ -31,18 +34,21 @@ import (
 	"sync/atomic"
 	"time"
 
+	"anypc/hub"
 	"anypc/pake"
 )
 
 // AdmitTimeout — окно «Пустить ПК в пространство?» ждёт ответа (решение B: «до 2 мин»).
 const AdmitTimeout = 2 * time.Minute
 
-// admitWait — срок окна для разбора «нет ответа» и для клиента; admitEvery — после отказа тому же ID или ключу окно
-// не раньше; joinLive — сессия вступления после «Разрешить» (состав и «Это все ваши ПК?» на новом ПК); proofWait —
-// доказательство фразы после соли (Argon2 на клиенте). Переменные — для тестов.
+// admitWait — срок ожидания окна для клиента; admitEvery — пауза после первого отказа или тайм-аута окна (общая по
+// хосту; каждый следующий подряд — вдвое дольше, до admitMax; «Разрешить» или час тишины — сброс); joinLive —
+// сессия вступления после «Разрешить» (состав и «Это все ваши ПК?» на новом ПК); proofWait — доказательство фразы
+// после соли (Argon2 на клиенте). Переменные — для тестов.
 var (
 	admitWait  = AdmitTimeout
 	admitEvery = 30 * time.Second
+	admitMax   = 16 * time.Minute
 	joinLive   = 4 * time.Minute
 	proofWait  = 30 * time.Second
 )
@@ -53,6 +59,16 @@ var joinBadHostSig atomic.Bool
 // AdmitReq — что показать в окне «Пустить ПК в пространство?»: ID и имя — заявленные новым ПК (rxClaim; ID "" —
 // не сообщил: вход паролем, AnyPC ≤ v0.3.1), FP — отпечаток его ключа (pake.KeyFingerprint), доказанного в "b".
 type AdmitReq struct{ ID, Name, FP string }
+
+// AdmitResult — исход окна «Пустить?» (AskAdmit).
+type AdmitResult int
+
+const (
+	AdmitNo       AdmitResult = iota // «Отклонить» (или окно закрыто)
+	AdmitYes                         // «Разрешить»
+	AdmitNoAnswer                    // нет ответа за AdmitTimeout
+	AdmitNoWindow                    // окно не смогло появиться: нет zenity, дисплея, сеанса, MessageBoxTimeoutW
+)
 
 // joinOn — хост пускает в пространство без пароля (объявляет join в "a").
 func (a *Agent) joinOn() bool { return a.SpaceOwner != nil && a.SpaceAdmit != nil && !a.noJoin }
@@ -69,87 +85,108 @@ func admitWho(q AdmitReq) string {
 	return "ПК " + q.ID + " с ключом " + fp
 }
 
-// admitAsk — окно «Пустить?» (решение B) на сессию s: ID или ключ pub получали отказ меньше admitEvery назад —
-// "later" без окна; «Разрешить» — true; иначе "no" или "timeout" (окно ждало почти весь admitWait). Одно окно за
-// раз: зовут только из сессии a.sess (вступление — после promote, вход паролем — уже вошедшая).
-func (a *Agent) admitAsk(s *session, q AdmitReq, pub []byte) (bool, string) {
-	keys := []string{"k" + string(pub)}
-	if q.ID != "" {
-		keys = append(keys, "i"+q.ID)
-	}
+// admitAsk — окно «Пустить?» (решение B) на сессию s; ctx кончается с сессией — окно закрывается (AskAdmit).
+// Одно окно на хост: открыто (в том числе ушедшему клиенту, если окно ОС не закрыть — Windows) — "later" без окна;
+// после отказа или тайм-аута следующее — не раньше admitNext (растущая пауза, общая по хосту: смена ID и ключа её не
+// обходит) — "later". «Разрешить» — true; иначе why: no | timeout | nowin. Клиент ушёл — "no" без паузы.
+func (a *Agent) admitAsk(ctx context.Context, s *session, q AdmitReq) (bool, string) {
 	now := time.Now()
 	a.mu.Lock()
-	for k, t := range a.admitAt {
-		if now.Sub(t) >= admitEvery {
-			delete(a.admitAt, k)
-		}
+	if a.admitOpen || now.Before(a.admitNext) {
+		open := a.admitOpen
+		a.mu.Unlock()
+		log.Printf("сессия %s: %s — окно «Пустить?» %s, отказ без окна", s.label(), admitWho(q), map[bool]string{true: "уже открыто", false: "было недавно"}[open])
+		return false, "later"
 	}
-	for _, k := range keys {
-		if _, ok := a.admitAt[k]; ok {
-			a.mu.Unlock()
-			log.Printf("сессия %s: %s — окно «Пустить?» уже было меньше %v назад, отказ без окна", s.label(), admitWho(q), admitEvery)
-			return false, "later"
-		}
-	}
+	a.admitOpen = true
 	a.mu.Unlock()
+	defer func() { a.mu.Lock(); a.admitOpen = false; a.mu.Unlock() }()
 	log.Printf("сессия %s: %s просит вступить в пространство — окно «Пустить?»", s.label(), admitWho(q))
-	t0 := time.Now()
-	yes := a.SpaceAdmit(q)
+	res := a.SpaceAdmit(ctx, q)
+	gone := ctx.Err() != nil || s.gone.Load()
 	switch {
-	case yes && !s.gone.Load():
+	case res == AdmitYes && !gone:
+		a.mu.Lock()
+		a.admitN, a.admitNext = 0, time.Time{}
+		a.mu.Unlock()
 		log.Printf("сессия %s: вступление разрешено на этом ПК", s.label())
 		return true, ""
-	case yes:
-		return false, "no" // клиент ушёл, пока окно было открыто: отвечать некому
+	case gone: // клиент ушёл — окно закрыто, отвечать некому
+		log.Printf("сессия %s: вступающий ушёл, окно «Пустить?» закрыто", s.label())
+		return false, "no"
+	case res == AdmitNoWindow:
+		log.Printf("сессия %s: окно «Пустить?» не появилось — вступление отклонено", s.label())
+		return false, "nowin"
 	}
-	why := "no"
-	if time.Since(t0) >= admitWait*95/100 {
-		why = "timeout"
-	}
+	why := map[AdmitResult]string{AdmitNo: "no", AdmitNoAnswer: "timeout"}[res]
 	a.mu.Lock()
-	if a.admitAt == nil {
-		a.admitAt = map[string]time.Time{}
+	end := time.Now()
+	if end.Sub(a.admitLast) > time.Hour {
+		a.admitN = 0
 	}
-	for _, k := range keys {
-		a.admitAt[k] = time.Now()
-	}
+	a.admitN++
+	a.admitLast = end
+	a.admitNext = end.Add(min(admitEvery<<min(a.admitN-1, 10), admitMax))
 	a.mu.Unlock()
 	log.Printf("сессия %s: вступление отклонено на этом ПК (%s)", s.label(), map[string]string{"no": "«Отклонить»", "timeout": "нет ответа"}[why])
 	return false, why
 }
 
-// joinCode — код TOTP вступления записи user (под a.mu): лестницы кодов и паролей — те же, что у входа паролем и
-// кодом для чужого (не закреплённого) ключа (authChannel, check). Неверный — неудача и в общий счёт. locked — вход
-// заперт: код не проверялся.
-func (a *Agent) joinCode(cid, user, code string) (ok, locked bool) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	lock := func() bool {
-		now := time.Now()
-		n := a.nameOf(user, false)
-		return now.Before(a.otpLock) || n != nil && now.Before(n.otpUntil) || a.pwLocked(user, now)
-	}
-	if lock() {
-		return false, true
-	}
-	if _, ok = a.OTP(user, code); ok {
-		if n := a.names[user]; n != nil {
-			n.otpFails = 0
+// admitLoop — окно «Пустить?» там, где кнопку нельзя выключить на время (zenity, osascript, MessageBox), как
+// askLoop: «Разрешить» раньше AskDelay+askSpawn от первого окна — окно снова; срок admitWait (= AdmitTimeout) на все окна — потом
+// AdmitNoAnswer; ctx кончился — AdmitNo (окно закрыто: вступающий ушёл).
+func admitLoop(ctx context.Context, show func(left time.Duration, again bool) AdmitResult) AdmitResult {
+	t0 := time.Now()
+	end := t0.Add(admitWait)
+	for again := false; ; again = true {
+		left := time.Until(end)
+		switch {
+		case ctx.Err() != nil:
+			return AdmitNo
+		case left < time.Second:
+			return AdmitNoAnswer
 		}
-		return true, false
+		if r := show(left, again); r != AdmitYes || time.Since(t0) >= AskDelay+askSpawn {
+			return r
+		}
 	}
-	n := a.nameOf(user, true)
-	lockStep(&n.otpFails, &n.otpUntil, 5)
-	n.at = time.Now()
-	hostStep(&a.otpFails, &a.otpLock, &a.otpAt)
-	a.countAuth(cid, user, false)
-	return false, false
 }
 
-// joinB — "b" вступления без пароля (решение A'). keyOK — ключ m.CPub доказан подписью над этим соединением;
-// salt — соль записи user при входе; waitCode, waitProof — повесить обработчик следующего "otp" и "join" канала.
-// Порядок: код (счёт неудач) → соль ключа владельца → доказательство фразы (счёт неудач) → promote → окно.
-func (a *Agent) joinB(s *session, m authMsg, keyOK bool, user string, salt []byte, fpc, fph string, send func(authMsg),
+// joinCode — код TOTP вступления: своя лестница вступления (joinFails по хосту, под a.mu), лестницы входа записи
+// (паролей и кодов) не трогает — иначе посторонний, зная только ID, запирал бы вход владельцу (и с закреплённым
+// ключом). locked — лестница заперта: код не проверялся.
+func (a *Agent) joinCode(user, code string) (ok, locked bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if time.Now().Before(a.joinUntil) {
+		return false, true
+	}
+	if _, ok = a.OTP(user, code); !ok {
+		a.joinFail()
+	}
+	return ok, false
+}
+
+// joinFail — неудача вступления (неверный код или фраза, под a.mu): 5 подряд — 1 мин, дальше удвоение до 1 ч
+// (lockStep, как REQ-S-04); счёт забывается после hostForget тишины.
+func (a *Agent) joinFail() {
+	now := time.Now()
+	if now.After(a.joinAt.Add(hostForget)) && now.After(a.joinUntil.Add(hostForget)) {
+		a.joinFails = 0
+	}
+	a.joinAt = now
+	lockStep(&a.joinFails, &a.joinUntil, joinLockAt)
+	log.Printf("неверный код или фраза вступления (подряд %d)", a.joinFails)
+}
+
+// joinLockAt — неудач вступления до блокировки (как у имени записи, REQ-S-04).
+const joinLockAt = 5
+
+// joinB — "b" вступления без пароля (решение A'). ctx — сессии; keyOK — ключ m.CPub доказан подписью над этим
+// соединением; salt — соль записи user при входе; waitCode, waitProof — повесить обработчик следующего "otp" и
+// "join" канала. Порядок: код (лестница вступления) → соль ключа владельца → доказательство фразы (та же лестница)
+// → promote → окно.
+func (a *Agent) joinB(ctx context.Context, s *session, m authMsg, keyOK bool, user string, salt []byte, fpc, fph string, send func(authMsg),
 	waitCode func(func(string)), waitProof func(func(authMsg))) {
 	var step atomic.Int32 // 0 — ждём код, 1 — ждём доказательство, 2 — окно и дальше, 3 — отказ
 	reject := func(t string, why ...string) {
@@ -158,6 +195,7 @@ func (a *Agent) joinB(s *session, m authMsg, keyOK bool, user string, salt []byt
 		a.release(s)
 		time.AfterFunc(500*time.Millisecond, func() { s.pc.Close() })
 	}
+	id, name := rxClaim(m)
 	switch {
 	case !a.joinOn() || user != "" || s.offOnly: // только запись по умолчанию (запись пространства)
 		reject("nojoin", "none")
@@ -165,25 +203,27 @@ func (a *Agent) joinB(s *session, m authMsg, keyOK bool, user string, salt []byt
 	case !keyOK: // ключ нового члена M — только доказанный (им P сверит ключ в составе)
 		reject("fail")
 		return
+	case !hub.IsHostID(id) || id == a.ID: // в окне и в M — только заявленный ID другого ПК
+		reject("nojoin", "id")
+		return
 	case a.LoginShut != nil && a.LoginShut(user): // решение 12 A: этот ПК сам ещё не сверен после вступления
 		reject("denied", "wait")
 		return
 	}
 	a.mu.Lock()
-	locked := a.pwLocked(user, time.Now())
+	locked := time.Now().Before(a.joinUntil)
 	a.mu.Unlock()
 	if locked {
 		reject("locked")
 		return
 	}
-	id, name := rxClaim(m)
 	cpub := ed25519.PublicKey(append([]byte(nil), m.CPub...))
 	s.asking.Store(true) // общий таймер входа не закрывает: свои сроки на код, доказательство и окно
 	waitCode(func(code string) {
 		if !step.CompareAndSwap(0, 1) {
 			return
 		}
-		ok, locked := a.joinCode(s.cid, user, code)
+		ok, locked := a.joinCode(user, code)
 		switch {
 		case locked:
 			reject("locked")
@@ -207,13 +247,15 @@ func (a *Agent) joinB(s *session, m authMsg, keyOK bool, user string, salt []byt
 			}
 			if !pake.SpaceJoinVerify(opub, p.Sig, a.ID, fpc, fph, cpub) {
 				a.mu.Lock()
-				a.countAuth(s.cid, user, false)
+				a.joinFail()
 				a.mu.Unlock()
 				log.Printf("сессия %s: вступление — фраза пространства не доказана", s.cid)
 				reject("fail", "phrase")
 				return
 			}
-			a.authResult(s.cid, user, true) // код и фраза верны — счёт имени сброшен, как после верного входа
+			a.mu.Lock()
+			a.joinFails = 0 // код и фраза верны — лестница вступления сброшена
+			a.mu.Unlock()
 			s.mu.Lock()
 			s.cpub = cpub
 			s.mu.Unlock()
@@ -223,7 +265,7 @@ func (a *Agent) joinB(s *session, m authMsg, keyOK bool, user string, salt []byt
 			}
 			send(authMsg{T: "admit"})
 			go func() {
-				ok, why := a.admitAsk(s, AdmitReq{ID: id, Name: name, FP: pake.KeyFingerprint(cpub)}, cpub)
+				ok, why := a.admitAsk(ctx, s, AdmitReq{ID: id, Name: name, FP: pake.KeyFingerprint(cpub)})
 				if !ok {
 					if why == "later" {
 						reject("later")
@@ -237,7 +279,7 @@ func (a *Agent) joinB(s *session, m authMsg, keyOK bool, user string, salt []byt
 				s.mu.Unlock()
 				s.admitted.Store(true)
 				s.spaceOK.Store(true) // ctl "sp": запрос состава и M с этим ПК
-				s.joinIn.Store(true)
+				s.joinIn.Store(true)  // до asking=false: таймер входа сессию вступления не рвёт (authChannel)
 				s.asking.Store(false)
 				send(authMsg{T: "ok", Join: true, Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph)})
 				time.AfterFunc(joinLive, func() { s.pc.Close() })
@@ -255,9 +297,9 @@ func (a *Agent) joinB(s *session, m authMsg, keyOK bool, user string, salt []byt
 		hsig = pake.HostSign(a.Key, a.ID, fph, fpc)
 	}
 	send(authMsg{T: "otp", Join: true, Pub: a.Key.Public().(ed25519.PublicKey), Sig: hsig})
-	time.AfterFunc(time.Duration(otpWait90.Load()), func() {
+	time.AfterFunc(authWait, func() { // клиент шлёт код сам, сразу: ждать человека здесь незачем
 		if step.CompareAndSwap(0, 3) {
-			log.Printf("сессия %s: вступление — код TOTP не введён", s.cid)
+			log.Printf("сессия %s: вступление — кода нет за %v", s.cid, authWait)
 			reject("denied")
 		}
 	})

@@ -17,24 +17,30 @@ import (
 )
 
 // admitRig — Ч12б: поручитель P с вступлением без пароля. Ключ владельца — случайный (в app он из фразы и osalt),
-// окно «Пустить?» — answer теста; asks — что показали в окне.
+// окно «Пустить?» — answer теста; asks — что показали в окне. Всё, что тест меняет при работающем P, — атомарно.
 type admitRig struct {
 	*spaceRig
 	url    string
 	owner  ed25519.PrivateKey
 	osalt  []byte
 	why    atomic.Value // string: ответ SpaceOwner ("" — пускает)
+	shut   atomic.Bool  // LoginShut
+	view   atomic.Bool  // «Только показ экрана»
+	codes  atomic.Int32 // вызовы OTP
 	amu    sync.Mutex
 	asks   []AdmitReq
-	answer func(AdmitReq) bool
+	answer func(context.Context, AdmitReq) AdmitResult
 	jid    string // id в SpaceJoin
 }
+
+func yes(context.Context, AdmitReq) AdmitResult { return AdmitYes }
+func no(context.Context, AdmitReq) AdmitResult  { return AdmitNo }
 
 func admitHost(t *testing.T, opt ...func(*admitRig)) *admitRig {
 	t.Helper()
 	url := local(t)
 	_, owner, _ := ed25519.GenerateKey(nil)
-	r := &admitRig{url: url, owner: owner, osalt: []byte("osalt-0123456789"), answer: func(AdmitReq) bool { return true }}
+	r := &admitRig{url: url, owner: owner, osalt: []byte("osalt-0123456789"), answer: yes}
 	r.why.Store("")
 	r.spaceRig = spaceHost(t, url, "123456789", func(s *spaceRig) {
 		r.spaceRig = s
@@ -47,20 +53,23 @@ func admitHost(t *testing.T, opt ...func(*admitRig)) *admitRig {
 			}
 			return bytes.Clone(r.osalt), r.owner.Public().(ed25519.PublicKey), ""
 		}
-		s.a.SpaceAdmit = func(q AdmitReq) bool {
+		s.a.SpaceAdmit = func(ctx context.Context, q AdmitReq) AdmitResult {
 			r.amu.Lock()
 			r.asks = append(r.asks, q)
 			f := r.answer
 			r.amu.Unlock()
-			return f(q)
+			return f(ctx, q)
 		}
-		join := s.a.SpaceJoin
+		join, otp := s.a.SpaceJoin, s.a.OTP
 		s.a.SpaceJoin = func(sl, m []byte, pub ed25519.PublicKey, id string) error {
 			r.amu.Lock()
 			r.jid = id
 			r.amu.Unlock()
 			return join(sl, m, pub, id)
 		}
+		s.a.OTP = func(u, c string) (bool, bool) { r.codes.Add(1); return otp(u, c) }
+		s.a.LoginShut = func(string) bool { return r.shut.Load() }
+		s.a.ViewOnly = func() bool { return r.view.Load() }
 		for _, f := range opt {
 			f(r)
 		}
@@ -80,6 +89,37 @@ func (r *admitRig) asked() []AdmitReq {
 	r.amu.Lock()
 	defer r.amu.Unlock()
 	return append([]AdmitReq(nil), r.asks...)
+}
+
+func (r *admitRig) setAnswer(f func(context.Context, AdmitReq) AdmitResult) {
+	r.amu.Lock()
+	r.answer = f
+	r.amu.Unlock()
+}
+
+// noPause — снять паузу окна после отказа (тест следующего шага).
+func (r *admitRig) noPause() {
+	r.a.mu.Lock()
+	r.a.admitNext = time.Time{}
+	r.a.mu.Unlock()
+}
+
+// jlock — лестница вступления P: неудачи подряд и сколько ещё заперта.
+func jlock(a *Agent) (int, time.Duration) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.joinFails, time.Until(a.joinUntil)
+}
+
+// ownerLocks — лестницы входа записи по умолчанию и хоста не тронуты (вход владельца открыт).
+func ownerLocks(t *testing.T, a *Agent) {
+	t.Helper()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	n := a.names[""]
+	if a.fails != 0 || a.otpFails != 0 || !a.lockUntil.IsZero() || !a.otpLock.IsZero() || n != nil && (n.fails != 0 || n.otpFails != 0) {
+		t.Errorf("вступление тронуло лестницы входа: хост %d/%d, запись %+v", a.fails, a.otpFails, n)
+	}
 }
 
 // joinDial — новый ПК N с ключом key: ID 987654321, имя «Ноутбук», ключ владельца owner (nil — свой у P).
@@ -110,6 +150,8 @@ func (r *admitRig) joinDial(key, owner ed25519.PrivateKey, code string, stages *
 		}}
 }
 
+func newKey() ed25519.PrivateKey { _, k, _ := ed25519.GenerateKey(nil); return k }
+
 // TestSpaceJoinAdmit — Ч12б, решения A' и B, happy-path: без пароля — код, доказательство фразы, окно «Пустить?» с
 // ID, именем и отпечатком ключа N, «Разрешить» — P принимает M под показанным ID. Сессия вступления — не вход:
 // плашки и видео нет. Код, ключ владельца и состав — не в журнале.
@@ -118,7 +160,7 @@ func TestSpaceJoinAdmit(t *testing.T) {
 	log.SetOutput(&logs)
 	defer log.SetOutput(os.Stderr)
 	r := admitHost(t)
-	_, nkey, _ := ed25519.GenerateKey(nil)
+	nkey := newKey()
 	var stages []string
 	code := r.fresh()
 	out, err := SpaceJoin(context.Background(), r.joinDial(nkey, nil, code, &stages, nil))
@@ -147,9 +189,7 @@ func TestSpaceJoinAdmit(t *testing.T) {
 	if got := strings.Join(stages, ","); got != "link,auth,admit,list" {
 		t.Errorf("стадии: %s", got)
 	}
-	if f, _ := lock(r.a); f != 0 {
-		t.Errorf("неудач у P: %d", f)
-	}
+	ownerLocks(t, r.a)
 	l := logs.String()
 	if strings.Contains(l, "вход выполнен") {
 		t.Error("сессия вступления стала входом (экран)")
@@ -164,112 +204,265 @@ func TestSpaceJoinAdmit(t *testing.T) {
 	}
 }
 
-// TestSpaceJoinAdmitDeny — «Отклонить»: отказ declined, состава N не получил; повтор того же ключа или того же ID
-// раньше admitEvery — later без окна; другой ID и ключ — окно; после admitEvery — снова окно.
+// TestSpaceJoinAuthWait — приёмка Б1: «Разрешить» нажали раньше authWait, а человек на новом ПК ещё смотрит «Это все
+// ваши ПК?» дольше authWait — таймер входа сессию вступления не рвёт.
+func TestSpaceJoinAuthWait(t *testing.T) {
+	defer func(d time.Duration) { authWait = d }(authWait)
+	authWait = 2 * time.Second
+	r := admitHost(t)
+	d := r.joinDial(newKey(), nil, r.fresh(), nil, nil)
+	d.Confirm = 20 * time.Second
+	d.Sign = func(m []byte, _ ed25519.PublicKey, _ ...[]byte) ([]byte, error) {
+		time.Sleep(4 * time.Second) // человек читает состав
+		return append(bytes.Clone(m), "+N"...), nil
+	}
+	if _, err := SpaceJoin(context.Background(), d); err != nil {
+		t.Fatalf("вступление после быстрого «Разрешить»: %v", err)
+	}
+}
+
+// TestSpaceJoinAdmitDeny — «Отклонить»: отказ declined, состава N не получил; пауза окна общая по хосту — другой ID и
+// ключ её не обходят (later без окна); после паузы окно снова; второй отказ подряд — пауза вдвое дольше; «Разрешить»
+// сбрасывает паузу. Отказы окна — не неудачи входа и не неудачи вступления.
 func TestSpaceJoinAdmitDeny(t *testing.T) {
 	defer func(e time.Duration) { admitEvery = e }(admitEvery)
-	admitEvery = 1500 * time.Millisecond
-	r := admitHost(t, func(r *admitRig) { r.answer = func(AdmitReq) bool { return false } })
-	_, nkey, _ := ed25519.GenerateKey(nil)
-	_, other, _ := ed25519.GenerateKey(nil)
+	admitEvery = time.Second
+	r := admitHost(t, func(r *admitRig) { r.answer = no })
 	var signed atomic.Bool
-	if _, err := SpaceJoin(context.Background(), r.joinDial(nkey, nil, r.fresh(), nil, &signed)); !errors.Is(err, ErrSpaceDeclined) || !errors.Is(err, ErrSpaceRefused) {
+	if _, err := SpaceJoin(context.Background(), r.joinDial(newKey(), nil, r.fresh(), nil, &signed)); !errors.Is(err, ErrSpaceDeclined) || !errors.Is(err, ErrSpaceRefused) {
 		t.Fatalf("«Отклонить»: %v", err)
 	}
 	if signed.Load() || len(r.asked()) != 1 {
 		t.Fatalf("после «Отклонить» состав %v, окон %d", signed.Load(), len(r.asked()))
 	}
-	if _, err := SpaceJoin(context.Background(), r.joinDial(nkey, nil, r.fresh(), nil, nil)); !errors.Is(err, ErrSpaceLater) {
-		t.Errorf("тот же ключ сразу: %v", err)
-	}
-	d := r.joinDial(other, nil, r.fresh(), nil, nil) // другой ключ, тот же ID
-	if _, err := SpaceJoin(context.Background(), d); !errors.Is(err, ErrSpaceLater) {
-		t.Errorf("тот же ID сразу: %v", err)
-	}
-	if n := len(r.asked()); n != 1 {
-		t.Errorf("повторы показали окно: %d", n)
-	}
-	d = r.joinDial(other, nil, r.fresh(), nil, nil)
+	d := r.joinDial(newKey(), nil, r.fresh(), nil, nil)
 	d.Self = "111222333"
-	if _, err := SpaceJoin(context.Background(), d); !errors.Is(err, ErrSpaceDeclined) || len(r.asked()) != 2 {
-		t.Errorf("другой ID и ключ: %v, окон %d", err, len(r.asked()))
+	if _, err := SpaceJoin(context.Background(), d); !errors.Is(err, ErrSpaceLater) || len(r.asked()) != 1 {
+		t.Errorf("другой ID и ключ во время паузы: %v, окон %d", err, len(r.asked()))
 	}
 	time.Sleep(admitEvery)
-	if _, err := SpaceJoin(context.Background(), r.joinDial(nkey, nil, r.fresh(), nil, nil)); !errors.Is(err, ErrSpaceDeclined) || len(r.asked()) != 3 {
-		t.Errorf("после admitEvery: %v, окон %d", err, len(r.asked()))
+	if _, err := SpaceJoin(context.Background(), r.joinDial(newKey(), nil, r.fresh(), nil, nil)); !errors.Is(err, ErrSpaceDeclined) || len(r.asked()) != 2 {
+		t.Fatalf("после паузы: %v, окон %d", err, len(r.asked()))
 	}
-	if f, _ := lock(r.a); f != 0 {
-		t.Errorf("отказы окна — не неудачи входа, а у P %d", f)
+	time.Sleep(admitEvery + 200*time.Millisecond) // вторая пауза — 2 с: через 1,2 с ещё идёт
+	if _, err := SpaceJoin(context.Background(), r.joinDial(newKey(), nil, r.fresh(), nil, nil)); !errors.Is(err, ErrSpaceLater) || len(r.asked()) != 2 {
+		t.Errorf("пауза не выросла: %v, окон %d", err, len(r.asked()))
+	}
+	time.Sleep(admitEvery)
+	r.setAnswer(yes)
+	if _, err := SpaceJoin(context.Background(), r.joinDial(newKey(), nil, r.fresh(), nil, nil)); err != nil {
+		t.Fatalf("после второй паузы «Разрешить»: %v", err)
+	}
+	r.a.mu.Lock()
+	n, next := r.a.admitN, r.a.admitNext
+	r.a.mu.Unlock()
+	if n != 0 || !next.IsZero() {
+		t.Errorf("«Разрешить» не сбросило паузу: %d %v", n, next)
+	}
+	ownerLocks(t, r.a)
+	if f, _ := jlock(r.a); f != 0 {
+		t.Errorf("отказы окна посчитаны неудачами вступления: %d", f)
 	}
 }
 
-// TestSpaceJoinAdmitTimeout — окно без ответа весь срок: отказ noanswer (не declined).
+// TestSpaceJoinAdmitTimeout — окно без ответа весь срок: отказ noanswer (не declined); окно не появилось — nowin, без
+// паузы (следующее вступление снова с окном).
 func TestSpaceJoinAdmitTimeout(t *testing.T) {
-	defer func(w time.Duration) { admitWait = w }(admitWait)
-	admitWait = 800 * time.Millisecond
 	r := admitHost(t, func(r *admitRig) {
-		r.answer = func(AdmitReq) bool { time.Sleep(admitWait); return false }
+		r.answer = func(context.Context, AdmitReq) AdmitResult { return AdmitNoAnswer }
 	})
-	_, nkey, _ := ed25519.GenerateKey(nil)
-	_, err := SpaceJoin(context.Background(), r.joinDial(nkey, nil, r.fresh(), nil, nil))
-	if !errors.Is(err, ErrSpaceNoAnswer) || errors.Is(err, ErrSpaceDeclined) {
+	if _, err := SpaceJoin(context.Background(), r.joinDial(newKey(), nil, r.fresh(), nil, nil)); !errors.Is(err, ErrSpaceNoAnswer) || errors.Is(err, ErrSpaceDeclined) {
 		t.Errorf("нет ответа: %v", err)
 	}
+	r.noPause()
+	r.setAnswer(func(context.Context, AdmitReq) AdmitResult { return AdmitNoWindow })
+	if _, err := SpaceJoin(context.Background(), r.joinDial(newKey(), nil, r.fresh(), nil, nil)); !errors.Is(err, ErrSpaceNoWindow) {
+		t.Errorf("окно не появилось: %v", err)
+	}
+	if _, err := SpaceJoin(context.Background(), r.joinDial(newKey(), nil, r.fresh(), nil, nil)); !errors.Is(err, ErrSpaceNoWindow) || len(r.asked()) != 3 {
+		t.Errorf("после «окна нет» — пауза: %v, окон %d", err, len(r.asked()))
+	}
 }
 
-// TestSpaceJoinBadCode — неверный код: неудача входа, соль владельца не отдана (фразу не проверить), окна нет.
+// TestSpaceJoinClientGone — вступающий ушёл, пока окно открыто: окно закрывается (ctx), «Разрешить» после ухода не
+// засчитывается, паузы нет; второго окна одновременно с первым не бывает (пока первое открыто — later).
+func TestSpaceJoinClientGone(t *testing.T) {
+	var logs syncBuf
+	log.SetOutput(&logs)
+	defer log.SetOutput(os.Stderr)
+	var open, maxOpen, closed atomic.Int32
+	r := admitHost(t, func(r *admitRig) {
+		r.answer = func(ctx context.Context, _ AdmitReq) AdmitResult {
+			n := open.Add(1)
+			for m := maxOpen.Load(); n > m && !maxOpen.CompareAndSwap(m, n); m = maxOpen.Load() {
+			}
+			defer open.Add(-1)
+			select {
+			case <-ctx.Done():
+				closed.Add(1)
+			case <-time.After(15 * time.Second):
+			}
+			return AdmitYes // «Разрешить» уже после ухода
+		}
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	d := r.joinDial(newKey(), nil, r.fresh(), nil, nil)
+	var once sync.Once
+	d.Stage = func(s string) {
+		if s == "admit" {
+			once.Do(func() { time.AfterFunc(300*time.Millisecond, cancel) })
+		}
+	}
+	if _, err := SpaceJoin(ctx, d); err == nil {
+		t.Fatal("вступление ушедшего прошло")
+	}
+	for end := time.Now().Add(5 * time.Second); closed.Load() == 0 && time.Now().Before(end); {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if closed.Load() != 1 {
+		t.Fatal("окно не закрыто после ухода вступающего")
+	}
+	time.Sleep(300 * time.Millisecond)
+	if strings.Contains(logs.String(), "вступление разрешено") {
+		t.Error("«Разрешить» после ухода засчитано")
+	}
+	r.setAnswer(yes)
+	if _, err := SpaceJoin(context.Background(), r.joinDial(newKey(), nil, r.fresh(), nil, nil)); err != nil {
+		t.Errorf("после ухода — пауза или окно открыто: %v", err)
+	}
+	if maxOpen.Load() > 1 {
+		t.Errorf("одновременно окон: %d", maxOpen.Load())
+	}
+}
+
+// TestSpaceJoinOneWindow — пока окно открыто (в том числе ушедшему клиенту, если окно ОС не закрыть), второе
+// вступление — later без окна.
+func TestSpaceJoinOneWindow(t *testing.T) {
+	r := admitHost(t)
+	r.a.mu.Lock()
+	r.a.admitOpen = true
+	r.a.mu.Unlock()
+	if _, err := SpaceJoin(context.Background(), r.joinDial(newKey(), nil, r.fresh(), nil, nil)); !errors.Is(err, ErrSpaceLater) || len(r.asked()) != 0 {
+		t.Errorf("второе окно при открытом: %v, окон %d", err, len(r.asked()))
+	}
+	r.a.mu.Lock()
+	r.a.admitOpen = false
+	r.a.mu.Unlock()
+}
+
+// TestSpaceJoinBadCode — неверный код: неудача вступления, соль владельца не отдана (фразу не проверить), окна нет;
+// лестницы входа владельца не тронуты.
 func TestSpaceJoinBadCode(t *testing.T) {
 	r := admitHost(t)
-	_, nkey, _ := ed25519.GenerateKey(nil)
 	code := r.fresh()
 	bad := "000000"
 	if code == bad {
 		bad = "111111"
 	}
-	d := r.joinDial(nkey, nil, bad, nil, nil)
-	salted := false
+	d := r.joinDial(newKey(), nil, bad, nil, nil)
+	var salted atomic.Bool
 	ok := d.OwnerKey
-	d.OwnerKey = func(s []byte) (ed25519.PrivateKey, error) { salted = true; return ok(s) }
+	d.OwnerKey = func(s []byte) (ed25519.PrivateKey, error) { salted.Store(true); return ok(s) }
 	_, err := SpaceJoin(context.Background(), d)
 	if !errors.Is(err, ErrSpaceBadCode) || !errors.Is(err, ErrSpaceAuth) {
 		t.Errorf("неверный код: %v", err)
 	}
-	if salted || len(r.asked()) != 0 {
-		t.Errorf("соль отдана %v, окон %d", salted, len(r.asked()))
+	if salted.Load() || len(r.asked()) != 0 {
+		t.Errorf("соль отдана %v, окон %d", salted.Load(), len(r.asked()))
 	}
-	if f, _ := lock(r.a); f != 1 {
-		t.Errorf("неудач у P %d, ждали 1", f)
+	if f, _ := jlock(r.a); f != 1 {
+		t.Errorf("неудач вступления %d, ждали 1", f)
+	}
+	ownerLocks(t, r.a)
+}
+
+// TestSpaceJoinAnonLocksOwner — приёмка Б2: посторонний, зная только ID, пятью вступлениями с неверным кодом запирает
+// только вступление — владелец входит паролем и кодом (и закреплённым ключом: лестница кодов записи не тронута).
+func TestSpaceJoinAnonLocksOwner(t *testing.T) {
+	r := admitHost(t)
+	for i := 0; i < 6; i++ {
+		c := []byte(r.fresh())
+		c[0] = '0' + (c[0]-'0'+1)%10
+		_, err := SpaceJoin(context.Background(), r.joinDial(newKey(), nil, string(c), nil, nil))
+		if !errors.Is(err, ErrSpaceBadCode) && !(i == 5 && errors.Is(err, ErrSpaceLockedThere)) {
+			t.Fatalf("попытка %d: %v", i+1, err)
+		}
+	}
+	if _, l := jlock(r.a); l <= 0 {
+		t.Error("пять неверных кодов не заперли вступление")
+	}
+	ownerLocks(t, r.a)
+	d := r.joinDial(newKey(), nil, r.fresh(), nil, nil) // владелец: пароль и код (вход, как до Ч12б)
+	d.Password, d.OwnerKey = "secret123", nil
+	if _, err := SpaceJoin(context.Background(), d); err != nil {
+		t.Errorf("владелец паролем и кодом после анонимных вступлений: %v", err)
 	}
 }
 
-// TestSpaceJoinBadPhrase — ключ не из той фразы: неудача входа без окна; пятая подряд запирает вход (как пароль).
+// TestSpaceJoinBadPhrase — ключ не из той фразы: неудача вступления без окна; пятая подряд запирает вступление
+// (и с верными кодом и фразой — locked), вход владельца не тронут.
 func TestSpaceJoinBadPhrase(t *testing.T) {
 	r := admitHost(t)
-	_, nkey, _ := ed25519.GenerateKey(nil)
-	_, wrong, _ := ed25519.GenerateKey(nil)
+	nkey, wrong := newKey(), newKey()
 	for i := 1; i <= 5; i++ {
 		_, err := SpaceJoin(context.Background(), r.joinDial(nkey, wrong, r.fresh(), nil, nil))
 		if !errors.Is(err, ErrSpaceBadPhrase) || !errors.Is(err, ErrSpaceAuth) {
 			t.Fatalf("попытка %d: %v", i, err)
 		}
-		if f, _ := lock(r.a); f != i {
-			t.Fatalf("после %d неудач у P %d", i, f)
+		if f, _ := jlock(r.a); f != i {
+			t.Fatalf("после %d неудач вступления %d", i, f)
 		}
 	}
 	if len(r.asked()) != 0 {
 		t.Errorf("окно после неверной фразы: %d", len(r.asked()))
 	}
-	_, err := SpaceJoin(context.Background(), r.joinDial(nkey, nil, r.fresh(), nil, nil)) // и с верной — заперто
-	if !errors.Is(err, ErrSpaceLockedThere) {
+	if _, err := SpaceJoin(context.Background(), r.joinDial(nkey, nil, r.fresh(), nil, nil)); !errors.Is(err, ErrSpaceLockedThere) {
 		t.Errorf("после 5 неудач: %v", err)
 	}
+	ownerLocks(t, r.a)
+}
+
+// TestSpaceJoinCodeLocked — лестница вступления заперта: и с верным кодом — locked, код не проверяется, окна нет.
+func TestSpaceJoinCodeLocked(t *testing.T) {
+	r := admitHost(t)
+	r.a.mu.Lock()
+	r.a.joinUntil = time.Now().Add(time.Minute)
+	r.a.mu.Unlock()
+	if _, err := SpaceJoin(context.Background(), r.joinDial(newKey(), nil, r.fresh(), nil, nil)); !errors.Is(err, ErrSpaceLockedThere) {
+		t.Errorf("заперто: %v", err)
+	}
+	if len(r.asked()) != 0 || r.codes.Load() != 0 {
+		t.Errorf("окон %d, кодов проверено %d", len(r.asked()), r.codes.Load())
+	}
+	joinBadHostSig.Store(true) // заперто — хост и кода не просит: «otp» с плохой подписью клиент не увидит
+	_, err := SpaceJoin(context.Background(), r.joinDial(newKey(), nil, r.fresh(), nil, nil))
+	joinBadHostSig.Store(false)
+	if !errors.Is(err, ErrSpaceLockedThere) {
+		t.Errorf("заперто — код всё же спрошен: %v", err)
+	}
+	r.a.mu.Lock()
+	r.a.joinUntil = time.Time{}
+	r.a.mu.Unlock()
+	joinCodeHook = func() { // заперли, пока хост ждал код (параллельные попытки): код не проверяется
+		r.a.mu.Lock()
+		r.a.joinUntil = time.Now().Add(time.Minute)
+		r.a.mu.Unlock()
+	}
+	_, err = SpaceJoin(context.Background(), r.joinDial(newKey(), nil, r.fresh(), nil, nil))
+	joinCodeHook = nil
+	if !errors.Is(err, ErrSpaceLockedThere) || r.codes.Load() != 0 || len(r.asked()) != 0 {
+		t.Errorf("заперли во время ожидания кода: %v, кодов %d, окон %d", err, r.codes.Load(), len(r.asked()))
+	}
+	r.a.mu.Lock()
+	r.a.joinUntil = time.Time{}
+	r.a.mu.Unlock()
 }
 
 // TestSpaceJoinProofTransfer — доказательство из другого соединения (те же P, ключ N и фраза, другие DTLS-отпечатки)
 // не принимается; подпись ключом владельца в чужом домене (подпись клиента, хоста) — тоже.
 func TestSpaceJoinProofTransfer(t *testing.T) {
 	r := admitHost(t)
-	_, nkey, _ := ed25519.GenerateKey(nil)
+	nkey := newKey()
 	var first []byte
 	joinSigHook = func(sig []byte) []byte { first = bytes.Clone(sig); return make([]byte, len(sig)) }
 	defer func() { joinSigHook = nil }()
@@ -300,47 +493,149 @@ func TestSpaceJoinProofTransfer(t *testing.T) {
 	}
 }
 
+// TestSpaceJoinBadClient — приёмка Б4: ключ нового ПК не доказан (испорченная подпись в "b"), вступление в запись по
+// имени, без заявленного ID, «Только показ экрана» на поручителе — отказ без окна и без состава.
+func TestSpaceJoinBadClient(t *testing.T) {
+	r := admitHost(t)
+	var signed atomic.Bool
+	joinBadCSig.Store(true)
+	_, err := SpaceJoin(context.Background(), r.joinDial(newKey(), nil, r.fresh(), nil, &signed))
+	joinBadCSig.Store(false)
+	if !errors.Is(err, ErrSpaceAuth) {
+		t.Errorf("недоказанный ключ: %v", err)
+	}
+	joinAsUser = "guest"
+	_, err = SpaceJoin(context.Background(), r.joinDial(newKey(), nil, r.fresh(), nil, &signed))
+	joinAsUser = ""
+	if !errors.Is(err, ErrSpaceNotThere) {
+		t.Errorf("запись по имени: %v", err)
+	}
+	d := r.joinDial(newKey(), nil, r.fresh(), nil, &signed)
+	d.Self = ""
+	if _, err := SpaceJoin(context.Background(), d); !errors.Is(err, ErrSpaceNotThere) {
+		t.Errorf("без ID: %v", err)
+	}
+	d.Self = "123456789" // ID самого поручителя
+	if _, err := SpaceJoin(context.Background(), d); !errors.Is(err, ErrSpaceNotThere) {
+		t.Errorf("ID поручителя: %v", err)
+	}
+	r.view.Store(true)
+	if _, err := SpaceJoin(context.Background(), r.joinDial(newKey(), nil, r.fresh(), nil, &signed)); !errors.Is(err, ErrSpaceNotThere) {
+		t.Errorf("«Только показ экрана»: %v", err)
+	}
+	r.view.Store(false)
+	if len(r.asked()) != 0 || signed.Load() {
+		t.Errorf("окон %d, состав отдан %v", len(r.asked()), signed.Load())
+	}
+}
+
 // TestSpaceJoinOldVoucher — поручитель без join (≤ v0.3.1): без пароля — ErrSpaceNeedPass до отправки чего-либо
 // (ни неудачи, ни соли); с паролем — прежний путь работает.
 func TestSpaceJoinOldVoucher(t *testing.T) {
 	r := admitHost(t, func(r *admitRig) { r.a.noJoin, r.a.SpaceAdmit = true, nil })
-	_, nkey, _ := ed25519.GenerateKey(nil)
-	d := r.joinDial(nkey, nil, r.fresh(), nil, nil)
-	salted := false
-	d.OwnerKey = func([]byte) (ed25519.PrivateKey, error) { salted = true; return nil, errors.New("тест") }
-	if _, err := SpaceJoin(context.Background(), d); !errors.Is(err, ErrSpaceNeedPass) || salted {
-		t.Errorf("старый поручитель без пароля: %v (соль %v)", err, salted)
+	d := r.joinDial(newKey(), nil, r.fresh(), nil, nil)
+	var salted atomic.Bool
+	d.OwnerKey = func([]byte) (ed25519.PrivateKey, error) { salted.Store(true); return nil, errors.New("тест") }
+	if _, err := SpaceJoin(context.Background(), d); !errors.Is(err, ErrSpaceNeedPass) || salted.Load() {
+		t.Errorf("старый поручитель без пароля: %v (соль %v)", err, salted.Load())
 	}
-	if f, _ := lock(r.a); f != 0 {
-		t.Errorf("неудач у P %d", f)
-	}
+	ownerLocks(t, r.a)
 	d.Password = "secret123"
 	if out, err := SpaceJoin(context.Background(), d); err != nil || string(out) != "M-SECRET-MARK-1+N" {
 		t.Errorf("путь с паролем: %q %v", out, err)
 	}
 }
 
+// TestSpaceJoinPasswordToNew — пароль ввели (мастер помнил старого поручителя), а поручитель новый: вступление идёт
+// без пароля — с кодом, фразой и окном; стадия «ждём «Разрешить»» видна.
+func TestSpaceJoinPasswordToNew(t *testing.T) {
+	r := admitHost(t)
+	var stages []string
+	d := r.joinDial(newKey(), nil, r.fresh(), &stages, nil)
+	d.Password = "secret123"
+	if _, err := SpaceJoin(context.Background(), d); err != nil {
+		t.Fatal(err)
+	}
+	if a := r.asked(); len(a) != 1 || a[0].ID != "987654321" || strings.Join(stages, ",") != "link,auth,admit,list" {
+		t.Errorf("окно %+v, стадии %v", a, stages)
+	}
+}
+
 // TestSpaceJoinPasswordAdmit — вход паролем (клиент ≤ v0.3.1) на новом поручителе: состав — только после «Разрешить»
-// (окно без ID: старый клиент его не сообщает); «Отклонить» — отказ, состава N не видел.
+// (окно без ID: старый клиент его не сообщает); на время окна ввод этой сессии выключен; «Отклонить» — отказ, состава
+// N не видел; состав без запроса до «Разрешить» — отказ rights (окно старым протоколом не обойти).
 func TestSpaceJoinPasswordAdmit(t *testing.T) {
-	var answer atomic.Bool
-	r := admitHost(t, func(r *admitRig) { r.answer = func(AdmitReq) bool { return answer.Load() } })
-	_, nkey, _ := ed25519.GenerateKey(nil)
+	var blocked, after atomic.Int32
+	r := admitHost(t)
+	old := func(signed *atomic.Bool) SpaceDial {
+		d := r.joinDial(newKey(), nil, r.fresh(), nil, signed)
+		d.Password, d.Self, d.Name, d.OwnerKey = "secret123", "", "", nil
+		return d
+	}
+	r.setAnswer(func(context.Context, AdmitReq) AdmitResult {
+		r.a.mu.Lock()
+		s := r.a.sess
+		r.a.mu.Unlock()
+		if s != nil && s.admitBlock.Load() && !s.inputOK() {
+			blocked.Add(1)
+		}
+		return AdmitNo
+	})
 	var signed atomic.Bool
-	d := r.joinDial(nkey, nil, r.fresh(), nil, &signed)
-	d.Password, d.Self, d.Name = "secret123", "", ""
+	d := old(&signed)
 	if _, err := SpaceJoin(context.Background(), d); !errors.Is(err, ErrSpaceDeclined) || signed.Load() {
 		t.Errorf("«Отклонить» при входе паролем: %v (состав %v)", err, signed.Load())
 	}
-	if a := r.asked(); len(a) != 1 || a[0].ID != "" || a[0].FP != pake.KeyFingerprint(nkey.Public().(ed25519.PublicKey)) {
+	if a := r.asked(); len(a) != 1 || a[0].ID != "" || a[0].FP != pake.KeyFingerprint(d.Key.Public().(ed25519.PublicKey)) {
 		t.Errorf("окно: %+v", a)
 	}
-	answer.Store(true)
-	_, nkey2, _ := ed25519.GenerateKey(nil) // другой ключ — мимо admitEvery
-	d = r.joinDial(nkey2, nil, r.fresh(), nil, &signed)
-	d.Password, d.Self, d.Name = "secret123", "", ""
-	if out, err := SpaceJoin(context.Background(), d); err != nil || string(out) != "M-SECRET-MARK-1+N" || len(r.asked()) != 2 {
+	if blocked.Load() != 1 {
+		t.Error("ввод сессии не выключен на время окна")
+	}
+	r.noPause()
+	r.setAnswer(func(context.Context, AdmitReq) AdmitResult {
+		r.a.mu.Lock()
+		if s := r.a.sess; s != nil {
+			time.AfterFunc(200*time.Millisecond, func() {
+				if !s.admitBlock.Load() {
+					after.Add(1)
+				}
+			})
+		}
+		r.a.mu.Unlock()
+		return AdmitYes
+	})
+	if out, err := SpaceJoin(context.Background(), old(&signed)); err != nil || string(out) != "M-SECRET-MARK-1+N" || len(r.asked()) != 2 {
 		t.Errorf("«Разрешить» при входе паролем: %q %v, окон %d", out, err, len(r.asked()))
+	}
+	time.Sleep(300 * time.Millisecond)
+	if after.Load() != 1 {
+		t.Error("ввод не вернулся после окна")
+	}
+	r.mu.Lock()
+	r.joined = nil
+	r.mu.Unlock()
+	spEarlyM = []byte("M-SECRET-MARK-1+N")
+	_, err := SpaceJoin(context.Background(), old(nil))
+	spEarlyM = nil
+	r.mu.Lock()
+	joined := r.joined
+	r.mu.Unlock()
+	if !errors.Is(err, ErrSpaceRefused) || !strings.Contains(err.Error(), "rights") || joined != nil {
+		t.Errorf("состав до «Разрешить»: %v, принят %q", err, joined)
+	}
+}
+
+// TestInputOK — ввод сессии не идёт на хост, пока открыто окно «Пустить?» этой сессии.
+func TestInputOK(t *testing.T) {
+	var s session
+	s.authed.Store(true)
+	if !s.inputOK() {
+		t.Fatal("управление без окна — ввод выключен")
+	}
+	s.admitBlock.Store(true)
+	if s.inputOK() {
+		t.Error("ввод идёт при открытом окне «Пустить?»")
 	}
 }
 
@@ -348,25 +643,24 @@ func TestSpaceJoinPasswordAdmit(t *testing.T) {
 // сверки (LoginShut), занят другим сеансом (busy). Окна нет.
 func TestSpaceJoinNotThere(t *testing.T) {
 	r := admitHost(t)
-	_, nkey, _ := ed25519.GenerateKey(nil)
 	r.why.Store("none")
-	if _, err := SpaceJoin(context.Background(), r.joinDial(nkey, nil, r.fresh(), nil, nil)); !errors.Is(err, ErrSpaceNotThere) {
+	if _, err := SpaceJoin(context.Background(), r.joinDial(newKey(), nil, r.fresh(), nil, nil)); !errors.Is(err, ErrSpaceNotThere) {
 		t.Errorf("не в пространстве: %v", err)
 	}
 	r.why.Store("ask")
-	if _, err := SpaceJoin(context.Background(), r.joinDial(nkey, nil, r.fresh(), nil, nil)); !errors.Is(err, ErrSpaceAsk) {
+	if _, err := SpaceJoin(context.Background(), r.joinDial(newKey(), nil, r.fresh(), nil, nil)); !errors.Is(err, ErrSpaceAsk) {
 		t.Errorf("«Спрашивать»: %v", err)
 	}
 	r.why.Store("")
-	r.a.LoginShut = func(string) bool { return true }
-	if _, err := SpaceJoin(context.Background(), r.joinDial(nkey, nil, r.fresh(), nil, nil)); !errors.Is(err, ErrSpaceWaitThere) {
+	r.shut.Store(true)
+	if _, err := SpaceJoin(context.Background(), r.joinDial(newKey(), nil, r.fresh(), nil, nil)); !errors.Is(err, ErrSpaceWaitThere) {
 		t.Errorf("поручитель ждёт сверки: %v", err)
 	}
-	r.a.LoginShut = nil
+	r.shut.Store(false)
 	r.a.mu.Lock()
 	r.a.sess = &session{cid: "занят"}
 	r.a.mu.Unlock()
-	if _, err := SpaceJoin(context.Background(), r.joinDial(nkey, nil, r.fresh(), nil, nil)); !errors.Is(err, ErrSpaceBusyThere) {
+	if _, err := SpaceJoin(context.Background(), r.joinDial(newKey(), nil, r.fresh(), nil, nil)); !errors.Is(err, ErrSpaceBusyThere) {
 		t.Errorf("идёт сеанс: %v", err)
 	}
 	r.a.mu.Lock()
@@ -374,6 +668,28 @@ func TestSpaceJoinNotThere(t *testing.T) {
 	r.a.mu.Unlock()
 	if len(r.asked()) != 0 {
 		t.Errorf("окон %d", len(r.asked()))
+	}
+}
+
+// TestSpaceJoinHostProof — код уходит только хосту, доказавшему ключ над этим соединением и (если он знаком) тому же
+// ключу: подпись не над этим соединением — отказ без кода; другой отпечаток, чем запомненный, — ErrSpaceHostKey.
+func TestSpaceJoinHostProof(t *testing.T) {
+	r := admitHost(t)
+	nkey := newKey()
+	joinBadHostSig.Store(true)
+	_, err := SpaceJoin(context.Background(), r.joinDial(nkey, nil, r.fresh(), nil, nil))
+	joinBadHostSig.Store(false)
+	if !errors.Is(err, ErrSpaceAuth) || r.codes.Load() != 0 {
+		t.Errorf("подпись хоста не над этим соединением: %v, кодов у хоста %d", err, r.codes.Load())
+	}
+	d := r.joinDial(nkey, nil, r.fresh(), nil, nil)
+	d.Known = "0000 0000 0000 0000 0000 0000 0000 0000"
+	if _, err := SpaceJoin(context.Background(), d); !errors.Is(err, ErrSpaceHostKey) || r.codes.Load() != 0 {
+		t.Errorf("чужой ключ хоста: %v, кодов у хоста %d", err, r.codes.Load())
+	}
+	d.Known = pake.KeyFingerprint(r.a.Key.Public().(ed25519.PublicKey))
+	if _, err := SpaceJoin(context.Background(), d); err != nil || r.codes.Load() != 1 {
+		t.Errorf("запомненный ключ: %v, кодов %d", err, r.codes.Load())
 	}
 }
 
@@ -400,69 +716,38 @@ func TestAdmitText(t *testing.T) {
 	}
 }
 
-// TestAskLoopFor — срок окна askLoopFor — свой (окно «Пустить?» — AdmitTimeout, не AskTimeout).
-func TestAskLoopFor(t *testing.T) {
+// TestAdmitLoop — окна «Пустить?» без выключаемой кнопки: срок — на все окна (потом «нет ответа»), «Разрешить» раньше
+// задержки — окно снова, «Отклонить» и «окна нет» — сразу, ctx кончился — отказ. Срок по решению владельца — 2 мин.
+func TestAdmitLoop(t *testing.T) {
+	defer func(w, d, s time.Duration) { admitWait, AskDelay, askSpawn = w, d, s }(admitWait, AskDelay, askSpawn)
+	admitWait, AskDelay, askSpawn = 1500*time.Millisecond, 200*time.Millisecond, 0
 	var first time.Duration
 	t0 := time.Now()
-	a := askLoopFor(1500*time.Millisecond, func(left time.Duration, again bool) Answer {
+	if r := admitLoop(context.Background(), func(left time.Duration, again bool) AdmitResult {
 		if !again {
 			first = left
 		}
 		time.Sleep(left)
-		return Deny
-	})
-	if a != Deny || first > 1500*time.Millisecond || first < 1400*time.Millisecond || time.Since(t0) > 2500*time.Millisecond {
-		t.Errorf("askLoopFor: %v, первое окно %v, всего %v", a, first, time.Since(t0))
+		return AdmitNoAnswer
+	}); r != AdmitNoAnswer || first > admitWait || first < admitWait-100*time.Millisecond || time.Since(t0) > 2500*time.Millisecond {
+		t.Errorf("срок: %v, первое окно %v, всего %v", r, first, time.Since(t0))
+	}
+	shows := 0
+	if r := admitLoop(context.Background(), func(time.Duration, bool) AdmitResult { shows++; return AdmitYes }); r != AdmitYes || shows < 2 {
+		t.Errorf("ранний «Разрешить»: %v, окон %d", r, shows)
+	}
+	for _, want := range []AdmitResult{AdmitNo, AdmitNoWindow} {
+		shows = 0
+		if r := admitLoop(context.Background(), func(time.Duration, bool) AdmitResult { shows++; return want }); r != want || shows != 1 {
+			t.Errorf("%v: %v, окон %d", want, r, shows)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if r := admitLoop(ctx, func(time.Duration, bool) AdmitResult { return AdmitYes }); r != AdmitNo {
+		t.Errorf("ctx кончился: %v", r)
 	}
 	if AdmitTimeout != 2*time.Minute {
 		t.Errorf("AdmitTimeout %v — решение владельца: до 2 мин", AdmitTimeout)
-	}
-}
-
-// TestSpaceJoinHostProof — код уходит только хосту, доказавшему ключ над этим соединением и (если он знаком) тому же
-// ключу: подпись не над этим соединением — отказ без кода; другой отпечаток, чем запомненный, — ErrSpaceHostKey.
-func TestSpaceJoinHostProof(t *testing.T) {
-	r := admitHost(t)
-	var codes atomic.Int32
-	own := r.a.OTP
-	r.a.OTP = func(u, c string) (bool, bool) { codes.Add(1); return own(u, c) }
-	_, nkey, _ := ed25519.GenerateKey(nil)
-	joinBadHostSig.Store(true)
-	_, err := SpaceJoin(context.Background(), r.joinDial(nkey, nil, r.fresh(), nil, nil))
-	joinBadHostSig.Store(false)
-	if !errors.Is(err, ErrSpaceAuth) || codes.Load() != 0 {
-		t.Errorf("подпись хоста не над этим соединением: %v, кодов у хоста %d", err, codes.Load())
-	}
-	d := r.joinDial(nkey, nil, r.fresh(), nil, nil)
-	d.Known = "0000 0000 0000 0000 0000 0000 0000 0000"
-	if _, err := SpaceJoin(context.Background(), d); !errors.Is(err, ErrSpaceHostKey) || codes.Load() != 0 {
-		t.Errorf("чужой ключ хоста: %v, кодов у хоста %d", err, codes.Load())
-	}
-	d.Known = pake.KeyFingerprint(r.a.Key.Public().(ed25519.PublicKey))
-	if _, err := SpaceJoin(context.Background(), d); err != nil || codes.Load() != 1 {
-		t.Errorf("запомненный ключ: %v, кодов %d", err, codes.Load())
-	}
-}
-
-// TestSpaceJoinCodeLocked — лестница кодов заперта (неверные коды записи или хоста), а паролей — нет: вступление и с
-// верным кодом — locked, окна нет (проверка под тем же a.mu, что счёт: параллельные попытки не проскочат).
-func TestSpaceJoinCodeLocked(t *testing.T) {
-	r := admitHost(t)
-	_, nkey, _ := ed25519.GenerateKey(nil)
-	r.a.mu.Lock()
-	r.a.nameOf("", true).otpUntil = time.Now().Add(time.Minute)
-	r.a.mu.Unlock()
-	if _, err := SpaceJoin(context.Background(), r.joinDial(nkey, nil, r.fresh(), nil, nil)); !errors.Is(err, ErrSpaceLockedThere) {
-		t.Errorf("заперты коды записи: %v", err)
-	}
-	r.a.mu.Lock()
-	r.a.names = nil
-	r.a.otpLock = time.Now().Add(time.Minute)
-	r.a.mu.Unlock()
-	if _, err := SpaceJoin(context.Background(), r.joinDial(nkey, nil, r.fresh(), nil, nil)); !errors.Is(err, ErrSpaceLockedThere) {
-		t.Errorf("заперты коды хоста: %v", err)
-	}
-	if len(r.asked()) != 0 {
-		t.Errorf("окон %d", len(r.asked()))
 	}
 }
