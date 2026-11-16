@@ -388,6 +388,26 @@ return "no"`, title, t, yes, no, strconv.Itoa(int(left.Seconds()))).Output()
 	}) == Allow
 }
 
+// AskAdmit — окно «Пустить ПК в пространство?» (Ч12б, admit.go): как AskRecv, срок AdmitTimeout.
+func AskAdmit(q AdmitReq) bool {
+	if fakeDesktop {
+		return true
+	}
+	lang := sysLang()
+	title, text, yes, no, _ := admitText(lang, q, true)
+	return askLoopFor(AdmitTimeout, func(left time.Duration, again bool) Answer {
+		t := text
+		if again {
+			t = "⚠ " + admitAsksOf(lang)[11] + "\n\n" + text
+		}
+		out, err := osa(`set r to display dialog (item 2 of argv) with title (item 1 of argv) buttons {item 4 of argv, item 3 of argv} default button 1 cancel button 1 giving up after ((item 5 of argv) as integer) with icon caution
+if gave up of r then return "no"
+if button returned of r is (item 3 of argv) then return "yes"
+return "no"`, title, t, yes, no, strconv.Itoa(int(left.Seconds()))).Output()
+		return map[bool]Answer{true: Allow}[err == nil && strings.TrimSpace(string(out)) == "yes"]
+	}) == Allow
+}
+
 // pickFile — окно выбора файла на хосте; ctx кончился — окно закрывается.
 func pickFile(ctx context.Context) (string, bool) {
 	if fakeDesktop {

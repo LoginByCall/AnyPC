@@ -286,6 +286,28 @@ func AskRecv(q RecvReq) bool {
 	}) == Allow
 }
 
+// AskAdmit — окно «Пустить ПК в пространство?» (Ч12б, admit.go): как AskRecv, срок AdmitTimeout; без zenity — отказ.
+func AskAdmit(q AdmitReq) bool {
+	if fakeDesktop {
+		return true
+	}
+	lang := sysLang()
+	title, text, yes, no, _ := admitText(lang, q, true)
+	return askLoopFor(AdmitTimeout, func(left time.Duration, again bool) Answer {
+		t := text
+		if again {
+			t = "⚠ " + admitAsksOf(lang)[11] + "\n\n" + text
+		}
+		err := exec.Command("zenity", "--question", "--default-cancel", "--width=480", "--title="+title, "--text="+pangoEscape(t),
+			"--ok-label="+yes, "--cancel-label="+no, "--timeout="+strconv.Itoa(int(left.Seconds()))).Run()
+		var ee *exec.ExitError
+		if err != nil && !errors.As(err, &ee) {
+			log.Printf("окно «Пустить?»: %v — вступление отклонено", err) // нет zenity: окна не было
+		}
+		return map[bool]Answer{true: Allow}[err == nil]
+	}) == Allow
+}
+
 // AskControl — окно «Разрешить управление?» (смена режима сессии «Спрашивать»): как AskAccept, без «Только просмотр».
 func AskControl(cid, peer string) bool {
 	if fakeDesktop {

@@ -186,3 +186,26 @@ func XPub(pub ed25519.PublicKey) (*ecdh.PublicKey, error) {
 	slices.Reverse(b)
 	return ecdh.X25519().NewPublicKey(b)
 }
+
+// Доказательство фразы при вступлении без пароля (Ч12б, решение владельца A'): новый ПК подписывает ключом владельца
+// из фразы (тот же ключ, что подписывает состав M, решение 8 B) домен вступления, ID поручителя, DTLS-отпечатки
+// ЭТОГО соединения (клиента, хоста) и свой ключ cpub (доказан в "b" подписью clientMsg). Домен «anypc-space-join-v1»
+// отличен от домена подписи M («AnyPC space M\x00», app/space.go): подпись состава не сойдёт за доказательство и
+// наоборот; отпечатки — перенос в другое соединение не пройдёт; cpub — доказательство не отдать другому ключу.
+// Поля без '\n' (ID — цифры, Fingerprint — "sha-256 AB:…"), cpub — последним фиксированной длины: разбор однозначен.
+// ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ (A13, A2 #10: ключ владельца подписывает второй вид сообщений).
+func spaceJoinMsg(hostID, fpClient, fpHost string, cpub []byte) []byte {
+	return append([]byte("anypc-space-join-v1\n"+hostID+"\n"+fpClient+"\n"+fpHost+"\n"), cpub...)
+}
+
+// SpaceJoinSign — доказательство фразы ключом владельца owner (новый ПК: fpClient — свой отпечаток, fpHost — поручителя).
+func SpaceJoinSign(owner ed25519.PrivateKey, hostID, fpClient, fpHost string, cpub []byte) []byte {
+	return ed25519.Sign(owner, spaceJoinMsg(hostID, fpClient, fpHost, cpub))
+}
+
+// SpaceJoinVerify — доказательство sig дано ключом владельца opub для этого соединения (fpClient — клиента, fpHost —
+// этого хоста hostID) и ключа клиента cpub.
+func SpaceJoinVerify(opub, sig []byte, hostID, fpClient, fpHost string, cpub []byte) bool {
+	return len(opub) == ed25519.PublicKeySize && len(cpub) == ed25519.PublicKeySize && fpClient != "" && fpHost != "" &&
+		len(sig) == ed25519.SignatureSize && ed25519.Verify(opub, spaceJoinMsg(hostID, fpClient, fpHost, cpub), sig)
+}

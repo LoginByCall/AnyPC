@@ -35,7 +35,7 @@ type syncPC struct {
 	stop func()
 }
 
-func syncNode(t *testing.T, url string, c *config, old bool) *syncPC {
+func syncNode(t *testing.T, url string, c *config, old bool, opt ...func(*agent.Agent)) *syncPC {
 	t.Helper()
 	c.mu.Lock()
 	c.Server = url
@@ -51,6 +51,9 @@ func syncNode(t *testing.T, url string, c *config, old bool) *syncPC {
 		}}
 	if !old {
 		a.SpaceSync = c
+	}
+	for _, f := range opt { // Ч12б: окно «Пустить?» и вступление без пароля (admit_test.go)
+		f(a)
 	}
 	on := make(chan bool, 8)
 	a.OnState = func(o bool, _ string) {
@@ -348,7 +351,7 @@ func TestSpaceSyncBadID(t *testing.T) {
 	}
 	b, _ := in.marshal()
 	salt, _, _ := cp.secret("")
-	if err := cp.spaceJoin(salt, b, npub); err != nil {
+	if err := cp.spaceJoin(salt, b, npub, ""); err != nil {
 		t.Fatal(err)
 	}
 	before := spConf(cp)

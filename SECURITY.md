@@ -179,6 +179,50 @@ password login to the default account until it has synced with a member other th
 decision 12 A; "Ask" with the one-time code from its screen and guests stay open); leaving the space before that sync
 erases the default account's password and code, since they came from the guarantor's unverified list.
 
+«Моё пространство», вступление нового ПК (Ч12б, решения владельца B и A'; ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ): вступление через
+ПК пространства (поручитель) требует кода из приложения, фразы и человека у поручителя; пароль новому ПК не нужен.
+Фразу новый ПК доказывает подписью ключом владельца (тот же ключ из фразы, что подписывает состав) над доменом
+«anypc-space-join-v1», ID поручителя, DTLS-отпечатками обоих концов этого соединения и своим ключом, доказанным в
+том же соединении. Домен отличен от домена подписи состава — одна не сходит за другую; перенос доказательства в
+другое соединение или другому ключу не проходит. Код новый ПК отдаёт только поручителю, доказавшему ключ хоста над
+этим соединением (и тому же ключу, если поручитель уже знаком). Соль ключа владельца поручитель отдаёт только после
+верного кода; открытого ключа владельца до вступления новый ПК не получает. Неверный код или неверная фраза — неудача
+входа с тем же счётом и блокировкой, что у пароля, окна нет. После верных кода и фразы поручитель показывает окно
+«Пустить ПК «имя» в ваше пространство?» с ID, именем (их заявляет новый ПК) и отпечатком его ключа; «Разрешить»
+срабатывает через 3–5 с; без ответа 2 минуты — отказ; после «Отклонить» или тайм-аута окно тому же ID или ключу — не
+раньше чем через 30 с (а код одноразовый — не чаще раза в шаг кода вообще). Сессия вступления — не вход: ни экрана,
+ни ввода, ни буфера; только выдача состава и приём нового, где новый ПК — под ID из окна и с ключом из соединения;
+живёт до 4 минут. Пока открыто окно и идёт вступление (до 6 минут), других подключений поручитель не принимает.
+Вход паролем (новые ПК с AnyPC 0.3.1 и старше) на новом поручителе получает состав тоже только после «Разрешить»
+(окно без ID: старая версия его не сообщает) — обойти окно старым протоколом нельзя. Поручитель 0.3.1 и старше
+вступления без пароля не объявляет: новый ПК идёт прежним путём с паролем, окна там нет. Остаточное: знающий фразу и
+код может вызывать окно у поручителя (раз в шаг кода, на один ID и ключ — не чаще раза в 30 с); ID и имя в окне —
+заявленные, ID подтверждается позже сверкой (под этим ID должен ответить тот же ключ); соль ключа владельца видит
+всякий, кто знает текущий код (перебор фразы по ней без открытого ключа невозможен). На Linux без zenity окно не
+появляется — вступление отклоняется.
+"My space", joining a new PC (part 12b, owner decisions B and A'; NEEDS HUMAN REVIEW): joining through a PC of the
+space (the guarantor) needs the authenticator code, the phrase and a person at the guarantor; the new PC needs no
+password. It proves the phrase with a signature by the owner key (the same phrase-derived key that signs the member
+list) over the domain "anypc-space-join-v1", the guarantor ID, the DTLS fingerprints of both ends of this connection
+and its own key proven on the same connection. The domain differs from the member-list signature domain — neither
+passes for the other; a proof moved to another connection or another key fails. The new PC sends the code only to a
+guarantor that proved its host key over this connection (and to the same key if it is already known). The guarantor
+gives out the owner-key salt only after a correct code; the new PC does not get the owner public key before joining. A
+wrong code or phrase is a login failure with the same counting and lockout as a password, with no window. After a
+correct code and phrase the guarantor shows "Let PC “name” into your space?" with the ID, the name (both claimed by the
+new PC) and its key fingerprint; "Allow" works after 3–5 s; no answer within 2 minutes — refused; after "Deny" or a
+timeout the window for the same ID or key comes no sooner than 30 s later (and the code is single-use — at most once
+per code step anyway). The join session is not a login: no screen, input or clipboard; only handing out the list and
+taking the new one, where the new PC is under the ID from the window with the key from the connection; it lives up to
+4 minutes. While the window is open and the join runs (up to 6 minutes) the guarantor takes no other connections. A
+password login (new PCs with AnyPC 0.3.1 or older) on a new guarantor also gets the list only after "Allow" (the window
+has no ID: the old version does not report it) — the window cannot be bypassed with the old protocol. A guarantor of
+0.3.1 or older does not announce password-less joining: the new PC takes the old password path, with no window there.
+Residual: whoever knows the phrase and code can raise the window on the guarantor (once per code step, for one ID and
+key no more than once in 30 s); the ID and name in the window are claimed, the ID is confirmed later by sync (the same
+key must answer under that ID); the owner-key salt is visible to anyone who knows the current code (it does not allow
+guessing the phrase without the public key). On Linux without zenity the window does not appear — the join is refused.
+
 «Моё пространство», объединение составов: каждый подписанный фразой состав — подлинная правка владельца, поэтому ПК
 не выбирает «правильную ветвь», а объединяет все известные составы: исключённые — объединение, члены — объединение
 без исключённых. Исключённый ПК не возвращается никогда, повтор старых составов ничего не меняет, правки, сделанные
