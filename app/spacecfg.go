@@ -424,7 +424,8 @@ func (c *config) spaceEnterAsk(ctx context.Context, hostID, password, code, phra
 		jmu sync.Mutex // Sign — в горутине обмена, она может пережить ошибку spaceDial
 		res *result
 	)
-	out, err := spaceDial(ctx, agent.SpaceDial{Server: server, ID: hostID, Key: key, Password: password, Code: code, Known: known, Confirm: spaceConfirmWait,
+	stage := spaceStageOf(ctx) // Ч12: ход для окна — соединяюсь, проверяю, получаю состав, сохраняю
+	out, err := spaceDial(ctx, agent.SpaceDial{Server: server, ID: hostID, Key: key, Password: password, Code: code, Known: known, Confirm: spaceConfirmWait, Stage: stage,
 		Sign: func(b []byte, hostPub ed25519.PublicKey, rest ...[]byte) ([]byte, error) {
 			var ms []*space
 			for _, x := range append([][]byte{b}, rest...) {

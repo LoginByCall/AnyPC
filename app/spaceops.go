@@ -30,6 +30,8 @@ type spaceOpFn func(ctx context.Context, preview func(spacePreview), ok <-chan b
 type spaceOpState struct {
 	kind    string
 	state   string // run | confirm | done | err
+	stage   string // Ч12: шаг идущей операции для окна (вступление: link | auth | list | save), "" — нет
+	cancel  context.CancelFunc
 	preview *spacePreview
 	result  any
 	err     error
@@ -99,8 +101,16 @@ func (r *spaceOpRun) start(kind string, f spaceOpFn) error {
 	if r.busyLocked() {
 		return errSpaceBusy
 	}
-	o := &spaceOpState{kind: kind, state: "run", ok: make(chan bool, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	o := &spaceOpState{kind: kind, state: "run", ok: make(chan bool, 1), cancel: cancel}
 	r.cur = o
+	ctx = context.WithValue(ctx, spaceStageKey{}, func(st string) {
+		r.mu.Lock()
+		if o.end.IsZero() {
+			o.stage = st
+		}
+		r.mu.Unlock()
+	})
 	preview := func(p spacePreview) {
 		r.mu.Lock()
 		if o.end.IsZero() { // превью после конца (обмен оборвался, пока Sign шёл к нему) — не воскрешать операцию
@@ -109,10 +119,11 @@ func (r *spaceOpRun) start(kind string, f spaceOpFn) error {
 		r.mu.Unlock()
 	}
 	r.wg.Go(func() {
-		res, err := f(context.Background(), preview, o.ok)
+		res, err := f(ctx, preview, o.ok)
+		cancel()
 		r.mu.Lock()
 		defer r.mu.Unlock()
-		o.result, o.err, o.preview, o.end, o.state = res, err, nil, spaceOpNow(), "done"
+		o.result, o.err, o.preview, o.end, o.state, o.stage = res, err, nil, spaceOpNow(), "done", ""
 		if err != nil {
 			o.result, o.state = nil, "err"
 			if spaceErrCode(err) == "other" { // окну — код, текст — в журнал (ошибки ядра секретов не содержат)
@@ -133,7 +144,34 @@ func (r *spaceOpRun) confirm(yes bool) error {
 	}
 	o.ok <- yes // буфер 1, ответ на превью — один: preview зовётся один раз
 	o.state = "run"
+	if yes {
+		o.stage = "save"
+	}
 	return nil
+}
+
+// stop — «Отмена» окна (Ч12): прервать идущее вступление (соединение, проверка, превью). Итог — err "cancel". До
+// отправки нового M тот ПК ничего не сохранил; после — как обрыв: повтор безопасен (SpaceJoin). Других операций
+// и кончившихся — errSpaceNoOp.
+func (r *spaceOpRun) stop() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	o := r.liveLocked()
+	if o == nil || o.kind != "enter" || !o.end.IsZero() {
+		return errSpaceNoOp
+	}
+	o.cancel()
+	return nil
+}
+
+type spaceStageKey struct{}
+
+// spaceStageOf — сообщить окну шаг операции (контекст spaceOps.start); вне операции — ничего.
+func spaceStageOf(ctx context.Context) func(string) {
+	if f, ok := ctx.Value(spaceStageKey{}).(func(string)); ok {
+		return f
+	}
+	return func(string) {}
 }
 
 // snap — состояние для окна: nil — операции нет; full — с превью и итогом (spaceOp), иначе только вид и состояние
@@ -146,6 +184,9 @@ func (r *spaceOpRun) snap(full bool) map[string]any {
 		return nil
 	}
 	m := map[string]any{"kind": o.kind, "state": o.state}
+	if o.stage != "" {
+		m["stage"] = o.stage
+	}
 	if o.err != nil {
 		m["err"] = spaceErrCode(o.err)
 	}
