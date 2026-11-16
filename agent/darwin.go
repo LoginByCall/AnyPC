@@ -408,8 +408,8 @@ func pickDir(ctx context.Context) (string, bool) {
 	return p, err == nil && p != ""
 }
 
-// utf8 — pbcopy/pbpaste перекодируют по LANG; без UTF-8 кириллица превращается в «?».
-func utf8(c *exec.Cmd) *exec.Cmd { c.Env = append(os.Environ(), "LANG=en_US.UTF-8"); return c }
+// utf8Lang — pbcopy/pbpaste перекодируют по LANG; без UTF-8 кириллица превращается в «?».
+func utf8Lang(c *exec.Cmd) *exec.Cmd { c.Env = append(os.Environ(), "LANG=en_US.UTF-8"); return c }
 
 // clipReadFull — буфер целиком для «Отправить» (send.go): pbpaste не обрезает.
 func clipReadFull() (string, error) { return ClipText() }
@@ -420,7 +420,7 @@ func ClipText() (string, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	out, err := utf8(exec.CommandContext(ctx, "pbpaste")).Output()
+	out, err := utf8Lang(exec.CommandContext(ctx, "pbpaste")).Output()
 	if err != nil {
 		return "", nil
 	}
@@ -433,7 +433,7 @@ func SetClipText(s string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	c := utf8(exec.CommandContext(ctx, "pbcopy"))
+	c := utf8Lang(exec.CommandContext(ctx, "pbcopy"))
 	c.Stdin = strings.NewReader(s)
 	if err := c.Run(); err != nil {
 		log.Printf("буфер обмена: %v", err)
