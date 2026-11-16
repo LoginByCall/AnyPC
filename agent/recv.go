@@ -141,6 +141,7 @@ type rxState struct {
 
 	declined atomic.Bool
 	asking   atomic.Int32 // открыто окно «Принять?»: ждём человека — простой и срок не считаются (rxWatch)
+	placing  atomic.Int32 // Ч10.5: файл переносится на место (без жёстких ссылок — копия части): ждём диск этого ПК, не отправителя
 	pinning  atomic.Bool  // приём разовым кодом: ключ закрепляется (RecvPin) — rxStill закрепления ещё не требует
 	texting  atomic.Bool  // идёт приём текста (один за раз)
 	ask      sync.Mutex   // окно «Принять?» — одно за раз в сессии
@@ -322,7 +323,7 @@ func (a *Agent) rxWatch(ctx context.Context, s *session, rx *rxState) {
 		case now := <-t.C:
 			m, why := rx.moved.Load(), ""
 			switch {
-			case rx.asking.Load() > 0: // окно «Принять?» (до AskTimeout): ждёт человек, не отправитель
+			case rx.asking.Load() > 0 || rx.placing.Load() > 0: // окно «Принять?» (до AskTimeout) или копия части: ждёт не отправитель
 				rx.touch()
 				m = -1
 			case now.Sub(time.Unix(0, rx.last.Load())) > rx.idle:

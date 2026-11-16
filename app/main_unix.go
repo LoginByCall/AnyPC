@@ -187,7 +187,8 @@ func hostMain() {
 	}
 	if startTray != nil { // значок в трее (Linux) или строке меню (Мак): окно — повторно, каждый раз новым одноразовым кодом
 		go startTray(ctx, trayDeps{id: cfg.ID, state: func() trayState { return trayStateOf(cfg, a.PassMaster) }, open: trayOpen, quit: trayQuit,
-			here: func() { trayGo(trayJSHere) }, pc: func(id string) { trayGo(trayJSPC(id)) }, help: func() { trayGo(trayJSHelp) }})
+			here: func() { trayGo(trayJSHere) }, pc: func(id string) { trayGo(trayJSPC(id)) }, help: func() { trayGo(trayJSHelp) },
+			send: func(id string) { sendOps.startTray(cfg, id) }, swin: func() { trayGo(trayJSSend) }})
 	}
 	srv := cfg.Server
 	code := cfg.code()

@@ -219,7 +219,8 @@ func main() {
 			return trayStateOf(cfg, a.PassMaster)
 		}
 		runTray(ctx, trayDeps{id: cfg.ID, state: state, quit: w.Destroy,
-			open: func() { show("") }, here: func() { show(trayJSHere) }, pc: func(id string) { show(trayJSPC(id)) }, help: func() { show(trayJSHelp) }})
+			open: func() { show("") }, here: func() { show(trayJSHere) }, pc: func(id string) { show(trayJSPC(id)) }, help: func() { show(trayJSHelp) },
+			send: func(id string) { sendOps.startTray(cfg, id) }, swin: func() { show(trayJSSend) }})
 	}()
 	startSpaceSync(ctx, cfg, a)
 	run.start(cfg.Server)

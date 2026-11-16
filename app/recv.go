@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/ed25519"
+	"errors"
 	"log"
 	"slices"
 	"sync/atomic"
@@ -100,6 +101,37 @@ func (c *config) recvUnpin(pub []byte) (bool, error) {
 	return true, err
 }
 
+var errPinNone = errors.New("отправка: такого закреплённого отправителя нет")
+
+// recvUnpinFP — «Отозвать» окна: по отпечатку ключа (странице ключ целиком не нужен).
+func (c *config) recvUnpinFP(fp string) error {
+	for _, p := range c.recvPinList() {
+		if fp != "" && pake.KeyFingerprint(p.Pub) == fp {
+			_, err := c.recvUnpin(p.Pub)
+			return err
+		}
+	}
+	return errPinNone
+}
+
+// recvPinsInfo — окну («Доступ к этому ПК»): закреплённые отправители (id, name — заявленные ими при закреплении,
+// fp — отпечаток доказанного ключа, at — когда) и последнее новое закрепление (new; null — нет или прочитано).
+func recvPinsInfo(c *config) map[string]any {
+	l := []map[string]any{}
+	for _, p := range c.recvPinList() {
+		l = append(l, recvPinJSON(p))
+	}
+	var nw any
+	if p := recvPinNew.Load(); p != nil {
+		nw = recvPinJSON(*p)
+	}
+	return map[string]any{"pins": l, "new": nw}
+}
+
+func recvPinJSON(p recvPin) map[string]any {
+	return map[string]any{"id": p.ID, "name": p.Name, "fp": pake.KeyFingerprint(p.Pub), "at": p.At}
+}
+
 // recvPinList — закреплённые отправители (для окна, Ч10.5): только годные, копия.
 func (c *config) recvPinList() []recvPin {
 	c.mu.Lock()
@@ -112,4 +144,16 @@ func (c *config) recvPinList() []recvPin {
 		}
 	}
 	return out
+}
+
+// recvPinNewJSON — hostInfo.recvNew: новое закрепление, пока оно в силе и не прочитано (recvPinSeen); иначе nil.
+func recvPinNewJSON(c *config) any {
+	p := recvPinNew.Load()
+	if p == nil {
+		return nil
+	}
+	if _, _, ok := c.recvPinned(p.Pub); !ok { // уже отозвано — не о чем уведомлять
+		return nil
+	}
+	return recvPinJSON(*p)
 }
