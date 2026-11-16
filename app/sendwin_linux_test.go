@@ -89,12 +89,12 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   // избранные: «Изменить» → переименовать → «Убрать» с отзывом
   await ev("document.getElementById('sndfaved').click(); 1"); await sleep(100);
   await ev("{ const r = document.querySelector('#sndfavx .sndfe'); r.querySelector('input').value = 'Мама'; [...r.querySelectorAll('button')][0].click(); } 1");
-  await until("/сохранено/.test(document.querySelector('#sndfavx [role=status]')?.textContent)");
+  await until("/сохранено/.test(document.querySelector('#sndfavx [role=status]')?.textContent) && sndT.favs[0]?.name === 'Мама'");
   await ev("document.getElementById('sndfaved').click(); 1"); await sleep(100);
   console.log('renamed=' + await ev("[...document.querySelectorAll('#sndfavs .sndt b')].map(b => b.textContent).join(',')"));
   await ev("document.getElementById('sndfaved').click(); 1"); await sleep(100);
   await ev("{ const r = document.querySelector('#sndfavx .sndfe'); r.querySelector('input[type=checkbox]').checked = true; [...r.querySelectorAll('button')][1].click(); } 1");
-  await until("/без кода он больше/.test(document.querySelector('#sndfavx [role=status]')?.textContent)");
+  await until("/без кода он больше/.test(document.querySelector('#sndfavx [role=status]')?.textContent) && document.querySelectorAll('#sndfavx .sndfe').length === 1");
   console.log('removed=' + await ev("[...document.querySelectorAll('#sndfavx .sndfe')].length + '|' + document.querySelector('#sndfavx [role=status]').textContent"));
   // новое закрепление: плашка на главном → «Посмотреть или отозвать» → «Доступ» → «Отозвать»
   await fetch(base + '/pin');
