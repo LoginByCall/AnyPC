@@ -759,24 +759,56 @@ func (a *Agent) byCID(cid string) *session {
 	return nil
 }
 
-// proxy — прокси из окружения (HTTPS_PROXY…); переменная — для теста.
-var proxy = http.ProxyFromEnvironment
+// proxy — прокси из окружения (HTTPS_PROXY…); переменная — для теста. proxyWait — сколько служебное соединение
+// (hostDial → dialWait) ждёт WebSocket через прокси, прежде чем идти напрямую: зависший прокси иначе съедал весь
+// spaceDialWait. Регистрация ПК (dial) живой прокси не обходит.
+var (
+	proxy     = http.ProxyFromEnvironment
+	proxyWait = 4 * time.Second
+)
 
 // dial — сигнализация через прокси из окружения, а если он не отвечает — напрямую:
 // забытый мёртвый HTTPS_PROXY не должен отрезать ПК от сети (так было на ПК владельца, 2026-11-06).
-func dial(ctx context.Context, u string) (*websocket.Conn, error) {
+func dial(ctx context.Context, u string) (*websocket.Conn, error) { return dialWait(ctx, u, 0) }
+
+// dialWait — как dial; wait > 0 — ждать WebSocket через прокси не дольше wait, затем напрямую. Только служебным
+// соединениям (hostDial): срок дозвона короткий, а WebRTC следом всё равно идёт мимо прокси. Регистрация ПК на хабе
+// (a.run) живой прокси не обходит, сколько бы он ни отвечал: напрямую — только если с прокси не соединиться.
+func dialWait(ctx context.Context, u string, wait time.Duration) (*websocket.Conn, error) {
 	via := func(p func(*http.Request) (*url.URL, error)) *websocket.DialOptions {
 		t := http.DefaultTransport.(*http.Transport).Clone()
 		t.Proxy = p
 		return &websocket.DialOptions{HTTPClient: &http.Client{Transport: t}}
 	}
-	c, _, err := websocket.Dial(ctx, u, via(proxy))
+	pctx, pcancel := ctx, context.CancelFunc(func() {})
+	if r, _ := http.NewRequest("GET", strings.Replace(strings.Replace(u, "wss://", "https://", 1), "ws://", "http://", 1), nil); r != nil {
+		if pu, _ := proxy(r); pu != nil && wait > 0 { // Ч12, приёмка: зависший прокси — не дольше proxyWait, остаток срока — прямому пути
+			pctx, pcancel = context.WithTimeout(ctx, wait)
+		}
+	}
+	c, _, err := websocket.Dial(pctx, u, via(proxy))
+	pcancel()
 	if op := (*net.OpError)(nil); errors.As(err, &op) && op.Op == "proxyconnect" {
 		log.Printf("прокси из окружения не отвечает (%v) — подключаюсь напрямую", op.Err)
 		c, _, err = websocket.Dial(ctx, u, via(nil))
+	} else if err != nil && pctx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+		log.Printf("прокси из окружения не ответил за %v — подключаюсь напрямую", wait)
+		c, _, err = websocket.Dial(ctx, u, via(nil))
 	}
-	return c, err
+	if err != nil {
+		return nil, urlScrubbed{err}
+	}
+	return c, nil
 }
+
+// urlScrubbed — ошибка dial без строки запроса адреса (Ч12): в ней ID и ключ хоста (?host=…&key=…), а текст
+// ошибки идёт в журнал («сигнализация …: …») и в ошибки пространства. errors.Is/As — по исходной ошибке.
+type urlScrubbed struct{ err error }
+
+var urlQuery = regexp.MustCompile(`\?[^\s"']*`)
+
+func (e urlScrubbed) Error() string { return urlQuery.ReplaceAllString(e.err.Error(), "?…") }
+func (e urlScrubbed) Unwrap() error { return e.err }
 
 func (a *Agent) run(ctx context.Context, server string) error {
 	pub := base64.RawURLEncoding.EncodeToString(a.Key.Public().(ed25519.PublicKey))
