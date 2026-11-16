@@ -165,7 +165,15 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   // Ч12: мастер вступления — подписи полей, ход по стадиям, ошибка соединения (поля, кроме пароля и кода, на месте), отмена
   await click('spjoin');
   console.log('labels=' + await ev("[...document.querySelectorAll('#spenter label > span')].map(e => e.textContent).join(';') + '|' + document.querySelector('#spenter [data-n]').textContent"));
-  await ev(val('speid', '444 555 666') + val('spepw', 'owner-pass') + val('specd', '654321') + val('speph', 'able baker cable delta eagle fable gable habit ideal jewel'));
+  // Ч12б: шаги ID → фраза → код; неверный ID — на шаге 1; «← Назад»
+  const jstep = () => ev("['spj1', 'spj2', 'spj3', 'spepwf', 'speerr'].map(i => !document.getElementById(i).classList.contains('hidden')).join(',') + '|' + [...document.querySelectorAll('#spenter > .wiz:not(.hidden) > b, #spenter > .wiz:not(.hidden) > span.mut')].map(e => e.textContent).join(';') + '|' + document.activeElement.id");
+  console.log('j1=' + await jstep()); await shot('step1', 'spenter');
+  await ev(val('speid', '123 456 789')); await click('spj1go'); console.log('j1self=' + await jstep() + '|' + await ev(txt('speerr')));
+  await ev(val('speid', '444 555 666')); await click('spj1go'); console.log('j2=' + await jstep());
+  await click('spj2go'); console.log('j2empty=' + await jstep());
+  await ev(val('speph', 'able baker cable delta eagle fable gable habit ideal jewel')); await shot('step2', 'spenter'); await click('spj2go'); console.log('j3=' + await jstep());
+  await ev("document.querySelector('#spj3 .spjback').click(); 1"); await sleep(250); console.log('j3back=' + await jstep()); await click('spj2go');
+  await ev(val('specd', '654321'));
   await shot('form', 'spenter');
   await ev("enterRun = true; 1"); await click('spego'); await sleep(1300);
   const stp = () => ev("[...document.getElementById('spop').children].map(e => e.textContent).join(';') + '|' + [document.getElementById('spnew').disabled, document.getElementById('spjoin').disabled, " + vis('spenter') + "].join('|')");
@@ -174,6 +182,9 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await ev("setOp({ kind: 'enter', state: 'run', stage: 'auth', result: null }); 1"); await sleep(1300);
   console.log('st2=' + await stp());
   await shot('progress', 'spop');
+  await ev("setOp({ kind: 'enter', state: 'run', stage: 'admit', left: 95, result: null }); 1"); await sleep(1300); // Ч12б: ждём «Разрешить» на том ПК
+  console.log('stadmit=' + await stp());
+  await shot('admit', 'spop');
   await ev("spJoinID = ''; setOp({ kind: 'enter', state: 'run', stage: 'link', result: null }); 1"); await sleep(1300); // окно перезагрузили
   console.log('st0=' + await stp());
   await ev("spJoinID = '444555666'; setOp({ kind: 'enter', state: 'run', stage: 'save', result: null }); 1"); await sleep(1300);
@@ -193,12 +204,24 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await ev("enterErr = ''; setOp(null); enterFail = 'busy'; 1"); await sleep(1300); await calls();
   await ev(val('spepw', 'owner-pass') + val('specd', '654321')); await click('spego'); await sleep(300);
   console.log('callfail=' + await calls() + '|' + await ev([vis('speerr'), "document.getElementById('spepw').value", "document.getElementById('specd').value", txt('speerr')].join(" + '|' + ")));
-  await ev("enterFail = ''; 1"); await click('spex');
+  // Ч12б: отказы вступления без пароля и запасной путь с паролем (тот ПК ≤ 0.3.1)
+  for (const e of ['declined', 'noanswer', 'badcode', 'badphrase']) {
+    await ev("enterFail = ''; enterErr = '" + e + "'; 1"); await ev(val('specd', '654321')); await click('spego'); await sleep(1300);
+    console.log(e + '=' + await jstep() + '|' + await ev(txt('speerr')));
+    if (e === 'declined') await shot('declined', 'speerr');
+  }
+  await ev("enterErr = 'needpw'; 1"); await ev(val('specd', '654321')); await click('spego'); await sleep(1300);
+  console.log('needpw=' + await jstep() + '|' + await ev(txt('speerr')));
+  await shot('needpw', 'speerr');
+  await ev("enterErr = ''; enterRun = true; 1"); await ev(val('spepw', 'owner-pass') + val('specd', '654321')); await click('spego'); await sleep(1300);
+  console.log('pwpath=' + await calls() + '|' + await stp());
+  await ev("setOp(null); enterRun = false; 1"); await sleep(1300);
+  await ev("enterFail = ''; enterErr = ''; 1"); await ev("document.querySelector('#spj3 .spex').click(); 1"); await sleep(250);
   // вступление в два шага: превью → отказ → снова → подтверждение
   await click('spjoin');
   await ev(val('speid', '444 555 666') + val('spepw', 'owner-pass') + val('specd', '654321') + val('speph', 'able baker cable delta eagle fable gable habit ideal jewel')); await click('spego'); await sleep(300);
   console.log('preview=' + await calls() + '|' + await ev("[...document.getElementById('spop').children].map(e => e.textContent).join(';')"));
-  await click('spex'); await sleep(200);
+  await ev("document.querySelector('#spj1 .spex').click(); 1"); await sleep(450);
   console.log('enterx=' + await calls() + '|' + await ev(vis('spenter') + " + '|' + document.getElementById('speph').value"));
   await click('spjoin');
   await ev(val('speid', '444555666') + val('spepw', 'owner-pass') + val('specd', '654321') + val('speph', 'able baker cable delta eagle fable gable habit ideal jewel')); await click('spego'); await sleep(300);
@@ -269,10 +292,7 @@ func TestBrowserSpace(t *testing.T) {
 		"backphrase=|false|create:owner-pass,createno\n", // «Назад»: то же
 		"foreign=Wrong space phrase\n",
 		"created=|false|false|true|false|This PCID 123 456 789key: SELF-FP|create:owner-pass,createok:able baker,createok:" + ph + "\n",
-		"next=true|false|✓ The space is created. This PC is the first one in it.Next: add another PC of yours" +
-			"On the other PC open AnyPC → “My space” → “Set up” → “Join” and enter:This PC’s ID123 456 789📋Space passwordthe same password you use to sign in to the PCs of the space" +
-			"Authenticator app code6 digits from the app entry you use to sign in to the PCs of the space: “AnyPC” with the ID of the PC where the space was created, or “AnyPC пространство” if the code was changed" +
-			"Space phrasethe 10 words you wrote downWhile the other PC joins, this one must be on and online.Got it\n",
+		"next=true|false|✓ The space is created. This PC is the first one in it.Next: add another PC of yoursOn the other PC open AnyPC → “My space” → “Set up” → “Join” and enter:This PC’s ID123 456 789📋Authenticator app code6 digits from the app entry you use to sign in to the PCs of the space: “AnyPC” with the ID of the PC where the space was created, or “AnyPC пространство” if the code was changedSpace phrasethe 10 words you wrote downSpace passwordnot needed if the other PC runs AnyPC newer than 0.3.1; for an old version — the same password you use to sign in to the PCs of the spaceThen — “Allow” on this PCWhen the other PC has checked the code and the phrase, a window “Let PC … into your space?” appears here: come and press “Allow” (the window waits 2 minutes).While the other PC joins, this one must be on and online.Got it\n",
 		"gotit=false|true\n", "how=true|false|true\n",
 		"askin=true\n",
 		"askoff=setconfirm:false|false|true|false\n", // выключено, и снова включить нельзя
@@ -298,44 +318,23 @@ func TestBrowserSpace(t *testing.T) {
 		"left=leave:owner-pass:123456|false|true|false|false|true\n", // до сверки: пароль и TOTP стёрты — подсказка
 		"setpw=true|false|newpw\n",
 		"pwset=setpw:new-pass1|false\n", // задан — снова «как прежде»: под «Спрашивать» поле скрыто
-		"labels=ID of your PC that is already in the space;9 digits from that PC’s main screen (“This computer’s ID”);Space password;" +
-			"the same password you use to sign in to the PCs of the space;Authenticator app code (6 digits);" +
-			"from the space entry in the app — the one you use to sign in to the PCs of the space: “AnyPC” with the ID of the PC where the space was created, or “AnyPC пространство” if the code was changed. Not this PC’s entry; the code changes every 30 seconds;Space phrase (10 words in Latin letters);" +
-			"the 10 words you wrote down when creating the space|Step 1 of 3\n",
-		"st1=enter:444555666:owner-pass:654321:" + ph + "|Step 2 of 3;Connecting and checking;Usually up to 30 seconds. Nothing to press.;" +
-			"…Connecting to 444 555 666…;·Checking the password and code…;·Getting the list of PCs in the space…;Cancel|true|true|false\n",
-		"st2=Step 2 of 3;Connecting and checking;Usually up to 30 seconds. Nothing to press.;" +
-			"✓Connecting to 444 555 666…;…Checking the password and code…;·Getting the list of PCs in the space…;Cancel|true|true|false\n",
-		"nolink=Could not joinCould not connect to that PC: is AnyPC running and online there? A firewall or VPN may block the direct connection" +
-			"What to do: make sure AnyPC is running on that PC and its main screen says “online”. While joining, turn off VPN and allow AnyPC in the firewall on both PCs, then press “Join” again." +
-			"The password and code were cleared — enter them again; everything else is kept.|true|true|444 555 666|||" + strconv.Itoa(len(ph)) + "|false|\n",
-		"noudp=Could not joinThe connection was not established: this PC or its network does not let AnyPC through (firewall, VPN or closed port UDP/TCP 3478)" +
-			"What to do: allow outgoing connections for AnyPC in this PC’s firewall (on a Mac — LuLu, Little Snitch: a rule for AnyPC to any address, not only to the server), turn off VPN while joining, and on a foreign network (office, hotel) try another one. Then press “Join” again." +
-			"The password and code were cleared — enter them again; everything else is kept.\n",
+		"labels=ID of your PC that is already in the space;9 digits from that PC’s main screen (“This computer’s ID”);Space phrase (10 words in Latin letters);the 10 words you wrote down when creating the space;Space password;the same password you use to sign in to the PCs of the space;Authenticator app code (6 digits);from the space entry in the app — the one you use to sign in to the PCs of the space: “AnyPC” with the ID of the PC where the space was created, or “AnyPC пространство” if the code was changed. Not this PC’s entry; the code changes every 30 seconds|Step 1 of 5\n",
+		"st1=enter:444555666::654321:" + ph + "|Step 4 of 5;Connecting and checking;Usually up to 30 seconds. Nothing to press.;…Connecting to 444 555 666…;·Checking the code and the phrase…;·Waiting for confirmation on “Office · 444 555 666”: go to it and press “Allow”;·Getting the list of PCs in the space…;Cancel|true|true|false\n",
+		"st2=Step 4 of 5;Connecting and checking;Usually up to 30 seconds. Nothing to press.;✓Connecting to 444 555 666…;…Checking the code and the phrase…;·Waiting for confirmation on “Office · 444 555 666”: go to it and press “Allow”;·Getting the list of PCs in the space…;Cancel|true|true|false\n",
+		"nolink=Could not joinCould not connect to that PC: is AnyPC running and online there? A firewall or VPN may block the direct connectionWhat to do: make sure AnyPC is running on that PC and its main screen says “online”. While joining, turn off VPN and allow AnyPC in the firewall on both PCs, then press “Join” again.The code was cleared — enter a fresh one; the ID and phrase are kept.|true|true|444 555 666|||58|false|\n",
+		"noudp=Could not joinThe connection was not established: this PC or its network does not let AnyPC through (firewall, VPN or closed port UDP/TCP 3478)What to do: allow outgoing connections for AnyPC in this PC’s firewall (on a Mac — LuLu, Little Snitch: a rule for AnyPC to any address, not only to the server), turn off VPN while joining, and on a foreign network (office, hotel) try another one. Then press “Join” again.The code was cleared — enter a fresh one; the ID and phrase are kept.\n",
 		"pwgone=|\n", // пароль и код не держатся в поле после отправки
-		"st0=Step 2 of 3;Connecting and checking;Usually up to 30 seconds. Nothing to press.;…Connecting to your PC…;·Checking the password and code…;·Getting the list of PCs in the space…;Cancel|true|true|false\n",
-		"stsave=Step 3 of 3;Saving the join…|true|true|false\n",
-		"err2=enter:444555666:owner-pass:654321:" + ph + ",enter:444555666:owner-pass:654321:" + ph + "|true|||Could not joinWrong space phrase" +
-			"What to do: compare the phrase with your note — 10 words in Latin letters separated by spaces, then “Join”.The password and code were cleared — enter them again; everything else is kept.\n",
-		"callfail=enter:444555666:owner-pass:654321:" + ph + "|true|||Could not joinAnother operation is in progress — wait for it to finish" +
-			"What to do: wait until the current space operation on this PC ends and press “Join” again.The password and code were cleared — enter them again; everything else is kept.\n",
-		"cancelled=cancel|Joining stoppedCancelledWhat to do: to join, press “Join” again.The password and code were cleared — enter them again; everything else is kept.|true\n",
-		"preview=enter:444555666:owner-pass:654321:" + ph + "|Step 3 of 3;Are these all your PCs?;Check the list. All yours — “Confirm”. A PC that is not yours — “Refuse”.;" +
-			"OfficeID 444 555 666key: OFFICE-FP;This PCID 123 456 789key: SELF-FP;" +
-			"The password of this PC will be replaced with the space password.;The authenticator code of this PC will be replaced with the space code.;" +
-			"Will be reset: trusted keys — 2, sign-in by key — 1.;" +
-			"“Ask before each connection” stays on: sign-in with password and code works once you turn it off.;Revoked: 2;key: GONE-FP1;key: GONE-FP2;ConfirmRefuse\n",
+		"st0=Step 4 of 5;Connecting and checking;Usually up to 30 seconds. Nothing to press.;…Connecting to your PC…;·Checking the code and the phrase…;·Waiting for confirmation on your PC: go to it and press “Allow”;·Getting the list of PCs in the space…;Cancel|true|true|false\n",
+		"stsave=Step 5 of 5;Saving the join…|true|true|false\n",
+		"err2=enter:444555666::654321:" + ph + ",enter:444555666::654321:" + ph + "|true|||Could not joinWrong space phraseWhat to do: compare the phrase with your note — 10 words in Latin letters separated by spaces, then “Join”.The code was cleared — enter a fresh one; the ID and phrase are kept.\n",
+		"callfail=enter:444555666::654321:" + ph + "|true|||Could not joinAnother operation is in progress — wait for it to finishWhat to do: wait until the current space operation on this PC ends and press “Join” again.The code was cleared — enter a fresh one; the ID and phrase are kept.\n",
+		"cancelled=cancel|Joining stoppedCancelledWhat to do: to join, press “Join” again.The code was cleared — enter a fresh one; the ID and phrase are kept.|true\n",
+		"preview=enter:444555666::654321:" + ph + "|Step 5 of 5;Are these all your PCs?;Check the list. All yours — “Confirm”. A PC that is not yours — “Refuse”.;OfficeID 444 555 666key: OFFICE-FP;This PCID 123 456 789key: SELF-FP;The password of this PC will be replaced with the space password.;The authenticator code of this PC will be replaced with the space code.;Will be reset: trusted keys — 2, sign-in by key — 1.;“Ask before each connection” stays on: sign-in with password and code works once you turn it off.;Revoked: 2;key: GONE-FP1;key: GONE-FP2;ConfirmRefuse\n",
 		"enterx=confirm:false|true|\n", // «Отмена» при ждущем превью — отказ: снова шаг 1 с итогом
 		"answer=0\n",
-		"refused=enter:444555666:owner-pass:654321:" + ph + ",confirm:false||true|Joining stoppedJoining cancelledWhat to do: to join, press “Join” again." +
-			"The password and code were cleared — enter them again; everything else is kept.\n",
+		"refused=enter:444555666::654321:" + ph + ",confirm:false||true|Joining stoppedJoining cancelledWhat to do: to join, press “Join” again.The code was cleared — enter a fresh one; the ID and phrase are kept.\n",
 		"how2=true\n",
-		"joined=enter:444555666:owner-pass:654321:" + ph + ",confirm:true|✓ This PC has joined the space." +
-			"Password sign-in and “I'm here” open after a check with another PC of yours: it runs by itself when that PC is online, or press “Check now”." + // сначала сверка, потом «Я тут»
-			"Next: on the main screen, in the “My space” block, enter the space password and code and press “I'm here” — your PCs open from here without a password." +
-			"The app code for this PC is now shared by the space — from the same entry you used to sign in to 444 555 666. This PC’s old entry no longer works." +
-			"“Ask before each connection” is on for this PC: your PCs get in only with confirmation. Untick it below to sign in with the password and code.Got it|false||true|" +
-			"Password sign-in and “I'm here” are closed until a check with your PC other than Office · 444 555 666.Check now\n",
+		"joined=enter:444555666::654321:" + ph + ",confirm:true|✓ This PC has joined the space.Password sign-in and “I'm here” open after a check with another PC of yours: it runs by itself when that PC is online, or press “Check now”.Next: on the main screen, in the “My space” block, enter the space password and code and press “I'm here” — your PCs open from here without a password.The app code for this PC is now shared by the space — from the same entry you used to sign in to 444 555 666. This PC’s old entry no longer works.“Ask before each connection” is on for this PC: your PCs get in only with confirmation. Untick it below to sign in with the password and code.Got it|false||true|Password sign-in and “I'm here” are closed until a check with your PC other than Office · 444 555 666.Check now\n",
 		"stale=2|0\n",
 		"askbar=1\n",
 		"slow=2\n",
@@ -344,6 +343,20 @@ func TestBrowserSpace(t *testing.T) {
 		"outform=false|\n",
 		"showback=true|false|true||false|createno\n",
 		"back=false|true|true\n",
+		// Ч12б: шаги ID → фраза → код, ожидание «Разрешить» с отсчётом, отказы и запасной путь с паролем
+		"j1=true,false,false,false,false|Step 1 of 5;Details of your PC that is already in the space;Any of your PCs in the space shows them: “My space” → “Set up” → “How to add a PC”.|speid\n",
+		"j1self=true,false,false,false,true|Could not join;Step 1 of 5;Details of your PC that is already in the space;Any of your PCs in the space shows them: “My space” → “Set up” → “How to add a PC”.|speid|Could not joinWrong PC IDWhat to do: enter the 9-digit ID of your other PC (not this one).The code was cleared — enter a fresh one; the ID and phrase are kept.\n",
+		"j2=false,true,false,false,false|Step 2 of 5;Space phrase;Enter the 10 words you wrote down when creating the space. The phrase does not go over the network: this PC proves it to that PC with a signature.|speph\n",
+		"j2empty=false,true,false,false,false|Step 2 of 5;Space phrase;Enter the 10 words you wrote down when creating the space. The phrase does not go over the network: this PC proves it to that PC with a signature.|speph\n",
+		"j3=false,false,true,false,false|Step 3 of 5;Authenticator code;The code goes last: it changes every 30 seconds. After “Join” this PC connects to that one, it checks the code and the phrase, and you will need to press “Allow” on it.|specd\n",
+		"j3back=false,true,false,false,false|Step 2 of 5;Space phrase;Enter the 10 words you wrote down when creating the space. The phrase does not go over the network: this PC proves it to that PC with a signature.|speph\n",
+		"stadmit=Step 4 of 5;Connecting and checking;A window “Let PC … into your space?” has opened on “Office · 444 555 666”. Check this PC’s ID in it and press “Allow”. No answer within 2 minutes — joining is cancelled.;✓Connecting to 444 555 666…;✓Checking the code and the phrase…;…Waiting for confirmation on “Office · 444 555 666”: go to it and press “Allow”;·Getting the list of PCs in the space…;The window on that PC waits 95 s more;Cancel|true|true|false\n",
+		"declined=false,false,true,false,true|Could not join;Step 3 of 5;Authenticator code;The code goes last: it changes every 30 seconds. After “Join” this PC connects to that one, it checks the code and the phrase, and you will need to press “Allow” on it.|specd|Could not join“Deny” was pressed on that PCWhat to do: after 30 seconds press “Join” again and press “Allow” on that PC. If it was not you who pressed “Deny”, find out who is at that PC.The code was cleared — enter a fresh one; the ID and phrase are kept.\n",
+		"noanswer=false,false,true,false,true|Could not join;Step 3 of 5;Authenticator code;The code goes last: it changes every 30 seconds. After “Join” this PC connects to that one, it checks the code and the phrase, and you will need to press “Allow” on it.|specd|Could not joinNo answer on that PC within 2 minutesWhat to do: go to that PC, after 30 seconds press “Join” here again and, when the window “Let PC … into your space?” appears there, press “Allow”.The code was cleared — enter a fresh one; the ID and phrase are kept.\n",
+		"badcode=false,false,true,false,true|Could not join;Step 3 of 5;Authenticator code;The code goes last: it changes every 30 seconds. After “Join” this PC connects to that one, it checks the code and the phrase, and you will need to press “Allow” on it.|specd|Could not joinThe code did not matchWhat to do: take a fresh code from the space entry in the app (the one you use to sign in to the PCs of the space — not this PC’s entry) and press “Join”. After several wrong attempts that PC closes sign-in for a while.The code was cleared — enter a fresh one; the ID and phrase are kept.\n",
+		"badphrase=false,true,false,false,true|Could not join;Step 2 of 5;Space phrase;Enter the 10 words you wrote down when creating the space. The phrase does not go over the network: this PC proves it to that PC with a signature.|speph|Could not joinThat PC did not accept the phraseWhat to do: compare the phrase with your note — it must be the phrase of the space that PC is in. Then enter a fresh code and “Join”. After several wrong attempts that PC closes sign-in for a while.The code was cleared — enter a fresh one; the ID and phrase are kept.\n",
+		"needpw=false,false,true,true,true|The password is needed too;Step 3 of 5;Password and code;Through this PC only with the space password: it runs AnyPC 0.3.1 or older. There will be no “Allow” window on it.|spepw|The password is needed tooThat PC runs AnyPC 0.3.1 or older: joining through it needs the space passwordWhat to do: enter the space password below (the same one you use to sign in to the PCs of the space) and a fresh code, then “Join”. Or update AnyPC on that PC — then no password is needed.The password and code were cleared — enter them again; everything else is kept.\n",
+		"pwpath=enter:444555666::654321:" + ph + ",enter:444555666::654321:" + ph + ",enter:444555666::654321:" + ph + ",enter:444555666::654321:" + ph + ",enter:444555666::654321:" + ph + ",enter:444555666:owner-pass:654321:" + ph + "|Step 4 of 5;Connecting and checking;Usually up to 30 seconds. Nothing to press.;…Connecting to 444 555 666…;·Checking the password and code…;·Getting the list of PCs in the space…;Cancel|true|true|false\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("нет %q", want)
@@ -368,7 +381,7 @@ func TestSpaceCodesUI(t *testing.T) {
 		}
 	}
 	// Ч12, приёмка M2: у каждой ошибки вступления — свой «что делать» (sw_a_<код>; синонимы — SP_ADV в окне)
-	for _, c := range []string{"noudp", "nolink", "offline", "closed", "auth", "ask", "old", "phrase", "id", "busythere", "lockedthere", "nopassthere",
+	for _, c := range []string{"needpw", "badcode", "badphrase", "declined", "noanswer", "later", "nospace", "waitthere", "noudp", "nolink", "offline", "closed", "auth", "ask", "old", "phrase", "id", "busythere", "lockedthere", "nopassthere",
 		"hostkey", "badid", "clock", "change", "other", "busy", "in", "compromised", "over", "damaged", "again", "retry"} {
 		if n := strings.Count(string(html), " sw_a_"+c+": "); n != 7 {
 			t.Errorf("sw_a_%s: в словарях %d раз из 7", c, n)

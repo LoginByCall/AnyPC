@@ -11,6 +11,8 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"anypc/agent"
 )
 
 var (
@@ -29,8 +31,9 @@ type spaceOpFn func(ctx context.Context, preview func(spacePreview), ok <-chan b
 
 type spaceOpState struct {
 	kind    string
-	state   string // run | confirm | done | err
-	stage   string // Ч12: шаг идущей операции для окна (вступление: link | auth | list | save), "" — нет
+	state   string    // run | confirm | done | err
+	stage   string    // Ч12: шаг идущей операции для окна (вступление: link | auth | admit | list | save), "" — нет
+	stageAt time.Time // Ч12б: когда начался stage (admit — отсчёт окна «Пустить?» на том ПК)
 	cancel  context.CancelFunc
 	preview *spacePreview
 	result  any
@@ -106,8 +109,8 @@ func (r *spaceOpRun) start(kind string, f spaceOpFn) error {
 	r.cur = o
 	ctx = context.WithValue(ctx, spaceStageKey{}, func(st string) {
 		r.mu.Lock()
-		if o.end.IsZero() {
-			o.stage = st
+		if o.end.IsZero() && o.stage != st {
+			o.stage, o.stageAt = st, spaceOpNow()
 		}
 		r.mu.Unlock()
 	})
@@ -186,6 +189,10 @@ func (r *spaceOpRun) snap(full bool) map[string]any {
 	m := map[string]any{"kind": o.kind, "state": o.state}
 	if o.stage != "" {
 		m["stage"] = o.stage
+	}
+	if o.stage == "admit" { // Ч12б: сколько ещё ждёт окно «Пустить?» на том ПК, с (вверх)
+		left := agent.AdmitTimeout - spaceOpNow().Sub(o.stageAt)
+		m["left"] = max(0, int((left+time.Second-1)/time.Second))
 	}
 	if o.err != nil {
 		m["err"] = spaceErrCode(o.err)

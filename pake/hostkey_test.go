@@ -63,3 +63,36 @@ func TestHostKey(t *testing.T) {
 		t.Fatalf("%q %v", fp, err)
 	}
 }
+
+// TestSpaceJoinProof — Ч12б: доказательство фразы годится только для своего соединения, ID поручителя и ключа
+// клиента; подпись другого домена тем же ключом (clientMsg, identityMsg) — не доказательство.
+func TestSpaceJoinProof(t *testing.T) {
+	_, owner, _ := ed25519.GenerateKey(nil)
+	opub := owner.Public().(ed25519.PublicKey)
+	cpub, _, _ := ed25519.GenerateKey(nil)
+	other, _, _ := ed25519.GenerateKey(nil)
+	const id, fc, fh = "123456789", "sha-256 AA:BB", "sha-256 CC:DD"
+	sig := SpaceJoinSign(owner, id, fc, fh, cpub)
+	if !SpaceJoinVerify(opub, sig, id, fc, fh, cpub) {
+		t.Fatal("верное доказательство не принято")
+	}
+	for name, ok := range map[string]bool{
+		"чужое соединение (клиент)": SpaceJoinVerify(opub, sig, id, "sha-256 AA:BC", fh, cpub),
+		"чужое соединение (хост)":   SpaceJoinVerify(opub, sig, id, fc, "sha-256 CC:DE", cpub),
+		"отпечатки местами":         SpaceJoinVerify(opub, sig, id, fh, fc, cpub),
+		"другой поручитель":         SpaceJoinVerify(opub, sig, "123456780", fc, fh, cpub),
+		"другой ключ клиента":       SpaceJoinVerify(opub, sig, id, fc, fh, other),
+		"другой ключ владельца":     SpaceJoinVerify(cpub, sig, id, fc, fh, cpub),
+		"без отпечатков":            SpaceJoinVerify(opub, SpaceJoinSign(owner, id, "", "", cpub), id, "", "", cpub),
+		"домен clientMsg":           SpaceJoinVerify(opub, ed25519.Sign(owner, clientMsg(id, fc, fh)), id, fc, fh, cpub),
+		"домен identityMsg":         SpaceJoinVerify(opub, HostSign(owner, id, fc, fh), id, fc, fh, cpub),
+		"пустая подпись":            SpaceJoinVerify(opub, nil, id, fc, fh, cpub),
+	} {
+		if ok {
+			t.Errorf("%s: принято", name)
+		}
+	}
+	if ClientVerify(opub, sig, id, fc, fh) || HostVerify(opub, sig, id, fc, fh) == nil {
+		t.Error("доказательство фразы сошло за подпись клиента или хоста")
+	}
+}

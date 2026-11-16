@@ -69,7 +69,7 @@ func newSpaceRig(a *Agent) *spaceRig {
 		}
 		return append([][]byte{bytes.Clone(r.m)}, r.heads...)
 	}
-	a.SpaceJoin = func(s, m []byte, pub ed25519.PublicKey) error {
+	a.SpaceJoin = func(s, m []byte, pub ed25519.PublicKey, _ string) error {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		if !bytes.Equal(s, salt) || bytes.Contains(m, []byte("reject")) {
@@ -315,7 +315,7 @@ func TestSpaceOldClient(t *testing.T) {
 	o := &otpHost{secret: totp.NewSecret()}
 	e2eAgent = func(a *Agent) {
 		a.OTP, a.SpaceGet = o.check, func([]byte) [][]byte { return [][]byte{[]byte("M")} }
-		a.SpaceJoin = func([]byte, []byte, ed25519.PublicKey) error {
+		a.SpaceJoin = func([]byte, []byte, ed25519.PublicKey, string) error {
 			t.Error("вступление без запроса")
 			return nil
 		}

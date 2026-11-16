@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"slices"
 	"sync"
 	"time"
@@ -230,8 +231,9 @@ func (c *config) spaceOwnerLocked(salt []byte) *space {
 // канале), эпоха max+1, остальное без изменений (перекрывает все верхушки); подпись — закреплённым opub (сравнение байтов с ожидаемым). Сессия —
 // записи владельца (salt, как в spaceGet): сверка под тем же c.mu, что и запись. Принятый M — ещё одна верхушка.
 // ID нового ПК (С4) проверяет рассылка после приёма: ПК под этим ID должен ответить ключом pub (spaceSyncer.one).
-func (c *config) spaceJoin(salt, b []byte, pub ed25519.PublicKey) error {
-	if err := c.spaceJoinSave(salt, b, pub); err != nil {
+// Ч12б: id — ID, показанный в окне «Пустить?» (заявлен новым ПК): новый член M — только под ним; "" — не сообщён.
+func (c *config) spaceJoin(salt, b []byte, pub ed25519.PublicKey, id string) error {
+	if err := c.spaceJoinSave(salt, b, pub, id); err != nil {
 		return err
 	}
 	if s := c.syn; s != nil { // остальным — до ответа новому ПК (его сверка с ними сразу пройдёт); ему — проверка ID
@@ -242,7 +244,7 @@ func (c *config) spaceJoin(salt, b []byte, pub ed25519.PublicKey) error {
 	return nil
 }
 
-func (c *config) spaceJoinSave(salt, b []byte, pub ed25519.PublicKey) error {
+func (c *config) spaceJoinSave(salt, b []byte, pub ed25519.PublicKey, id string) error {
 	in, err := spaceParse(b)
 	if err != nil {
 		return err
@@ -262,6 +264,9 @@ func (c *config) spaceJoinSave(salt, b []byte, pub ed25519.PublicKey) error {
 	if i < 0 {
 		return errors.New("пространство: в составе нет ключа, которым вошёл новый ПК")
 	}
+	if id != "" && in.Members[i].ID != id { // Ч12б: человек разрешил ПК с этим ID — под другим не принимать
+		return errors.New("пространство: новый ПК в составе не под тем ID, что был в окне «Пустить?»")
+	}
 	want.Members = append(want.Members, spaceMember{ID: in.Members[i].ID, Pub: bytes.Clone(pub)})
 	slices.SortFunc(want.Members, func(x, y spaceMember) int { return bytes.Compare(x.Pub, y.Pub) })
 	if !bytes.Equal(want.signBytes(), in.signBytes()) {
@@ -271,6 +276,24 @@ func (c *config) spaceJoinSave(salt, b []byte, pub ed25519.PublicKey) error {
 		return err
 	}
 	return c.save()
+}
+
+// spaceAdmitOwner — agent.Agent.SpaceOwner (Ч12б, на поручителе): соль и открытый ключ владельца для проверки
+// доказательства фразы в сессии записи по умолчанию с солью salt — только если вход с ней — запись владельца
+// (spaceOwnerLocked: та же соль, хэш и секрет кода, не «Спрашивать», не скомпрометирован, не SpaceOver). Иначе why:
+// "ask" — режим «Спрашивать» (снять на этом ПК), "none" — остальное. Секретов не отдаёт: opub и osalt лежат в M.
+func (c *config) spaceAdmitOwner(salt []byte) (osalt []byte, opub ed25519.PublicKey, why string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reload()
+	if len(c.Space) > 0 && c.codeModeLocked() {
+		return nil, nil, "ask"
+	}
+	m := c.spaceOwnerLocked(salt)
+	if m == nil {
+		return nil, nil, "none"
+	}
+	return bytes.Clone(m.OSalt), bytes.Clone(m.OPub), ""
 }
 
 // spaceOwnerCheck — Н1 приёмки Э1: первому составу из сети верят, только если ключ владельца из введённой фразы и
@@ -393,7 +416,10 @@ func (c *config) spaceAsk(ctx context.Context, m *space, half bool, preview func
 // errSpaceSlow), P нового M не получает; запись по умолчанию сменилась после показа — errSpaceChange. После успеха
 // запись по умолчанию этого ПК — запись владельца из объединения. Режим подтверждения и записи гостей не меняются
 // (С3 приёмки Э2: иначе ожили бы спящие гостевые записи «Спрашивать»).
-// ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ (A13: подпись состава фразой).
+// Ч12б (решение A'): password "" — вступление без пароля: P проверяет код и доказательство фразы (ключ владельца из
+// фразы и osalt P над этим соединением, agent/admit.go), человек на P нажимает «Разрешить»; P ≤ v0.3.1 —
+// agent.ErrSpaceNeedPass (окно спросит пароль). Запись по умолчанию и тогда — из M (пароль пространства не вводили).
+// ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ (A13: подпись состава фразой, доказательство фразы).
 func (c *config) spaceEnterAsk(ctx context.Context, hostID, password, code, phrase string, preview func(spacePreview), ok <-chan bool) (spaceChanges, error) {
 	ctx, cancel := context.WithCancel(ctx) // Sign ждёт в горутине обмена: конец вступления его отпускает
 	defer cancel()
@@ -425,7 +451,14 @@ func (c *config) spaceEnterAsk(ctx context.Context, hostID, password, code, phra
 		res *result
 	)
 	stage := spaceStageOf(ctx) // Ч12: ход для окна — соединяюсь, проверяю, получаю состав, сохраняю
+	name, _ := os.Hostname()   // Ч12б: имя этого ПК — в окно «Пустить?» поручителя (там очищается)
 	out, err := spaceDial(ctx, agent.SpaceDial{Server: server, ID: hostID, Key: key, Password: password, Code: code, Known: known, Confirm: spaceConfirmWait, Stage: stage,
+		Self: id, Name: name, OwnerKey: func(osalt []byte) (ed25519.PrivateKey, error) { // Ч12б (A'): доказательство фразы
+			if len(osalt) != spaceSaltLen {
+				return nil, errors.New("пространство: соль ключа владельца не той длины")
+			}
+			return spaceOwnerKey(phrase, osalt), nil
+		},
 		Sign: func(b []byte, hostPub ed25519.PublicKey, rest ...[]byte) ([]byte, error) {
 			var ms []*space
 			for _, x := range append([][]byte{b}, rest...) {
@@ -446,8 +479,10 @@ func (c *config) spaceEnterAsk(ctx context.Context, hostID, password, code, phra
 			if err := spaceOwnerCheck(m, phrase); err != nil {
 				return nil, err
 			}
-			if err := spaceLoginCheck(m, password); err != nil { // P отдал M с чужим паролем входа — не наш
-				return nil, err
+			if password != "" { // путь с паролем: P отдал M с чужим паролем входа — не наш (без пароля — только фраза, A')
+				if err := spaceLoginCheck(m, password); err != nil {
+					return nil, err
+				}
 			}
 			if !m.has(spaceMember{ID: hostID, Pub: hostPub}) {
 				return nil, errors.New("пространство: ПК, отдавший состав, в нём не числится")
