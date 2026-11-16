@@ -186,7 +186,7 @@ func TestTray(t *testing.T) {
 		}
 		labels = append(labels, p["label"].Value().(string))
 	}
-	if want := []string{trayTitle("123456789"), "Помочь кому-то…", "Выйти"}; strings.Join(labels, "|") != strings.Join(want, "|") || seps != 1 {
+	if want := []string{trayTitle("123456789"), "Отправить", "Помочь кому-то…", "Выйти"}; strings.Join(labels, "|") != strings.Join(want, "|") || seps != 1 {
 		t.Errorf("меню: %q, разделителей %d", labels, seps)
 	}
 
@@ -302,7 +302,7 @@ func TestTrayLive(t *testing.T) {
 	name := w.next(t)
 	menu := w.conn.Object(name, menuPath)
 	rev0, l0 := trayLayoutLabels(t, menu)
-	if l0 != trayTitle("123456789")+"|Помочь кому-то…|—|Выйти" {
+	if l0 != trayTitle("123456789")+"|Отправить|Помочь кому-то…|—|Выйти" {
 		t.Errorf("вне пространства: %s", l0)
 	}
 	time.Sleep(100 * time.Millisecond) // несколько опросов без перемен
@@ -324,7 +324,7 @@ func TestTrayLive(t *testing.T) {
 		t.Fatal("нет LayoutUpdated")
 	}
 	h, _ := os.Hostname()
-	if rev, l := trayLayoutLabels(t, menu); rev <= rev0 || l != h+" · я тут|—|Офис|200 000 002|—|Помочь кому-то…|—|Выйти" {
+	if rev, l := trayLayoutLabels(t, menu); rev <= rev0 || l != h+" · я тут|—|Офис|200 000 002|—|Отправить|Помочь кому-то…|—|Выйти" {
 		t.Errorf("в пространстве: ревизия %d, %s", rev, l)
 	}
 	if err := menu.Call(menuIface+".Event", 0, int32(trayPCID("200000002")), "clicked", dbus.MakeVariant(""), uint32(0)).Err; err != nil {

@@ -142,8 +142,7 @@ func TestPlaceLinkInside(t *testing.T) {
 // TestPlaceNoHardLinks — M7: ФС без жёстких ссылок (FAT/exFAT): одноимённые файлы, переносимые одновременно, — каждый
 // под своим именем, ни один не перезаписан (O_EXCL, не Rename); уже лежащий файл не тронут.
 func TestPlaceNoHardLinks(t *testing.T) {
-	rootLink = func(*os.Root, string, string) error { return syscall.EPERM }
-	defer func() { rootLink = func(r *os.Root, o, n string) error { return r.Link(o, n) } }()
+	linkSet(t, func(*os.Root, string, string) error { return syscall.EPERM }) // recv_place_test.go
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("старое"), 0o644)
 	const n = 20

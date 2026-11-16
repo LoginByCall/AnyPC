@@ -107,6 +107,8 @@ type settings struct {
 	CodeSalt []byte `json:"code_salt,omitempty"`
 	// Ч10.1: чужие отправители, приславшие сюда разовым кодом (app/recv.go): дальше — «Принять?» без кода.
 	RecvPins []recvPin `json:"recv_pins,omitempty"`
+	// Ч10.4: «Избранные» — чужие ПК, которым отправляют отсюда (app/sendfav.go): ID и имя; ключ — в Known.
+	Favs []sendFav `json:"send_favs,omitempty"`
 	// До учётных записей (v0.1.19 и раньше) запись была одна: Salt/Hash, Trusted и account. Читаются и переезжают
 	// в Users[0] (migrate), в файл больше не пишутся.
 	Salt    []byte   `json:"salt,omitempty"`
