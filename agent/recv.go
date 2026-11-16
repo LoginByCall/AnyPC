@@ -325,6 +325,7 @@ func (a *Agent) rxWatch(ctx context.Context, s *session, rx *rxState) {
 			switch {
 			case rx.asking.Load() > 0 || rx.placing.Load() > 0: // окно «Принять?» (до AskTimeout) или копия части: ждёт не отправитель
 				rx.touch()
+				winAt, winMoved = now, rx.moved.Load() // окно скорости — заново: время ожидания не делится на байты (Б1 приёмки Ч10.5)
 				m = -1
 			case now.Sub(time.Unix(0, rx.last.Load())) > rx.idle:
 				why = fmt.Sprintf("нет данных %v", rx.idle)

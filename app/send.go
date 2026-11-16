@@ -44,16 +44,17 @@ var (
 // sendReq — sendStart окна: кому (id, code — разовый код чужого ПК) и что: picks — метки sendPick (пути страница не
 // передаёт: решение координатора, A13 — страница с XSS не отправит произвольный файл ПК), текст, буфер.
 type sendReq struct {
-	ID    string   `json:"id"`
-	Code  string   `json:"code"`
-	Picks []string `json:"picks"`
-	Text  string   `json:"text"`
-	Clip  bool     `json:"clip"`
-	Fav   bool     `json:"fav"`  // Ч10.4: «Добавить в избранные» — после того как ключ того ПК доказан
-	Name  string   `json:"name"` // имя избранного ("" — ID)
-	Files []string `json:"-"`    // из picks (sendOpRun.resolve)
-	Dirs  []string `json:"-"`
-	tray  bool     // из трея (startTray): итог — уведомлением
+	ID    string            `json:"id"`
+	Code  string            `json:"code"`
+	Picks []string          `json:"picks"`
+	Text  string            `json:"text"`
+	Clip  bool              `json:"clip"`
+	Fav   bool              `json:"fav"`  // Ч10.4: «Добавить в избранные» — после того как ключ того ПК доказан
+	Name  string            `json:"name"` // имя избранного ("" — ID)
+	Files []string          `json:"-"`    // из picks (sendOpRun.resolve)
+	Dirs  []string          `json:"-"`
+	tray  bool              // из трея (startTray): итог — уведомлением
+	began func(kind string) // трей: отправка принята (до фона — уведомление «Отправляю» раньше итога)
 }
 
 // sendPicked — выбранное человеком в окне ОС (sendPick): путь живёт только здесь, у страницы — метка.
@@ -115,7 +116,7 @@ type sendOpState struct {
 	err      error
 	cancel   context.CancelFunc
 	picks    map[string]sendPicked // метки этой отправки: при неудаче до первого байта возвращаются (kept)
-	kept     bool                  // метки возвращены — окно не просит выбрать снова
+	kept     bool                  // все метки возвращены — окно не просит выбрать снова
 	tray     bool                  // начата из трея: итог — уведомлением (sendNotice)
 	what     string                // трей: имя файла для уведомления
 }
@@ -189,6 +190,9 @@ func sendDial(c *config, q sendReq) (agent.SendDial, string, error) {
 
 // start — отправка в фоне; идёт другая — errSendRunning; кончившаяся заменяется.
 func (r *sendOpRun) start(c *config, q sendReq) error {
+	if _, ok := favName(q.Name); q.Fav && !ok { // «Добавить в избранные» с негодным именем — до отправки, не молча после
+		return errFavName
+	}
 	if err := r.resolve(&q); err != nil {
 		return err
 	}
@@ -212,6 +216,9 @@ func (r *sendOpRun) start(c *config, q sendReq) error {
 	}
 	r.cur = o
 	r.mu.Unlock()
+	if q.began != nil {
+		q.began(kind)
+	}
 	item := 0
 	d.Progress = func(p agent.SendProgress) {
 		r.mu.Lock()
@@ -247,12 +254,14 @@ func (r *sendOpRun) start(c *config, q sendReq) error {
 				if r.picks == nil {
 					r.picks = map[string]sendPicked{}
 				}
+				o.kept = true // «выбор сохранён» — только если вернулись все метки; истёкшая (срок — прежний) — выбрать снова
 				for t, x := range o.picks {
 					if time.Since(x.at) <= sendPickTTL {
 						r.picks[t] = x
+					} else {
+						o.kept = false
 					}
 				}
-				o.kept = true
 			}
 		}
 		r.mu.Unlock()
@@ -278,8 +287,10 @@ func (r *sendOpRun) startTray(c *config, id string) {
 	if !ok {
 		return
 	}
-	if err := r.start(c, sendReq{ID: id, Files: []string{p}, tray: true}); err != nil {
-		sendNotice("AnyPC", sendNoticeText(trayLang(), sendTargetName(c, id), filepath.Base(p), err))
+	who, what := sendTargetName(c, id), filepath.Base(p)
+	began := func(kind string) { sendNotice("AnyPC", sendNoticeRun(trayLang(), who, what, kind != "own")) } // окна нет — сказать, что началось
+	if err := r.start(c, sendReq{ID: id, Files: []string{p}, tray: true, began: began}); err != nil {
+		sendNotice("AnyPC", sendNoticeText(trayLang(), who, what, err))
 	}
 }
 
@@ -390,6 +401,9 @@ func (r *sendOpRun) snapLocked() map[string]any {
 	if o.state == "err" && len(o.picks) > 0 {
 		m["kept"] = o.kept
 	}
+	if o.tray { // из трея: окно не трогает свой выбор (snd.picks)
+		m["tray"] = true
+	}
 	if o.state != "run" {
 		sk := o.res.Skipped
 		m["skippedN"] = len(sk)
@@ -455,15 +469,17 @@ func sendCall(c *config, name string, args []json.RawMessage) (any, error) {
 		err = sendOps.clear()
 	case "sendTargets":
 		res = sendTargets(c)
-	case "sendFavSet": // {id, name, add}: добавить (add) или переименовать
-		var q struct {
-			ID, Name string
-			Add      bool
+	case "sendFavSet": // {id, name}: только переименовать; добавить — лишь отправкой с доказанным ключом (sendStart fav)
+		var q struct{ ID, Name string }
+		var dec *json.Decoder
+		if len(args) > 0 {
+			dec = json.NewDecoder(bytes.NewReader(args[0]))
+			dec.DisallowUnknownFields() // "add" — отказ
 		}
-		if len(args) == 0 || json.Unmarshal(args[0], &q) != nil {
+		if dec == nil || dec.Decode(&q) != nil {
 			err = errSendArgs
 		} else {
-			err = c.favSet(q.ID, q.Name, q.Add)
+			err = c.favSet(q.ID, q.Name, false)
 		}
 	case "sendFavDel": // {id, unpin}
 		var q struct {
