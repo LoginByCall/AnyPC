@@ -27,7 +27,6 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -232,10 +231,15 @@ var tray struct {
 	gate func() bool
 }
 
-// trayItems — пункты для anypcTray: строки «номер\tподпись»; разделитель — номер без подписи.
+// trayItems — пункты для anypcTray: строки «номер\tподпись»; разделитель — номер без подписи; подменю (Ч10.5
+// «Отправить ›») — «S\tподпись», его пункты, «E\t».
 func trayItems(rows []trayRow) string {
 	var b strings.Builder
 	for _, r := range rows {
+		if len(r.Sub) > 0 {
+			fmt.Fprintf(&b, "S\t%s\n%sE\t\n", strings.ReplaceAll(r.Label, "\n", " "), trayItems(r.Sub))
+			continue
+		}
 		fmt.Fprintf(&b, "%d\t%s\n", r.ID, strings.ReplaceAll(trayText(r, " · "), "\n", " "))
 	}
 	return b.String()
@@ -248,7 +252,7 @@ func macTray(ctx context.Context, d trayDeps) {
 	}
 	set := func(rows []trayRow) {
 		tray.Lock()
-		same := tray.rows != nil && slices.Equal(tray.rows, rows)
+		same := tray.rows != nil && trayRowsEqual(tray.rows, rows)
 		tray.rows = rows
 		tray.Unlock()
 		if same {

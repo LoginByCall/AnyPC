@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -49,7 +48,11 @@ var trayPoll = time.Second
 func trayTree(rows []trayRow) *trayItem {
 	root := &trayItem{}
 	for _, r := range rows {
-		root.children = append(root.children, &trayItem{id: int32(r.ID), label: trayText(r, " · "), sep: r.Label == ""})
+		it := &trayItem{id: int32(r.ID), label: trayText(r, " · "), sep: r.Label == ""}
+		if len(r.Sub) > 0 { // Ч10.5 «Отправить ›»: children-display "submenu"
+			it.children = trayTree(r.Sub).children
+		}
+		root.children = append(root.children, it)
 	}
 	return root
 }
@@ -66,7 +69,7 @@ type trayMenuState struct {
 func (s *trayMenuState) set(rows []trayRow) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.root != nil && slices.Equal(rows, s.rows) {
+	if s.root != nil && trayRowsEqual(rows, s.rows) {
 		return false
 	}
 	s.rev++

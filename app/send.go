@@ -28,7 +28,8 @@ import (
 	"anypc/pake"
 )
 
-var sendNames = []string{"sendPick", "sendStart", "sendState", "sendCancel", "sendClear", "sendTargets"}
+var sendNames = []string{"sendPick", "sendStart", "sendState", "sendCancel", "sendClear", "sendTargets",
+	"sendFavSet", "sendFavDel", "recvPins", "recvUnpin", "recvPinSeen"} // Ч10.4–10.5: избранные, закреплённые отправители
 
 var (
 	errSendRunning = errors.New("отправка: уже идёт другая")
@@ -43,13 +44,18 @@ var (
 // sendReq — sendStart окна: кому (id, code — разовый код чужого ПК) и что: picks — метки sendPick (пути страница не
 // передаёт: решение координатора, A13 — страница с XSS не отправит произвольный файл ПК), текст, буфер.
 type sendReq struct {
-	ID    string   `json:"id"`
-	Code  string   `json:"code"`
-	Picks []string `json:"picks"`
-	Text  string   `json:"text"`
-	Clip  bool     `json:"clip"`
-	Files []string `json:"-"` // из picks (sendOpRun.resolve)
-	Dirs  []string `json:"-"`
+	ID    string            `json:"id"`
+	Code  string            `json:"code"`
+	Picks []string          `json:"picks"`
+	Text  string            `json:"text"`
+	Clip  bool              `json:"clip"`
+	Fav   bool              `json:"fav"`  // Ч10.4: «Добавить в избранные» — после того как ключ того ПК доказан
+	Name  string            `json:"name"` // имя избранного ("" — ID)
+	Files []string          `json:"-"`    // из picks (sendOpRun.resolve)
+	Dirs  []string          `json:"-"`
+	tray  bool              // из трея (startTray): итог — уведомлением
+	began func(kind string) // трей: отправка принята (уведомление «Отправляю» — в своей горутине)
+	after chan struct{}     // трей: итог — после уведомления «Отправляю» (закрывает began)
 }
 
 // sendPicked — выбранное человеком в окне ОС (sendPick): путь живёт только здесь, у страницы — метка.
@@ -73,7 +79,8 @@ var sendCodes = []struct {
 	code string
 }{
 	{errSendRunning, "running"}, {errSendNoOp, "noop"}, {errSendID, "id"}, {errSendSelf, "self"}, {errSendBoth, "both"},
-	{errSendArgs, "args"}, {errSendPick, "pick"}, {agent.ErrSendEmpty, "empty"}, {agent.ErrSendClip, "clip"}, {agent.ErrSendNotFile, "notfile"},
+	{errSendArgs, "args"}, {errSendPick, "pick"}, {errFavName, "favname"}, {errFavMax, "favmax"}, {errFavOwn, "favown"},
+	{errFavNone, "favnone"}, {errPinNone, "pinnone"}, {agent.ErrSendEmpty, "empty"}, {agent.ErrSendClip, "clip"}, {agent.ErrSendNotFile, "notfile"},
 	{agent.ErrSendMany, "many"}, {agent.ErrSendRoot, "root"}, {agent.ErrRecvOld, "old"}, {agent.ErrRecvOldDirs, "olddirs"}, {agent.ErrRecvCode, "code"},
 	{agent.ErrRecvLocked, "locked"}, {agent.ErrRecvNoKey, "nokey"}, {agent.ErrRecvNoCode, "nocode"},
 	{agent.ErrRecvDenied, "denied"}, {agent.ErrRecvBusy, "busy"}, {agent.ErrRecvRate, "rate"}, {agent.ErrRecvLimit, "limit"},
@@ -109,6 +116,10 @@ type sendOpState struct {
 	res      agent.SendResult
 	err      error
 	cancel   context.CancelFunc
+	picks    map[string]sendPicked // метки этой отправки: при неудаче до первого байта возвращаются (kept)
+	kept     bool                  // все метки возвращены — окно не просит выбрать снова
+	tray     bool                  // начата из трея: итог — уведомлением (sendNotice)
+	what     string                // трей: имя файла для уведомления
 }
 
 type sendOpRun struct {
@@ -180,6 +191,9 @@ func sendDial(c *config, q sendReq) (agent.SendDial, string, error) {
 
 // start — отправка в фоне; идёт другая — errSendRunning; кончившаяся заменяется.
 func (r *sendOpRun) start(c *config, q sendReq) error {
+	if _, ok := favName(q.Name); q.Fav && !ok { // «Добавить в избранные» с негодным именем — до отправки, не молча после
+		return errFavName
+	}
 	if err := r.resolve(&q); err != nil {
 		return err
 	}
@@ -192,13 +206,20 @@ func (r *sendOpRun) start(c *config, q sendReq) error {
 		r.mu.Unlock()
 		return errSendRunning
 	}
-	for _, t := range q.Picks { // отправка началась — метки израсходованы
+	ctx, cancel := context.WithCancel(context.Background())
+	o := &sendOpState{id: q.ID, kind: kind, state: "run", cancel: cancel, picks: map[string]sendPicked{}, tray: q.tray}
+	for _, t := range q.Picks { // отправка началась — метки израсходованы (вернутся, если до первого байта не дошло)
+		o.picks[t] = r.picks[t]
 		delete(r.picks, t)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	o := &sendOpState{id: q.ID, kind: kind, state: "run", cancel: cancel}
+	if len(q.Files) == 1 {
+		o.what = filepath.Base(q.Files[0])
+	}
 	r.cur = o
 	r.mu.Unlock()
+	if q.began != nil {
+		q.began(kind)
+	}
 	item := 0
 	d.Progress = func(p agent.SendProgress) {
 		r.mu.Lock()
@@ -218,10 +239,31 @@ func (r *sendOpRun) start(c *config, q sendReq) error {
 		if kind == "code" && len(res.HostPub) > 0 && c.knownGet(d.ID) == "" {
 			c.knownSet(d.ID, pake.KeyFingerprint(res.HostPub))
 		}
+		if q.Fav && kind != "own" && len(res.HostPub) > 0 { // «Добавить в избранные»: ключ доказан — ПК настоящий
+			if e := c.favSet(d.ID, q.Name, true); e != nil && !errors.Is(e, errFavMax) {
+				log.Printf("избранное %s: %v", d.ID, e)
+			}
+		}
 		r.mu.Lock()
 		o.res, o.err, o.state = res, err, "done"
 		if err != nil {
 			o.state = "err"
+			// метки — назад, если ни байта не ушло (отказ кода, нет связи, старый хост, отмена до начала): человек
+			// повторяет без нового окна выбора. Безопасно: метка жила бы столько же, не начнись отправка вовсе (срок —
+			// прежний at). Байты ушли — не возвращаются (повтор того же файла докачивает — выбрать его снова).
+			if o.prog.Done == 0 && res.Files == 0 && !res.Text && len(o.picks) > 0 {
+				if r.picks == nil {
+					r.picks = map[string]sendPicked{}
+				}
+				o.kept = true // «выбор сохранён» — только если вернулись все метки; истёкшая (срок — прежний) — выбрать снова
+				for t, x := range o.picks {
+					if time.Since(x.at) <= sendPickTTL {
+						r.picks[t] = x
+					} else {
+						o.kept = false
+					}
+				}
+			}
 		}
 		r.mu.Unlock()
 		if err != nil {
@@ -230,8 +272,33 @@ func (r *sendOpRun) start(c *config, q sendReq) error {
 			log.Printf("отправка на %s: файлов %d, %d байт%s", d.ID, res.Files, res.Bytes, map[bool]string{true: ", текст"}[res.Text])
 		}
 		r.notify()
+		if o.tray {
+			if q.after != nil { // «Отправляю…» — раньше итога (notify-send ограничен 5 с)
+				<-q.after
+			}
+			sendNotice("AnyPC", sendNoticeText(trayLang(), sendTargetName(c, d.ID), o.what, err))
+		}
 	})
 	return nil
+}
+
+// startTray — трей «Отправить › <ПК>»: окно выбора файла ОС здесь же (путь странице не нужен), отправка в фоне,
+// итог — уведомлением. Отмена выбора — ничего. Ошибка до начала (идёт другая, нет ключа) — тоже уведомлением.
+func (r *sendOpRun) startTray(c *config, id string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	p, ok := sendPickFile(ctx)
+	cancel()
+	if !ok {
+		return
+	}
+	who, what := sendTargetName(c, id), filepath.Base(p)
+	shown := make(chan struct{})
+	began := func(kind string) { // окна нет — сказать, что началось; зависший сервер уведомлений не задерживает старт
+		go func() { defer close(shown); sendNotice("AnyPC", sendNoticeRun(trayLang(), who, what, kind != "own")) }()
+	}
+	if err := r.start(c, sendReq{ID: id, Files: []string{p}, tray: true, began: began, after: shown}); err != nil {
+		sendNotice("AnyPC", sendNoticeText(trayLang(), who, what, err))
+	}
 }
 
 // pick — окно выбора ОС: kind "file" | "dir"; итог — {token, name, dir} или nil (отмена). Путь странице не отдаётся.
@@ -270,7 +337,11 @@ func (r *sendOpRun) pick(kind string) (any, error) {
 		delete(r.picks, old)
 	}
 	r.picks[tok] = sendPicked{path: p, dir: kind == "dir", at: now}
-	return map[string]any{"token": tok, "name": filepath.Base(p), "dir": kind == "dir"}, nil
+	out := map[string]any{"token": tok, "name": filepath.Base(p), "dir": kind == "dir"}
+	if st, err := os.Stat(p); err == nil && kind == "file" && st.Mode().IsRegular() { // размер — окну (макет: «Договор.pdf · 2,4 МБ»)
+		out["size"] = st.Size()
+	}
+	return out, nil
 }
 
 // resolve — метки q.Picks → q.Files, q.Dirs; неизвестная или устаревшая — errSendPick (метки не расходуются).
@@ -334,6 +405,12 @@ func (r *sendOpRun) snapLocked() map[string]any {
 	if o.state != "run" { // и после ошибки/отмены: сколько уже доставлено
 		m["files"], m["bytes"], m["text"] = o.res.Files, o.res.Bytes, o.res.Text
 	}
+	if o.state == "err" && len(o.picks) > 0 {
+		m["kept"] = o.kept
+	}
+	if o.tray { // из трея: окно не трогает свой выбор (snd.picks)
+		m["tray"] = true
+	}
 	if o.state != "run" {
 		sk := o.res.Skipped
 		m["skippedN"] = len(sk)
@@ -365,7 +442,7 @@ func sendTargets(c *config) map[string]any {
 		}
 	}
 	c.mu.Unlock()
-	return map[string]any{"own": own, "known": known}
+	return map[string]any{"own": own, "known": known, "favs": c.favList()}
 }
 
 // sendCall — вызов окна name (из sendNames); ошибка — только send:<код>.
@@ -399,6 +476,41 @@ func sendCall(c *config, name string, args []json.RawMessage) (any, error) {
 		err = sendOps.clear()
 	case "sendTargets":
 		res = sendTargets(c)
+	case "sendFavSet": // {id, name}: только переименовать; добавить — лишь отправкой с доказанным ключом (sendStart fav)
+		var q struct{ ID, Name string }
+		var dec *json.Decoder
+		if len(args) > 0 {
+			dec = json.NewDecoder(bytes.NewReader(args[0]))
+			dec.DisallowUnknownFields() // "add" — отказ
+		}
+		if dec == nil || dec.Decode(&q) != nil {
+			err = errSendArgs
+		} else {
+			err = c.favSet(q.ID, q.Name, false)
+		}
+	case "sendFavDel": // {id, unpin}
+		var q struct {
+			ID    string
+			Unpin bool
+		}
+		if len(args) == 0 || json.Unmarshal(args[0], &q) != nil {
+			err = errSendArgs
+		} else {
+			var un bool
+			un, err = c.favDel(q.ID, q.Unpin)
+			res = map[string]any{"unpinned": un}
+		}
+	case "recvPins":
+		res = recvPinsInfo(c)
+	case "recvUnpin": // отпечаток ключа (из recvPins)
+		var fp string
+		if len(args) == 0 || json.Unmarshal(args[0], &fp) != nil {
+			err = errSendArgs
+		} else {
+			err = c.recvUnpinFP(fp)
+		}
+	case "recvPinSeen": // уведомление о новом закреплении прочитано
+		recvPinNew.Store(nil)
 	default:
 		err = errSendArgs
 	}

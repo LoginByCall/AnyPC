@@ -577,7 +577,14 @@ func (a *Agent) receiveFile(dc *webrtc.DataChannel, active *atomic.Int32, s *ses
 				sendJSON(dc, fileMsg{T: "resume", Offset: off})
 			}()
 		case fm.T == "end" && state == "open":
+			if rx != nil { // копия большого файла (FAT/exFAT, SMB) дольше простоя rxIdle — сессию не рвать (остаток Ч10.2–3)
+				rx.placing.Add(1)
+			}
 			dst, sum, err := r.Finish()
+			if rx != nil {
+				rx.placing.Add(-1)
+				rx.touch()
+			}
 			if errors.Is(err, errRelDir) { // в пути папки — ссылка или файл (Ч10.2)
 				failCode("path", err.Error())
 				return

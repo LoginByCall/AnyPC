@@ -270,7 +270,7 @@ static NSStatusItem *tray;
 static ATray *trayTarget;
 
 // anypcTray — значок в строке меню и его меню (app/tray.go, trayRows): items — строки «номер\tподпись», номер без
-// подписи — разделитель. Повторный вызов — новое меню у того же значка (сменился состав пространства или «я тут»).
+// подписи — разделитель; «S\tподпись» … «E\t» — подменю. Повторный вызов — новое меню у того же значка (сменился состав пространства или «я тут»).
 void anypcTray(const char *tip, const char *items) {
 	@autoreleasepool {
 		NSString *t = str(tip);
@@ -290,17 +290,29 @@ void anypcTray(const char *tip, const char *items) {
 			tray.button.toolTip = t;
 			if (!trayTarget) trayTarget = [ATray new];
 			NSMenu *m = [[NSMenu new] autorelease];
+			NSMenu *cur = m; // подменю «S\tподпись» … «E\t» (Ч10.5 «Отправить ›»)
 			for (NSString *l in lines) {
 				NSRange r = [l rangeOfString:@"\t"];
 				if (r.location == NSNotFound) continue;
+				NSString *head = [l substringToIndex:r.location];
 				NSString *label = [l substringFromIndex:r.location + 1];
-				if (!label.length) {
-					[m addItem:[NSMenuItem separatorItem]];
+				if ([head isEqualToString:@"S"]) {
+					NSMenuItem *it = [m addItemWithTitle:label action:nil keyEquivalent:@""];
+					cur = [[[NSMenu alloc] initWithTitle:label] autorelease];
+					it.submenu = cur;
 					continue;
 				}
-				NSMenuItem *it = [m addItemWithTitle:label action:@selector(click:) keyEquivalent:@""];
+				if ([head isEqualToString:@"E"]) {
+					cur = m;
+					continue;
+				}
+				if (!label.length) {
+					[cur addItem:[NSMenuItem separatorItem]];
+					continue;
+				}
+				NSMenuItem *it = [cur addItemWithTitle:label action:@selector(click:) keyEquivalent:@""];
 				it.target = trayTarget;
-				it.tag = [[l substringToIndex:r.location] integerValue];
+				it.tag = [head integerValue];
 			}
 			tray.menu = m;
 			[t release];

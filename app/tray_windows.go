@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -85,6 +86,8 @@ const (
 	nifMessage, nifIcon, nifTip, nifShowTip     = 0x1, 0x2, 0x4, 0x80
 	notifyIconV4                                = 4      // NOTIFYICON_VERSION_4: событие в LOWORD(lParam), точка в wParam
 	trayCallback                                = 0x8001 // WM_APP+1
+	trayNoticeMsg                               = 0x8002 // WM_APP+2: уведомление (noticeOS) — в потоке значка
+	nifInfo, niifInfo                           = 0x10, 0x1
 	ninSelect, ninKeySelect, wmContextMenu      = 0x400, 0x401, 0x7b
 	wmNull, wmDestroy, wmClose, wmSettingChange = 0x0, 0x2, 0x10, 0x1a
 	tpmFlags                                    = 0x2 | 0x80 | 0x100 // TPM_RIGHTBUTTON | TPM_NONOTIFY | TPM_RETURNCMD
@@ -159,6 +162,9 @@ func createTray(t *winTray) (uintptr, error) {
 	tip, _ := syscall.UTF16FromString(t.title)
 	copy(t.nid.Tip[:len(t.nid.Tip)-1], tip[:len(tip)-1])
 	trayWin = t
+	trayNoticeQ.Lock()
+	trayNoticeQ.hwnd = h
+	trayNoticeQ.Unlock()
 	t.add()
 	return h, nil
 }
@@ -199,7 +205,21 @@ func trayProc(h, msg, wp, lp uintptr) uintptr {
 		pNotifyIcon.Call(nimModify, uintptr(unsafe.Pointer(&t.nid)))
 		pDestroyIcon.Call(old)
 		return 0
+	case msg == trayNoticeMsg: // всплывающее уведомление у значка (Ч10.5: итог отправки из трея)
+		trayNoticeQ.Lock()
+		n := t.nid
+		n.Flags, n.InfoFlags = nifInfo, niifInfo
+		ti, _ := syscall.UTF16FromString(trayNoticeQ.title)
+		tx, _ := syscall.UTF16FromString(trayNoticeQ.body)
+		trayNoticeQ.Unlock()
+		copy(n.InfoTitle[:len(n.InfoTitle)-1], ti[:len(ti)-1])
+		copy(n.Info[:len(n.Info)-1], tx[:len(tx)-1])
+		pNotifyIcon.Call(nimModify, uintptr(unsafe.Pointer(&n)))
+		return 0
 	case msg == wmDestroy:
+		trayNoticeQ.Lock()
+		trayNoticeQ.hwnd = 0
+		trayNoticeQ.Unlock()
 		pNotifyIcon.Call(nimDelete, uintptr(unsafe.Pointer(&t.nid)))
 		pDestroyIcon.Call(t.nid.Icon)
 		trayWin = nil
@@ -226,32 +246,48 @@ func (t *winTray) menu(h uintptr, x, y int32) {
 	if m == 0 {
 		return
 	}
-	defer pDestroyMenu.Call(m)
+	defer pDestroyMenu.Call(m) // и подменю: DestroyMenu рекурсивен
 	rows := t.d.rows()
-	for i, r := range rows {
+	flat := trayFlat(rows)
+	trayWinFill(m, rows, flat)
+	pDefaultItem.Call(m, trayOpen, 0) // жирным — то, что делает левый щелчок
+	pSetForeground.Call(h)
+	cmd, _, _ := pTrackMenu.Call(m, tpmFlags, uintptr(x), uintptr(y), 0, h, 0)
+	pPostMsg.Call(h, wmNull, 0, 0)
+	t.run(trayWinCmd(int(cmd), flat), rows)
+}
+
+// trayWinFill — пункты rows в меню m (подменю — MF_POPUP, Ч10.5 «Отправить ›»); flat — trayFlat всего меню: номера
+// больше 16 бит — trayWinPC + место в нём.
+func trayWinFill(m uintptr, rows, flat []trayRow) {
+	for _, r := range rows {
 		if r.Label == "" {
 			pAppendMenu.Call(m, 0x800, 0, 0) // MF_SEPARATOR
 			continue
-		}
-		id := r.ID
-		if id >= trayPC0 { // номер ПК больше 16 бит (номера пунктов меню Windows — WORD): в этом меню — 0x1000 + место
-			id = trayWinPC + i
 		}
 		// «&» — мнемоника; табуляция — подпись «я тут» прижата вправо (как в макете)
 		s, err := syscall.UTF16PtrFromString(strings.ReplaceAll(trayText(r, "\t"), "&", "&&"))
 		if err != nil { // NUL в имени ПК
 			continue
 		}
+		if len(r.Sub) > 0 {
+			sub, _, _ := pPopupMenu.Call()
+			if sub == 0 {
+				continue
+			}
+			trayWinFill(sub, r.Sub, flat)
+			pAppendMenu.Call(m, 0x10, sub, uintptr(unsafe.Pointer(s))) // MF_POPUP: подменю уничтожится с m
+			continue
+		}
+		id := r.ID
+		if id >= trayPC0 || trayIsDst(id) { // номер ПК больше 16 бит (номера пунктов меню Windows — WORD)
+			id = trayWinPC + slices.IndexFunc(flat, func(x trayRow) bool { return x.ID == r.ID })
+		}
 		pAppendMenu.Call(m, 0, uintptr(id), uintptr(unsafe.Pointer(s))) // MF_STRING
 	}
-	pDefaultItem.Call(m, trayOpen, 0) // жирным — то, что делает левый щелчок
-	pSetForeground.Call(h)
-	cmd, _, _ := pTrackMenu.Call(m, tpmFlags, uintptr(x), uintptr(y), 0, h, 0)
-	pPostMsg.Call(h, wmNull, 0, 0)
-	t.run(trayWinCmd(int(cmd), rows), rows)
 }
 
-// trayWinPC — номера пунктов ПК в меню Windows: trayWinPC + место в rows того же меню (меню строится и
+// trayWinPC — номера пунктов ПК в меню Windows: trayWinPC + место в trayFlat(rows) того же меню (меню строится и
 // выбирается из одних rows — смена состава между ними невозможна).
 const trayWinPC = 0x1000
 
@@ -330,4 +366,24 @@ func showMain(h uintptr) {
 		pShowWindow.Call(h, 5)
 	}
 	pSetForeground.Call(h)
+}
+
+// trayNoticeQ — последнее уведомление и окно значка: noticeOS зовётся из любой горутины, Shell_NotifyIcon — в потоке значка.
+var trayNoticeQ struct {
+	sync.Mutex
+	title, body string
+	hwnd        uintptr
+}
+
+// noticeOS — всплывающее уведомление у значка (NIF_INFO); значка нет — только журнал.
+func noticeOS(title, body string) {
+	trayNoticeQ.Lock()
+	trayNoticeQ.title, trayNoticeQ.body = title, body
+	h := trayNoticeQ.hwnd
+	trayNoticeQ.Unlock()
+	if h == 0 {
+		log.Printf("уведомление: значка нет")
+		return
+	}
+	pPostMsg.Call(h, trayNoticeMsg, 0, 0)
 }
