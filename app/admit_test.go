@@ -34,11 +34,14 @@ func admitP(t *testing.T, url string, c *config, yes bool) *admitLog {
 	l := &admitLog{}
 	syncNode(t, url, c, false, func(a *agent.Agent) {
 		a.SpaceOwner = c.spaceAdmitOwner
-		a.SpaceAdmit = func(q agent.AdmitReq) bool {
+		a.SpaceAdmit = func(_ context.Context, q agent.AdmitReq) agent.AdmitResult {
 			l.mu.Lock()
 			l.asks = append(l.asks, q)
 			l.mu.Unlock()
-			return yes
+			if yes {
+				return agent.AdmitYes
+			}
+			return agent.AdmitNo
 		}
 	})
 	return l
@@ -197,6 +200,7 @@ func TestSpaceJoinCodes(t *testing.T) {
 		fmt.Errorf("%w (%w)", agent.ErrSpaceDeclined, agent.ErrSpaceRefused):       "declined",
 		fmt.Errorf("%w (%w)", agent.ErrSpaceNoAnswer, agent.ErrSpaceRefused):       "noanswer",
 		fmt.Errorf("%w (%w)", agent.ErrSpaceLater, agent.ErrSpaceRefused):          "later",
+		fmt.Errorf("%w (%w)", agent.ErrSpaceNoWindow, agent.ErrSpaceRefused):       "nowin",
 		fmt.Errorf("%w: none (%w)", agent.ErrSpaceNotThere, agent.ErrSpaceRefused): "nospace",
 		fmt.Errorf("%w (%w: denied)", agent.ErrSpaceWaitThere, agent.ErrSpaceAuth): "waitthere",
 		errors.New("x"): "other",

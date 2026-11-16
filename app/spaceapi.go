@@ -36,7 +36,7 @@ var spaceCodes = []struct {
 	{errSpacePhraseLogin, "phrase_login"}, {errSpacePhrase, "phrase"}, {errSpacePassword, "password"}, {errPassCode, "code"},
 	{errPassShort, "short"},
 	{agent.ErrSpaceNeedPass, "needpw"}, {agent.ErrSpaceBadCode, "badcode"}, {agent.ErrSpaceBadPhrase, "badphrase"}, // Ч12б: до auth
-	{agent.ErrSpaceDeclined, "declined"}, {agent.ErrSpaceNoAnswer, "noanswer"}, {agent.ErrSpaceLater, "later"}, // Ч12б: до refused
+	{agent.ErrSpaceDeclined, "declined"}, {agent.ErrSpaceNoAnswer, "noanswer"}, {agent.ErrSpaceNoWindow, "nowin"}, {agent.ErrSpaceLater, "later"}, // Ч12б: до refused
 	{agent.ErrSpaceNotThere, "nospace"}, {agent.ErrSpaceWaitThere, "waitthere"},
 	{agent.ErrSpaceBusyThere, "busythere"}, {agent.ErrSpaceLockedThere, "lockedthere"}, {agent.ErrSpaceNoPassThere, "nopassthere"}, // до auth и refused
 	{agent.ErrSpaceAuth, "auth"}, {agent.ErrSpaceOffline, "offline"},

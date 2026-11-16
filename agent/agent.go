@@ -125,11 +125,12 @@ type Agent struct {
 	// Ч12б, вступление в пространство через этот ПК (admit.go, решения владельца B и A'). SpaceOwner(salt) — для
 	// сессии записи по умолчанию с солью salt: osalt и opub ключа владельца пространства этого ПК (доказательство
 	// фразы без пароля) или why "none" (пространства нет, вход не его, скомпрометирован…) | "ask" («Спрашивать»).
-	// SpaceAdmit — окно «Пустить ПК в пространство?» (AskAdmit, не дольше AdmitTimeout): true — «Разрешить».
+	// SpaceAdmit — окно «Пустить ПК в пространство?» (AskAdmit, не дольше AdmitTimeout; ctx кончился — закрыть окно):
+	// исход — «Разрешить», «Отклонить», нет ответа или окно не смогло появиться.
 	// Оба заданы — хост объявляет join (вступление без пароля); SpaceAdmit задан — и вступление паролем (клиенты
 	// ≤ v0.3.1) получает состав только после «Разрешить». nil — как раньше.
 	SpaceOwner func(salt []byte) (osalt []byte, opub ed25519.PublicKey, why string)
-	SpaceAdmit func(q AdmitReq) bool
+	SpaceAdmit func(ctx context.Context, q AdmitReq) AdmitResult
 
 	mu          sync.Mutex
 	ice         []webrtc.ICEServer
@@ -160,8 +161,14 @@ type Agent struct {
 	noRecv  bool                   // тест: хост старой версии — приём не объявляет
 	noDirs  bool                   // тест: хост Ч10.1 — приём без папок (recv.go, rxStart)
 
-	noJoin  bool                 // тест: хост ≤ v0.3.1 — вступление без пароля не объявляет (admit.go)
-	admitAt map[string]time.Time // Ч12б: ключ или ID нового ПК → когда ему отказали в окне «Пустить?» (admitEvery)
+	noJoin bool // тест: хост ≤ v0.3.1 — вступление без пароля не объявляет (admit.go)
+	// Ч12б (admit.go, под mu): admitOpen — окно «Пустить?» открыто (одно на хост); admitN — отказов окна подряд,
+	// admitLast — последний, admitNext — раньше нового окна нет (растущая пауза); joinFails, joinUntil, joinAt —
+	// лестница неудач вступления (код, фраза), отдельная от лестниц входа записи.
+	admitOpen            bool
+	admitN, joinFails    int
+	admitLast, admitNext time.Time
+	joinUntil, joinAt    time.Time
 
 	syncs  map[string]*session  // Э4: ключ члена → его соединение сверки (одно; nil — пока шлётся offer), spsync.go
 	sxSeen map[string]time.Time // Э4в: соли открытых sx → до какого времени помнить (повтор хабом, spseal.go)
@@ -212,10 +219,11 @@ type session struct {
 	// Ч12б (admit.go): admitted — на этом ПК нажали «Разрешить» в окне «Пустить?» для этой сессии; admitting — окно
 	// (вход паролем) открыто; joinIn — сессия вступления без пароля: не вход (ни экрана, ни ввода), только ctl "sp";
 	// joinID — заявленный ID нового ПК (под mu): в составе M новый ПК — только под ним.
-	admitted  atomic.Bool
-	admitting atomic.Bool
-	joinIn    atomic.Bool
-	joinID    string
+	admitted   atomic.Bool
+	admitting  atomic.Bool
+	admitBlock atomic.Bool // вход паролем: окно «Пустить?» открыто — ввод этой сессии выключен (сама «Разрешить» не нажмёт)
+	joinIn     atomic.Bool
+	joinID     string
 
 	mu        sync.Mutex
 	closeInd  func()         // закрыть плашку сессии
@@ -1246,7 +1254,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 	}
 	bad := 0
 	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-		if !s.control() {
+		if !s.inputOK() {
 			return
 		}
 		e, err := decode(msg.Data)
@@ -1279,7 +1287,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 		}
 		if !s.authed.Load() { // Ч12б: сессия вступления без пароля — только состав пространства (admit.go)
 			if m.T == "sp" && s.joinIn.Load() && a.SpaceGet != nil {
-				a.spaceCtl(s, msg.Data, func(r spMsg) { b, _ := json.Marshal(r); ctl.SendText(string(b)) })
+				a.spaceCtl(sctx, s, msg.Data, func(r spMsg) { b, _ := json.Marshal(r); ctl.SendText(string(b)) })
 			}
 			return
 		}
@@ -1302,7 +1310,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 		case m.T == "trust": // Ч7б: «Добавить» — ключ во вход без пароля без переподключения (trustctl.go)
 			a.trustCtl(s, msg.Data, func(r trustMsg) { b, _ := json.Marshal(r); ctl.SendText(string(b)) })
 		case m.T == "sp" && a.SpaceGet != nil: // Э2: состав пространства (space.go)
-			a.spaceCtl(s, msg.Data, func(r spMsg) { b, _ := json.Marshal(r); ctl.SendText(string(b)) })
+			a.spaceCtl(sctx, s, msg.Data, func(r spMsg) { b, _ := json.Marshal(r); ctl.SendText(string(b)) })
 		case m.T == "audio" && m.SDP != "" && a.Audio:
 			s.audioOffer(m.SDP)
 		case m.T == "pause" && a.Pause: // REQ-F-27: фоновая вкладка «Моих ПК» просит остановить/возобновить видео
@@ -1526,7 +1534,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 			return
 		}
 		if m.Join && !m.Off && !s.offOnly { // Ч12б: вступление без пароля — не вход (admit.go)
-			a.joinB(s, m, keyOK, user, salt, fpc, fph, send,
+			a.joinB(ctx, s, m, keyOK, user, salt, fpc, fph, send,
 				func(f func(string)) { s.mu.Lock(); otpWait = f; s.mu.Unlock() },
 				func(f func(authMsg)) { s.mu.Lock(); joinWait = f; s.mu.Unlock() })
 			return
@@ -1746,7 +1754,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		}()
 	})
 	time.AfterFunc(authWait, func() {
-		if !s.authed.Load() && !s.asking.Load() && s.rx.Load() == nil { // приём закрывает rxWatch
+		if !s.authed.Load() && !s.asking.Load() && !s.joinIn.Load() && s.rx.Load() == nil { // приём закрывает rxWatch; Ч12б: разрешённое вступление — свой срок joinLive
 			s.pc.Close()
 		}
 	})
@@ -2038,6 +2046,9 @@ func (a *Agent) replaque(s *session) {
 
 // control — от клиента можно принимать ввод, буфер обмена и файлы: вход выполнен и сессия не «только просмотр».
 func (s *session) control() bool { return s.authed.Load() && !s.view.Load() }
+
+// inputOK — ввод клиента идёт на хост: управление и (Ч12б) на хосте не открыто окно «Пустить?» этой сессии.
+func (s *session) inputOK() bool { return s.control() && !s.admitBlock.Load() }
 
 // userClose — человек закрыл плашку сессии s: разорвать её, но не следующую (плашка могла пережить свою сессию).
 func (a *Agent) userClose(s *session) func() {

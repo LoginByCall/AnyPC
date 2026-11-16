@@ -284,13 +284,8 @@ var AskDelay, askSpawn = 3 * time.Second, 2 * time.Second
 // снова с пояснением сверху (again, tooEarly), отказ — сразу. Всего — не дольше AskTimeout.
 // Отсчёт от первого окна, не от каждого: иначе рефлекторный щелчок в каждом новом окне давал «окно снова и снова» (канбан 2026-11-13).
 func askLoop(show func(left time.Duration, again bool) Answer) Answer {
-	return askLoopFor(AskTimeout, show)
-}
-
-// askLoopFor — askLoop со сроком timeout (окно «Пустить?» — AdmitTimeout, Ч12б).
-func askLoopFor(timeout time.Duration, show func(left time.Duration, again bool) Answer) Answer {
 	t0 := time.Now()
-	end := t0.Add(timeout)
+	end := t0.Add(AskTimeout)
 	for again := false; ; again = true {
 		left := time.Until(end)
 		if left < time.Second {

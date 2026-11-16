@@ -286,26 +286,48 @@ func AskRecv(q RecvReq) bool {
 	}) == Allow
 }
 
-// AskAdmit — окно «Пустить ПК в пространство?» (Ч12б, admit.go): как AskRecv, срок AdmitTimeout; без zenity — отказ.
-func AskAdmit(q AdmitReq) bool {
+// AskAdmit — окно «Пустить ПК в пространство?» (Ч12б, admit.go): zenity со сроком AdmitTimeout; ctx кончился —
+// окно закрывается. Нет дисплея или zenity, zenity не смог открыть окно — AdmitNoWindow.
+func AskAdmit(ctx context.Context, q AdmitReq) AdmitResult {
 	if fakeDesktop {
-		return true
+		return AdmitYes
+	}
+	if os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
+		log.Printf("окно «Пустить?»: нет дисплея (DISPLAY, WAYLAND_DISPLAY)")
+		return AdmitNoWindow
 	}
 	lang := sysLang()
 	title, text, yes, no, _ := admitText(lang, q, true)
-	return askLoopFor(AdmitTimeout, func(left time.Duration, again bool) Answer {
+	return admitLoop(ctx, func(left time.Duration, again bool) AdmitResult {
 		t := text
 		if again {
 			t = "⚠ " + admitAsksOf(lang)[11] + "\n\n" + text
 		}
-		err := exec.Command("zenity", "--question", "--default-cancel", "--width=480", "--title="+title, "--text="+pangoEscape(t),
-			"--ok-label="+yes, "--cancel-label="+no, "--timeout="+strconv.Itoa(int(left.Seconds()))).Run()
-		var ee *exec.ExitError
-		if err != nil && !errors.As(err, &ee) {
-			log.Printf("окно «Пустить?»: %v — вступление отклонено", err) // нет zenity: окна не было
-		}
-		return map[bool]Answer{true: Allow}[err == nil]
-	}) == Allow
+		var stderr strings.Builder
+		cmd := exec.CommandContext(ctx, "zenity", "--question", "--default-cancel", "--width=480", "--title="+title, "--text="+pangoEscape(t),
+			"--ok-label="+yes, "--cancel-label="+no, "--timeout="+strconv.Itoa(int(left.Seconds())))
+		cmd.Stderr = &stderr
+		err := cmd.Run()
+		return zenityAdmit(err, ctx.Err() != nil, stderr.String())
+	})
+}
+
+// zenityAdmit — исход zenity --question: 0 — «Разрешить», 1 — «Отклонить» (или крестик), 5 — срок вышел; не
+// запустился, другой код или «cannot open display» — окна не было.
+func zenityAdmit(err error, cancelled bool, stderr string) AdmitResult {
+	var ee *exec.ExitError
+	switch {
+	case err == nil:
+		return AdmitYes
+	case cancelled:
+		return AdmitNo
+	case errors.As(err, &ee) && ee.ExitCode() == 5:
+		return AdmitNoAnswer
+	case errors.As(err, &ee) && ee.ExitCode() == 1 && !strings.Contains(strings.ToLower(stderr), "display"):
+		return AdmitNo
+	}
+	log.Printf("окно «Пустить?»: %v %s", err, strings.TrimSpace(stderr))
+	return AdmitNoWindow
 }
 
 // AskControl — окно «Разрешить управление?» (смена режима сессии «Спрашивать»): как AskAccept, без «Только просмотр».
