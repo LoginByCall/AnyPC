@@ -64,6 +64,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await until("/Отправляю/.test(" + txt('sndst') + ")");
   console.log('run=' + await ev("[" + txt('sndst') + ", " + txt('sndcancel') + ", document.getElementById('sndsend').disabled].join('|')"));
   await shot('send-run-light');
+  // чужому — строка про «Принять?» (своему её нет — проверка run= выше); ход — нейтральная рамка, не ошибка
+  console.log('runask=' + await ev("(() => { snd.last = ''; sndRender({ id: '555666777', kind: 'known', state: 'run', item: 1, items: 1, done: 1, total: 2 }); const b = document.querySelector('#sndst .banner'); const r = [b.className, /Принять/.test(b.textContent)].join('|'); snd.last = ''; sndRender(hostS.send); return r; })()"));
   await fetch(base + '/release');
   await until("/✓/.test(" + txt('sndst') + ")");
   console.log('done=' + await ev("[" + txt('sndst') + ", document.querySelectorAll('#sndpicks .sndpk').length].join('|')"));
@@ -73,6 +75,13 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   // неверный код чужому по ID: ни байта — выбор сохранён, окно говорит, что делать
   await ev("document.getElementById('sndpick').click(); 1");
   await until("document.querySelectorAll('#sndpicks .sndpk').length === 1");
+  // отправка из трея (итог виден и в окне) выбор окна не стирает — ни итогом, ни «Отправить ещё»
+  await fetch(base + '/tray');
+  await until("/✓/.test(" + txt('sndst') + ")");
+  const tr1 = await ev("document.querySelectorAll('#sndpicks .sndpk').length");
+  await ev("[...document.querySelectorAll('#sndst button')].find(b => /ещё/.test(b.textContent)).click(); 1");
+  await until(txt('sndst') + " === ''");
+  console.log('tray=' + tr1 + '|' + await ev("document.querySelectorAll('#sndpicks .sndpk').length"));
   await ev("{ const i = document.getElementById('sndid'); i.value = '777 888 999'; i.dispatchEvent(new Event('input')); } 1");
   console.log('needcode=' + await ev("[" + txt('sndhint') + ", document.getElementById('sndsend').disabled, " + vis('sndaddfav') + "].join('|')"));
   await ev("{ const c = document.getElementById('sndcode'); c.value = '000000'; c.dispatchEvent(new Event('input')); } 1");
@@ -172,7 +181,7 @@ func TestBrowserSend(t *testing.T) {
 		}
 		return agent.SendResult{HostPub: d.HostPub, Files: 1, Bytes: 2_500_000}, nil
 	}
-	defer func() { sendRun, sendPickFile = agent.SendTo, agent.PickFile; sendOps.clear() }()
+	defer func() { sendRun, sendPickFile, sendNotice = agent.SendTo, agent.PickFile, noticeOS; sendOps.clear() }()
 
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -189,6 +198,8 @@ func TestBrowserSend(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.Handle("/", h)
 	mux.HandleFunc("/release", func(http.ResponseWriter, *http.Request) { close(release) })
+	mux.HandleFunc("/tray", func(http.ResponseWriter, *http.Request) { sendOps.startTray(cfg, p.id()) })
+	sendNotice = func(string, string) {} // уведомления рабочего стола в тесте не показывать
 	mux.HandleFunc("/pin", func(http.ResponseWriter, *http.Request) {
 		k := ed25519.PublicKey(make([]byte, 32))
 		k[0] = 9
@@ -237,7 +248,8 @@ func TestBrowserSend(t *testing.T) {
 		"picked=Договор.pdf · 2.4 MB|Добавить ещё…|Шаг 2: выберите, кому",
 		"ready=Договор.pdf → Офис|Всё готово — нажмите «Отправить».|false|true\n",
 		"favs=Ноутбук мамыспросит «Принять?»,444 555 666первый раз — нужен код\n",
-		"run=Отправляю на «Офис»…Файл 1 из 1 · 977 KB из 2.4 MB", "|Остановить|true\n", // своему — без строки про «Принять?»
+		"run=Отправляю на «Офис»…Файл 1 из 1 · 977 KB из 2.4 MBОстановить можно кнопкой «Остановить»; уже принятое на том ПК останется.|Остановить|true\n", // своему — без строки про «Принять?»
+		"runask=banner info|true\n", "tray=1|1\n",
 		"done=✓ Отправлено на «Офис»файлов: 1 · 2.4 MBФайлы — в папке «Загрузки» того ПК", "|0\n",
 		"needcode=Первый раз этому ПК: введите 6 цифр кода с его экрана.|true|true\n",
 		"fail=Не отправлено на «777 888 999»Неверный код. Что делать: введите код", "Выбор сохранён: исправьте и нажмите «Отправить» снова.Понятно|1\n",

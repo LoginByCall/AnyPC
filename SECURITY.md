@@ -260,7 +260,7 @@ that is moving is not cut; speed is not checked during the first 30 minutes — 
 Отправка: избранные и закреплённые отправители (Ч10.4–10.5, ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ: сопоставление ключей при отзыве,
 метки выбора, уведомления). Избранное — только ID и имя на этом ПК; ключ того ПК — прежний запомненный отпечаток (тот
 же, что проверяется при подключении для управления), в избранные ПК попадает только после того, как его ключ доказан
-отправкой (по коду или по запомненному ключу). «Убрать» стирает запись; галочка «и запретить ему присылать мне без
+отправкой (по коду или по запомненному ключу); страница окна добавить избранное не может — только переименовать. «Убрать» стирает запись; галочка «и запретить ему присылать мне без
 кода» снимает закрепление того ПК как отправителя СЮДА — по доказанному ключу (запомненный отпечаток этого ID равен
 отпечатку закреплённого ключа), а не по ID, который отправитель заявил при закреплении. Закрепление ЭТОГО ПК на том
 отсюда снять нельзя — только владельцу того ПК («Доступ к этому ПК» → «Кто может присылать сюда без кода» →
@@ -273,7 +273,7 @@ that is moving is not cut; speed is not checked during the first 30 minutes — 
 Sending: favorites and pinned senders (Ch10.4–10.5, NEEDS HUMAN REVIEW: key matching on revoke, picker tokens,
 notifications). A favorite is only an ID and a name on this PC; that PC's key is the existing remembered fingerprint
 (the same one checked when connecting for control), and a PC becomes a favorite only after its key is proven by a send
-(by code or by the remembered key). "Remove" deletes the entry; the checkbox "and stop it from sending to me without a
+(by code or by the remembered key); the window page cannot add a favorite, only rename one. "Remove" deletes the entry; the checkbox "and stop it from sending to me without a
 code" removes that PC's pin as a sender TO this PC — matched by the proven key (the remembered fingerprint of this ID
 equals the fingerprint of the pinned key), not by the ID the sender claimed when pinned. This PC's pin on that PC
 cannot be removed from here — only by that PC's owner ("Access to this PC" → "Who can send here without a code" →

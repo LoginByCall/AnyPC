@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"html"
 	"log"
 	"os/exec"
 	"runtime"
@@ -20,7 +21,8 @@ func noticeOS(title, body string) {
 		cmd = exec.CommandContext(ctx, "/usr/bin/osascript", "-e", "on run argv", "-e",
 			"display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run", title, body) // аргументы после скрипта — argv (title — всегда «AnyPC»)
 	} else if p, err := exec.LookPath("notify-send"); err == nil {
-		cmd = exec.CommandContext(ctx, p, "--", title, body)
+		// тело — разметка у части серверов уведомлений (KDE, dunst): & < > — сущностями, иначе имя файла «a<b» ломает текст
+		cmd = exec.CommandContext(ctx, p, "--", title, noticeEsc(body))
 	} else {
 		log.Printf("уведомление: нет notify-send")
 		return
@@ -29,3 +31,6 @@ func noticeOS(title, body string) {
 		log.Printf("уведомление: %v", err)
 	}
 }
+
+// noticeEsc — тело для notify-send: & < > (и кавычки) — сущностями разметки.
+func noticeEsc(s string) string { return html.EscapeString(s) }

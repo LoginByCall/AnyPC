@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"anypc/agent"
 	"anypc/pake"
@@ -40,7 +41,11 @@ func TestSendFavs(t *testing.T) {
 	if _, err := n.spaceEnter(context.Background(), p.id(), spacePass, spaceCode(p, sec), ph); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := callSend(n, "sendFavSet", map[string]any{"id": "555666777", "name": "  Ноутбук мамы ", "add": true}); err != nil {
+	// добавить страница не может (замечание 3 приёмки): только отправка с доказанным ключом (sendStart fav)
+	if _, err := callSend(n, "sendFavSet", map[string]any{"id": "555666777", "name": "x", "add": true}); err == nil || err.Error() != "send:args" {
+		t.Fatalf("add со страницы: %v", err)
+	}
+	if err := n.favSet("555666777", "  Ноутбук мамы ", true); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := callSend(n, "sendFavSet", map[string]any{"id": "555666777", "name": "Мама"}); err != nil { // переименовать
@@ -54,12 +59,14 @@ func TestSendFavs(t *testing.T) {
 		{"111222333", "a‮b", "send:favname"}, {"111222333", "a\nb", "send:favname"},
 		{"111222333", strings.Repeat("я", 41), "send:favname"},
 	} {
-		if _, err := callSend(n, "sendFavSet", map[string]any{"id": c.id, "name": c.name, "add": true}); err == nil || err.Error() != c.code {
+		if err := n.favSet(c.id, c.name, true); err == nil || "send:"+sendErrCode(err) != c.code {
 			t.Errorf("%q %q: %v, ждали %s", c.id, c.name, err, c.code)
 		}
 	}
+	pid, nid := p.id(), n.id()
 	n.mu.Lock()
-	n.Favs = append(n.Favs, sendFav{ID: "bad", Name: "x"}, sendFav{ID: "222333444", Name: "a\u0000"}) // как правленный руками файл
+	n.Favs = append(n.Favs, sendFav{ID: "bad", Name: "x"}, sendFav{ID: "222333444", Name: "a\u0000"}, // как правленный руками файл
+		sendFav{ID: pid, Name: "Офис"}, sendFav{ID: nid, Name: "Я"}) // избранный, позже вступивший в пространство, и этот ПК — не избранные
 	n.save()
 	n.mu.Unlock()
 	l := n.favList()
@@ -189,6 +196,9 @@ func TestSendKeptPicks(t *testing.T) {
 		switch mode {
 		case "code": // неверный код: ни байта
 			return agent.SendResult{}, agent.ErrRecvCode
+		case "slowcode": // неверный код после 600 мс
+			time.Sleep(600 * time.Millisecond)
+			return agent.SendResult{}, agent.ErrRecvCode
 		case "half": // половина файла и обрыв
 			d.Progress(agent.SendProgress{Item: 1, Items: 1, Done: 5, Total: 10})
 			return agent.SendResult{HostPub: other.Public().(ed25519.PublicKey)}, agent.ErrRecvGone
@@ -214,6 +224,50 @@ func TestSendKeptPicks(t *testing.T) {
 	}
 	if len(c.favList()) != 0 {
 		t.Fatal("в избранных ПК, чей ключ не доказан")
+	}
+	// возвращённая метка — с прежним сроком (не продлевается)
+	sendOps.mu.Lock()
+	at0 := sendOps.picks[tok].at
+	sendOps.mu.Unlock()
+	if at0.IsZero() || time.Since(at0) > time.Minute {
+		t.Fatalf("срок возвращённой метки: %v", at0)
+	}
+	sendOps.mu.Lock()
+	x := sendOps.picks[tok]
+	x.at = time.Now().Add(-sendPickTTL + 300*time.Millisecond) // истечёт во время отправки
+	sendOps.picks[tok] = x
+	sendOps.mu.Unlock()
+	mode = "slowcode"
+	if err := start(map[string]any{"id": "555666777", "code": "000000", "picks": []string{tok}}); err != nil {
+		t.Fatal(err)
+	}
+	if s := sendOps.snap(); s["kept"] != false {
+		t.Fatalf("истёкшая метка — «выбор сохранён»: %v", s)
+	}
+	sendOps.mu.Lock()
+	_, back := sendOps.picks[tok]
+	sendOps.mu.Unlock()
+	if back {
+		t.Fatal("истёкшая метка возвращена")
+	}
+	v, _ = callSend(c, "sendPick", "file")
+	tok = v.(map[string]any)["token"].(string)
+	sendOps.mu.Lock()
+	x = sendOps.picks[tok]
+	x.at = time.Now().Add(-30 * time.Minute)
+	sendOps.picks[tok] = x
+	sendOps.mu.Unlock()
+	mode = "code"
+	start(map[string]any{"id": "555666777", "code": "000000", "picks": []string{tok}})
+	sendOps.mu.Lock()
+	at1 := sendOps.picks[tok].at
+	sendOps.mu.Unlock()
+	if !at1.Equal(x.at) {
+		t.Fatalf("срок метки продлён: был %v, стал %v", x.at, at1)
+	}
+	// негодное имя избранного — отказ до отправки, метка цела
+	if err := start(map[string]any{"id": "555666777", "code": "000000", "picks": []string{tok}, "fav": true, "name": "a\u200db"}); err == nil || err.Error() != "send:favname" {
+		t.Fatalf("имя с ZWJ: %v", err)
 	}
 	mode = "half"
 	if err := start(map[string]any{"id": "555666777", "code": "123456", "picks": []string{tok}}); err != nil {
@@ -319,17 +373,24 @@ func TestSendTrayNotice(t *testing.T) {
 	sendOps.startTray(c, "111222333") // без known и кода — до начала
 	mu.Lock()
 	defer mu.Unlock()
-	lg := trayLang() // язык ОС, как у трея
-	want := []string{sendNoticeText(lg, "Мама", "Отчёт.pdf", nil), sendNoticeText(lg, "Мама", "", agent.ErrSpaceOffline),
-		sendNoticeText(lg, "111 222 333", "", agent.ErrRecvKnown)}
-	if len(notes) != 3 || strings.Join(notes, "\n") != strings.Join(want, "\n") {
+	lg := trayLang()                                     // язык ОС, как у трея
+	runN := sendNoticeRun(lg, "Мама", "Отчёт.pdf", true) // «Мама» — чужой по known: «ждём «Принять?»»
+	want := []string{runN, sendNoticeText(lg, "Мама", "Отчёт.pdf", nil), runN, sendNoticeText(lg, "Мама", "Отчёт.pdf", agent.ErrSpaceOffline),
+		sendNoticeText(lg, "111 222 333", "a", agent.ErrRecvKnown)}
+	if len(notes) != 5 || strings.Join(notes, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("уведомления:\n%q\nждали\n%q", notes, want)
+	}
+	if got := sendNoticeRun("ru", "Офис", "a.txt", false); got != "Отправляю «a.txt» на «Офис»…" { // своему — без «Принять?»
+		t.Errorf("ru run: %q", got)
+	}
+	if got := sendNoticeRun("ru", "Мама", "a.txt", true); got != "Отправляю «a.txt» на «Мама»… Ждём «Принять?» на том ПК." {
+		t.Errorf("ru run ask: %q", got)
 	}
 	if got := sendNoticeText("ru", "Мама", "", agent.ErrRecvNoKey); got != "Не отправлено на «Мама»: первый раз нужен код с экрана того ПК. Что делать — в окне AnyPC: «Отправить»." {
 		t.Errorf("ru: %q", got)
 	}
 	for l, w := range sendNoticeWords {
-		for _, k := range []string{"ok", "fail", "files", "known", "offline", "denied", "cancel", "running", "busy", "other"} {
+		for _, k := range []string{"run", "runask", "ok", "fail", "files", "known", "offline", "denied", "cancel", "running", "busy", "other"} {
 			if w[k] == "" {
 				t.Errorf("%s: нет %s", l, k)
 			}
