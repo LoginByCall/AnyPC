@@ -100,8 +100,8 @@ func TestSendFavs(t *testing.T) {
 func TestSendFavUnpin(t *testing.T) {
 	c := favCfg(t)
 	k, l := favPub(t), favPub(t)
+	c.recvPin(l, "555666777", "Самозванец") // заявил ID избранного, ключ — другой (первым в списке)
 	c.recvPin(k, "999888777", "Заявил другой ID")
-	c.recvPin(l, "555666777", "Самозванец") // заявил ID избранного, ключ — другой
 	c.knownSet("555666777", pake.KeyFingerprint(k))
 	c.favSet("555666777", "Друг", true)
 	c.favSet("111222333", "Без ключа", true)

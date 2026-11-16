@@ -319,7 +319,11 @@ func (r *sendOpRun) pick(kind string) (any, error) {
 		delete(r.picks, old)
 	}
 	r.picks[tok] = sendPicked{path: p, dir: kind == "dir", at: now}
-	return map[string]any{"token": tok, "name": filepath.Base(p), "dir": kind == "dir"}, nil
+	out := map[string]any{"token": tok, "name": filepath.Base(p), "dir": kind == "dir"}
+	if st, err := os.Stat(p); err == nil && kind == "file" && st.Mode().IsRegular() { // размер — окну (макет: «Договор.pdf · 2,4 МБ»)
+		out["size"] = st.Size()
+	}
+	return out, nil
 }
 
 // resolve — метки q.Picks → q.Files, q.Dirs; неизвестная или устаревшая — errSendPick (метки не расходуются).
