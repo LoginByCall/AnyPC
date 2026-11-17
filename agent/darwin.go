@@ -388,6 +388,40 @@ return "no"`, title, t, yes, no, strconv.Itoa(int(left.Seconds()))).Output()
 	}) == Allow
 }
 
+// AskAdmit — окно «Пустить ПК в пространство?» (Ч12б, admit.go): display dialog со сроком AdmitTimeout; ctx
+// кончился — osascript убит. «Отклонить» — кнопка отмены (ошибка −128); другая ошибка osascript — окна не было.
+func AskAdmit(ctx context.Context, q AdmitReq) AdmitResult {
+	if fakeDesktop {
+		return AdmitYes
+	}
+	lang := sysLang()
+	title, text, yes, no, _ := admitText(lang, q, true)
+	return admitLoop(ctx, func(left time.Duration, again bool) AdmitResult {
+		t := text
+		if again {
+			t = "⚠ " + admitAsksOf(lang)[11] + "\n\n" + text
+		}
+		c := osa(`set r to display dialog (item 2 of argv) with title (item 1 of argv) buttons {item 4 of argv, item 3 of argv} default button 1 cancel button 1 giving up after ((item 5 of argv) as integer) with icon caution
+if gave up of r then return "late"
+if button returned of r is (item 3 of argv) then return "yes"
+return "no"`, title, t, yes, no, strconv.Itoa(int(left.Seconds())))
+		dc := exec.CommandContext(ctx, c.Path, c.Args[1:]...)
+		var errb strings.Builder
+		dc.Stderr = &errb
+		out, err := dc.Output()
+		switch reply := strings.TrimSpace(string(out)); {
+		case err == nil && reply == "yes":
+			return AdmitYes
+		case err == nil && reply == "late":
+			return AdmitNoAnswer
+		case err == nil || ctx.Err() != nil || strings.Contains(errb.String(), "-128"): // «Отклонить» = кнопка отмены
+			return AdmitNo
+		}
+		log.Printf("окно «Пустить?»: %v %s", err, strings.TrimSpace(errb.String()))
+		return AdmitNoWindow
+	})
+}
+
 // pickFile — окно выбора файла на хосте; ctx кончился — окно закрывается.
 func pickFile(ctx context.Context) (string, bool) {
 	if fakeDesktop {

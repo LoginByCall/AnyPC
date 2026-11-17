@@ -51,6 +51,8 @@ type tdRun struct {
 	delay   time.Duration // кнопки согласия выключены столько после появления окна
 	enabled bool          // уже включены (только из tdCallbackFn — поток окна)
 	click   int           // тест: нажать эту кнопку сразу после появления окна
+	stop    func() bool   // Ч12б: true — закрыть окно «Отклонить» (вступающий ушёл); nil — нет
+	expired bool          // срок вышел (только из tdCallbackFn — поток окна; читается после возврата окна)
 	cfg     [160]byte     // TASKDIALOGCONFIG (pshpack1), x64
 	btns    [36]byte      // 3 × TASKDIALOG_BUTTON (pshpack1): int + PCWSTR = 12 байт
 	pressed int32
@@ -156,7 +158,10 @@ func tdCallbackFn(hwnd uintptr, msg uint32, wparam, lparam, ref uintptr) uintptr
 			procPostMessage.Call(hwnd, tdmEnableButton, tdView, 1)
 		}
 		if time.Duration(wparam)*time.Millisecond >= r.timeout {
+			r.expired = true
 			procPostMessage.Call(hwnd, tdmClickButton, tdDeny, 0) // своя кнопка точно есть; IDCANCEL без кнопки «Отмена» не гарантирован
+		} else if r.stop != nil && r.stop() {
+			procPostMessage.Call(hwnd, tdmClickButton, tdDeny, 0)
 		}
 	}
 	return 0
@@ -165,9 +170,15 @@ func tdCallbackFn(hwnd uintptr, msg uint32, wparam, lparam, ref uintptr) uintptr
 // askTaskDialog — окно с кнопками yes / view / no; Esc, крестик и истёкшее время → Deny. Кнопка по умолчанию — «Отклонить».
 // delay > 0 — yes и view выключены первые delay (TDM_ENABLE_BUTTON по таймеру окна). view == "" — без этой кнопки.
 func askTaskDialog(title, text, yes, no, view string, timeout, delay time.Duration, click int) (Answer, error) {
+	a, _, err := askTD(title, text, yes, no, view, timeout, delay, click, nil)
+	return a, err
+}
+
+// askTD — askTaskDialog с отменой (stop() — закрыть окно отказом) и признаком «срок вышел» (Ч12б, AskAdmit).
+func askTD(title, text, yes, no, view string, timeout, delay time.Duration, click int, stop func() bool) (Answer, bool, error) {
 	tdOnce.Do(tdInit)
 	if tdInitErr != nil {
-		return Deny, tdInitErr
+		return Deny, false, tdInitErr
 	}
 	u := func(s string) *uint16 { p, _ := syscall.UTF16PtrFromString(s); return p }
 	t, c := u(title), u(text)
@@ -175,7 +186,7 @@ func askTaskDialog(title, text, yes, no, view string, timeout, delay time.Durati
 	if view == "" {
 		labels, ids = []*uint16{labels[0], labels[2]}, []int32{tdAllow, tdDeny}
 	}
-	r := &tdRun{timeout: timeout, delay: delay, click: click}
+	r := &tdRun{timeout: timeout, delay: delay, click: click, stop: stop}
 	for i, id := range ids {
 		binary.LittleEndian.PutUint32(r.btns[i*12:], uint32(id))
 		binary.LittleEndian.PutUint64(r.btns[i*12+4:], uint64(uintptr(unsafe.Pointer(labels[i]))))
@@ -209,16 +220,16 @@ func askTaskDialog(title, text, yes, no, view string, timeout, delay time.Durati
 	runtime.KeepAlive(c)
 	runtime.KeepAlive(r)
 	if err != nil {
-		return Deny, err
+		return Deny, false, err
 	}
 	if int32(hr) != 0 { // HRESULT — 32 бита, старшая половина RAX не определена
-		return Deny, fmt.Errorf("TaskDialogIndirect: HRESULT %#x", uint32(hr))
+		return Deny, false, fmt.Errorf("TaskDialogIndirect: HRESULT %#x", uint32(hr))
 	}
 	switch r.pressed {
 	case tdAllow:
-		return Allow, nil
+		return Allow, false, nil
 	case tdView:
-		return ViewOnly, nil
+		return ViewOnly, false, nil
 	}
-	return Deny, nil
+	return Deny, r.expired, nil
 }

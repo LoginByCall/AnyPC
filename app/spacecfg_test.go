@@ -92,7 +92,7 @@ func spaceNet(p *config, give func([]byte) []byte) func(context.Context, agent.S
 		if bytes.Equal(out, m) { // как agent: уже в составе — P ничего не шлём
 			return out, nil
 		}
-		if err := p.spaceJoin(salt, out, d.Key.Public().(ed25519.PublicKey)); err != nil {
+		if err := p.spaceJoin(salt, out, d.Key.Public().(ed25519.PublicKey), ""); err != nil {
 			return nil, fmt.Errorf("%w: bad (%v)", agent.ErrSpaceRefused, err)
 		}
 		return out, nil
@@ -361,14 +361,14 @@ func TestSpaceJoinStrict(t *testing.T) {
 		"тот же":     {b(cur), cfgPub(p)},
 		"мусор":      {[]byte("M"), pub1},
 	} {
-		if p.spaceJoin(salt, c.m, c.pub) == nil {
+		if p.spaceJoin(salt, c.m, c.pub, "") == nil {
 			t.Errorf("%s: принят", name)
 		}
 	}
-	if p.spaceJoin(bytes.Repeat([]byte{1}, 16), b(one), pub1) == nil { // С7: сессия не записи владельца
+	if p.spaceJoin(bytes.Repeat([]byte{1}, 16), b(one), pub1, "") == nil { // С7: сессия не записи владельца
 		t.Error("принят от чужой записи")
 	}
-	if err := p.spaceJoin(salt, b(one), pub1); err != nil {
+	if err := p.spaceJoin(salt, b(one), pub1, ""); err != nil {
 		t.Fatal(err)
 	}
 	p.mu.Lock()
