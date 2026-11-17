@@ -281,7 +281,7 @@ func TestSpaceCompromised(t *testing.T) {
 	in, _ := spaceAdd(top, ph, "9"+hub.RandDigits(8), npub)
 	ib, _ := in.marshal()
 	salt, _, _ := ca.secret("")
-	if err := ca.spaceJoin(salt, ib, npub); !errors.Is(err, errSpaceNotIn) {
+	if err := ca.spaceJoin(salt, ib, npub, ""); !errors.Is(err, errSpaceNotIn) {
 		t.Errorf("вступление при скомпрометированном входе: %v", err)
 	}
 	p := testMaster(ca)

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os/exec"
@@ -166,6 +167,47 @@ func AskRecv(q RecvReq) bool {
 		r, _, _ := p.Call(0, uintptr(unsafe.Pointer(m)), uintptr(unsafe.Pointer(t)), flags, 0, uintptr(left/time.Millisecond))
 		return map[bool]Answer{true: Allow}[r == 6] // IDYES
 	}) == Allow
+}
+
+// AskAdmit — окно «Пустить ПК в пространство?» (Ч12б, admit.go): TaskDialog со сроком AdmitTimeout, ctx кончился —
+// окно закрывается отказом; запасное — MessageBox «Да / Нет» (Enter — «Нет»; его не закрыть по ctx — закроется по
+// сроку). Нет MessageBoxTimeoutW — AdmitNoWindow.
+func AskAdmit(ctx context.Context, q AdmitReq) AdmitResult {
+	lang := uiLang()
+	title, text, yes, no, _ := admitText(lang, q, false)
+	a, expired, err := askTD(title, text, yes, no, "", AdmitTimeout, AskDelay, 0, func() bool { return ctx.Err() != nil })
+	if err == nil {
+		switch {
+		case a == Allow:
+			return AdmitYes
+		case expired:
+			return AdmitNoAnswer
+		}
+		return AdmitNo
+	}
+	log.Printf("окно «Пустить»: %v — запасное окно MessageBox", err)
+	p := user32.NewProc("MessageBoxTimeoutW")
+	if p.Find() != nil {
+		return AdmitNoWindow
+	}
+	title, text, _, _, hint := admitText(lang, q, true)
+	t, _ := syscall.UTF16PtrFromString(title)
+	const flags = 0x4 | 0x20 | 0x100 | 0x1000 | 0x10000 | 0x40000 // YESNO | ICONQUESTION | DEFBUTTON2 (Enter = «Нет») | SYSTEMMODAL | SETFOREGROUND | TOPMOST
+	return admitLoop(ctx, func(left time.Duration, again bool) AdmitResult {
+		body := text
+		if again {
+			body = "⚠ " + admitAsksOf(lang)[11] + "\n\n" + text
+		}
+		m, _ := syscall.UTF16PtrFromString(body + "\n\n" + hint)
+		r, _, _ := p.Call(0, uintptr(unsafe.Pointer(m)), uintptr(unsafe.Pointer(t)), flags, 0, uintptr(left/time.Millisecond))
+		switch r {
+		case 6: // IDYES
+			return AdmitYes
+		case 32000: // срок вышел
+			return AdmitNoAnswer
+		}
+		return AdmitNo
+	})
 }
 
 // AskControl — окно «Разрешить управление?» (смена режима сессии «Спрашивать»): как AskAccept, без «Только просмотр»;

@@ -92,10 +92,11 @@ type Agent struct {
 	// кодом TOTP. SpaceGet(salt) — записи M: главная верхушка, затем остальные (состав — их объединение, решение 10 A;
 	// salt — соль записи при входе; nil — пространства нет или пароль не его);
 	// SpaceJoin(salt, m, pub) — принять M следующей эпохи, где добавлен ровно ПК с ключом pub (ключ клиента,
-	// доказанный подписью в "b"), для той же записи, что и SpaceGet(salt). SpaceGet == nil — хост пространства не
+	// доказанный подписью в "b"), для той же записи, что и SpaceGet(salt); id — ID нового ПК, показанный в окне
+	// «Пустить?» (Ч12б): в M он обязан быть под ним ("" — не сообщён, вход паролем). SpaceGet == nil — хост пространства не
 	// знает (ctl "sp" пропускается, как у старой версии). «Только показ экрана» — "sp" отвечает rights.
 	SpaceGet  func(salt []byte) [][]byte
-	SpaceJoin func(salt, m []byte, pub ed25519.PublicKey) error
+	SpaceJoin func(salt, m []byte, pub ed25519.PublicKey, id string) error
 	// Э3, пропуск 12 ч (pass.go): ключ pub — член состава M этого ПК, а запись по умолчанию с солью salt — запись
 	// владельца из M (как SpaceGet). Зовётся при выдаче и при каждом входе по пропуску. nil — пропусков нет.
 	SpaceMember func(salt, pub []byte) bool
@@ -121,6 +122,15 @@ type Agent struct {
 	RecvPinned func(pub []byte) (id, name string, ok bool)
 	RecvPin    func(pub []byte, id, name string)
 	RecvAsk    func(q RecvReq) bool
+	// Ч12б, вступление в пространство через этот ПК (admit.go, решения владельца B и A'). SpaceOwner(salt) — для
+	// сессии записи по умолчанию с солью salt: osalt и opub ключа владельца пространства этого ПК (доказательство
+	// фразы без пароля) или why "none" (пространства нет, вход не его, скомпрометирован…) | "ask" («Спрашивать»).
+	// SpaceAdmit — окно «Пустить ПК в пространство?» (AskAdmit, не дольше AdmitTimeout; ctx кончился — закрыть окно):
+	// исход — «Разрешить», «Отклонить», нет ответа или окно не смогло появиться.
+	// Оба заданы — хост объявляет join (вступление без пароля); SpaceAdmit задан — и вступление паролем (клиенты
+	// ≤ v0.3.1) получает состав только после «Разрешить». nil — как раньше.
+	SpaceOwner func(salt []byte) (osalt []byte, opub ed25519.PublicKey, why string)
+	SpaceAdmit func(ctx context.Context, q AdmitReq) AdmitResult
 
 	mu          sync.Mutex
 	ice         []webrtc.ICEServer
@@ -150,6 +160,15 @@ type Agent struct {
 	rxParts int64                  // Ч10.1: заявленный размер открытых .part сессий приёма (не больше rxPartMax)
 	noRecv  bool                   // тест: хост старой версии — приём не объявляет
 	noDirs  bool                   // тест: хост Ч10.1 — приём без папок (recv.go, rxStart)
+
+	noJoin bool // тест: хост ≤ v0.3.1 — вступление без пароля не объявляет (admit.go)
+	// Ч12б (admit.go, под mu): admitOpen — окно «Пустить?» открыто (одно на хост); admitN — отказов окна подряд,
+	// admitLast — последний, admitNext — раньше нового окна нет (растущая пауза); joinFails, joinUntil, joinAt —
+	// лестница неудач вступления (код, фраза), отдельная от лестниц входа записи.
+	admitOpen            bool
+	admitN, joinFails    int
+	admitLast, admitNext time.Time
+	joinUntil, joinAt    time.Time
 
 	syncs  map[string]*session  // Э4: ключ члена → его соединение сверки (одно; nil — пока шлётся offer), spsync.go
 	sxSeen map[string]time.Time // Э4в: соли открытых sx → до какого времени помнить (повтор хабом, spseal.go)
@@ -196,6 +215,19 @@ type session struct {
 	ctl     *webrtc.DataChannel
 	peer    string // адрес клиента по выбранной паре ICE — для окна подтверждения
 	ice     iceCap // потолок удалённых ICE-кандидатов (F5, icecap.go)
+
+	// Ч12б (admit.go): admitted — на этом ПК нажали «Разрешить» в окне «Пустить?» для этой сессии; admitting — окно
+	// (вход паролем) открыто; joinIn — сессия вступления без пароля: не вход (ни экрана, ни ввода), только ctl "sp";
+	// joinID — заявленный ID нового ПК (под mu): в составе M новый ПК — только под ним.
+	admitted   atomic.Bool
+	admitting  atomic.Bool
+	admitBlock atomic.Bool // вход паролем: окно «Пустить?» открыто — ввод этой сессии выключен (сама «Разрешить» не нажмёт)
+	joinIn     atomic.Bool
+	joinID     string
+	// Ч12б, вход паролем (под mu): claimID, claimName — заявленные в "b" ID и имя (rxClaim) для окна «Пустить?»;
+	// authSend — отправка в канал "auth" (сигнал "admit" новому клиенту вступления).
+	claimID, claimName string
+	authSend           func(authMsg)
 
 	mu        sync.Mutex
 	closeInd  func()         // закрыть плашку сессии
@@ -319,7 +351,10 @@ type authMsg struct {
 
 	// Ч10.1, приём (recv.go): recv — в первом "a" хост понимает приём, в "b" — соединение приёма; from, name — в "b"
 	// заявленные ID и имя отправителя; в "rx" хоста: ask — первое принимаемое спросит «Принять?», lim — потолки.
-	Recv bool      `json:"recv,omitempty"`
+	Recv bool `json:"recv,omitempty"`
+	// Ч12б (admit.go): в первом "a" хоста — понимает вступление без пароля; в "b" — вступление; в "otp", "ok" — его шаги
+	Join bool      `json:"join,omitempty"`
+	Left int       `json:"left,omitempty"` // Ч12б: в "later" и "denied" вступления — через сколько секунд возможно новое окно «Пустить?»
 	From string    `json:"from,omitempty"`
 	Name string    `json:"name,omitempty"`
 	Ask  bool      `json:"ask,omitempty"`
@@ -1223,28 +1258,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 		return fail(err)
 	}
 	bad := 0
-	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-		if !s.control() {
-			return
-		}
-		e, err := decode(msg.Data)
-		if err == nil {
-			s.keys.track(e)
-			if s.keys.copyKey(e) {
-				s.copied.Store(true)
-			}
-			err = sendInput(e, s.monitor())
-			if !s.control() { // сессия ушла в просмотр, пока событие шло: dropControl его не застал — отпустить
-				for _, r := range s.keys.release() {
-					sendInput(r, nil)
-				}
-			}
-		}
-		if err != nil && bad < 10 { // не забивать журнал
-			bad++
-			log.Printf("ввод: %v", err)
-		}
-	})
+	dc.OnMessage(func(msg webrtc.DataChannelMessage) { s.inputMsg(msg.Data, &bad) })
 
 	ctl, err := pc.CreateDataChannel("ctl", nil)
 	if err != nil {
@@ -1252,7 +1266,13 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 	}
 	ctl.OnMessage(func(msg webrtc.DataChannelMessage) {
 		var m ctlMsg
-		if !s.authed.Load() || json.Unmarshal(msg.Data, &m) != nil {
+		if json.Unmarshal(msg.Data, &m) != nil {
+			return
+		}
+		if !s.authed.Load() { // Ч12б: сессия вступления без пароля — только состав пространства (admit.go)
+			if m.T == "sp" && s.joinIn.Load() && a.SpaceGet != nil {
+				a.spaceCtl(sctx, s, msg.Data, func(r spMsg) { b, _ := json.Marshal(r); ctl.SendText(string(b)) })
+			}
 			return
 		}
 		if m.T == "pause" { // тест: любое "pause" до гейта a.Pause (старый хост их получать не должен)
@@ -1274,7 +1294,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 		case m.T == "trust": // Ч7б: «Добавить» — ключ во вход без пароля без переподключения (trustctl.go)
 			a.trustCtl(s, msg.Data, func(r trustMsg) { b, _ := json.Marshal(r); ctl.SendText(string(b)) })
 		case m.T == "sp" && a.SpaceGet != nil: // Э2: состав пространства (space.go)
-			a.spaceCtl(s, msg.Data, func(r spMsg) { b, _ := json.Marshal(r); ctl.SendText(string(b)) })
+			a.spaceCtl(sctx, s, msg.Data, func(r spMsg) { b, _ := json.Marshal(r); ctl.SendText(string(b)) })
 		case m.T == "audio" && m.SDP != "" && a.Audio:
 			s.audioOffer(m.SDP)
 		case m.T == "pause" && a.Pause: // REQ-F-27: фоновая вкладка «Моих ПК» просит остановить/возобновить видео
@@ -1396,8 +1416,12 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 	var fpClient, fpHost string
 	named, view, whoDone := false, false, false                                 // клиент уже назвал имя записи (одно на сессию); права записи «просмотр»; "who" был
 	var otpWait func(code string)                                               // ждём код TOTP (под s.mu); nil — не ждём
+	var joinWait func(m authMsg)                                                // Ч12б: ждём доказательство фразы (под s.mu)
 	otpN := 0                                                                   // номер запроса кода: таймер закрывает сессию, только если на этот запрос не ответили
 	send := func(m authMsg) { b, _ := json.Marshal(m); ch.SendText(string(b)) } // JSON — текстом: браузер парсит строку
+	s.mu.Lock()
+	s.authSend = send
+	s.mu.Unlock()
 	ch.OnOpen(func() {
 		s.mu.Lock()
 		fpHost, fpClient = pake.Fingerprint(s.pc.LocalDescription().SDP), pake.Fingerprint(s.pc.RemoteDescription().SDP)
@@ -1412,7 +1436,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		st, view, s.salt = state, v, salt
 		s.mu.Unlock()
 		send(authMsg{T: "a", Salt: salt, Msg: msgA, Users: true, Keys: a.KeyLogin != nil, Space: a.SpaceGet != nil, Pass: a.SpaceMember != nil, Sync: a.SpaceSync != nil,
-			SX: s.seal.answer(fpClient, fpHost), Recv: !a.noRecv}) // Э4в: sx у каждой сессии, у сверки — статус (spseal.go); Ч10.1: приём (recv.go)
+			SX: s.seal.answer(fpClient, fpHost), Recv: !a.noRecv, Join: a.joinOn()}) // Ч12б: вступление без пароля (admit.go); Э4в: sx у каждой сессии, у сверки — статус (spseal.go); Ч10.1: приём (recv.go)
 	})
 	ch.OnMessage(func(msg webrtc.DataChannelMessage) {
 		var m authMsg
@@ -1447,6 +1471,16 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 			s.mu.Unlock()
 			if f != nil {
 				f(m.Code)
+			}
+			return
+		}
+		if !bad && m.T == "join" { // Ч12б: доказательство фразы — ответ на соль (admit.go), один раз
+			s.mu.Lock()
+			f := joinWait
+			joinWait = nil
+			s.mu.Unlock()
+			if f != nil {
+				f(m)
 			}
 			return
 		}
@@ -1486,9 +1520,20 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 			a.recvB(ctx, s, m, cur, keyOK, user, fpc, fph, send)
 			return
 		}
+		if m.Join && !m.Off && !s.offOnly { // Ч12б: вступление без пароля — не вход (admit.go)
+			a.joinB(ctx, s, m, keyOK, user, salt, fpc, fph, send,
+				func(f func(string)) { s.mu.Lock(); otpWait = f; s.mu.Unlock() },
+				func(f func(authMsg)) { s.mu.Lock(); joinWait = f; s.mu.Unlock() })
+			return
+		}
 		if m.Off || s.offOnly { // Э3: «снять» — не вход: ни счёта неудач, ни блокировки; соединение «снять» входа не даёт
 			a.passOff(s, m, keyOK, fpc, fph, send)
 			return
+		}
+		if id, name := rxClaim(m); id != "" && id != a.ID { // Ч12б: вступление паролем — ID и имя в окно «Пустить?»
+			s.mu.Lock()
+			s.claimID, s.claimName = id, name
+			s.mu.Unlock()
 		}
 		unattended := a.Confirm == nil || a.Unattended != nil && a.Unattended()
 		otpSet := false
@@ -1701,7 +1746,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		}()
 	})
 	time.AfterFunc(authWait, func() {
-		if !s.authed.Load() && !s.asking.Load() && s.rx.Load() == nil { // приём закрывает rxWatch
+		if !s.authed.Load() && !s.asking.Load() && !s.joinIn.Load() && s.rx.Load() == nil { // приём закрывает rxWatch; Ч12б: разрешённое вступление — свой срок joinLive
 			s.pc.Close()
 		}
 	})
@@ -1993,6 +2038,36 @@ func (a *Agent) replaque(s *session) {
 
 // control — от клиента можно принимать ввод, буфер обмена и файлы: вход выполнен и сессия не «только просмотр».
 func (s *session) control() bool { return s.authed.Load() && !s.view.Load() }
+
+// inputOK — ввод клиента идёт на хост: управление и (Ч12б) на хосте не открыто окно «Пустить?» этой сессии.
+func (s *session) inputOK() bool { return s.control() && !s.admitBlock.Load() }
+
+// inputSend — ввод на хост (тест подменяет: счёт дошедших событий).
+var inputSend = sendInput
+
+// inputMsg — сообщение канала "input": только при inputOK; bad — счёт ошибок в журнал (не больше 10).
+func (s *session) inputMsg(data []byte, bad *int) {
+	if !s.inputOK() {
+		return
+	}
+	e, err := decode(data)
+	if err == nil {
+		s.keys.track(e)
+		if s.keys.copyKey(e) {
+			s.copied.Store(true)
+		}
+		err = inputSend(e, s.monitor())
+		if !s.control() { // сессия ушла в просмотр, пока событие шло: dropControl его не застал — отпустить
+			for _, r := range s.keys.release() {
+				inputSend(r, nil)
+			}
+		}
+	}
+	if err != nil && *bad < 10 { // не забивать журнал
+		*bad++
+		log.Printf("ввод: %v", err)
+	}
+}
 
 // userClose — человек закрыл плашку сессии s: разорвать её, но не следующую (плашка могла пережить свою сессию).
 func (a *Agent) userClose(s *session) func() {
