@@ -224,6 +224,10 @@ type session struct {
 	admitBlock atomic.Bool // вход паролем: окно «Пустить?» открыто — ввод этой сессии выключен (сама «Разрешить» не нажмёт)
 	joinIn     atomic.Bool
 	joinID     string
+	// Ч12б, вход паролем (под mu): claimID, claimName — заявленные в "b" ID и имя (rxClaim) для окна «Пустить?»;
+	// authSend — отправка в канал "auth" (сигнал "admit" новому клиенту вступления).
+	claimID, claimName string
+	authSend           func(authMsg)
 
 	mu        sync.Mutex
 	closeInd  func()         // закрыть плашку сессии
@@ -1415,6 +1419,9 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 	var joinWait func(m authMsg)                                                // Ч12б: ждём доказательство фразы (под s.mu)
 	otpN := 0                                                                   // номер запроса кода: таймер закрывает сессию, только если на этот запрос не ответили
 	send := func(m authMsg) { b, _ := json.Marshal(m); ch.SendText(string(b)) } // JSON — текстом: браузер парсит строку
+	s.mu.Lock()
+	s.authSend = send
+	s.mu.Unlock()
 	ch.OnOpen(func() {
 		s.mu.Lock()
 		fpHost, fpClient = pake.Fingerprint(s.pc.LocalDescription().SDP), pake.Fingerprint(s.pc.RemoteDescription().SDP)
@@ -1522,6 +1529,11 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		if m.Off || s.offOnly { // Э3: «снять» — не вход: ни счёта неудач, ни блокировки; соединение «снять» входа не даёт
 			a.passOff(s, m, keyOK, fpc, fph, send)
 			return
+		}
+		if id, name := rxClaim(m); id != "" && id != a.ID { // Ч12б: вступление паролем — ID и имя в окно «Пустить?»
+			s.mu.Lock()
+			s.claimID, s.claimName = id, name
+			s.mu.Unlock()
 		}
 		unattended := a.Confirm == nil || a.Unattended != nil && a.Unattended()
 		otpSet := false
