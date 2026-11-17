@@ -350,6 +350,7 @@ type authMsg struct {
 	Recv bool `json:"recv,omitempty"`
 	// Ч12б (admit.go): в первом "a" хоста — понимает вступление без пароля; в "b" — вступление; в "otp", "ok" — его шаги
 	Join bool      `json:"join,omitempty"`
+	Left int       `json:"left,omitempty"` // Ч12б: в "later" и "denied" вступления — через сколько секунд возможно новое окно «Пустить?»
 	From string    `json:"from,omitempty"`
 	Name string    `json:"name,omitempty"`
 	Ask  bool      `json:"ask,omitempty"`
@@ -1253,28 +1254,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 		return fail(err)
 	}
 	bad := 0
-	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-		if !s.inputOK() {
-			return
-		}
-		e, err := decode(msg.Data)
-		if err == nil {
-			s.keys.track(e)
-			if s.keys.copyKey(e) {
-				s.copied.Store(true)
-			}
-			err = sendInput(e, s.monitor())
-			if !s.control() { // сессия ушла в просмотр, пока событие шло: dropControl его не застал — отпустить
-				for _, r := range s.keys.release() {
-					sendInput(r, nil)
-				}
-			}
-		}
-		if err != nil && bad < 10 { // не забивать журнал
-			bad++
-			log.Printf("ввод: %v", err)
-		}
-	})
+	dc.OnMessage(func(msg webrtc.DataChannelMessage) { s.inputMsg(msg.Data, &bad) })
 
 	ctl, err := pc.CreateDataChannel("ctl", nil)
 	if err != nil {
@@ -2049,6 +2029,33 @@ func (s *session) control() bool { return s.authed.Load() && !s.view.Load() }
 
 // inputOK — ввод клиента идёт на хост: управление и (Ч12б) на хосте не открыто окно «Пустить?» этой сессии.
 func (s *session) inputOK() bool { return s.control() && !s.admitBlock.Load() }
+
+// inputSend — ввод на хост (тест подменяет: счёт дошедших событий).
+var inputSend = sendInput
+
+// inputMsg — сообщение канала "input": только при inputOK; bad — счёт ошибок в журнал (не больше 10).
+func (s *session) inputMsg(data []byte, bad *int) {
+	if !s.inputOK() {
+		return
+	}
+	e, err := decode(data)
+	if err == nil {
+		s.keys.track(e)
+		if s.keys.copyKey(e) {
+			s.copied.Store(true)
+		}
+		err = inputSend(e, s.monitor())
+		if !s.control() { // сессия ушла в просмотр, пока событие шло: dropControl его не застал — отпустить
+			for _, r := range s.keys.release() {
+				inputSend(r, nil)
+			}
+		}
+	}
+	if err != nil && *bad < 10 { // не забивать журнал
+		*bad++
+		log.Printf("ввод: %v", err)
+	}
+}
 
 // userClose — человек закрыл плашку сессии s: разорвать её, но не следующую (плашка могла пережить свою сессию).
 func (a *Agent) userClose(s *session) func() {

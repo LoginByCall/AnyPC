@@ -106,7 +106,7 @@ func TestSpaceEnterDeclined(t *testing.T) {
 	n.Server = url
 	n.save()
 	n.mu.Unlock()
-	if _, err := n.spaceEnter(context.Background(), p.id(), "", spaceCode(p, sec), ph); spaceErrCode(err) != "declined" {
+	if _, err := n.spaceEnter(context.Background(), p.id(), "", spaceCode(p, sec), ph); spaceErrCode(err) != "declined:30" { // и пауза до нового окна (первая — 30 с)
 		t.Errorf("«Отклонить»: %v (%s)", err, spaceErrCode(err))
 	}
 	if spaceOf(n) != nil || spaceOf(p).member(cfgPub(n)) {
@@ -195,14 +195,18 @@ func TestSpaceJoinDomains(t *testing.T) {
 func TestSpaceJoinCodes(t *testing.T) {
 	for err, want := range map[error]string{
 		agent.ErrSpaceNeedPass: "needpw",
-		fmt.Errorf("%w (%w)", agent.ErrSpaceBadCode, agent.ErrSpaceAuth):           "badcode",
-		fmt.Errorf("%w (%w)", agent.ErrSpaceBadPhrase, agent.ErrSpaceAuth):         "badphrase",
-		fmt.Errorf("%w (%w)", agent.ErrSpaceDeclined, agent.ErrSpaceRefused):       "declined",
-		fmt.Errorf("%w (%w)", agent.ErrSpaceNoAnswer, agent.ErrSpaceRefused):       "noanswer",
-		fmt.Errorf("%w (%w)", agent.ErrSpaceLater, agent.ErrSpaceRefused):          "later",
-		fmt.Errorf("%w (%w)", agent.ErrSpaceNoWindow, agent.ErrSpaceRefused):       "nowin",
-		fmt.Errorf("%w: none (%w)", agent.ErrSpaceNotThere, agent.ErrSpaceRefused): "nospace",
-		fmt.Errorf("%w (%w: denied)", agent.ErrSpaceWaitThere, agent.ErrSpaceAuth): "waitthere",
+		fmt.Errorf("%w (%w)", agent.ErrSpaceBadCode, agent.ErrSpaceAuth):                                          "badcode",
+		fmt.Errorf("%w (%w)", agent.ErrSpaceBadPhrase, agent.ErrSpaceAuth):                                        "badphrase",
+		fmt.Errorf("%w (%w)", agent.ErrSpaceDeclined, agent.ErrSpaceRefused):                                      "declined",
+		fmt.Errorf("%w (%w)", agent.ErrSpaceNoAnswer, agent.ErrSpaceRefused):                                      "noanswer",
+		fmt.Errorf("%w (%w)", agent.ErrSpaceLater, agent.ErrSpaceRefused):                                         "later",
+		fmt.Errorf("%w (%w)", agent.ErrSpaceNoWindow, agent.ErrSpaceRefused):                                      "nowin",
+		agent.SpaceWaitError{Err: fmt.Errorf("%w (%w)", agent.ErrSpaceDeclined, agent.ErrSpaceRefused), Secs: 60}: "declined:60",
+		fmt.Errorf("%w (%w)", agent.ErrSpaceJoinLocked, agent.ErrSpaceLockedThere):                                "joinlocked",
+		fmt.Errorf("%w (%w)", agent.ErrSpaceSlowHere, agent.ErrSpaceRefused):                                      "late",
+		fmt.Errorf("%w (%w)", agent.ErrSpaceViewOnlyThere, agent.ErrSpaceRefused):                                 "viewonly",
+		fmt.Errorf("%w: none (%w)", agent.ErrSpaceNotThere, agent.ErrSpaceRefused):                                "nospace",
+		fmt.Errorf("%w (%w: denied)", agent.ErrSpaceWaitThere, agent.ErrSpaceAuth):                                "waitthere",
 		errors.New("x"): "other",
 	} {
 		if got := spaceErrCode(err); got != want {

@@ -174,19 +174,42 @@ var (
 	errSpaceProtocol = errors.New("пространство: нарушение протокола")
 
 	// Ч12б (admit.go): вступление без пароля
-	ErrSpaceNeedPass  = errors.New("пространство: на том ПК AnyPC ≤ 0.3.1 — вступление через него только с паролем")
-	ErrSpaceBadCode   = errors.New("пространство: неверный код")                 // и errors.Is(ErrSpaceAuth)
-	ErrSpaceBadPhrase = errors.New("пространство: фраза не подошла тому ПК")     // и errors.Is(ErrSpaceAuth)
-	ErrSpaceDeclined  = errors.New("пространство: на том ПК нажали «Отклонить»") // и errors.Is(ErrSpaceRefused)
-	ErrSpaceNoAnswer  = errors.New("пространство: на том ПК не ответили в окне «Пустить?»")
-	ErrSpaceNoWindow  = errors.New("пространство: на том ПК не смогло появиться окно «Пустить?»")
-	ErrSpaceLater     = errors.New("пространство: тот ПК недавно отказал этому ПК — повторите позже")
-	ErrSpaceNotThere  = errors.New("пространство: тот ПК сейчас не пускает в пространство")
-	ErrSpaceWaitThere = errors.New("пространство: тот ПК ещё не сверился с другим членом после своего вступления") // и errors.Is(ErrSpaceAuth)
+	ErrSpaceNeedPass      = errors.New("пространство: на том ПК AnyPC ≤ 0.3.1 — вступление через него только с паролем")
+	ErrSpaceBadCode       = errors.New("пространство: неверный код")                 // и errors.Is(ErrSpaceAuth)
+	ErrSpaceBadPhrase     = errors.New("пространство: фраза не подошла тому ПК")     // и errors.Is(ErrSpaceAuth)
+	ErrSpaceDeclined      = errors.New("пространство: на том ПК нажали «Отклонить»") // и errors.Is(ErrSpaceRefused)
+	ErrSpaceNoAnswer      = errors.New("пространство: на том ПК не ответили в окне «Пустить?»")
+	ErrSpaceNoWindow      = errors.New("пространство: на том ПК не смогло появиться окно «Пустить?»")
+	ErrSpaceJoinLocked    = errors.New("пространство: вступление через тот ПК временно закрыто после неверных кодов") // и errors.Is(ErrSpaceLockedThere)
+	ErrSpaceViewOnlyThere = errors.New("пространство: на том ПК включено «Только показ экрана»")
+	ErrSpaceSlowHere      = errors.New("пространство: этот ПК не успел отдать код или доказательство фразы")
+	ErrSpaceLater         = errors.New("пространство: тот ПК недавно отказал этому ПК — повторите позже")
+	ErrSpaceNotThere      = errors.New("пространство: тот ПК сейчас не пускает в пространство")
+	ErrSpaceWaitThere     = errors.New("пространство: тот ПК ещё не сверился с другим членом после своего вступления") // и errors.Is(ErrSpaceAuth)
 )
 
-// joinRefusal — отказ хоста в канале auth при вступлении (Ч12б и вход паролем): ошибка для окна; nil — t не отказ.
-func joinRefusal(t, why string) error {
+// SpaceWaitError — отказ окна «Пустить?» с паузой (Ч12б): новое окно на том ПК не раньше чем через Secs секунд.
+type SpaceWaitError struct {
+	Err  error
+	Secs int
+}
+
+func (e SpaceWaitError) Error() string {
+	return fmt.Sprintf("%v (новое окно через %d с)", e.Err, e.Secs)
+}
+func (e SpaceWaitError) Unwrap() error { return e.Err }
+
+// joinRefusal — отказ хоста в канале auth при вступлении (Ч12б и вход паролем): ошибка для окна; nil — не отказ.
+// Пауза окна (left) — SpaceWaitError вокруг.
+func joinRefusal(am authMsg) error {
+	err := joinRefusal0(am.T, am.Why)
+	if err != nil && am.Left > 0 && (am.T == "later" || am.T == "denied" && (am.Why == "no" || am.Why == "timeout")) {
+		return SpaceWaitError{Err: err, Secs: am.Left}
+	}
+	return err
+}
+
+func joinRefusal0(t, why string) error {
 	switch {
 	case t == "fail" && why == "code":
 		return fmt.Errorf("%w (%w)", ErrSpaceBadCode, ErrSpaceAuth)
@@ -196,6 +219,10 @@ func joinRefusal(t, why string) error {
 		return fmt.Errorf("%w (%w)", ErrSpaceDeclined, ErrSpaceRefused)
 	case t == "denied" && why == "timeout":
 		return fmt.Errorf("%w (%w)", ErrSpaceNoAnswer, ErrSpaceRefused)
+	case t == "denied" && why == "slow":
+		return fmt.Errorf("%w (%w)", ErrSpaceSlowHere, ErrSpaceRefused)
+	case t == "locked" && why == "join":
+		return fmt.Errorf("%w (%w)", ErrSpaceJoinLocked, ErrSpaceLockedThere)
 	case t == "denied" && why == "nowin":
 		return fmt.Errorf("%w (%w)", ErrSpaceNoWindow, ErrSpaceRefused)
 	case t == "denied" && why == "wait": // и errors.Is(ErrSpaceAuth) с «denied», как было до Ч12б
@@ -204,6 +231,8 @@ func joinRefusal(t, why string) error {
 		return fmt.Errorf("%w (%w)", ErrSpaceLater, ErrSpaceRefused)
 	case t == "nojoin" && why == "ask":
 		return ErrSpaceAsk
+	case t == "nojoin" && why == "rights":
+		return fmt.Errorf("%w (%w)", ErrSpaceViewOnlyThere, ErrSpaceRefused)
 	case t == "nojoin":
 		return fmt.Errorf("%w: %s (%w)", ErrSpaceNotThere, why, ErrSpaceRefused)
 	case t == "ask":
@@ -460,7 +489,7 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 						askM()
 						mu.Unlock()
 					default:
-						if err := joinRefusal(am.T, am.Why); err != nil {
+						if err := joinRefusal(am); err != nil {
 							finish(err)
 						}
 					}

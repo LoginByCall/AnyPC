@@ -235,6 +235,13 @@ func TestSpaceJoinAdmitDeny(t *testing.T) {
 	if signed.Load() || len(r.asked()) != 1 {
 		t.Fatalf("после «Отклонить» состав %v, окон %d", signed.Load(), len(r.asked()))
 	}
+	var sw SpaceWaitError
+	if _, err := SpaceJoin(context.Background(), r.joinDial(newKey(), nil, r.fresh(), nil, nil)); !errors.As(err, &sw) || sw.Secs != 1 || !errors.Is(err, ErrSpaceLater) {
+		t.Errorf("пауза в отказе: %v (%d с)", err, sw.Secs)
+	}
+	if len(r.asked()) != 1 {
+		t.Fatalf("окно во время паузы: %d", len(r.asked()))
+	}
 	d := r.joinDial(newKey(), nil, r.fresh(), nil, nil)
 	d.Self = "111222333"
 	if _, err := SpaceJoin(context.Background(), d); !errors.Is(err, ErrSpaceLater) || len(r.asked()) != 1 {
@@ -285,8 +292,10 @@ func TestSpaceJoinAdmitTimeout(t *testing.T) {
 }
 
 // TestSpaceJoinClientGone — вступающий ушёл, пока окно открыто: окно закрывается (ctx), «Разрешить» после ухода не
-// засчитывается, паузы нет; второго окна одновременно с первым не бывает (пока первое открыто — later).
+// засчитывается; ушёл сразу (раньше AskDelay) — паузы нет; второго окна одновременно с первым не бывает.
 func TestSpaceJoinClientGone(t *testing.T) {
+	defer func(d time.Duration) { AskDelay = d }(AskDelay)
+	AskDelay = 3 * time.Second
 	var logs syncBuf
 	log.SetOutput(&logs)
 	defer log.SetOutput(os.Stderr)
@@ -332,6 +341,86 @@ func TestSpaceJoinClientGone(t *testing.T) {
 	}
 	if maxOpen.Load() > 1 {
 		t.Errorf("одновременно окон: %d", maxOpen.Load())
+	}
+}
+
+// TestSpaceJoinGoneLate — приёмка круга 2, Б1: окно провисело дольше AskDelay, вступающий ушёл — как «нет ответа»:
+// пауза растёт (иначе знающий код и фразу держал бы окно, уходил и через миг открывал снова).
+func TestSpaceJoinGoneLate(t *testing.T) {
+	defer func(d time.Duration) { AskDelay = d }(AskDelay)
+	AskDelay = 300 * time.Millisecond
+	r := admitHost(t, func(r *admitRig) {
+		r.answer = func(ctx context.Context, _ AdmitReq) AdmitResult { <-ctx.Done(); return AdmitNo }
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	d := r.joinDial(newKey(), nil, r.fresh(), nil, nil)
+	var once sync.Once
+	d.Stage = func(s string) {
+		if s == "admit" {
+			once.Do(func() { time.AfterFunc(time.Second, cancel) })
+		}
+	}
+	SpaceJoin(ctx, d)
+	for end := time.Now().Add(5 * time.Second); r.a.admitLeft() == 0 && time.Now().Before(end); {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if r.a.admitLeft() == 0 {
+		t.Fatal("уход после AskDelay — без паузы")
+	}
+	for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(50 * time.Millisecond) { // сессия ушедшего освобождена
+		r.a.mu.Lock()
+		free := r.a.sess == nil
+		r.a.mu.Unlock()
+		if free {
+			break
+		}
+	}
+	if _, err := SpaceJoin(context.Background(), r.joinDial(newKey(), nil, r.fresh(), nil, nil)); !errors.Is(err, ErrSpaceLater) || len(r.asked()) != 1 {
+		t.Errorf("сразу после ухода: %v, окон %d", err, len(r.asked()))
+	}
+}
+
+// TestSpaceJoinSlow — код не пришёл за authWait, доказательство — за proofWait: свой отказ late (не про пароль).
+func TestSpaceJoinSlow(t *testing.T) {
+	defer func(a, p time.Duration) { authWait, proofWait = a, p }(authWait, proofWait)
+	authWait, proofWait = time.Second, time.Second
+	r := admitHost(t)
+	joinCodeHook = func() { time.Sleep(1500 * time.Millisecond) }
+	_, err := SpaceJoin(context.Background(), r.joinDial(newKey(), nil, r.fresh(), nil, nil))
+	joinCodeHook = nil
+	if !errors.Is(err, ErrSpaceSlowHere) {
+		t.Errorf("код опоздал: %v", err)
+	}
+	d := r.joinDial(newKey(), nil, r.fresh(), nil, nil)
+	ok := d.OwnerKey
+	d.OwnerKey = func(s []byte) (ed25519.PrivateKey, error) { time.Sleep(1500 * time.Millisecond); return ok(s) }
+	if _, err := SpaceJoin(context.Background(), d); !errors.Is(err, ErrSpaceSlowHere) {
+		t.Errorf("доказательство опоздало: %v", err)
+	}
+	if len(r.asked()) != 0 {
+		t.Errorf("окон %d", len(r.asked()))
+	}
+}
+
+// TestInputChannel — приёмка круга 2, Б3: событие канала input при открытом окне «Пустить?» этой сессии до хоста не
+// доходит; после решения — доходит.
+func TestInputChannel(t *testing.T) {
+	var got atomic.Int32
+	defer func(f func(event, *Monitor) error) { inputSend = f }(inputSend)
+	inputSend = func(event, *Monitor) error { got.Add(1); return nil }
+	var s session
+	s.authed.Store(true)
+	s.admitBlock.Store(true)
+	bad := 0
+	ev := []byte(`{"t":"m","x":100,"y":100}`)
+	s.inputMsg(ev, &bad)
+	if got.Load() != 0 {
+		t.Fatal("ввод дошёл при открытом окне")
+	}
+	s.admitBlock.Store(false)
+	s.inputMsg(ev, &bad)
+	if got.Load() != 1 {
+		t.Errorf("после окна ввод не дошёл: %d", got.Load())
 	}
 }
 
@@ -416,7 +505,7 @@ func TestSpaceJoinBadPhrase(t *testing.T) {
 	if len(r.asked()) != 0 {
 		t.Errorf("окно после неверной фразы: %d", len(r.asked()))
 	}
-	if _, err := SpaceJoin(context.Background(), r.joinDial(nkey, nil, r.fresh(), nil, nil)); !errors.Is(err, ErrSpaceLockedThere) {
+	if _, err := SpaceJoin(context.Background(), r.joinDial(nkey, nil, r.fresh(), nil, nil)); !errors.Is(err, ErrSpaceJoinLocked) || !errors.Is(err, ErrSpaceLockedThere) {
 		t.Errorf("после 5 неудач: %v", err)
 	}
 	ownerLocks(t, r.a)
@@ -520,7 +609,7 @@ func TestSpaceJoinBadClient(t *testing.T) {
 		t.Errorf("ID поручителя: %v", err)
 	}
 	r.view.Store(true)
-	if _, err := SpaceJoin(context.Background(), r.joinDial(newKey(), nil, r.fresh(), nil, &signed)); !errors.Is(err, ErrSpaceNotThere) {
+	if _, err := SpaceJoin(context.Background(), r.joinDial(newKey(), nil, r.fresh(), nil, &signed)); !errors.Is(err, ErrSpaceViewOnlyThere) {
 		t.Errorf("«Только показ экрана»: %v", err)
 	}
 	r.view.Store(false)
@@ -653,6 +742,11 @@ func TestSpaceJoinNotThere(t *testing.T) {
 	}
 	r.why.Store("")
 	r.shut.Store(true)
+	c := []byte(r.fresh()) // без верного кода посторонний не узнаёт, что поручитель недавно вступил
+	c[0] = '0' + (c[0]-'0'+1)%10
+	if _, err := SpaceJoin(context.Background(), r.joinDial(newKey(), nil, string(c), nil, nil)); !errors.Is(err, ErrSpaceBadCode) {
+		t.Errorf("поручитель ждёт сверки, неверный код: %v", err)
+	}
 	if _, err := SpaceJoin(context.Background(), r.joinDial(newKey(), nil, r.fresh(), nil, nil)); !errors.Is(err, ErrSpaceWaitThere) {
 		t.Errorf("поручитель ждёт сверки: %v", err)
 	}
