@@ -182,33 +182,37 @@ erases the default account's password and code, since they came from the guarant
 «Моё пространство», вступление нового ПК (Ч12б, решения владельца B и A'; ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ): вступление через
 ПК пространства (поручитель) требует кода из приложения, фразы и человека у поручителя; пароль новому ПК не нужен.
 Фразу новый ПК доказывает подписью ключом владельца (тот же ключ из фразы, что подписывает состав) над доменом
-«anypc-space-join-v1», ID поручителя, DTLS-отпечатками обоих концов этого соединения и своим ключом, доказанным в
-том же соединении. Домен отличен от домена подписи состава — одна не сходит за другую; перенос доказательства в
-другое соединение или другому ключу не проходит. Ключ поручителя новому ПК при первом вступлении незнаком (TOFU):
-новый ПК проверяет только, что ответивший доказал владение каким-то ключом над этим соединением. Поэтому самозванец
-под ID поручителя (например, хаб) получает от нового ПК текущий код и подпись ключом владельца над солью, которую
-выбрал сам; по этой подписи он может проверять догадки о фразе офлайн. Стойкость тогда — 80 бит случайной фразы и
-Argon2id (64 МБ) на каждую догадку; код без пароля теперь проверяем сам по себе (6 цифр — только онлайн у настоящего
-ПК, с блокировкой). Соль ключа владельца настоящий поручитель отдаёт только после верного кода; открытого ключа
-владельца до вступления новый ПК не получает. Неверный код или неверная фраза — неудача вступления: своя лестница
-поручителя, как у пароля (5 подряд — 1 минута, дальше удвоение до часа); вход владельца (пароль, код, закреплённый
-ключ) она не запирает; окна нет. После верных кода и фразы поручитель показывает окно «Пустить ПК «имя» в ваше
-пространство?» с ID, именем (их заявляет новый ПК; без ID вступление отклоняется) и отпечатком его ключа;
-«Разрешить» срабатывает через 3–5 с; без ответа 2 минуты — отказ; окно не смогло появиться (нет сеанса рабочего
-стола, zenity, MessageBoxTimeoutW) — отказ с отдельной причиной. Окно на хост одно; после «Отклонить» или тайм-аута
-следующее — не раньше чем через 30 с, каждый следующий отказ подряд — вдвое дольше (до 16 минут; «Разрешить» или час
-тишины сбрасывают), смена ID или ключа паузу не обходит. Ушёл вступающий — окно закрывается (на Windows запасное окно
-MessageBox закрыть нельзя — оно доживает свой срок, второе при нём не открывается). Сессия вступления — не вход: ни
-экрана, ни ввода, ни буфера; только выдача состава и приём нового, где новый ПК — под ID из окна и с ключом из
-соединения; живёт до 4 минут. Вход паролем (новые ПК с AnyPC 0.3.1 и старше) на новом поручителе получает состав тоже
-только после «Разрешить» (окно без ID: старая версия его не сообщает), ввод этой сессии на время окна выключен —
-обойти окно старым протоколом нельзя. Поручитель 0.3.1 и старше вступления без пароля не объявляет: новый ПК идёт
-прежним путём с паролем, окна там нет. Доступность поручителя (остаточное): посторонний без кода держит только место
-незавершённого входа — не дольше 20 с на попытку, как любое подключение; с верными кодом и фразой окно и вступление
-занимают поручителя («занят» для других подключений, в том числе владельца) до 2 минут окна и до 4 минут после
-«Разрешить», а новые окна идут не чаще растущей паузы — бессрочно отрезать владельца знающий код и фразу не может, но
-может раз в паузу занимать поручителя на несколько минут (тогда смените код фразой). ID и имя в окне — заявленные, ID
-подтверждается позже сверкой (под этим ID должен ответить тот же ключ).
+«anypc-space-join-v1», ID поручителя, DTLS-отпечатками обоих концов этого соединения и своим ключом, доказанным в том
+же соединении. Домен отличен от домена подписи состава — одна не сходит за другую; перенос доказательства в другое
+соединение или другому ключу не проходит. Ключ поручителя новому ПК при первом вступлении незнаком (TOFU): новый ПК
+проверяет только, что ответивший доказал владение каким-то ключом над этим соединением. Поэтому самозванец под ID
+поручителя (например, хаб) получает от нового ПК текущий код и подпись ключом владельца над солью, которую выбрал сам;
+по этой подписи он может проверять догадки о фразе офлайн. Стойкость тогда — 80 бит случайной фразы и Argon2id (64 МБ)
+на каждую догадку; код без пароля теперь проверяем сам по себе (6 цифр — только онлайн у настоящего ПК, с
+блокировкой). Соль ключа владельца настоящий поручитель отдаёт только после верного кода; открытого ключа владельца до
+вступления новый ПК не получает. Неверный код или неверная фраза — неудача вступления: своя лестница поручителя, как у
+пароля (5 подряд — 1 минута, дальше удвоение до часа); вход владельца (пароль, код, закреплённый ключ) она не
+запирает; окна нет. После верных кода и фразы поручитель показывает окно «Пустить ПК «имя» в ваше пространство?» с ID,
+именем (их заявляет новый ПК; без ID вступление отклоняется) и отпечатком его ключа; «Разрешить» срабатывает через 3–5
+с; без ответа 2 минуты — отказ; окно не смогло появиться (нет сеанса рабочего стола, zenity, MessageBoxTimeoutW) —
+отказ с отдельной причиной. Окно на хост одно; после «Отклонить» или тайм-аута следующее — не раньше чем через 30 с,
+каждый следующий отказ подряд — вдвое дольше (до 16 минут; «Разрешить» или час тишины сбрасывают), смена ID или ключа
+паузу не обходит. Ушёл вступающий — окно закрывается (на Windows запасное окно MessageBox закрыть нельзя — оно
+доживает свой срок, второе при нём не открывается). Сессия вступления — не вход: ни экрана, ни ввода, ни буфера;
+только выдача состава и приём нового, где новый ПК — под ID из окна и с ключом из соединения; живёт до 4 минут. Вход
+паролем (новые ПК с AnyPC 0.3.1 и старше) на новом поручителе получает состав тоже только после «Разрешить» (окно без
+ID: старая версия его не сообщает), ввод этой сессии на время окна выключен — обойти окно старым протоколом нельзя.
+Поручитель 0.3.1 и старше вступления без пароля не объявляет: новый ПК идёт прежним путём с паролем, окна там нет.
+Доступность поручителя (остаточное): незавершённая попытка без кода держит место незавершённого входа до 40 с (до 20 с
+до запроса вступления и до 20 с на код), с верным кодом — ещё до 30 с на доказательство фразы, как любое подключение.
+Лестница вступления — одна на поручителя: посторонний без кода, зная только ID, пятью неверными кодами закрывает
+вступление через этот ПК на минуту, а дальше одним неверным кодом раз в час держит его закрытым бессрочно (каждая
+неудача удлиняет блокировку до часа); вход владельца это не трогает, вступать тогда — через другой ПК пространства, а
+повторяющаяся блокировка — повод сменить код. С верными кодом и фразой окно и вступление занимают поручителя («занят»
+для других подключений, в том числе владельца) до 2 минут окна и до 4 минут после «Разрешить»; уход вступающего после
+3 с окна считается как «нет ответа» и удлиняет паузу, новые окна — не чаще растущей паузы. Бессрочно отрезать
+владельца знающий код и фразу не может, но может раз в паузу занимать поручителя на несколько минут (тогда смените код
+фразой). ID и имя в окне — заявленные, ID подтверждается позже сверкой (под этим ID должен ответить тот же ключ).
 "My space", joining a new PC (part 12b, owner decisions B and A'; NEEDS HUMAN REVIEW): joining through a PC of the
 space (the guarantor) needs the authenticator code, the phrase and a person at the guarantor; the new PC needs no
 password. It proves the phrase with a signature by the owner key (the same phrase-derived key that signs the member
@@ -220,26 +224,32 @@ under the guarantor ID (e.g. the hub) gets the current code and a signature by t
 choice, and can test phrase guesses offline against it. Strength then rests on the 80-bit random phrase and Argon2id
 (64 MB) per guess; without a password the code is checkable on its own (6 digits — online only, at the real PC, with
 lockout). The real guarantor gives out the owner-key salt only after a correct code; the new PC gets no owner public
-key before joining. A wrong code or phrase is a join failure: a separate ladder on the guarantor, like the password one
-(5 in a row — 1 minute, then doubling up to an hour); it does not lock the owner's login (password, code, pinned key);
-no window. After a correct code and phrase the guarantor shows "Let PC “name” into your space?" with the ID, the name
-(both claimed by the new PC; a join without an ID is refused) and its key fingerprint; "Allow" works after 3–5 s; no
-answer within 2 minutes — refused; if the window cannot appear (no desktop session, zenity, MessageBoxTimeoutW) —
+key before joining. A wrong code or phrase is a join failure: a separate ladder on the guarantor, like the password
+one (5 in a row — 1 minute, then doubling up to an hour); it does not lock the owner's login (password, code, pinned
+key); no window. After a correct code and phrase the guarantor shows "Let PC “name” into your space?" with the ID, the
+name (both claimed by the new PC; a join without an ID is refused) and its key fingerprint; "Allow" works after 3–5 s;
+no answer within 2 minutes — refused; if the window cannot appear (no desktop session, zenity, MessageBoxTimeoutW) —
 refused with its own reason. One window per host; after "Deny" or a timeout the next one comes no sooner than 30 s
 later, each further refusal in a row doubles that (up to 16 minutes; "Allow" or an hour of quiet resets it); changing
 the ID or key does not bypass the pause. If the joining PC leaves, the window closes (on Windows the fallback
 MessageBox cannot be closed — it lives out its time, and no second window opens meanwhile). The join session is not a
 login: no screen, input or clipboard; only handing out the list and taking the new one, where the new PC is under the
 ID from the window with the key from the connection; it lives up to 4 minutes. A password login (new PCs with AnyPC
-0.3.1 or older) on a new guarantor also gets the list only after "Allow" (the window has no ID: the old version does not
-report it), and that session's input is off while the window is open — the window cannot be bypassed with the old
+0.3.1 or older) on a new guarantor also gets the list only after "Allow" (the window has no ID: the old version does
+not report it), and that session's input is off while the window is open — the window cannot be bypassed with the old
 protocol. A guarantor of 0.3.1 or older does not announce password-less joining: the new PC takes the old password
-path, with no window there. Guarantor availability (residual): a stranger without the code holds only an unfinished
-login slot — up to 20 s per attempt, like any connection; with a correct code and phrase the window and the join make
-the guarantor busy for other connections, the owner's included, for up to 2 minutes of window and up to 4 minutes after
-"Allow", and new windows come no faster than the growing pause — whoever knows the code and phrase cannot cut the owner
-off indefinitely, but can occupy the guarantor for a few minutes once per pause (then set a new code with the phrase).
-The ID and name in the window are claimed; the ID is confirmed later by sync (the same key must answer under that ID).
+path, with no window there. Guarantor availability (residual): an unfinished attempt without the code holds an
+unfinished login slot for up to 40 s (up to 20 s before the join request and up to 20 s for the code), with a correct
+code up to 30 s more for the phrase proof, like any connection. The join ladder is one per guarantor: a stranger who
+knows only the ID closes joining through this PC for a minute with five wrong codes and then keeps it closed
+indefinitely with one wrong code an hour (each failure extends the lock up to an hour); the owner's login is not
+affected, joining then goes through another PC of the space, and a recurring lock is a reason to change the code. With
+a correct code and phrase the window and the join make the guarantor busy for other connections, the owner's included,
+for up to 2 minutes of window and up to 4 minutes after "Allow"; the joining PC leaving after 3 s of window counts as
+"no answer" and lengthens the pause; new windows come no faster than the growing pause. Whoever knows the code and
+phrase cannot cut the owner off indefinitely, but can occupy the guarantor for a few minutes once per pause (then set
+a new code with the phrase). The ID and name in the window are claimed; the ID is confirmed later by sync (the same
+key must answer under that ID).
 
 «Моё пространство», объединение составов: каждый подписанный фразой состав — подлинная правка владельца, поэтому ПК
 не выбирает «правильную ветвь», а объединяет все известные составы: исключённые — объединение, члены — объединение

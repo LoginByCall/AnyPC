@@ -35,6 +35,7 @@ var spaceCodes = []struct {
 	{errSpaceHeads, "over"}, {errSpacePhraseCount, "phrase_count"}, {errSpacePhraseASCII, "phrase_ascii"},
 	{errSpacePhraseLogin, "phrase_login"}, {errSpacePhrase, "phrase"}, {errSpacePassword, "password"}, {errPassCode, "code"},
 	{errPassShort, "short"},
+	{agent.ErrSpaceJoinLocked, "joinlocked"}, {agent.ErrSpaceSlowHere, "late"}, {agent.ErrSpaceViewOnlyThere, "viewonly"}, // Ч12б, круг 3
 	{agent.ErrSpaceNeedPass, "needpw"}, {agent.ErrSpaceBadCode, "badcode"}, {agent.ErrSpaceBadPhrase, "badphrase"}, // Ч12б: до auth
 	{agent.ErrSpaceDeclined, "declined"}, {agent.ErrSpaceNoAnswer, "noanswer"}, {agent.ErrSpaceNoWindow, "nowin"}, {agent.ErrSpaceLater, "later"}, // Ч12б: до refused
 	{agent.ErrSpaceNotThere, "nospace"}, {agent.ErrSpaceWaitThere, "waitthere"},
@@ -50,15 +51,21 @@ var spaceCodes = []struct {
 	{context.Canceled, "cancel"}, {context.DeadlineExceeded, "timeout"},
 }
 
-// spaceErrCode — код ошибки для окна; слово фразы не из словаря — phrase_word:N (N с 1); неизвестная — other.
+// spaceErrCode — код ошибки для окна; слово фразы не из словаря — phrase_word:N (N с 1); отказ окна «Пустить?» с
+// паузой — <код>:N (N — секунд до нового окна, Ч12б); неизвестная — other.
 func spaceErrCode(err error) string {
 	var w spacePhraseWordError
 	if errors.As(err, &w) {
 		return "phrase_word:" + strconv.Itoa(w.N)
 	}
+	var sw agent.SpaceWaitError
+	wait := ""
+	if errors.As(err, &sw) && sw.Secs > 0 {
+		wait = ":" + strconv.Itoa(sw.Secs)
+	}
 	for _, x := range spaceCodes {
 		if errors.Is(err, x.err) {
-			return x.code
+			return x.code + wait
 		}
 	}
 	return "other"

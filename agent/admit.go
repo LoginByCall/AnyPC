@@ -102,6 +102,7 @@ func (a *Agent) admitAsk(ctx context.Context, s *session, q AdmitReq) (bool, str
 	a.mu.Unlock()
 	defer func() { a.mu.Lock(); a.admitOpen = false; a.mu.Unlock() }()
 	log.Printf("сессия %s: %s просит вступить в пространство — окно «Пустить?»", s.label(), admitWho(q))
+	t0 := time.Now()
 	res := a.SpaceAdmit(ctx, q)
 	gone := ctx.Err() != nil || s.gone.Load()
 	switch {
@@ -111,9 +112,12 @@ func (a *Agent) admitAsk(ctx context.Context, s *session, q AdmitReq) (bool, str
 		a.mu.Unlock()
 		log.Printf("сессия %s: вступление разрешено на этом ПК", s.label())
 		return true, ""
-	case gone: // клиент ушёл — окно закрыто, отвечать некому
+	case gone && time.Since(t0) < AskDelay: // ушёл сразу — окно закрыто, отвечать некому, паузы нет
 		log.Printf("сессия %s: вступающий ушёл, окно «Пустить?» закрыто", s.label())
 		return false, "no"
+	case gone: // окно провисело — как «нет ответа»: пауза растёт (иначе знающий код и фразу держал бы окно без конца)
+		res = AdmitNoAnswer
+		log.Printf("сессия %s: вступающий ушёл, окно «Пустить?» закрыто — как нет ответа", s.label())
 	case res == AdmitNoWindow:
 		log.Printf("сессия %s: окно «Пустить?» не появилось — вступление отклонено", s.label())
 		return false, "nowin"
@@ -150,6 +154,18 @@ func admitLoop(ctx context.Context, show func(left time.Duration, again bool) Ad
 			return r
 		}
 	}
+}
+
+// admitLeft — через сколько секунд (вверх) возможно следующее окно «Пустить?»: пауза после отказа или, пока окно
+// открыто, его полный срок; 0 — хоть сейчас.
+func (a *Agent) admitLeft() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	d := time.Until(a.admitNext)
+	if a.admitOpen && d < admitWait {
+		d = admitWait
+	}
+	return max(0, int((d+time.Second-1)/time.Second))
 }
 
 // joinCode — код TOTP вступления: своя лестница вступления (joinFails по хосту, под a.mu), лестницы входа записи
@@ -189,12 +205,13 @@ const joinLockAt = 5
 func (a *Agent) joinB(ctx context.Context, s *session, m authMsg, keyOK bool, user string, salt []byte, fpc, fph string, send func(authMsg),
 	waitCode func(func(string)), waitProof func(func(authMsg))) {
 	var step atomic.Int32 // 0 — ждём код, 1 — ждём доказательство, 2 — окно и дальше, 3 — отказ
-	reject := func(t string, why ...string) {
+	rejectLeft := func(left int, t string, why ...string) {
 		step.Store(3)
-		send(authMsg{T: t, Why: strings.Join(why, "")})
+		send(authMsg{T: t, Why: strings.Join(why, ""), Left: left})
 		a.release(s)
 		time.AfterFunc(500*time.Millisecond, func() { s.pc.Close() })
 	}
+	reject := func(t string, why ...string) { rejectLeft(0, t, why...) }
 	id, name := rxClaim(m)
 	switch {
 	case !a.joinOn() || user != "" || s.offOnly: // только запись по умолчанию (запись пространства)
@@ -206,15 +223,12 @@ func (a *Agent) joinB(ctx context.Context, s *session, m authMsg, keyOK bool, us
 	case !hub.IsHostID(id) || id == a.ID: // в окне и в M — только заявленный ID другого ПК
 		reject("nojoin", "id")
 		return
-	case a.LoginShut != nil && a.LoginShut(user): // решение 12 A: этот ПК сам ещё не сверен после вступления
-		reject("denied", "wait")
-		return
 	}
 	a.mu.Lock()
 	locked := time.Now().Before(a.joinUntil)
 	a.mu.Unlock()
 	if locked {
-		reject("locked")
+		reject("locked", "join")
 		return
 	}
 	cpub := ed25519.PublicKey(append([]byte(nil), m.CPub...))
@@ -226,11 +240,14 @@ func (a *Agent) joinB(ctx context.Context, s *session, m authMsg, keyOK bool, us
 		ok, locked := a.joinCode(user, code)
 		switch {
 		case locked:
-			reject("locked")
+			reject("locked", "join")
 			return
 		case !ok:
 			log.Printf("сессия %s: вступление — неверный код TOTP", s.cid)
 			reject("fail", "code")
+			return
+		case a.LoginShut != nil && a.LoginShut(user): // решение 12 A: этот ПК сам ещё не сверен — только знающему код
+			reject("denied", "wait")
 			return
 		}
 		osalt, opub, why := a.SpaceOwner(salt)
@@ -268,9 +285,9 @@ func (a *Agent) joinB(ctx context.Context, s *session, m authMsg, keyOK bool, us
 				ok, why := a.admitAsk(ctx, s, AdmitReq{ID: id, Name: name, FP: pake.KeyFingerprint(cpub)})
 				if !ok {
 					if why == "later" {
-						reject("later")
+						rejectLeft(a.admitLeft(), "later")
 					} else {
-						reject("denied", why)
+						rejectLeft(a.admitLeft(), "denied", why)
 					}
 					return
 				}
@@ -288,7 +305,7 @@ func (a *Agent) joinB(ctx context.Context, s *session, m authMsg, keyOK bool, us
 		send(authMsg{T: "join", Salt: osalt})
 		time.AfterFunc(proofWait, func() {
 			if step.CompareAndSwap(1, 3) {
-				reject("denied")
+				reject("denied", "slow")
 			}
 		})
 	})
@@ -300,7 +317,7 @@ func (a *Agent) joinB(ctx context.Context, s *session, m authMsg, keyOK bool, us
 	time.AfterFunc(authWait, func() { // клиент шлёт код сам, сразу: ждать человека здесь незачем
 		if step.CompareAndSwap(0, 3) {
 			log.Printf("сессия %s: вступление — кода нет за %v", s.cid, authWait)
-			reject("denied")
+			reject("denied", "slow")
 		}
 	})
 }
