@@ -635,19 +635,72 @@ func TestSpaceJoinOldVoucher(t *testing.T) {
 	}
 }
 
-// TestSpaceJoinPasswordToNew — пароль ввели (мастер помнил старого поручителя), а поручитель новый: вступление идёт
-// без пароля — с кодом, фразой и окном; стадия «ждём «Разрешить»» видна.
+// TestSpaceJoinPasswordToNew — пароль ввели (запасной путь), поручитель новый: вход паролем и кодом, состав — только
+// после «Разрешить»; в окне — заявленные ID и имя, новый член — только под этим ID; стадия «ждём «Разрешить»» видна.
 func TestSpaceJoinPasswordToNew(t *testing.T) {
 	r := admitHost(t)
 	var stages []string
 	d := r.joinDial(newKey(), nil, r.fresh(), &stages, nil)
 	d.Password = "secret123"
+	salted := false
+	d.OwnerKey = func([]byte) (ed25519.PrivateKey, error) { salted = true; return nil, errors.New("тест") }
 	if _, err := SpaceJoin(context.Background(), d); err != nil {
 		t.Fatal(err)
 	}
-	if a := r.asked(); len(a) != 1 || a[0].ID != "987654321" || strings.Join(stages, ",") != "link,auth,admit,list" {
-		t.Errorf("окно %+v, стадии %v", a, stages)
+	r.amu.Lock()
+	jid := r.jid
+	r.amu.Unlock()
+	if a := r.asked(); len(a) != 1 || a[0].ID != "987654321" || a[0].Name != "Ноутбук" || jid != "987654321" || salted {
+		t.Errorf("окно %+v, ID в SpaceJoin %q, путь без пароля %v", a, jid, salted)
 	}
+	if strings.Join(stages, ",") != "link,auth,list,admit" {
+		t.Errorf("стадии %v", stages)
+	}
+}
+
+// TestSpaceJoinLockedFallback — решение владельца C: лестница вступления по коду заперта — joinlocked; запасной путь с
+// паролем проходит, но только после «Разрешить» (окно обязательно, ввод сессии на время окна выключен); неверный
+// пароль — обычная лестница входа, лестница вступления не тронута; без пароля — по-прежнему joinlocked.
+func TestSpaceJoinLockedFallback(t *testing.T) {
+	r := admitHost(t, func(r *admitRig) { r.answer = no })
+	r.a.mu.Lock()
+	r.a.joinUntil = time.Now().Add(time.Hour)
+	r.a.mu.Unlock()
+	if _, err := SpaceJoin(context.Background(), r.joinDial(newKey(), nil, r.fresh(), nil, nil)); !errors.Is(err, ErrSpaceJoinLocked) {
+		t.Fatalf("заперто: %v", err)
+	}
+	var signed atomic.Bool
+	pw := func(p string) SpaceDial {
+		d := r.joinDial(newKey(), nil, r.fresh(), nil, &signed)
+		d.Password = p
+		return d
+	}
+	if _, err := SpaceJoin(context.Background(), pw("secret123")); !errors.Is(err, ErrSpaceDeclined) || signed.Load() || len(r.asked()) != 1 {
+		t.Errorf("с паролем без «Разрешить»: %v, состав %v, окон %d", err, signed.Load(), len(r.asked()))
+	}
+	r.noPause()
+	if _, err := SpaceJoin(context.Background(), pw("wrong-pass")); !errors.Is(err, ErrSpaceAuth) || len(r.asked()) != 1 {
+		t.Errorf("неверный пароль: %v, окон %d", err, len(r.asked()))
+	}
+	if f, _ := lock(r.a); f != 1 {
+		t.Errorf("неверный пароль не в лестнице входа: %d", f)
+	}
+	r.a.mu.Lock()
+	jf, ju := r.a.joinFails, r.a.joinUntil
+	r.a.mu.Unlock()
+	if jf != 0 || time.Until(ju) < 59*time.Minute {
+		t.Errorf("лестница вступления тронута: %d, %v", jf, time.Until(ju))
+	}
+	r.setAnswer(yes)
+	if out, err := SpaceJoin(context.Background(), pw("secret123")); err != nil || string(out) != "M-SECRET-MARK-1+N" || len(r.asked()) != 2 {
+		t.Errorf("с паролем и «Разрешить»: %q %v, окон %d", out, err, len(r.asked()))
+	}
+	if _, err := SpaceJoin(context.Background(), r.joinDial(newKey(), nil, r.fresh(), nil, nil)); !errors.Is(err, ErrSpaceJoinLocked) {
+		t.Errorf("без пароля после пути с паролем: %v", err)
+	}
+	r.a.mu.Lock()
+	r.a.joinUntil = time.Time{}
+	r.a.mu.Unlock()
 }
 
 // TestSpaceJoinPasswordAdmit — вход паролем (клиент ≤ v0.3.1) на новом поручителе: состав — только после «Разрешить»

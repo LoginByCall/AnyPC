@@ -60,7 +60,7 @@ func (a *Agent) spaceCtl(ctx context.Context, s *session, data []byte, reply fun
 		return
 	}
 	s.mu.Lock()
-	salt, cpub, jid := s.salt, s.cpub, s.joinID
+	salt, cpub, jid, cid, cname, asend := s.salt, s.cpub, s.joinID, s.claimID, s.claimName, s.authSend
 	s.mu.Unlock()
 	give := func() {
 		if b := a.SpaceGet(salt); len(b) > 0 {
@@ -85,12 +85,18 @@ func (a *Agent) spaceCtl(ctx context.Context, s *session, data []byte, reply fun
 				for _, e := range s.keys.release() {
 					sendInput(e, nil)
 				}
-				ok, why := a.admitAsk(ctx, s, AdmitReq{FP: pake.KeyFingerprint(cpub)})
+				if asend != nil { // новый клиент покажет «ждём «Разрешить»»; старый неизвестный t в "auth" пропускает
+					asend(authMsg{T: "admit"})
+				}
+				ok, why := a.admitAsk(ctx, s, AdmitReq{ID: cid, Name: cname, FP: pake.KeyFingerprint(cpub)})
 				s.admitBlock.Store(false)
 				if !ok {
 					reply(spMsg{T: "sp", Err: "admit_" + why})
 					return
 				}
+				s.mu.Lock()
+				s.joinID = cid // новый член M — под ID из окна ("" — старый клиент ID не сообщил)
+				s.mu.Unlock()
 				s.admitted.Store(true)
 				give()
 			}()
@@ -401,9 +407,6 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 							finish(ErrSpaceOld)
 							return
 						}
-						if !join && am.Join && d.OwnerKey != nil && d.Self != "" { // пароль ввели, а поручитель новый: без пароля, с окном
-							join = true
-						}
 						if join && (!am.Join || d.OwnerKey == nil) { // поручитель ≤ v0.3.1: только путь с паролем
 							finish(ErrSpaceNeedPass)
 							return
@@ -431,7 +434,7 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 							finish(err)
 							return
 						}
-						sendA(authMsg{T: "b", Msg: b, Conf: conf, CPub: cpub, CSig: csig})
+						sendA(authMsg{T: "b", Msg: b, Conf: conf, CPub: cpub, CSig: csig, From: d.Self, Name: d.Name}) // Ч12б: ID и имя — в окно «Пустить?» нового поручителя
 					case "otp":
 						if otpN++; otpN > 1 || !hostOK(am) { // второй запрос — код не подошёл
 							finish(ErrSpaceAuth)
@@ -468,8 +471,8 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 							}
 							sendA(authMsg{T: "join", Sig: sig})
 						}()
-					case "admit": // окно «Пустить?» на том ПК открыто
-						if !join || !salted {
+					case "admit": // окно «Пустить?» на том ПК открыто (без пароля — после доказательства; с паролем — до состава)
+						if join && !salted {
 							finish(errSpaceProtocol)
 							return
 						}
