@@ -12,7 +12,7 @@
 - `f2t`: Crittografia end-to-end
 - `f2d`: Schermo e input viaggiano su DTLS-SRTP. Il server relay inoltra solo dati cifrati.
 - `f3t`: Un unico eseguibile
-- `f3d`: Lo stesso programma mostra il tuo ID e la password e si connette ad altri PC. Nessuna installazione.
+- `f3d`: Lo stesso programma mostra il tuo ID e il codice monouso e si connette ad altri PC. Nessuna installazione.
 - `f4t`: Fluido e reattivo
 - `f4d`: Video VP9 (o H.264) fino a 1080p a 30 fps; bitrate e frequenza dei fotogrammi si adattano alla connessione al volo, senza pause; statistiche di connessione in tempo reale.
 - `f10t`: I tuoi PC in schede
@@ -28,7 +28,7 @@
 - `w1`: Avvia il file AnyPC.exe scaricato: non serve installarlo e il programma mostra subito l’ID di questo computer. Al primo avvio scarica una sola volta il componente FFmpeg (circa 40 MB).
 - `w2`: Se compare «PC protetto da Windows», fai clic su «Ulteriori informazioni» → «Esegui comunque»: il programma non è ancora firmato.
 - `w3`: Se Windows Firewall chiede l’accesso alla rete, consentilo; altrimenti la connessione diretta potrebbe non riuscire e il traffico passerà dal server relay.
-- `w4`: Per consentire le connessioni a questo computer, imposta una password: «Accesso a questo PC» → «Configura» nella schermata principale.
+- `w4`: Scegli uno dei due metodi di accesso indipendenti a questo computer: attiva «Consenti il controllo» per un aiuto una tantum oppure apri «Accesso a questo PC» → «Configura», attiva «Consenti spazio» e aggiungi utenti permanenti con password, TOTP e permessi.
 - `w5`: Se FFmpeg non si scarica da solo (la finestra mostra un errore di download), scarica l’archivio manualmente — [ffmpeg-9.0.2-essentials_build.zip](https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip) (~115 MB) — e mettilo, senza decomprimerlo, nella cartella Download o accanto ad AnyPC.exe. Il programma lo trova entro 30 secondi e ne verifica il checksum.
 - `wchk`: Verifica il file (PowerShell): il checksum deve coincidere con quello indicato sopra:
 - `l1`: Installa le dipendenze, che variano in base alla sessione grafica:
@@ -38,7 +38,7 @@
 - `lchk`: Verifica il file: il checksum deve coincidere con quello indicato sopra:
 - `howT`: Inizia in 3 passi
 - `s1`: Scarica AnyPC sul computer da controllare (o su entrambi) e avvialo.
-- `s2`: Sul computer da controllare, imposta una password (almeno 8 caratteri) e annota il suo ID di 9 cifre.
+- `s2`: Sul computer da controllare, scegli uno dei due metodi di accesso indipendenti. Per l’accesso monouso, attiva «Consenti il controllo» e annota il suo ID di 9 cifre e il codice da 6 cifre. Per l’accesso permanente, attiva «Consenti spazio» e crea un utente nominativo con password propria, TOTP obbligatorio e permessi «Controllo completo» o «Solo visualizzazione».
 - `s3`: In una finestra del browser o sull’altro computer, inserisci quell’ID e la password e fai clic su «Connetti». Se sul PC controllato è attiva la conferma, lì qualcuno dovrà fare clic su «Consenti».
 - `secT`: Sicurezza
 - `sec1`: Ogni connessione richiede la password impostata sul PC controllato; la password non viene mai trasmessa in rete.

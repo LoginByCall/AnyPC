@@ -12,7 +12,7 @@
 - `f2t`: Ende-zu-Ende-Verschlüsselung
 - `f2d`: Bild und Eingaben laufen über DTLS-SRTP. Der Relay-Server leitet nur verschlüsselte Daten weiter.
 - `f3t`: Eine einzige ausführbare Datei
-- `f3d`: Ein Programm zeigt Ihre ID und Ihr Passwort an und verbindet sich mit anderen PCs. Keine Installation nötig.
+- `f3d`: Ein Programm zeigt Ihre ID und Ihren Einmalcode an und verbindet sich mit anderen PCs. Keine Installation nötig.
 - `f4t`: Flüssig und reaktionsschnell
 - `f4d`: VP9- (oder H.264-)Video bis 1080p mit 30 fps; Bitrate und Bildrate passen sich der Verbindung laufend und ohne Pausen an; Verbindungsstatistik live.
 - `f10t`: Mehrere eigene PCs
@@ -28,7 +28,7 @@
 - `w1`: Starten Sie die heruntergeladene AnyPC.exe – eine Installation ist nicht nötig, das Programm zeigt sofort die ID dieses Computers an. Beim ersten Start lädt es einmalig die FFmpeg-Komponente herunter (etwa 40 MB).
 - `w2`: Erscheint „Der Computer wurde durch Windows geschützt“, klicken Sie auf „Weitere Informationen“ → „Trotzdem ausführen“: Das Programm ist noch nicht signiert.
 - `w3`: Fragt die Windows-Firewall nach dem Netzwerkzugriff, erlauben Sie ihn – sonst kommt eine direkte Verbindung womöglich nicht zustande, und die Daten laufen über den Relay-Server.
-- `w4`: Damit sich andere mit diesem Computer verbinden können, legen Sie ein Passwort fest: „Zugriff auf diesen PC“ → „Einrichten“ auf dem Hauptbildschirm.
+- `w4`: Wählen Sie eine von zwei unabhängigen Zugriffsmethoden für diesen Computer: Schalten Sie „Steuerung erlauben“ für einmalige Hilfe ein, oder öffnen Sie „Zugriff auf diesen PC“ → „Einrichten“, aktivieren Sie „Bereich erlauben“ und fügen Sie dauerhafte Benutzer mit Passwörtern, TOTP und Rechten hinzu.
 - `w5`: Lädt FFmpeg nicht von selbst herunter (das Fenster zeigt einen Download-Fehler), laden Sie das Archiv manuell herunter – [ffmpeg-9.0.2-essentials_build.zip](https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip) (~115 MB) – und legen Sie es ungeöffnet in den Ordner „Downloads“ oder neben AnyPC.exe. Das Programm findet es innerhalb von 30 Sekunden und prüft die Prüfsumme.
 - `wchk`: Datei prüfen (PowerShell) – die Prüfsumme muss mit der oben angegebenen übereinstimmen:
 - `l1`: Installieren Sie die Abhängigkeiten – welche, hängt von Ihrer grafischen Sitzung ab:
@@ -38,7 +38,7 @@
 - `lchk`: Datei prüfen – die Prüfsumme muss mit der oben angegebenen übereinstimmen:
 - `howT`: In 3 Schritten loslegen
 - `s1`: Laden Sie AnyPC auf den Computer herunter, den Sie steuern möchten (oder auf beide), und starten Sie es.
-- `s2`: Legen Sie auf dem zu steuernden Computer ein Passwort fest (mindestens 8 Zeichen) und notieren Sie seine 9-stellige ID.
+- `s2`: Wählen Sie auf dem zu steuernden Computer eine von zwei unabhängigen Zugriffsmethoden. Für Einmalzugriff schalten Sie „Steuerung erlauben“ ein und notieren seine 9-stellige ID und den 6-stelligen Code. Für dauerhaften Zugriff aktivieren Sie „Bereich erlauben“ und erstellen einen benannten Benutzer mit eigenem Passwort, obligatorischem TOTP und den Rechten „Volle Steuerung“ oder „Nur ansehen“.
 - `s3`: Geben Sie im Browserfenster oder auf dem anderen Computer diese ID und das Passwort ein und klicken Sie auf „Verbinden“. Ist auf dem gesteuerten PC die Bestätigung aktiviert, muss dort jemand auf „Erlauben“ klicken.
 - `secT`: Sicherheit
 - `sec1`: Jede Verbindung erfordert das auf dem gesteuerten PC festgelegte Passwort; das Passwort selbst wird nie über das Netzwerk übertragen.

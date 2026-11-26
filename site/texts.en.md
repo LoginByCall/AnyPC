@@ -12,7 +12,7 @@
 - `f2t`: End-to-end encryption
 - `f2d`: Screen and input travel over DTLS-SRTP. The relay server forwards only ciphertext.
 - `f3t`: A single executable
-- `f3d`: One program shows your ID and password and connects to other PCs. Nothing to install.
+- `f3d`: One program shows your ID and one-time code and connects to other PCs. Nothing to install.
 - `f4t`: Smooth and responsive
 - `f4d`: VP9 (or H.264) video up to 1080p at 30 fps; bitrate and frame rate adapt to your connection on the fly, with no pauses; live connection statistics.
 - `f10t`: Your PCs in tabs
@@ -28,7 +28,7 @@
 - `w1`: Run the downloaded AnyPC.exe — there is nothing to install, and the program shows this computer’s ID right away. On first launch it downloads the FFmpeg component once (about 40 MB).
 - `w2`: If you see “Windows protected your PC”, click “More info” → “Run anyway”: the program is not code-signed yet.
 - `w3`: If Windows Firewall asks about network access, allow it; otherwise a direct connection may fail and traffic will go through the relay server.
-- `w4`: To allow connections to this computer, set a password: “Access to this PC” → “Set up” on the main screen.
+- `w4`: Choose one of two independent access methods on this computer: turn on “Allow control” for one-time help, or open “Access to this PC” → “Set up”, turn on “Allow space” and add permanent users with passwords, TOTP and rights.
 - `w5`: If FFmpeg does not download by itself (the window shows a download error), download the archive manually — [ffmpeg-9.0.2-essentials_build.zip](https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip) (~115 MB) — and put it, without unpacking, into your Downloads folder or next to AnyPC.exe. The program picks it up within 30 seconds and verifies its checksum.
 - `wchk`: Verify the file (PowerShell) — the checksum must match the one above:
 - `l1`: Install the dependencies — which ones depends on your graphical session:
@@ -38,7 +38,7 @@
 - `lchk`: Verify the file — the checksum must match the one above:
 - `howT`: Get started in 3 steps
 - `s1`: Download AnyPC to the computer you want to control (or to both) and run it.
-- `s2`: On the computer you want to control, set a password (at least 8 characters) and note its 9-digit ID.
+- `s2`: On the computer you want to control, choose one of two independent access methods. For one-time access, turn on “Allow control” and note its 9-digit ID and 6-digit code. For permanent access, turn on “Allow space” and create a named user with their own password, mandatory TOTP and “Full control” or “View only” rights.
 - `s3`: In a browser window or on the other computer, enter that ID and password and click “Connect”. If confirmation is turned on for the controlled PC, someone there has to click “Allow”.
 - `secT`: Security
 - `sec1`: Every connection requires the password set on the controlled PC; the password itself is never sent over the network.

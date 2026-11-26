@@ -12,7 +12,7 @@
 - `f2t`: Chiffrement de bout en bout
 - `f2d`: L’écran et les saisies transitent par DTLS-SRTP. Le serveur relais ne transmet que des données chiffrées.
 - `f3t`: Un seul fichier exécutable
-- `f3d`: Un même programme affiche votre ID et votre mot de passe et se connecte à d’autres PC. Aucune installation.
+- `f3d`: Un même programme affiche votre ID et votre code à usage unique et se connecte à d’autres PC. Aucune installation.
 - `f4t`: Fluide et réactif
 - `f4d`: Vidéo VP9 (ou H.264) jusqu’en 1080p à 30 i/s ; le débit et la cadence s’adaptent à la connexion à la volée, sans pause ; statistiques de connexion en temps réel.
 - `f10t`: Vos PC en onglets
@@ -28,7 +28,7 @@
 - `w1`: Lancez le fichier AnyPC.exe téléchargé : aucune installation n’est nécessaire, le programme affiche aussitôt l’ID de cet ordinateur. Au premier lancement, il télécharge une seule fois le composant FFmpeg (environ 40 Mo).
 - `w2`: Si le message « Windows a protégé votre ordinateur » s’affiche, cliquez sur « Informations complémentaires » → « Exécuter quand même » : le programme n’est pas encore signé.
 - `w3`: Si le pare-feu Windows demande l’accès au réseau, autorisez-le ; sinon, la connexion directe risque d’échouer et le trafic passera par le serveur relais.
-- `w4`: Pour que l’on puisse se connecter à cet ordinateur, définissez un mot de passe : « Accès à ce PC » → « Configurer » sur l’écran principal.
+- `w4`: Choisissez l’un des deux modes d’accès indépendants à cet ordinateur : activez « Autoriser le contrôle » pour une aide ponctuelle, ou ouvrez « Accès à ce PC » → « Configurer », activez « Autoriser l’espace » et ajoutez des utilisateurs permanents avec mots de passe, TOTP et droits.
 - `w5`: Si FFmpeg ne se télécharge pas tout seul (la fenêtre affiche une erreur de téléchargement), téléchargez l’archive manuellement — [ffmpeg-9.0.2-essentials_build.zip](https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip) (~115 Mo) — et placez-la, sans la décompresser, dans le dossier Téléchargements ou à côté d’AnyPC.exe. Le programme la détecte en 30 secondes et vérifie sa somme de contrôle.
 - `wchk`: Vérifier le fichier (PowerShell) — la somme doit correspondre à celle indiquée ci-dessus :
 - `l1`: Installez les dépendances ; elles varient selon votre session graphique :
@@ -38,7 +38,7 @@
 - `lchk`: Vérifier le fichier — la somme doit correspondre à celle indiquée ci-dessus :
 - `howT`: Démarrer en 3 étapes
 - `s1`: Téléchargez AnyPC sur l’ordinateur à contrôler (ou sur les deux) et lancez-le.
-- `s2`: Sur l’ordinateur à contrôler, définissez un mot de passe (8 caractères minimum) et notez son ID à 9 chiffres.
+- `s2`: Sur l’ordinateur à contrôler, choisissez l’un des deux modes d’accès indépendants. Pour un accès unique, activez « Autoriser le contrôle » et notez son ID à 9 chiffres et le code à 6 chiffres. Pour un accès permanent, activez « Autoriser l’espace » et créez un utilisateur nommé avec son mot de passe, un TOTP obligatoire et les droits « Contrôle total » ou « Affichage seul ».
 - `s3`: Dans une fenêtre de navigateur ou sur l’autre ordinateur, saisissez cet ID et le mot de passe, puis cliquez sur « Se connecter ». Si la confirmation est activée sur le PC contrôlé, quelqu’un doit y cliquer sur « Autoriser ».
 - `secT`: Sécurité
 - `sec1`: Chaque connexion exige le mot de passe défini sur le PC contrôlé ; le mot de passe lui-même ne transite jamais sur le réseau.
