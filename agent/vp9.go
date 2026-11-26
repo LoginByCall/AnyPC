@@ -8,7 +8,11 @@ package agent
 // даёт +1 дБ при 72 % битрейта (LOGBOOK 2026-11-09).
 
 /*
-#cgo LDFLAGS: -lvpx -lm
+#cgo linux,amd64 LDFLAGS: ${SRCDIR}/../third_party/libvpx/linux-amd64/lib/libvpx.a
+#cgo darwin,amd64 LDFLAGS: ${SRCDIR}/../third_party/libvpx/darwin-amd64/lib/libvpx.a
+#cgo darwin,arm64 LDFLAGS: ${SRCDIR}/../third_party/libvpx/darwin-arm64/lib/libvpx.a
+#cgo windows,amd64 LDFLAGS: ${SRCDIR}/../third_party/libvpx/windows-amd64/lib/libvpx.a
+#cgo LDFLAGS: -lm
 #cgo !darwin LDFLAGS: -lpthread
 #include <stdlib.h>
 #include <string.h>
