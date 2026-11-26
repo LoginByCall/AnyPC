@@ -129,6 +129,7 @@ const extra = async () => ` + "`" + `
   console.log('tour=' + tHome + '|' + tAll + '|' + tOn + '|' + tConn + '|' + tOff + '|end=' + await ev("[" + shown('connect') + ", " + shown('home') + ", " + shown('msg') + "].join(',')"));
   // рамка шага «Параметры» — по строке summary, не по всему <details>; «Показать подсказки снова» сбрасывает и тур «Другого ПК»
   const tOpt = await ev("tEls(TOURS.connect[1]).map(e => e.tagName + '#' + e.id).join(',')");
+  console.log('options=' + await ev("(() => { const d = document.getElementById('copts'), s = document.getElementById('coptsum'), closed = getComputedStyle(s, '::before').content; d.open = true; const open = getComputedStyle(s, '::before').content; d.open = false; return [s.textContent, closed, open, document.querySelector('#copts #id') === null].join('|'); })()"));
   await ev("document.getElementById('helpbtn').click(); 1"); await sleep(200);
   await ev("[...document.querySelectorAll('#helpbody button')].find(b => b.textContent === t('help_tour')).click(); 1"); await sleep(300);
   console.log('tour2=' + tOpt + '|' + await ev("[localStorage.getItem('tour_connect'), localStorage.getItem('tour_home'), tour?.kind].join('|')"));
@@ -185,6 +186,7 @@ func TestBrowserHome(t *testing.T) {
 		"renpoll=true|true|Набор|нужен код|Мамин\n",
 		"colors=rgb(180, 35, 24)|rgb(180, 35, 24)|rgb(29, 78, 216)|rgb(180, 35, 24)\n",
 		"tour=tour_id,tour_code,tour_add,tour_talk,tour_help||true:home|tour_go,tour_opts|false|end=true,false,true\n",
+		"options=Расширенные параметры|\"▸\"|\"▾\"|true\n",
 		"user=true|true|anna\n",
 		"codefit=true,INPUT+BUTTON.main,true|true,INPUT+BUTTON.main,true\n", // N1
 		"hdmenu=true,true\n",
