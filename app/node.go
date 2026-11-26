@@ -180,12 +180,46 @@ func (r *runner) start(server string) {
 	go func(done chan struct{}) { r.a.Run(ctx); close(done) }(r.done)
 }
 
-// wait — до остановки родительского ctx и последнего Run.
+func (r *runner) stop() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.cancel != nil {
+		r.cancel()
+		<-r.done
+		r.cancel, r.done = nil, nil
+	}
+}
+
+// sync подключает сеть только при включённом Allow control. Allow space сеть не включает.
+func (r *runner) sync(cfg *config) {
+	if !cfg.giving() {
+		r.stop()
+		return
+	}
+	r.start(cfg.server())
+}
+
+// syncNetwork останавливает и сигнализацию, и фоновую сверку пространства при выключенном Allow control.
+func syncNetwork(ctx context.Context, cfg *config, a *agent.Agent, r *runner, spaceCancel *context.CancelFunc) {
+	if cfg.giving() {
+		if *spaceCancel == nil {
+			*spaceCancel = startSpaceSync(ctx, cfg, a)
+		}
+	} else if *spaceCancel != nil {
+		(*spaceCancel)()
+		*spaceCancel = nil
+	}
+	r.sync(cfg)
+}
+
+// wait — до остановки родительского ctx и последнего Run; сеть могла не запускаться.
 func (r *runner) wait() {
 	<-r.ctx.Done()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	<-r.done
+	if r.done != nil {
+		<-r.done
+	}
 }
 
 // setNode — для окна: проверить узел, сохранить, перерегистрировать хост. Возвращает новый список хабов.
@@ -194,7 +228,7 @@ func setNode(cfg *config, r *runner, node string, public bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	r.start(s)
+	r.sync(cfg)
 	return s, nil
 }
 

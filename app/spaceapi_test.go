@@ -81,7 +81,15 @@ func opWait(t *testing.T, call func(string, ...any) (int, any, string), state st
 
 // TestSpaceAPIGate — каждое новое имя: без токена, с чужим токеном, с чужим Host, не POST — 403; с токеном —
 // маршрут есть (не 404), ошибки — только space:<код>. Имена — в привязках страницы.
+func spaceAuthOK(t *testing.T) {
+	t.Helper()
+	old := systemAuth
+	systemAuth = func() error { return nil }
+	t.Cleanup(func() { systemAuth = old })
+}
+
 func TestSpaceAPIGate(t *testing.T) {
+	spaceAuthOK(t)
 	opsReset(t)
 	cfg := spaceCfg(t, spacePass, totp.NewSecret())
 	page, err := shimmed("wss://example/ws", apiTok)
@@ -122,6 +130,9 @@ func TestSpaceAPIGate(t *testing.T) {
 
 // TestSpaceErrCode — коды ошибок; неизвестная — other, текст ядра в окно не идёт.
 func TestSpaceErrCode(t *testing.T) {
+	oldAuth := systemAuth
+	systemAuth = func() error { return nil }
+	defer func() { systemAuth = oldAuth }()
 	for _, c := range []struct {
 		err  error
 		code string
@@ -157,6 +168,7 @@ func TestSpaceErrCode(t *testing.T) {
 // TestSpaceOpOtherLogged — ошибка other фоновой операции: окну — код, текст — в журнал; испорченное пространство —
 // damaged и у сверки.
 func TestSpaceOpOtherLogged(t *testing.T) {
+	spaceAuthOK(t)
 	opsReset(t)
 	var logs syncLog
 	log.SetOutput(&logs)
@@ -184,6 +196,7 @@ func TestSpaceOpOtherLogged(t *testing.T) {
 // TestSpaceOpZombie — превью после конца операции (обмен оборвался, пока Sign шёл к превью) её не воскрешает:
 // состояние err, подтверждать нечего (регрессия приёмки Ч2, B1).
 func TestSpaceOpZombie(t *testing.T) {
+	spaceAuthOK(t)
 	opsReset(t)
 	sec := totp.NewSecret()
 	p := spaceCfg(t, spacePass, sec)
@@ -217,6 +230,7 @@ func TestSpaceOpZombie(t *testing.T) {
 // TestSpaceLeaveHolds — выход занимает операцию, пока идёт: «Работаю тут» и создание в это время — busy (регрессия
 // приёмки Ч2, M1).
 func TestSpaceLeaveHolds(t *testing.T) {
+	spaceAuthOK(t)
 	opsReset(t)
 	sec := totp.NewSecret()
 	p := spaceCfg(t, spacePass, sec)
@@ -255,6 +269,7 @@ func TestSpaceLeaveHolds(t *testing.T) {
 // TestSpaceAPIFlow — create → enter (отказ, затем подтверждение) → «Работаю тут» → «снять» → exclude (QR нового
 // кода) → leave через API на подменах сети; hostInfo без секретов на каждом шаге.
 func TestSpaceAPIFlow(t *testing.T) {
+	spaceAuthOK(t)
 	opsReset(t)
 	sec := totp.NewSecret()
 	p := spaceCfg(t, spacePass, sec)
@@ -455,6 +470,7 @@ func TestSpaceAPIFlow(t *testing.T) {
 // TestSpaceOpBusy — вторая операция при идущей — busy (и выход тоже); подтверждать нечего, пока операция не
 // спрашивает; итог живёт 5 мин по часам операций, после — операции нет и новая стартует.
 func TestSpaceOpBusy(t *testing.T) {
+	spaceAuthOK(t)
 	opsReset(t)
 	var mu sync.Mutex
 	now := time.Now()

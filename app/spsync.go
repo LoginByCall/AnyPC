@@ -488,7 +488,8 @@ func (s *spaceSyncer) spaceChangeLogin(ctx context.Context, phrase, newPassword 
 
 // startSpaceSync — при запуске: рассылка правок с этого ПК, сверка со всеми членами (ПК мог пропустить правки, пока
 // был выключен); вход сменился — рвать сессии со старым паролем.
-func startSpaceSync(ctx context.Context, cfg *config, a *agent.Agent) {
+func startSpaceSync(ctx context.Context, cfg *config, a *agent.Agent) context.CancelFunc {
+	ctx, cancel := context.WithCancel(ctx)
 	cfg.syn = &spaceSyncer{cfg: cfg, ctx: ctx}
 	spaceChanged = a.DropRevoked
 	cfg.syn.bg.Go(func() {
@@ -502,6 +503,7 @@ func startSpaceSync(ctx context.Context, cfg *config, a *agent.Agent) {
 			cfg.syn.random(ctx)
 		}
 	})
+	return cancel
 }
 
 // spaceEvery — пауза периодической сверки.

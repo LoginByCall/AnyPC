@@ -23,6 +23,9 @@ import (
 )
 
 func TestLocalAPI(t *testing.T) {
+	oldAuth := systemAuth
+	systemAuth = func() error { return nil }
+	defer func() { systemAuth = oldAuth }()
 	cfg, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
 	page, err := shimmed("wss://example/ws", "tok123")
 	if err != nil || !strings.Contains(string(page), `const T = "tok123"`) || strings.Count(string(page), "<script>") < 2 {

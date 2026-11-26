@@ -191,14 +191,15 @@ func hostMain() {
 			here: func() { trayGo(trayJSHere) }, pc: func(id string) { trayGo(trayJSPC(id)) }, help: func() { trayGo(trayJSHelp) },
 			send: func(id string) { sendOps.startTray(cfg, id) }, swin: func() { trayGo(trayJSSend) }})
 	}
-	srv := cfg.Server
 	code := cfg.code()
+	var spaceCancel context.CancelFunc
+	cfg.networkSync = func() { syncNetwork(ctx, cfg, a, run, &spaceCancel) }
 	go func() { // --view-only on/off при запущенной программе: идущая сессия — в просмотр и обратно (REQ-F-25)
 		for range time.Tick(2 * time.Second) {
 			pollConfig(cfg, a, &code)
 		}
 	}()
-	run.start(srv) // настройки дальше — только под c.mu (опрос выше их перечитывает)
+	syncNetwork(ctx, cfg, a, run, &spaceCancel)
 	run.wait()
 	quit, cancel := context.WithTimeout(context.Background(), 3*time.Second) // SIGTERM/SIGINT: снять пропуска (Э3)
 	passes.offAll(quit)
@@ -591,19 +592,19 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 		}
 		a.AudioMic(on)
 	case "setPassword":
-		err = dropAfter(a, cfg.setPassword(str(0)))
+		err = authDo(func() error { return dropAfter(a, cfg.setPassword(str(0))) })
 	case "setConfirm":
 		var on bool
 		if len(args) > 0 {
 			json.Unmarshal(args[0], &on)
 		}
-		err = dropAfter(a, cfg.setConfirm(on)) // смена режима: сессия по паролю или записи (другая соль) рвётся
+		err = authDo(func() error { return dropAfter(a, cfg.setConfirm(on)) })
 	case "setNode":
 		var pub bool
 		if len(args) > 1 {
 			json.Unmarshal(args[1], &pub)
 		}
-		res, err = setNode(cfg, run, str(0), pub)
+		res, err = authResult(func() (string, error) { return setNode(cfg, run, str(0), pub) })
 	case "quit": // вкладка браузера — не процесс: без кнопки программа живёт до Ctrl+C
 		quitNow(a)
 	case "showWindow": // вторая копия просит показать окно (single_unix.go, showRunning)
@@ -635,33 +636,33 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 		if len(args) > 0 {
 			json.Unmarshal(args[0], &on)
 		}
-		err = setViewOnly(cfg, a, on)
+		err = authDo(func() error { return setViewOnly(cfg, a, on) })
 	case "otpNew":
 		res, err = cfg.otpNew(str(0))
 	case "otpEnable":
-		err = dropAfter(a, cfg.otpEnable(str(0), str(1), str(2)))
+		err = authDo(func() error { return dropAfter(a, cfg.otpEnable(str(0), str(1), str(2))) })
 	case "newCode":
-		res, err = newCode(cfg, a)
+		res, err = authResult(func() (string, error) { return newCode(cfg, a) })
 	case "setGive":
 		var on bool
 		if len(args) > 0 {
 			json.Unmarshal(args[0], &on)
 		}
-		res, err = setGive(cfg, a, on)
+		res, err = authResult(func() (string, error) { return setGive(cfg, a, on) })
 	case "otpOff":
-		err = cfg.otpOff(str(0))
+		err = authDo(func() error { return cfg.otpOff(str(0)) })
 	case "userSave":
-		err = dropAfter(a, cfg.saveUser(str(0), str(1), str(2), str(3), str(4))) // единая атомарная запись с TOTP
+		err = authDo(func() error { return dropAfter(a, cfg.saveUser(str(0), str(1), str(2), str(3), str(4))) })
 	case "setSpaceAllow":
 		var on bool
 		if len(args) > 0 {
 			json.Unmarshal(args[0], &on)
 		}
-		err = setSpaceAllow(cfg, a, on)
+		err = authDo(func() error { return setSpaceAllow(cfg, a, on) })
 	case "userDel":
-		err = dropAfter(a, cfg.delUser(str(0)))
+		err = authDo(func() error { return dropAfter(a, cfg.delUser(str(0))) })
 	case "keyDel": // REQ-S-24: отозвать ключ входа без пароля — его сессия рвётся
-		err = dropAfter(a, cfg.keyDel(str(0), str(1)))
+		err = authDo(func() error { return dropAfter(a, cfg.keyDel(str(0), str(1))) })
 	case "clientSign": // ключ клиента на хост (У3, REQ-S-24), как clientSign из pake.wasm
 		res, err = pake.ClientSignB64(str(0), str(1), str(2), str(3))
 	case "pakeRespond":

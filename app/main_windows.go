@@ -156,22 +156,28 @@ func main() {
 	w.Bind("audioMic", a.AudioMic)
 	w.Bind("openUpdate", func() { exec.Command("rundll32", "url.dll,FileProtocolHandler", updateSite).Start() }) // адрес фиксирован: странице не открыть произвольный
 	w.Bind("openSite", func() { exec.Command("rundll32", "url.dll,FileProtocolHandler", siteHome).Start() })
-	w.Bind("setPassword", func(p string) error { return dropAfter(a, cfg.setPassword(p)) })
-	w.Bind("setConfirm", func(on bool) error { return dropAfter(a, cfg.setConfirm(on)) }) // смена режима рвёт сессию по паролю/записи
+	w.Bind("setPassword", func(p string) error { return authDo(func() error { return dropAfter(a, cfg.setPassword(p)) }) })
+	w.Bind("setConfirm", func(on bool) error { return authDo(func() error { return dropAfter(a, cfg.setConfirm(on)) }) })
 	w.Bind("otpNew", cfg.otpNew)
-	w.Bind("setViewOnly", func(on bool) error { return setViewOnly(cfg, a, on) })
-	w.Bind("otpEnable", func(s, code, user string) error { return dropAfter(a, cfg.otpEnable(s, code, user)) })
-	w.Bind("otpOff", cfg.otpOff)
-	w.Bind("newCode", func() (string, error) { return newCode(cfg, a) })
-	w.Bind("setGive", func(on bool) (string, error) { return setGive(cfg, a, on) }) // «Разрешить управление»
-	w.Bind("userSave", func(name, pw, rights, secret, code string) error {
-		return dropAfter(a, cfg.saveUser(name, pw, rights, secret, code))
+	w.Bind("setViewOnly", func(on bool) error { return authDo(func() error { return setViewOnly(cfg, a, on) }) })
+	w.Bind("otpEnable", func(s, code, user string) error {
+		return authDo(func() error { return dropAfter(a, cfg.otpEnable(s, code, user)) })
 	})
-	w.Bind("setSpaceAllow", func(on bool) error { return setSpaceAllow(cfg, a, on) })
-	w.Bind("userDel", func(name string) error { return dropAfter(a, cfg.delUser(name)) })
-	w.Bind("keyDel", func(name, fp string) error { return dropAfter(a, cfg.keyDel(name, fp)) }) // REQ-S-24: его сессия рвётся
+	w.Bind("otpOff", func(user string) error { return authDo(func() error { return cfg.otpOff(user) }) })
+	w.Bind("newCode", func() (string, error) { return authResult(func() (string, error) { return newCode(cfg, a) }) })
+	w.Bind("setGive", func(on bool) (string, error) {
+		return authResult(func() (string, error) { return setGive(cfg, a, on) })
+	})
+	w.Bind("userSave", func(name, pw, rights, secret, code string) error {
+		return authDo(func() error { return dropAfter(a, cfg.saveUser(name, pw, rights, secret, code)) })
+	})
+	w.Bind("setSpaceAllow", func(on bool) error { return authDo(func() error { return setSpaceAllow(cfg, a, on) }) })
+	w.Bind("userDel", func(name string) error { return authDo(func() error { return dropAfter(a, cfg.delUser(name)) }) })
+	w.Bind("keyDel", func(name, fp string) error { return authDo(func() error { return dropAfter(a, cfg.keyDel(name, fp)) }) })
 	run := &runner{a: a, ctx: ctx}
-	w.Bind("setNode", func(node string, public bool) (string, error) { return setNode(cfg, run, node, public) })
+	w.Bind("setNode", func(node string, public bool) (string, error) {
+		return authResult(func() (string, error) { return setNode(cfg, run, node, public) })
+	})
 	w.Bind("hostDisconnect", a.Disconnect)
 	w.Bind("fullscreen", func(on bool) { setFullscreen(uintptr(w.Window()), on) })
 	w.Bind("minimize", func() { user32.NewProc("ShowWindowAsync").Call(uintptr(w.Window()), 6) }) // SW_MINIMIZE
@@ -226,8 +232,9 @@ func main() {
 			open: func() { show("") }, here: func() { show(trayJSHere) }, pc: func(id string) { show(trayJSPC(id)) }, help: func() { show(trayJSHelp) },
 			send: func(id string) { sendOps.startTray(cfg, id) }, swin: func() { show(trayJSSend) }})
 	}()
-	startSpaceSync(ctx, cfg, a)
-	run.start(cfg.Server)
+	var spaceCancel context.CancelFunc
+	cfg.networkSync = func() { syncNetwork(ctx, cfg, a, run, &spaceCancel) }
+	syncNetwork(ctx, cfg, a, run, &spaceCancel)
 	w.Run()
 	quit, qcancel := context.WithTimeout(context.Background(), 3*time.Second) // Э3: выход мастера снимает его пропуска —
 	passes.offAll(quit)                                                       // до cancel(): летящие «снять» дождаться

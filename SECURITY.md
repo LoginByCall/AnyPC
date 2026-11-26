@@ -422,3 +422,26 @@ In the new first "a", the main CPace is one-time and `psalt`/`pmsg` carry the pe
 client answers "b" with `permanent:true`, while named accounts keep the existing second "a" with the name. An old
 client without `permanent` stays on the main one-time CPace. With an old host, a new client uses its only CPace as
 before. Disabling either profile reveals nothing about the other and does not change its salt or secret.
+
+Системная авторизация настроек (2026-11-26): изменение доступа, пользователей, TOTP, одноразового кода и своего узла
+требует подтверждения операционной системой. Windows вызывает CredUIPromptForWindowsCredentialsW и сразу затирает
+возвращённый буфер (RtlSecureZeroMemory + CredFree); Linux — polkit CheckAuthorization с AllowUserInteraction;
+macOS — LocalAuthentication evaluatePolicy(deviceOwnerAuthentication). Пароль AnyPC для настроек и отдельная ключевая
+фраза для них не создаются и не хранятся. TOTP требуется только для входа каждого постоянного пользователя My space.
+Без успешной авторизации API не меняет настройки. Проверяемые операции обёрнуты authDo/authResult: отказ возвращается
+окну, действие не выполняется.
+
+Allow control — и сетевой выключатель AnyPC: пока он выключен, runner не запускает сигнализацию и фоновую сверку
+пространства. Выключение останавливает их и отменяет дальнейшие попытки подключения; включение запускает заново.
+Поэтому статус показывает выключенный профиль, а не ошибку сервера.
+
+System authorization for settings (2026-11-26): changing access, users, TOTP, the one-time code or the own server
+requires operating-system authorization. Windows uses CredUIPromptForWindowsCredentialsW and immediately wipes the
+returned buffer (RtlSecureZeroMemory + CredFree); Linux uses polkit CheckAuthorization with AllowUserInteraction;
+macOS uses LocalAuthentication evaluatePolicy(deviceOwnerAuthentication). No AnyPC settings password or settings key
+phrase is created or stored. TOTP is required only for each permanent My space user signing in, not for settings changes.
+API wrappers authDo/authResult return the authorization failure to the window without applying the action.
+
+Allow control is also AnyPC's network switch: while off, the runner does not start signaling or background space sync.
+Turning it off stops both and prevents further connection attempts; turning it on starts them again. The status reports
+the disabled profile, not a server error.

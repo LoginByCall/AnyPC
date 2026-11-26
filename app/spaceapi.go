@@ -15,6 +15,7 @@ import (
 	"errors"
 	"log"
 	"net/url"
+	"slices"
 	"strconv"
 
 	"anypc/agent"
@@ -71,8 +72,16 @@ func spaceErrCode(err error) string {
 	return "other"
 }
 
+// spaceAuthNames — вызовы, изменяющие доступ или состав пространства: требуется системная авторизация.
+var spaceAuthNames = []string{"spaceCreate", "spaceCreateOK", "spaceEnter", "spaceConfirm", "spaceOp", "spaceExclude", "spaceLogin", "spaceLeave", "passOff"}
+
 // spaceCall — вызов окна name (из spaceNames) с аргументами JSON; ошибка — только space:<код>.
 func spaceCall(c *config, name string, args []json.RawMessage) (any, error) {
+	if slices.Contains(spaceAuthNames, name) {
+		if err := systemAuth(); err != nil {
+			return nil, err
+		}
+	}
 	str := func(i int) (s string) {
 		if i < len(args) {
 			json.Unmarshal(args[i], &s)

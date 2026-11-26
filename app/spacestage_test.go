@@ -16,6 +16,9 @@ import (
 // Ч12: ход вступления для окна — шаги из SpaceDial.Stage в spaceOp ("stage"), итог без шага; соединения нет —
 // код nolink, тот ПК закрыл — closed (окно показывает понятный текст и что делать, а не «Выполняется…» 3 мин).
 func TestSpaceEnterStages(t *testing.T) {
+	oldAuth := systemAuth
+	systemAuth = func() error { return nil }
+	defer func() { systemAuth = oldAuth }()
 	opsReset(t)
 	p := spaceCfg(t, spacePass, totp.NewSecret())
 	ph, err := p.spaceDraft(spacePass)
@@ -63,6 +66,9 @@ func TestSpaceEnterStages(t *testing.T) {
 // Ч12: «Отмена» в окне прерывает вступление на любом шаге (соединение, превью): итог cancel, кнопки окна
 // возвращаются; отменять кончившееся и чужие операции нельзя.
 func TestSpaceEnterStop(t *testing.T) {
+	oldAuth := systemAuth
+	systemAuth = func() error { return nil }
+	defer func() { systemAuth = oldAuth }()
 	opsReset(t)
 	p := spaceCfg(t, spacePass, totp.NewSecret())
 	ph, _ := p.spaceDraft(spacePass)

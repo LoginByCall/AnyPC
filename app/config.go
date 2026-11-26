@@ -68,6 +68,8 @@ type config struct {
 	// действует: запись по умолчанию отвечает случайным секретом offKey (тот же отказ, что неверному коду).
 	give   bool
 	offKey []byte
+	// networkSync запускает/останавливает сигнализацию при смене Allow control; не сериализуется.
+	networkSync func()
 }
 
 // settings — то, что лежит в файле.
@@ -533,9 +535,16 @@ func (c *config) setGive(on bool) (string, error) {
 		c.mu.Lock()
 		c.give, c.offKey = false, k
 		c.mu.Unlock()
+		if c.networkSync != nil {
+			c.networkSync()
+		}
 		return "", nil
 	}
-	return c.rotateCode(true)
+	code, err := c.rotateCode(true)
+	if err == nil && c.networkSync != nil {
+		c.networkSync()
+	}
+	return code, err
 }
 
 // newCode — сменить одноразовый код (↻, конец сессии, блокировка перебора); KDF — сразу, первый вход не ждёт Argon2.

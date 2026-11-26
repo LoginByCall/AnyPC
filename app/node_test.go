@@ -83,6 +83,37 @@ func TestSpaceAllowOffDrops(t *testing.T) {
 	}
 }
 
+// TestNetworkAllowControl — Allow control выключает и сигнализацию, и фоновую сверку пространства; Allow space сеть не включает.
+func TestNetworkAllowControl(t *testing.T) {
+	cfg, _ := loadConfig(filepath.Join(t.TempDir(), "c.json"))
+	cfg.Server = syncHub(t)
+	if err := cfg.setSpaceAllow(true); err != nil {
+		t.Fatal(err)
+	}
+	a := &agent.Agent{ID: cfg.ID, Key: cfg.key(), Secret: cfg.secret, OneTimeSecret: cfg.oneTimeSecret, CodeUsed: cfg.codeUsed}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := &runner{a: a, ctx: ctx}
+	var spaceCancel context.CancelFunc
+	cfg.networkSync = func() { syncNetwork(ctx, cfg, a, r, &spaceCancel) }
+	syncNetwork(ctx, cfg, a, r, &spaceCancel)
+	if r.done != nil || spaceCancel != nil {
+		t.Fatal("сеть запущена при выключенном Allow control")
+	}
+	if _, err := cfg.setGive(true); err != nil {
+		t.Fatal(err)
+	}
+	if r.done == nil || spaceCancel == nil {
+		t.Fatal("сеть не запущена при включении Allow control")
+	}
+	if _, err := cfg.setGive(false); err != nil {
+		t.Fatal(err)
+	}
+	if r.done != nil || spaceCancel != nil {
+		t.Fatal("сеть не остановлена при выключении Allow control")
+	}
+}
+
 // Смена узла: старый Run остановлен до старта нового; неверный адрес ничего не меняет.
 func TestRunnerRestart(t *testing.T) {
 	cfg, err := loadConfig(filepath.Join(t.TempDir(), "c.json"))

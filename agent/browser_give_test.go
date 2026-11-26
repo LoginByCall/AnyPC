@@ -35,6 +35,7 @@ const extra = async () => ` + "`" + `
   const state = () => ev("[document.getElementById('giveon').checked, " + vis('codebox') + ", " + txt('mycode') + ", " + shown('giveoff') + ", " + meTxt + ".includes('Код на одно подключение'), calls.join(',')].join('|')");
   // по умолчанию — выкл: строки кода нет, подсказка что делать; настоящий checkbox role="switch", цель ≥ 44 px
   console.log('off=' + await state());
+  console.log('offline=' + await ev(txt('mystate')));
   console.log('sw=' + await ev("[document.getElementById('giveon').type, document.getElementById('giveon').getAttribute('role'), document.querySelector('#giverow span').textContent, " + txt('giveoff') + ", " + hgt('giverow') + " >= 44, " + hgt('giveon') + " >= 44, !document.getElementById('accrow'), " + meTxt + ".includes('Настроить')].join('|')"));
   await ev("st.code = '999888'; 1"); await sleep(1300); // хост прислал код при выкл (старый хост) — всё равно не показывать
   console.log('leak=' + await ev("[" + vis('codebox') + ", " + meTxt + ".includes('999')].join('|')"));
@@ -117,6 +118,7 @@ func TestBrowserGive(t *testing.T) {
 	out := string(runCDP(t, ctx, chrome, cdpGive, srv.URL+"/"))
 	for _, want := range []string{
 		"off=false|false||true|false|\n",
+		"offline=не в сети — «Разрешить управление» выключено\n",
 		"sw=checkbox|switch|Разрешить управление|Включите, чтобы вам помогли: появится код, который нужно продиктовать.|true|true|true|false\n",
 		"leak=false|false\n",
 		"on=true|true|741 902|false|true|give:true|Новый код|true\n",

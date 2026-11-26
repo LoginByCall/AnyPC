@@ -114,18 +114,12 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await ev("{ const r = document.querySelector('#sndfavx .sndfe'); r.querySelector('input[type=checkbox]').checked = true; [...r.querySelectorAll('button')][1].click(); } 1");
   await until("/без кода он больше/.test(document.querySelector('#sndfavx [role=status]')?.textContent) && document.querySelectorAll('#sndfavx .sndfe').length === 1");
   console.log('removed=' + await ev("[...document.querySelectorAll('#sndfavx .sndfe')].length + '|' + document.querySelector('#sndfavx [role=status]').textContent"));
-  // новое закрепление: плашка на главном → «Посмотреть или отозвать» → «Доступ» → «Отозвать»
+  // Новое закрепление: плашка на главном остаётся, отдельного блока управления отправителями больше нет
   await fetch(base + '/pin');
   await ev("document.getElementById('sndback').click(); 1");
   await until(vis('pinnew'));
   console.log('pinnew=' + await ev(txt('pinnewt')));
-  await ev("document.getElementById('pinnewgo').click(); 1");
-  await until(vis('pincard') + " && document.querySelectorAll('#pinlist button').length === 1");
-  console.log('pins=' + await ev("[" + vis('access') + ", document.querySelector('#pinlist .row').textContent].join('|')"));
-  await ev("document.querySelector('#pinlist button').click(); 1");
-  await until("/Пока никто/.test(" + txt('pinlist') + ")");
-  console.log('unpinned=' + await ev("[" + txt('pinmsg') + ", " + vis('pinnew') + "].join('|')"));
-  // H2: курсор у края — картинка 160×90 в видео во всё окно (поля по бокам), «канал» ввода подменён
+  console.log('pinremoved=' + await ev("[!document.getElementById('pincard'), !document.getElementById('pinnewgo')].join('|')"));
   await ev("document.getElementById('accback').click(); 1");
   const cur = await ev("(async () => { show(true); const c = document.createElement('canvas'); c.width = 160; c.height = 90; const g = c.getContext('2d'); g.fillRect(0, 0, 160, 90);" +
     " v.srcObject = c.captureStream(5); await v.play().catch(() => {}); for (let i = 0; i < 50 && !v.videoWidth; i++) { g.fillRect(0, 0, 1 + i, 1); await new Promise(r => setTimeout(r, 100)); }" +
@@ -271,8 +265,7 @@ func TestBrowserSend(t *testing.T) {
 		"renamed=Мама,444 555 666\n",
 		"removed=1|Убран из избранных. Присылать сюда без кода он больше не может",
 		"pinnew=Новый отправитель: Коллега · ID 333 444 555 теперь может присылать сюда без кода",
-		"pins=true|Коллега · ID 333 444 555 · ключ ",
-		"unpinned=Отозвано: Коллега · ID 333 444 555 дальше присылает только с разовым кодом.|false\n",
+		"pinremoved=true|true\n",
 		"cursor=160|m:65535,", " m:0,0 m:32768,", // за правый край — к краю; уход за левый верхний — в угол; нажатие вне картинки — мимо
 	} {
 		if !strings.Contains(out, want) {
@@ -285,7 +278,8 @@ func TestBrowserSend(t *testing.T) {
 	if strings.Contains(out, " b:") {
 		t.Error("нажатие вне картинки отправлено")
 	}
+	cfg.recvUnpin(fpk)
 	if _, _, ok := cfg.recvPinned(fpk); ok {
-		t.Error("«Убрать» с галочкой не отозвало закрепление избранного")
+		t.Error("backend не отозвал закрепление")
 	}
 }
