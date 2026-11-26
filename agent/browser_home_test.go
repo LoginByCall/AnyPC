@@ -25,6 +25,7 @@ const extra = async () => ` + "`" + `
   st.space.members[0].passUntil = Date.now() + 3600e3;
   localStorage.setItem('mine', JSON.stringify([{ id: '482113907', name: 'Офис' }, { id: '730554218', name: 'Дом' }, { id: '915020664', name: 'Ноутбук мамы' }]));
   window.quit = () => calls.push('quit'); localStorage.setItem('tour_connect', '1');
+  window.setSpaceAllow = async on => { calls.push('space:' + on); st.allowSpace = on; };
   window.savedGet = async id => id === '111222333' ? 'pw1' : ''; window.savedSet = async () => {};
   localStorage.setItem('users', JSON.stringify({ '111222333': 'anna' }));` + "`" + `;` + cdpHead + `
   const fs = require('fs');
@@ -140,6 +141,10 @@ const extra = async () => ` + "`" + `
   // myPcHome: с «Другого ПК» и из «Настроек» — на главный
   const h1 = await ev("myPcHome() + ':' + " + shown('home') + " + ':' + " + shown('connect'));
   await ev("document.getElementById('setgo').click(); 1");
+  const settings2 = await ev("[!!document.getElementById('setnodecard'), !!document.getElementById('setspacecard'), !!document.getElementById('pincard'), !!document.getElementById('spaceallowsettings')].join('|')");
+  console.log('settings2=' + settings2);
+  await ev("document.getElementById('spaceallowsettings').click(); 1"); await sleep(300);
+  console.log('spaceToggle=' + await ev("[document.getElementById('spaceallow').checked, document.getElementById('spaceallowsettings').checked, calls.at(-1)].join('|')"));
   console.log('myPcHome=' + h1 + '|' + await ev("myPcHome() + ':' + " + shown('home') + " + ':' + " + shown('settings')) + '|' + await ev("typeof myPcAdd + ',' + !!document.getElementById('shpw')"));
   // «Показать подсказки снова» с главного: сброшен и тур «Другого ПК» (начнётся при входе на него), идёт тур главного
   await ev("localStorage.setItem('tour_connect', '1'); document.getElementById('helpbtn').click(); 1"); await sleep(200);
@@ -177,7 +182,7 @@ func TestBrowserHome(t *testing.T) {
 		"connect=true|false|id|true|true|false|false|Другой ПК\n",
 		"connback=false|true\n",
 		"settings=true|false|true|true|true|ab12 cd34|AnyPC 0.3.1|true|Настройки\n",
-		"quit=quit\n",
+		"quit=space:true,quit\n",
 		"framepw=true|true|true|true|true|false|false|нужен пароль\n", // B1: во фрейме без пароля — карточка входа, без главного и «Назад»
 		"pchome=true|true|false|1\n",
 		"memmenu=Переименовать: Офис|Переименовать|main|{\"id\":\"730554218\",\"name\":\"Дача\"}|Дача\n",
@@ -194,6 +199,8 @@ func TestBrowserHome(t *testing.T) {
 		"tour3=0|1|home|connect|1\n",          // сброс с главного: tour_connect=0; вход на «Другой ПК» начал его тур
 		"tour2=SUMMARY#coptsum|1|0|connect\n", // на «Другом ПК»: сброшены все, начат тур «Другого ПК»
 		"myPcHome=true:true:false|true:true:false|function,true\n",
+		"settings2=true|true|false|true\n",
+		"spaceToggle=true|true|space:true\n",
 		"incoming=true|settings/true|me\n",
 		"menu=true|true|Переименовать/Убрать из «Моего пространства»|Мамин|Мамин|true\n",
 		"open=915020664|false\n",

@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="ru">
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-iSXaeUgtH1wqVAwTRSwqDSotpBXr9FjhDtM+x4YlQ+s=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-B9sYa1rj75jBZjOYc4aJYkWS3YwQO/5xGL0RPEl288c=' 'wasm-unsafe-eval'; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AnyPC</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26'><style>.a{stroke:%2317181c}.b{fill:%23d2452d}@media(prefers-color-scheme:dark){.a{stroke:%23eceae4}.b{fill:%23ef6a52}}</style><rect class='a' x='1.5' y='3' width='15' height='11' rx='2' fill='none' stroke-width='2.6'/><rect class='b' x='10' y='12' width='15' height='11' rx='2'/></svg>">
@@ -171,7 +171,7 @@
   .sndchk { display: flex; align-items: center; gap: 12px; min-height: 44px; } .sndchk input { width: 20px; height: 20px; margin: 0; }
   .banner.info { border-color: var(--line); background: var(--bg); } /* ход — не ошибка */ #sndbar button { min-height: 44px; }
   #sndst { display: flex; flex-direction: column; gap: 8px; } #sndst progress { width: 100%; height: 10px; } .sndfe { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 6px 10px; background: var(--bg); border-radius: 8px; }
-  #pinlist .row { padding: 6px 10px; background: var(--bg); border-radius: 8px; } #sndsend:disabled { opacity: .45; cursor: not-allowed; }
+  #sndsend:disabled { opacity: .45; cursor: not-allowed; }
   #coptsum { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
   #coptsum::marker, #coptsum::-webkit-details-marker { display: none; }
   #coptsum::before { content: '▸'; width: 1em; color: var(--mut); }
@@ -218,7 +218,7 @@
         <div id="mystate" class="small">—</div>
         <a id="upd2" class="hidden small" href="https://www.anypc.org/#get" target="_blank" rel="noopener"></a>
         <span id="incat"></span>
-        <div id="pinnew" class="banner ok hidden" role="status"><span id="pinnewt"></span> <button id="pinnewok" data-t="rpin_new_ok"></button> <button id="pinnewgo" class="lnk" data-t="rpin_new_go"></button></div>
+        <div id="pinnew" class="banner ok hidden" role="status"><span id="pinnewt"></span> <button id="pinnewok" data-t="rpin_new_ok"></button></div>
         <div id="incoming" class="banner hidden">
           <span data-t="incoming"></span> <span class="mono" id="incid"></span>
           <button id="hostbye" class="main" data-t="disc"></button>
@@ -268,15 +268,20 @@
 
 <section id="settings" class="scr hidden">
   <div class="row" id="sethead"><button id="setback" data-t="acc_back"></button><h2 data-t="set_h"></h2></div>
+  <div class="card" id="setnodecard">
+    <b data-t="node_l" data-tt="node_t"></b>
+    <div class="row"><input id="node" class="grow" data-tp="node_p"> <button id="setnode" data-t="node_save"></button></div>
+    <label class="mut"><input id="nodepub" type="checkbox"> <span data-t="nodepub_l"></span></label>
+    <div id="nodestate" class="mut"></div>
+  </div>
+  <div class="card" id="setspacecard">
+    <div class="row"><label class="sw grow"><input id="spaceallowsettings" type="checkbox" role="switch"><span data-t="space_allow"></span></label><button id="setacc" data-t="acc_go"></button></div>
+  </div>
   <div class="card">
     <div class="mut mono small"><span data-t="fp_l"></span> <span id="myfp"></span></div>
     <div id="myver" class="mut mono small"></div>
     <a id="upd" class="hidden" href="https://www.anypc.org/#get" target="_blank" rel="noopener"></a>
     <div id="myff" class="mut"></div>
-    <div class="row"><span class="mut" data-t="node_l" data-tt="node_t"></span> <input id="node" class="grow" data-tp="node_p"> <button id="setnode" data-t="node_save"></button></div>
-    <label class="mut"><input id="nodepub" type="checkbox"> <span data-t="nodepub_l"></span></label>
-    <div id="nodestate" class="mut"></div>
-    <div class="row"><span class="grow" data-t="acc_h"></span><button id="setacc" data-t="acc_go"></button></div>
     <div class="row"><button id="quit" class="hidden" data-t="quit"></button></div>
   </div>
 </section>
@@ -386,8 +391,6 @@
       <div id="otpstate" class="mut" role="status"></div>
     </div>
   </div>
-  <!-- Ч10.5: чужие ПК, приславшие сюда с разовым кодом, — дальше без кода («Принять?»); «Отозвать» — recvUnpin -->
-  <div class="card hidden" id="pincard"><b data-t="rpin_h"></b><span class="mut" data-t="rpin_b"></span><div id="pinlist" class="wiz"></div><div id="pinmsg" class="mut" role="status"></div></div>
 </section>
 
 <section id="sess" class="hidden">
@@ -733,8 +736,8 @@ window.onHostState = s => {
   const give = !!s.give;
   $('mystate').textContent = t(!give ? 'offline' : s.online ? 'online' : s.idTaken ? 'id_taken' : 'offline');
   $('mystate').style.color = give && s.online ? 'var(--ok)' : 'var(--bad)';
-  if (!spaceBusy) $('spaceallow').checked = !!s.allowSpace;
-  $('spaceallow').disabled = spaceBusy;
+  if (!spaceBusy) for (const id of ['spaceallow', 'spaceallowsettings']) $(id).checked = !!s.allowSpace;
+  for (const id of ['spaceallow', 'spaceallowsettings']) $(id).disabled = spaceBusy;
   if (!giveBusy) $('giveon').checked = give;
   const sess = !!s.session; // выкл во время сессии: новые входы по коду закрыты, идущая сессия живёт
   $('giveoff').classList.toggle('hidden', give || sess); $('givesess').classList.toggle('hidden', give || !sess);
@@ -775,12 +778,15 @@ $('viewonly').onchange = async e => {
   try { await setViewOnly(e.target.checked); } catch (err) { $('codemsg').textContent = t('err') + err; }
   try { onHostState(await hostInfo()); } catch {}
 };
-$('spaceallow').onchange = async e => {
-  const on = e.target.checked; spaceBusy = true; $('spaceallow').disabled = true; $('ustate').textContent = '';
+const spaceAllowChange = async e => {
+  const on = e.target.checked; spaceBusy = true;
+  for (const id of ['spaceallow', 'spaceallowsettings']) $(id).disabled = true;
+  $('ustate').textContent = '';
   try { await setSpaceAllow(on); } catch (err) { $('ustate').textContent = t('err') + err; }
   spaceBusy = false;
-  try { onHostState(await hostInfo()); } catch { $('spaceallow').disabled = false; }
+  try { onHostState(await hostInfo()); } catch { for (const id of ['spaceallow', 'spaceallowsettings']) $(id).disabled = false; }
 };
+$('spaceallow').onchange = $('spaceallowsettings').onchange = spaceAllowChange;
 $('newcode').onclick = async () => { $('codemsg').textContent = ''; try { await newCode(); onHostState(await hostInfo()); } catch (e) { $('codemsg').textContent = giveErr(e); } };
 
 // Постоянные именные записи: TOTP сначала только staged в строке, запись — атомарно через userSave по Save.
@@ -891,7 +897,7 @@ const scrShow = on => { for (const k in SCR) $(k).classList.toggle('hidden', !on
 if (EMBED) scrShow(true); // вкладка-фрейм: карточка входа сразу (видна при needpw) — первый end() до сессии show() не зовёт
 const scrGo = k => { if (scr === 'access' && k !== 'access') spCreateX(); scr = k; $(SCR[k]).after($('incoming')); scrShow(true);
   if (tour) tourEnd(); if (k === 'connect') setTimeout(() => scr === 'connect' && startTour('connect'), 300); }; // выноска прежнего экрана не висит поверх нового
-const accShow = on => { scrGo(on ? 'access' : 'home'); if (on) pinRender(); }; // экран 2 «Доступ к этому ПК»
+const accShow = on => scrGo(on ? 'access' : 'home'); // экран 2 «Доступ к этому ПК»
 $('accgo').onclick = $('setacc').onclick = () => accShow(true); $('accback').onclick = () => accShow(false); // «Настроить» в «Моё пространство» и строка в ⚙
 $('setgo').onclick = () => scrGo('settings'); $('setback').onclick = $('connback').onclick = () => scrGo('home');
 const connGo = window.connGo = () => { if (APP && !EMBED) scrGo('connect'); $('id').focus(); }; // window.connGo — и для трея («Помочь кому-то…», app/tray.go trayJSHelp) // «+»: в веб-клиенте форма и так на главной
@@ -1007,16 +1013,8 @@ function sndRender(o) { // ход, итог, ошибка — каждое со�
   if (!$('send').classList.contains('hidden')) st.scrollIntoView({ block: 'nearest' }); // итог и ошибка — на виду, не под краем окна
   sndReady();
 }
-// «Доступ к этому ПК»: кто может присылать сюда без кода (recvPins) — «Отозвать»; новое закрепление — плашка на главном
+// Новое закрепление отправителя — плашка на главном экране.
 const pinWho = p => (p.name || t('rpin_noname')) + (p.id ? ' · ID ' + grp(p.id) : '');
-async function pinRender() {
-  if (!SND) return; spVis('pincard', true);
-  let r; try { r = await recvPins(); } catch (e) { $('pinmsg').textContent = sndErr(e); return; }
-  $('pinlist').replaceChildren(...(r.pins.length ? r.pins.map(p => { const row = spEl('div', '', 'row'), d = new Date(p.at * 1000);
-    row.append(spEl('span', pinWho(p) + ' · ' + t('rpin_key').replace('%s', p.fp.slice(0, 9)) + (p.at ? ' · ' + t('rpin_since').replace('%s', d.toLocaleDateString()) : ''), 'grow'),
-      spBtn('rpin_un', () => recvUnpin(p.fp).then(() => { $('pinmsg').textContent = t('rpin_un_ok').replace('%s', pinWho(p)); pinRender(); }, e => { $('pinmsg').textContent = sndErr(e); }))); return row; })
-    : [spEl('span', t('rpin_none'), 'mut')]));
-}
 function pinNewRender(p) {
   spVis('pinnew', SND && !!p); if (!SND || !p) return;
   $('pinnewt').textContent = t('rpin_new').replace('%s', pinWho(p));
@@ -1024,7 +1022,6 @@ function pinNewRender(p) {
 if (SND) {
   spVis('sndgo', true); $('sndgo').onclick = () => window.sendGo();
   $('pinnewok').onclick = () => recvPinSeen().then(async () => onHostState(await hostInfo()));
-  $('pinnewgo').onclick = () => recvPinSeen().then(async () => { accShow(true); $('pincard').scrollIntoView({ block: 'center' }); onHostState(await hostInfo()); });
 }
 let spSeq = 0, spDrawn = 0, spOp = null; // свежесть опроса: рисуется ответ новее последнего нарисованного (медленный spaceOp тоже), но не старше конца операции в hostInfo
 const spPoll = () => { const n = ++spSeq; return spaceOp().then(o => { if (n > spDrawn) { spDrawn = n; spOpRender(o); shRender(o); } }, () => {}); };
