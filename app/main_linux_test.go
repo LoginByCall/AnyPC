@@ -72,14 +72,16 @@ func TestLocalAPI(t *testing.T) {
 		h.ServeHTTP(w, r)
 		return w.Code
 	}
+	userSec := totp.NewSecret()
+	userOTP, _ := totp.Code(userSec, time.Now())
 	for _, c := range []struct {
 		name, args  string
 		code, drops int
 	}{
 		{"setPassword", `["short"]`, 400, 0},
 		{"setPassword", `["пароль-123"]`, 200, 1},
-		{"userSet", `["ivan","пароль-ивана","full"]`, 200, 2},
-		{"userSet", `["ivan","пароль-ивана","admin"]`, 400, 2},
+		{"userSave", `["ivan","пароль-ивана","full","` + userSec + `","` + userOTP + `"]`, 200, 2},
+		{"userSave", `["ivan","","admin","",""]`, 400, 2},
 		{"userDel", `["nobody"]`, 400, 2},
 		{"userDel", `["ivan"]`, 200, 3},
 	} {
@@ -268,11 +270,11 @@ func TestCLI(t *testing.T) {
 		if out, err := user("olga-pass2\n", "--user", "olga"); err != nil || !strings.Contains(out, "olga (view)") { // приёмка Д3
 			t.Errorf("смена пароля без --rights: %v %q", err, out)
 		}
-		_, def, _ := giveOn(c).secret("")
+		def := bytes.Clone(c.Users[0].Hash)
 		if out, err := user("other-pass1\n", "--user", "  "); err == nil { // приёмка Д5
 			t.Errorf("пустое имя принято: %q", out)
 		}
-		if c, _ := loadConfig(filepath.Join(home, ".config", "AnyPC", "config.json")); !bytes.Equal(func() []byte { _, h, _ := giveOn(c).secret(""); return h }(), def) {
+		if c, _ := loadConfig(filepath.Join(home, ".config", "AnyPC", "config.json")); !bytes.Equal(c.Users[0].Hash, def) {
 			t.Error("пустое --user сменило пароль по умолчанию")
 		}
 		if out, _ := cli("--status"); !strings.Contains(out, "  olga: view, TOTP: нет") {
@@ -312,7 +314,7 @@ func TestCLI(t *testing.T) {
 				io.WriteString(in, code+"\n")
 			}
 		}
-		if err := c.Wait(); err != nil || !strings.Contains(out.String(), "второй фактор TOTP включён") {
+		if err := c.Wait(); err != nil || !strings.Contains(out.String(), "permanent-профиль (legacy --confirm): включен") {
 			t.Errorf("--confirm off с кодом: %v %q", err, out.String())
 		}
 	}
@@ -332,17 +334,17 @@ func TestCLI(t *testing.T) {
 	if cfg.confirm() || cfg.Server != DefaultServer {
 		t.Errorf("настройки после ключей: confirm=%v server=%q", cfg.confirm(), cfg.Server)
 	}
-	if out, _ := cli("--status"); !strings.Contains(out, cfg.ID) || !strings.Contains(out, "Пароль задан: да") || !strings.Contains(out, "«Разрешить»: off") || !strings.Contains(out, "Второй фактор (TOTP): да") || !strings.Contains(out, "Только показ экрана: on") || strings.Contains(out, "Одноразовый код") {
+	if out, _ := cli("--status"); !strings.Contains(out, cfg.ID) || !strings.Contains(out, "Пароль владельца задан: да") || !strings.Contains(out, "Allow space: on") || !strings.Contains(out, "Второй фактор владельца (TOTP): да") || !strings.Contains(out, "View Only (one-time): on") || !strings.Contains(out, "permanent и one-time профили независимы") {
 		t.Errorf("--status: %q", out)
 	}
 	// режим «Спрашивать» (REQ-S-23): --confirm on заводит новый одноразовый код, но не печатает его — код виден и
 	// действует только в окне после «Разрешить управление» (переключатель — в памяти запущенной программы)
 	out, err := cli("--confirm", "on")
 	cfg, _ = loadConfig(filepath.Join(home, ".config", "AnyPC", "config.json"))
-	if code := giveOn(cfg).code(); err != nil || len(code) != 6 || strings.Contains(out, spaced(code)) || !strings.Contains(out, "одноразовый код — в окне AnyPC после «Разрешить управление»") {
+	if code := giveOn(cfg).code(); err != nil || len(code) != 6 || strings.Contains(out, spaced(code)) || !strings.Contains(out, "permanent-профиль (legacy --confirm): выключен") || !strings.Contains(out, "одноразовый код работает независимо") {
 		t.Errorf("--confirm on: %v %q (код %q)", err, out, code)
 	}
-	if out, _ := cli("--status"); !strings.Contains(out, "Одноразовый код: в окне AnyPC после «Разрешить управление»") || strings.Contains(out, spaced(cfg.code())) {
+	if out, _ := cli("--status"); !strings.Contains(out, "Allow space: off") || !strings.Contains(out, "permanent и one-time профили независимы") || strings.Contains(out, spaced(cfg.code())) {
 		t.Errorf("--status в режиме кода: %q", out)
 	}
 	if u := serviceUnit("/opt/my apps/AnyPC"); !strings.Contains(u, `ExecStart="/opt/my apps/AnyPC" --no-browser`) || !strings.Contains(u, "WantedBy=graphical-session.target") {

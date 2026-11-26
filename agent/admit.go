@@ -251,7 +251,7 @@ func (a *Agent) joinB(ctx context.Context, s *session, m authMsg, keyOK bool, us
 			return
 		}
 		osalt, opub, why := a.SpaceOwner(salt)
-		if why == "" && a.ViewOnly != nil && a.ViewOnly() {
+		if why == "" && a.viewOnlyFor(s) {
 			why = "rights" // «Только показ экрана» — никаких правок через сессию (как spaceCtl)
 		}
 		if why != "" {

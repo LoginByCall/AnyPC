@@ -30,8 +30,8 @@ func TestAccGiveModeChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("снова «Спрашивать»: codeMode=%v giving=%v code=%q", c.codeMode(), c.giving(), c.code())
-	if c.giving() || c.code() != "" {
-		t.Errorf("ПОДТВЕРЖДЕНО: после режим пароля → «Спрашивать» переключатель сам включён, код %q действует без включения", c.code())
+	if !c.giving() || c.code() == "" {
+		t.Errorf("настройки permanent-профиля отключили одноразовый доступ: give=%v code=%q", c.giving(), c.code())
 	}
 }
 
@@ -45,9 +45,9 @@ func TestAccGiveRecv(t *testing.T) {
 	stored := c.Code
 	c.mu.Unlock()
 	ctx, cancel := context.WithCancel(context.Background())
-	a := &agent.Agent{Server: url, ID: c.id(), Secret: c.secret, Key: c.key(), OTP: c.otp, CodeUsed: c.codeUsed,
+	a := &agent.Agent{Server: url, ID: c.id(), Secret: c.secret, OneTimeSecret: c.oneTimeSecret, Key: c.key(), OTP: c.otp, CodeUsed: c.codeUsed,
 		Unattended: func() bool { return !c.confirm() }, SpaceGet: c.spaceGet, LoginShut: c.loginShut,
-		CodeMode: c.codeMode, RecvPinned: c.recvPinned, RecvPin: c.recvPin, RecvAsk: func(agent.RecvReq) bool { return true },
+		CodeMode: c.oneTimeMode, RecvPinned: c.recvPinned, RecvPin: c.recvPin, RecvAsk: func(agent.RecvReq) bool { return true },
 		Confirm: func(string, string) agent.Answer { return agent.Deny }, FileDir: t.TempDir(),
 		Capture: func(context.Context, agent.Cap) (*exec.Cmd, error) {
 			return nil, errors.New("тест: без захвата")

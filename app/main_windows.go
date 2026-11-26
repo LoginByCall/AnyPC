@@ -111,18 +111,18 @@ func main() {
 	passes.cfg = cfg
 	go startLock(ctx, func() { go passes.offAll(context.WithoutCancel(ctx)) }, passes.lockAlive) // Э3: блокировка экрана снимает пропуска мастера (lock_windows.go)
 	a := &agent.Agent{Audio: true, Pause: true,
-		Version: version, Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, Key: cfg.key(), FPS: 30, Stderr: logf, Trusted: cfg.trusted, Trust: cfg.trust, KeyLogin: cfg.keyLogin, KeyTrust: cfg.keyTrust,
-		Bitrate: agent.Kbps(cfg.Bitrate),
-		Confirm: agent.AskAccept, ConfirmControl: agent.AskControl, Unattended: func() bool { return !cfg.confirm() }, OTP: cfg.otp, ViewOnly: cfg.viewOnly, // без подтверждения — с TOTP (PLAN.md)
+		Version: version, Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, OneTimeSecret: cfg.oneTimeSecret, Key: cfg.key(), FPS: 30, Stderr: logf, Trusted: cfg.trusted, Trust: cfg.trust, KeyLogin: cfg.keyLogin, KeyTrust: cfg.keyTrust,
+		Bitrate:    agent.Kbps(cfg.Bitrate),
+		Unattended: func() bool { return true }, OTP: cfg.otp, ViewOnly: cfg.viewOnly, // оба профиля самостоятельны; подтверждение на хосте не требуется
 		CodeUsed: cfg.codeUsed,                           // «Спрашивать»: код сменить после сессии и блокировки (REQ-S-23)
 		SpaceGet: cfg.spaceGet, SpaceJoin: cfg.spaceJoin, // «Моё пространство», Э2: отдать состав и принять вступление
 		SpaceOwner: cfg.spaceAdmitOwner, SpaceAdmit: agent.AskAdmit, // Ч12б: вступление без пароля и окно «Пустить?»
-		SpaceMember: cfg.spaceMember,                                                                        // Э3: пропуск 12 ч на ключ мастера (agent/pass.go)
-		LoginTag:    cfg.loginTag,                                                                           // Э4: смена входа пространства и исключение рвут сессии (revoked)
-		KeyGone:     cfg.keyGone,                                                                            // решение A: ключ исключённого ПК рвёт сессию в любом режиме
-		LoginShut:   cfg.loginShut,                                                                          // решение 12 A: вход паролем на новом ПК — после сверки с членом ≠ поручитель
-		SpaceSync:   cfg,                                                                                    // Э4: сверка состава между членами (spsync.go)
-		CodeMode:    cfg.codeMode, RecvPinned: cfg.recvPinned, RecvPin: cfg.recvPin, RecvAsk: agent.AskRecv, // Ч10.1: приём на хосте (agent/recv.go)
+		SpaceMember: cfg.spaceMember,                                                                           // Э3: пропуск 12 ч на ключ мастера (agent/pass.go)
+		LoginTag:    cfg.loginTag,                                                                              // Э4: смена входа пространства и исключение рвут сессии (revoked)
+		KeyGone:     cfg.keyGone,                                                                               // решение A: ключ исключённого ПК рвёт сессию в любом режиме
+		LoginShut:   cfg.loginShut,                                                                             // решение 12 A: вход паролем на новом ПК — после сверки с членом ≠ поручитель
+		SpaceSync:   cfg,                                                                                       // Э4: сверка состава между членами (spsync.go)
+		CodeMode:    cfg.oneTimeMode, RecvPinned: cfg.recvPinned, RecvPin: cfg.recvPin, RecvAsk: agent.AskRecv, // Ч10.1: приём на хосте (agent/recv.go)
 		Capture: func(ctx context.Context, c agent.Cap) (*exec.Cmd, error) { // выход DXGI c.Mon
 			ffMu.Lock()
 			ff := ff
@@ -164,7 +164,10 @@ func main() {
 	w.Bind("otpOff", cfg.otpOff)
 	w.Bind("newCode", func() (string, error) { return newCode(cfg, a) })
 	w.Bind("setGive", func(on bool) (string, error) { return setGive(cfg, a, on) }) // «Разрешить управление»
-	w.Bind("userSet", func(name, pw, rights string) error { return dropAfter(a, cfg.setUser(name, pw, rights)) })
+	w.Bind("userSave", func(name, pw, rights, secret, code string) error {
+		return dropAfter(a, cfg.saveUser(name, pw, rights, secret, code))
+	})
+	w.Bind("setSpaceAllow", func(on bool) error { return setSpaceAllow(cfg, a, on) })
 	w.Bind("userDel", func(name string) error { return dropAfter(a, cfg.delUser(name)) })
 	w.Bind("keyDel", func(name, fp string) error { return dropAfter(a, cfg.keyDel(name, fp)) }) // REQ-S-24: его сессия рвётся
 	run := &runner{a: a, ctx: ctx}

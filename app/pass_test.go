@@ -255,8 +255,8 @@ func TestPassMember(t *testing.T) {
 		t.Error("исключённый — член, или член — нет")
 	}
 	c.mu.Lock() // «Спрашивать» включила старая версия (Э4, С6: setConfirm на члене — отказ)
-	on := true
-	c.Confirm = &on
+	on, allow := true, false
+	c.Confirm, c.AllowSpace = &on, &allow
 	c.save()
 	c.mu.Unlock()
 	if c.spaceMember(salt, keys["200000001"]) {

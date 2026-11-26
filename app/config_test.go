@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -35,8 +36,8 @@ func TestConfig(t *testing.T) {
 	if err != nil || !hub.IsHostID(c.ID) {
 		t.Fatalf("первый запуск: %v %+v", err, c)
 	}
-	// новая установка — режим «Спрашивать» (REQ-S-23): вход — только одноразовым кодом, постоянного пароля нет
-	if s, h, _ := c.secret(""); len(c.code()) != 6 || !bytes.Equal(h, pake.KDF(c.code(), s)) || c.hasPass() {
+	// новая установка: постоянный профиль выключен, одноразовый код появляется после Allow control
+	if s, h := c.oneTimeSecret(); len(c.code()) != 6 || !bytes.Equal(h, pake.KDF(c.code(), s)) || c.hasPass() {
 		t.Fatalf("первый запуск: код %q", c.code())
 	}
 	if c.setPassword("short") == nil {
@@ -60,8 +61,8 @@ func TestConfig(t *testing.T) {
 	if err != nil || c2.ID != c.ID || !bytes.Equal(h, pake.KDF("пароль-123", salt)) || bytes.Equal(h, pake.KDF("пароль-124", salt)) {
 		t.Fatalf("перезагрузка: %v %+v", err, c2)
 	}
-	if s, h, _ := giveOn(c2).secret(""); bytes.Equal(h, pake.KDF("пароль-123", s)) || c2.code() != c.code() { // пароль хранится, но не действует
-		t.Fatal("в режиме «Спрашивать» действует постоянный пароль или код не пережил перезапуск")
+	if s, h := giveOn(c2).oneTimeSecret(); bytes.Equal(h, pake.KDF("пароль-123", s)) || c2.code() != c.code() { // постоянный пароль хранится отдельно
+		t.Fatal("одноразовый код не пережил перезапуск или совпал с постоянным паролем")
 	}
 }
 
@@ -178,6 +179,89 @@ func TestSaved(t *testing.T) {
 	}
 	if c.savedSet("123456789", "") != nil || c.savedGet("123456789") != "" {
 		t.Fatal("не забылся")
+	}
+}
+
+// TestProfilesIndependent — Allow space не отключает одноразовый код, а Allow control не отключает permanent-записи.
+func TestProfilesIndependent(t *testing.T) {
+	c, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
+	if err := c.setPassword("пароль-123"); err != nil {
+		t.Fatal(err)
+	}
+	passwordMode(t, c)
+	sec := totp.NewSecret()
+	code, _ := totp.Code(sec, time.Now())
+	if err := c.saveUser("ivan", "пароль-ивана", "view", sec, code); err != nil {
+		t.Fatal(err)
+	}
+	once, err := c.setGive(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(want bool) {
+		t.Helper()
+		_, dh, _ := c.secret("")
+		_, ih, iv := c.secret("ivan")
+		if (len(dh) != 0) != want || (len(ih) != 0) != want || want && !iv {
+			t.Fatalf("permanent: allow=%v, default=%d, ivan=%d view=%v", want, len(dh), len(ih), iv)
+		}
+		s, h := c.oneTimeSecret()
+		if !bytes.Equal(h, pake.KDF(once, s)) || c.code() != once {
+			t.Fatal("one-time код зависит от Allow space")
+		}
+	}
+	check(true)
+	if err := c.setSpaceAllow(false); err != nil {
+		t.Fatal(err)
+	}
+	check(false)
+	if err := c.setSpaceAllow(true); err != nil {
+		t.Fatal(err)
+	}
+	check(true)
+	if err := c.setSpaceAllow(false); err != nil {
+		t.Fatal(err)
+	}
+	c.setGive(false)
+	if s, h := c.oneTimeSecret(); len(h) == 0 || bytes.Equal(h, pake.KDF(once, s)) || c.code() != "" {
+		t.Fatal("Allow control выключен, но код действует или виден")
+	}
+	if _, h, _ := c.secret("ivan"); h != nil {
+		t.Fatal("отключённый permanent-профиль доступен")
+	}
+}
+
+// TestSaveUser — новая строка требует пароль и подтверждённый TOTP; пустой пароль при правке сохраняет прежний хэш.
+func TestSaveUser(t *testing.T) {
+	c, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
+	if err := c.saveUser("ivan", "пароль-ивана", "full", "", ""); !errors.Is(err, errUserOTP) || len(c.users()) != 0 {
+		t.Fatalf("сохранение без TOTP: %v, users=%v", err, c.users())
+	}
+	sec := totp.NewSecret()
+	code, _ := totp.Code(sec, time.Now())
+	if err := c.saveUser("ivan", "пароль-ивана", "full", sec, code); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.setSpaceAllow(true); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	salt, hash := bytes.Clone(c.Users[1].Salt), bytes.Clone(c.Users[1].Hash)
+	c.mu.Unlock()
+	if err := c.saveUser("ivan", "", "view", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	unchanged := bytes.Equal(salt, c.Users[1].Salt) && bytes.Equal(hash, c.Users[1].Hash) && c.Users[1].View && c.Users[1].TOTP == sec
+	c.mu.Unlock()
+	if !unchanged {
+		t.Fatal("пустые поля при правке изменили пароль или TOTP")
+	}
+	if err := c.saveUser("ivan", "другой-пароль", "full", sec, "000000"); err == nil {
+		t.Fatal("неверный код TOTP принят")
+	}
+	if s, h, view := c.secret("ivan"); !view || !bytes.Equal(h, pake.KDF("пароль-ивана", s)) {
+		t.Fatal("неудачная смена TOTP изменила запись")
 	}
 }
 
@@ -381,8 +465,8 @@ func TestUsersConfig(t *testing.T) {
 	if err := c.setUser(" Ivan ", "пароль-ивана", ""); err != nil { // новая без явных прав — «просмотр»
 		t.Fatal(err)
 	}
-	if s, h, v := c.secret("ivan"); !v || !bytes.Equal(h, pake.KDF("пароль-ивана", s)) {
-		t.Fatal("запись ivan")
+	if _, h, _ := c.secret("ivan"); h != nil {
+		t.Fatal("запись ivan доступна без TOTP")
 	}
 	if s, h, _ := c.secret(""); !bytes.Equal(h, pake.KDF("старый-пароль", s)) {
 		t.Fatal("запись по умолчанию сменила пароль")
@@ -399,6 +483,9 @@ func TestUsersConfig(t *testing.T) {
 	icode, _ := totp.Code(isec, time.Now())
 	if err := c.otpEnable(isec, icode, "IVAN"); err != nil || c.Users[0].TOTP != sec {
 		t.Fatalf("TOTP ivan: %v", err)
+	}
+	if s, h, v := c.secret("ivan"); !v || !bytes.Equal(h, pake.KDF("пароль-ивана", s)) {
+		t.Fatal("запись ivan с TOTP не действует")
 	}
 	if set, ok := c.otp("ivan", icode); !set || ok { // код настройки — повтор
 		t.Fatal("TOTP ivan: повтор принят")
@@ -417,68 +504,65 @@ func TestUsersConfig(t *testing.T) {
 		t.Fatal("отключение TOTP")
 	}
 	c2, _ := loadConfig(p)
-	if _, h, _ := c2.secret("ivan"); h == nil {
-		t.Fatal("запись не сохранилась")
+	if _, h, _ := c2.secret("ivan"); h != nil {
+		t.Fatal("запись без TOTP осталась доступна")
 	}
 	if c.delUser("") == nil || c.delUser("nobody") == nil || c.delUser("Ivan") != nil || len(c.users()) != 0 || !c.hasPass() {
 		t.Fatal("удаление")
 	}
 	fresh, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
-	if fresh.setUser("ivan", "пароль-ивана", "full") == nil {
-		t.Fatal("запись по имени без пароля по умолчанию")
+	if err := fresh.setUser("ivan", "пароль-ивана", "full"); err != nil || len(fresh.users()) != 1 {
+		t.Fatalf("независимая запись по имени: %v", err)
 	}
 }
 
-// TestCodeConfig — REQ-S-23: в режиме «Спрашивать» запись по умолчанию входит одноразовым кодом (6 цифр), постоянный
-// пароль и записи по имени не действуют; код меняется по ↻ и после сессии/блокировки (codeUsed), старый не годится,
-// соль та же; включение «Спрашивать» — новый код; без вопросов (TOTP) — пароль и записи, как раньше, код не меняется.
+// TestCodeConfig — одноразовый код меняется по ↻ и после сессии/блокировки; permanent-настройки его не отключают.
 func TestCodeConfig(t *testing.T) {
 	c, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
 	giveOn(c)
 	c.setPassword("пароль-123")
 	c.setUser("ivan", "пароль-ивана", "full")
 	code := c.code()
-	s0, h0, _ := c.secret("")
+	s0, h0 := c.oneTimeSecret()
 	if len(code) != 6 || strings.Trim(code, "0123456789") != "" || !bytes.Equal(h0, pake.KDF(code, s0)) {
 		t.Fatalf("код %q", code)
 	}
-	if _, h, _ := c.secret("ivan"); h != nil {
-		t.Fatal("запись по имени действует в режиме «Спрашивать»")
-	}
-	// ↻ и codeUsed (конец сессии, блокировка): новый код, старый не годится, соль та же (совпадение — 1e-6)
 	for _, rotate := range []func(){func() { c.newCode() }, c.codeUsed} {
-		old, _, oldH := code, s0, h0
+		old, oldH := code, h0
 		rotate()
 		code = c.code()
-		s, h, _ := c.secret("")
+		s, h := c.oneTimeSecret()
 		if c2, _ := loadConfig(c.path); code == old || giveOn(c2).code() != code || !bytes.Equal(s, s0) || !bytes.Equal(h, pake.KDF(code, s)) || bytes.Equal(h, oldH) {
 			t.Fatalf("смена кода: %q → %q", old, code)
 		}
 		h0 = h
 	}
-	before := code
 	sec := totp.NewSecret()
 	now, _ := totp.Code(sec, time.Now())
-	if err := c.otpEnable(sec, now, ""); err != nil { // без вопросов: пароль + TOTP
+	if err := c.otpEnable(sec, now, ""); err != nil {
 		t.Fatal(err)
 	}
-	if s, h, _ := c.secret(""); c.code() != "" || !bytes.Equal(h, pake.KDF("пароль-123", s)) {
-		t.Fatal("без вопросов: не постоянный пароль")
+	if s, h, _ := c.secret(""); !bytes.Equal(h, pake.KDF("пароль-123", s)) {
+		t.Fatal("постоянный пароль не действует при Allow space")
+	}
+	if c.code() != code {
+		t.Fatal("включение permanent-профиля отключило одноразовый код")
+	}
+	if err := c.otpEnable(totp.NewSecret(), now, "ivan"); err == nil {
+		t.Fatal("чужой TOTP-код принят для именной записи")
+	}
+	userSec := totp.NewSecret()
+	userCode, _ := totp.Code(userSec, time.Now())
+	if err := c.otpEnable(userSec, userCode, "ivan"); err != nil {
+		t.Fatal(err)
 	}
 	if _, h, _ := c.secret("ivan"); h == nil {
-		t.Fatal("без вопросов записи по имени не действуют")
+		t.Fatal("именная permanent-запись с TOTP не действует")
 	}
 	stored := c.Code
 	c.codeUsed()
-	if c.Code != stored {
-		t.Fatal("без вопросов код меняется")
-	}
-	c.setConfirm(true)
-	if c.giving() || c.code() != "" { // M1: переключатель выключился в режиме пароля и сам не включается
-		t.Fatalf("«Спрашивать» включили — переключатель %v, код %q без включения", c.giving(), c.code())
-	}
-	if giveOn(c).code() == "" || c.code() == stored || c.code() == before {
-		t.Fatalf("«Спрашивать» включили — код %q", c.code())
+	if c.Code == stored {
+		t.Fatal("одноразовый код не сменился после сессии")
 	}
 }
 
@@ -656,6 +740,11 @@ func TestTrustSecretSalt(t *testing.T) {
 	passwordMode(t, c)
 	c.setPassword("пароль-этого-пк")
 	c.setUser("ivan", "ivan-pass1", "full")
+	sec := totp.NewSecret()
+	code, _ := totp.Code(sec, time.Now())
+	if err := c.otpEnable(sec, code, "ivan"); err != nil {
+		t.Fatal(err)
+	}
 	for _, u := range []string{"", "ivan"} {
 		salt, _, _ := c.secret(u)
 		c.trust(k, u, salt)

@@ -93,7 +93,7 @@ func (c *config) spaceDraft(password string) (string, error) {
 		c.mu.Unlock()
 		return "", err
 	}
-	if c.codeModeLocked() || len(c.Users[0].Hash) == 0 {
+	if !c.spaceAllowedLocked() || len(c.Users[0].Hash) == 0 || c.Users[0].TOTP == "" {
 		c.mu.Unlock()
 		return "", errSpaceLogin
 	}
@@ -151,7 +151,7 @@ func (c *config) spaceCreateOK(phrase string) error {
 	}
 	u := c.Users[0]
 	key := ed25519.PrivateKey(c.Key)
-	if len(c.Space) > 0 || c.codeModeLocked() || !bytes.Equal(u.Salt, m.PSalt) || !bytes.Equal(u.Hash, m.PHash) || u.TOTP != m.TOTP ||
+	if len(c.Space) > 0 || !c.spaceAllowedLocked() || !bytes.Equal(u.Salt, m.PSalt) || !bytes.Equal(u.Hash, m.PHash) || u.TOTP != m.TOTP ||
 		len(c.Key) != ed25519.PrivateKeySize || m.Members[0].ID != c.ID || !bytes.Equal(m.Members[0].Pub, key.Public().(ed25519.PublicKey)) {
 		c.spNew = nil
 		return errSpaceChange
@@ -216,7 +216,7 @@ func (c *config) spaceMember(salt, pub []byte) bool {
 // кода фразой.
 func (c *config) spaceOwnerLocked(salt []byte) *space {
 	m := c.spaceLocked()
-	if m == nil || m.Compromised || c.SpaceOver != "" || c.codeModeLocked() {
+	if m == nil || m.Compromised || c.SpaceOver != "" || !c.spaceAllowedLocked() {
 		return nil
 	}
 	u := c.Users[0]
@@ -286,7 +286,7 @@ func (c *config) spaceAdmitOwner(salt []byte) (osalt []byte, opub ed25519.Public
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
-	if len(c.Space) > 0 && c.codeModeLocked() {
+	if len(c.Space) > 0 && !c.spaceAllowedLocked() {
 		return nil, nil, "ask"
 	}
 	m := c.spaceOwnerLocked(salt)
@@ -356,7 +356,7 @@ type spacePreview struct {
 func (c *config) spaceChangesLocked(m *space) spaceChanges {
 	u := c.Users[0]
 	return spaceChanges{Password: !bytes.Equal(u.Salt, m.PSalt) || !bytes.Equal(u.Hash, m.PHash), TOTP: u.TOTP != m.TOTP,
-		Trusted: len(u.Trusted), KeyLogin: len(u.KeyLogin), Ask: c.Confirm == nil || *c.Confirm}
+		Trusted: len(u.Trusted), KeyLogin: len(u.KeyLogin), Ask: !c.spaceAllowedLocked()}
 }
 
 func (c *config) spaceChangesFor(m *space, half bool) spaceChanges {

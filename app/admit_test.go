@@ -133,8 +133,8 @@ func TestSpaceAdmitOwner(t *testing.T) {
 		t.Errorf("чужая соль: %q", why)
 	}
 	p.mu.Lock()
-	on := true
-	p.Confirm = &on // правка файла старой версией: «Спрашивать» на члене
+	on, allow := true, false
+	p.Confirm, p.AllowSpace = &on, &allow // правка файла старой версией: permanent-профиль выключен
 	p.save()
 	p.mu.Unlock()
 	if _, _, why := p.spaceAdmitOwner(salt); why != "ask" {

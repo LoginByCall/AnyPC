@@ -451,7 +451,7 @@ func (a *Agent) recvB(ctx context.Context, s *session, m authMsg, cur *cpace.Sta
 		return
 	}
 	conf, err := pake.HostFinish(cur, m.Msg, m.Conf)
-	a.countAuth(s.cid, "", err == nil)
+	a.countAuth(s.cid, "", err == nil, s.once.Load())
 	a.mu.Unlock()
 	if err != nil {
 		reject("fail", "")

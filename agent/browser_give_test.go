@@ -18,9 +18,11 @@ import (
 const cdpGive = `
 const extra = async () => ` + "`" + `
   Object.defineProperty(navigator, 'languages', { get: () => ['ru'] });
-  Object.assign(st, { confirm: true, otp: false, give: false, code: '', online: true, version: '0.3.1' });
+  Object.assign(st, { confirm: true, otp: false, give: false, code: '', online: true, viewOnly: false, allowSpace: false, version: '0.3.1' });
   st.space = { in: false, damaged: false, compromised: false, over: false, pend: 0, wait: '', clock: [], ask: false, lock: true, gone: 0, members: [], op: null };
   window.setGive = async on => { calls.push('give:' + on); st.give = on; st.code = on ? '741902' : ''; return st.code; };
+  window.setViewOnly = async on => { calls.push('view:' + on); st.viewOnly = on; };
+  window.setSpaceAllow = async on => { calls.push('space:' + on); st.allowSpace = on; };
   window.newCode = async () => { calls.push('new'); if (!st.give) throw 'give_off'; st.code = '333444'; return st.code; };` + "`" + `;` + cdpHead + `
   const fs = require('fs'), path = require('path');
   const shown = i => "(e => !!e && e.checkVisibility())(document.getElementById('" + i + "'))";
@@ -44,9 +46,9 @@ const extra = async () => ` + "`" + `
   await shot('give-on');
   await ev("document.getElementById('newcode').click(); 1"); await sleep(400);
   console.log('new=' + await ev(txt('mycode') + " + '|' + calls.join(',')"));
-  // экран «Доступ»: блок «По коду» — состояние переключателя
+  // экран постоянного доступа: Allow space, без one-time summary и старых confirm controls
   await ev("document.getElementById('accgo').click(); 1"); await sleep(200);
-  const accOn = await ev(txt('acccode'));
+  const accOn = await ev("[document.getElementById('spaceallow').checked, document.querySelector('#acchead h2').textContent, !document.getElementById('acccode'), !document.getElementById('confirm')].join('|')");
   await ev("document.getElementById('accback').click(); 1"); await sleep(200);
   // выкл — строки кода нет, код из разметки ушёл
   await ev("document.getElementById('giveon').click(); 1"); await sleep(400);
@@ -59,16 +61,16 @@ const extra = async () => ` + "`" + `
   console.log('sess=' + await ev("[" + shown('givesess') + ", " + shown('giveoff') + ", " + txt('givesess') + ", " + shown('incoming') + ", document.getElementById('giveon').getAttribute('aria-describedby')].join('|')"));
   await ev("st.session = ''; 1"); await sleep(1300);
   await ev("document.getElementById('accgo').click(); 1"); await sleep(200);
-  console.log('acc=' + accOn + '|' + await ev(txt('acccode')));
+  console.log('acc=' + accOn + '|' + await ev("[document.getElementById('spaceallow').checked, !document.getElementById('acccode')].join('|')"));
   await ev("document.getElementById('accback').click(); 1"); await sleep(200);
-  // режим пароля (без вопросов, TOTP): кода нет вовсе — переключатель недоступен, сказано почему
-  await ev("st.confirm = false; st.otp = true; 1"); await sleep(1300);
-  console.log('pw=' + await ev("[document.getElementById('giveon').disabled, document.getElementById('giveon').checked, " + shown('givena') + ", " + shown('giveoff') + ", " + vis('codebox') + "].join('|')"));
-  // M4: тур в режиме пароля — шаг «код» пропущен
+  // Старые confirm/otp/space состояния больше не запрещают независимый one-time профиль.
+  await ev("st.confirm = false; st.otp = true; st.give = true; st.code = '741902'; 1"); await sleep(1300);
+  console.log('pw=' + await ev("[document.getElementById('giveon').disabled, document.getElementById('giveon').checked, !document.getElementById('givena'), " + shown('giveoff') + ", " + vis('codebox') + "].join('|')"));
+  // M4: тур в режиме пароля — шаг «код» присутствует у доступного one-time профиля
   console.log('tour=' + await ev("TOURS.home.filter(x => tEls(x).length).map(x => x[1]).join(',')"));
-  // M3: ПК пространства — честный текст без ссылки на неактивное «Спрашивать», и в блоке «По коду»
+  // M3: пространство тоже не отключает одноразовый доступ.
   await ev("st.space.in = true; 1"); await sleep(1300);
-  console.log('na=' + await ev(txt('givena') + " + '|' + " + txt('acccodeb')));
+  console.log('na=' + await ev("[document.getElementById('giveon').disabled, " + vis('codebox') + ", !document.getElementById('acccodeb')].join('|')"));
   // M5: одна «Настроить» вне пространства
   await ev("st.space.in = false; 1"); await sleep(1300);
   console.log('one=' + await ev("[!document.getElementById('mnoneb'), [...document.querySelectorAll('#spmain button')].filter(b => b.checkVisibility() && b.textContent === 'Настроить').length].join('|')"));
@@ -78,7 +80,9 @@ const extra = async () => ` + "`" + `
   for (const [k, v] of Object.entries(states)) {
     await ev("Object.assign(st.space, { in: false, wait: '', damaged: false, compromised: false }, " + JSON.stringify(v) + "); 1"); await sleep(1300);
     const vis1 = await ev("[" + shown('accgo') + ", " + hgt('accgo') + " >= 44, document.getElementById('accgo').closest('#mhead') !== null].join(',')");
-    await ev("document.getElementById('accgo').click(); 1"); await sleep(200);
+    if (await ev(shown('accgo'))) await ev("document.getElementById('accgo').click(); 1");
+    else { await ev("document.getElementById('setgo').click(); 1"); await sleep(100); await ev("document.getElementById('setacc').click(); 1"); }
+    await sleep(200);
     res.push(k + ':' + vis1 + ',' + await ev(shown('access') + " + ',' + document.querySelector('#acchead h2').textContent"));
     await ev("document.getElementById('accback').click(); 1"); await sleep(200);
   }
@@ -87,6 +91,14 @@ const extra = async () => ` + "`" + `
   await ev("document.getElementById('setgo').click(); 1"); await sleep(200);
   await ev("document.getElementById('setacc').click(); 1"); await sleep(200);
   console.log('gear=' + await ev("[" + shown('access') + ", " + shown('settings') + ", " + txt('setacc') + "].join('|')"));
+  await ev("document.getElementById('spaceallow').click(); 1"); await sleep(300);
+  await ev("document.getElementById('accback').click(); document.getElementById('viewonly').click(); 1"); await sleep(300);
+  console.log('switches=' + await ev("[document.getElementById('spaceallow').checked, document.getElementById('viewonly').checked, calls.slice(-2).join(',')].join('|')"));
+  await ev("st.online = false; 1"); await sleep(1200);
+  console.log('status0=' + await ev("document.getElementById('mystate').textContent === t('offline')"));
+  await ev("st.online = true; 1"); await sleep(1200);
+  console.log('status1=' + await ev("document.getElementById('mystate').textContent === t('online')"));
+  console.log('removed=' + await ev("['confirm','otpwarn','otpfix','acccode','newpw','uadd'].every(i => !document.getElementById(i))"));
   process.exit(0);
 })();`
 
@@ -112,13 +124,17 @@ func TestBrowserGive(t *testing.T) {
 		"off2=false|false||true|false|give:true,new,give:false|false\n",
 		"err=Код не выдан: включите «Разрешить управление». Если переключатель неактивен, этот ПК сейчас не принимает вход по коду.\n",
 		"sess=true|false|Новые подключения по коду выключены. Идущий сеанс продолжается — завершить: «Разорвать».|true|givesess\n",
-		"tour=tour_id,tour_pw,tour_add,tour_talk,tour_help\n",
-		"na=На ПК вашего пространства разовая помощь по коду пока недоступна. Можно самому подключиться к помощнику через «+» сверху или получить помощь на ПК вне пространства.|На ПК вашего пространства разовая помощь по коду пока недоступна: вход сюда — паролем и кодом из приложения.\n",
+		"tour=tour_id,tour_code,tour_pw,tour_add,tour_talk,tour_help\n",
+		"na=false|true|true\n",
 		"one=true|1\n",
-		"acc=включено|выключено\n",
-		"pw=true|false|true|false|false\n",
-		"setup=out:true,true,true,true,Доступ к этому ПК;in:true,true,true,true,Доступ к этому ПК;wait:true,true,true,true,Доступ к этому ПК;damaged:true,true,true,true,Доступ к этому ПК;comp:true,true,true,true,Доступ к этому ПК\n",
+		"acc=false|Постоянный доступ к этому компьютеру|true|true|false|true\n",
+		"pw=false|true|true|false|true\n",
+		"setup=out:true,true,true,true,Постоянный доступ к этому компьютеру;in:false,false,true,true,Постоянный доступ к этому компьютеру;wait:false,false,true,true,Постоянный доступ к этому компьютеру;damaged:false,false,true,true,Постоянный доступ к этому компьютеру;comp:false,false,true,true,Постоянный доступ к этому компьютеру\n",
 		"gear=true|false|Настроить\n",
+		"switches=true|true|space:true,view:true\n",
+		"status0=true\n",
+		"status1=true\n",
+		"removed=true\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("нет %q", want)

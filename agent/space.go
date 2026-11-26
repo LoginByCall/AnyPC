@@ -55,7 +55,7 @@ func (a *Agent) spaceCtl(ctx context.Context, s *session, data []byte, reply fun
 		return
 	}
 	// «Только показ экрана» на хосте — никаких правок через сессию, и состава тоже (решение приёмки Э2, строже)
-	if !s.spaceOK.Load() || a.ViewOnly != nil && a.ViewOnly() {
+	if !s.spaceOK.Load() || a.viewOnlyFor(s) {
 		reply(spMsg{T: "sp", Err: "rights"})
 		return
 	}
@@ -422,7 +422,12 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 							return
 						}
 						fc, fh := fps()
-						b, conf, hc, err := pake.ClientRespond(d.Password, am.Salt, am.Msg, d.ID, fc, fh)
+						salt, msg := am.Salt, am.Msg
+						permanent := len(am.PermSalt) > 0 && len(am.PermMsg) > 0
+						if permanent { // новый хост: основной "a" — одноразовый код, permanent — отдельный CPace
+							salt, msg = am.PermSalt, am.PermMsg
+						}
+						b, conf, hc, err := pake.ClientRespond(d.Password, salt, msg, d.ID, fc, fh)
 						if err != nil {
 							finish(err)
 							return
@@ -434,7 +439,7 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 							finish(err)
 							return
 						}
-						sendA(authMsg{T: "b", Msg: b, Conf: conf, CPub: cpub, CSig: csig, From: d.Self, Name: d.Name}) // Ч12б: ID и имя — в окно «Пустить?» нового поручителя
+						sendA(authMsg{T: "b", Msg: b, Conf: conf, Permanent: permanent, CPub: cpub, CSig: csig, From: d.Self, Name: d.Name}) // Ч12б: ID и имя — в окно «Пустить?» нового поручителя
 					case "otp":
 						if otpN++; otpN > 1 || !hostOK(am) { // второй запрос — код не подошёл
 							finish(ErrSpaceAuth)

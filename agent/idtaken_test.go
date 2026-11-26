@@ -114,7 +114,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const ev = async x => { const r = (await call("Runtime.evaluate", { expression: x, awaitPromise: true, returnByValue: true })).result; return r?.exceptionDetails ? "EXC " + JSON.stringify(r.exceptionDetails.exception?.description) : r?.result?.value; };
   await call('Page.enable', {});
   await call('Page.addScriptToEvaluateOnNewDocument', { source: ` + "`" + `
-    window.S = { id: '123456789', confirm: true, otp: false, hasPass: true, users: [], online: false, idTaken: true };
+    window.S = { id: '123456789', confirm: true, otp: false, hasPass: true, users: [], online: false, idTaken: true, give: true };
     window.hostInfo = async () => JSON.parse(JSON.stringify(S));
   ` + "`" + ` });
   await call('Page.navigate', { url }); await sleep(1500);

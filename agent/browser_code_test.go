@@ -12,8 +12,8 @@ import (
 	"anypc/ui"
 )
 
-// cdpHostCode — окно хоста, режим «Спрашивать» (REQ-S-23): вместо пароля — одноразовый код по три цифры и ↻; ↻ зовёт
-// newCode и показывает новый; галочку сняли (TOTP) — снова пароль, кода нет.
+// cdpHostCode — независимый one-time профиль: код по три цифры и ↻; ↻ зовёт newCode и показывает новый;
+// постоянный профиль и старые confirm/otp состояния одноразовый код не отключают.
 const cdpHostCode = `
 const [, , port, url] = process.argv;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -31,7 +31,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     window.newCode = async () => { calls.push('new'); st.code = '111222'; return st.code; };
   ` + "`" + ` });
   const vis = i => "!document.getElementById('" + i + "').classList.contains('hidden')";
-  const show = () => ev("[" + vis('codebox') + ", document.getElementById('mycode').textContent, " + vis('pwrow') + ", calls.join(',')].join('|')");
+  const show = () => ev("[" + vis('codebox') + ", document.getElementById('mycode').textContent, calls.join(',')].join('|')");
   await call('Page.navigate', { url }); await sleep(1500);
   console.log('ask=' + await show());
   await ev("document.getElementById('newcode').click(); 1"); await sleep(300);
@@ -41,7 +41,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   process.exit(0);
 })();`
 
-// TestBrowserHostCode — окно хоста: блок одноразового кода в режиме «Спрашивать» и ↻.
+// TestBrowserHostCode — окно хоста: одноразовый код и ↻ не зависят от постоянного профиля.
 func TestBrowserHostCode(t *testing.T) {
 	chrome, err := exec.LookPath("google-chrome")
 	if err != nil {
@@ -55,7 +55,7 @@ func TestBrowserHostCode(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	out := string(runCDP(t, ctx, chrome, cdpHostCode, srv.URL+"/"))
-	for _, want := range []string{"ask=true|482 913|false|\n", "new=true|111 222|false|new\n", "pw=false||true|new\n"} {
+	for _, want := range []string{"ask=true|482 913|\n", "new=true|111 222|new\n", "pw=true||new\n"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("нет %q", want)
 		}

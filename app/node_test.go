@@ -66,6 +66,23 @@ func TestCheckNode(t *testing.T) {
 	}
 }
 
+// TestSpaceAllowOffDrops — выключение permanent-профиля закрывает активные и pending-входы, включение pending не трогает.
+func TestSpaceAllowOffDrops(t *testing.T) {
+	cfg, _ := loadConfig(filepath.Join(t.TempDir(), "c.json"))
+	a := &agent.Agent{}
+	oldRevoked, oldPending := dropRevoked, dropPending
+	defer func() { dropRevoked, dropPending = oldRevoked, oldPending }()
+	revoked, pending := 0, 0
+	dropRevoked = func(*agent.Agent) { revoked++ }
+	dropPending = func(*agent.Agent) { pending++ }
+	if err := setSpaceAllow(cfg, a, true); err != nil || revoked != 1 || pending != 0 {
+		t.Fatalf("включение: err=%v revoked=%d pending=%d", err, revoked, pending)
+	}
+	if err := setSpaceAllow(cfg, a, false); err != nil || revoked != 2 || pending != 1 {
+		t.Fatalf("выключение: err=%v revoked=%d pending=%d", err, revoked, pending)
+	}
+}
+
 // Смена узла: старый Run остановлен до старта нового; неверный адрес ничего не меняет.
 func TestRunnerRestart(t *testing.T) {
 	cfg, err := loadConfig(filepath.Join(t.TempDir(), "c.json"))

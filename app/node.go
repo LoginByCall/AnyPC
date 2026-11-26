@@ -140,6 +140,15 @@ func setGive(cfg *config, a *agent.Agent, on bool) (string, error) {
 	return c, err
 }
 
+// setSpaceAllow — выключение permanent-профиля отзывает и активную, и ещё не завершённую аутентификацию.
+func setSpaceAllow(cfg *config, a *agent.Agent, on bool) error {
+	err := dropAfter(a, cfg.setSpaceAllow(on))
+	if err == nil && !on {
+		dropPending(a)
+	}
+	return err
+}
+
 func setViewOnly(cfg *config, a *agent.Agent, on bool) error {
 	err := cfg.setViewOnly(on)
 	if err == nil {
@@ -211,7 +220,7 @@ func applyNode(cfg *config, node string, public bool) (string, error) {
 // окно пишет «ID уже в сети», а не «нет связи с сервером».
 func hostInfo(cfg *config, a *agent.Agent, online bool, session, update string) map[string]any {
 	node, pub := cfg.node()
-	return map[string]any{"id": cfg.id(), "fp": cfg.fingerprint(), "online": online, "idTaken": a.IDTaken(), "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "otp": cfg.otpSet(), "users": cfg.users(), "keys": cfg.keyList(), "code": cfg.code(), "give": cfg.giving(), "viewOnly": cfg.viewOnly(), "version": version, "update": update, "node": node, "nodePub": pub, "server": cfg.server(), "audio": audioInfo(a), "spaceDamaged": cfg.spaceDamaged(), "space": spaceInfo(cfg), "send": sendOps.snap(), "recvNew": recvPinNewJSON(cfg)}
+	return map[string]any{"id": cfg.id(), "fp": cfg.fingerprint(), "online": online, "idTaken": a.IDTaken(), "session": session, "hasPass": cfg.hasPass(), "confirm": cfg.confirm(), "otp": cfg.otpSet(), "users": cfg.users(), "allowSpace": cfg.spaceAllowed(), "keys": cfg.keyList(), "code": cfg.code(), "give": cfg.giving(), "viewOnly": cfg.viewOnly(), "version": version, "update": update, "node": node, "nodePub": pub, "server": cfg.server(), "audio": audioInfo(a), "spaceDamaged": cfg.spaceDamaged(), "space": spaceInfo(cfg), "send": sendOps.snap(), "recvNew": recvPinNewJSON(cfg)}
 }
 
 // audioInfo — предложение звука для окна хоста (PLAN.md): nil — ждать нечего.

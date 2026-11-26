@@ -24,9 +24,9 @@ func TestAccGiveLockSeq(t *testing.T) {
 		c.save()
 		c.mu.Unlock()
 		ctx, cancel := context.WithCancel(context.Background())
-		a := &agent.Agent{Server: url, ID: c.id(), Secret: c.secret, Key: c.key(), OTP: c.otp, CodeUsed: c.codeUsed,
+		a := &agent.Agent{Server: url, ID: c.id(), Secret: c.secret, OneTimeSecret: c.oneTimeSecret, Key: c.key(), OTP: c.otp, CodeUsed: c.codeUsed,
 			Unattended: func() bool { return !c.confirm() }, SpaceGet: c.spaceGet, LoginShut: c.loginShut,
-			CodeMode: c.codeMode, RecvPinned: c.recvPinned, RecvPin: c.recvPin, RecvAsk: func(agent.RecvReq) bool { return true },
+			CodeMode: c.oneTimeMode, RecvPinned: c.recvPinned, RecvPin: c.recvPin, RecvAsk: func(agent.RecvReq) bool { return true },
 			Confirm: func(string, string) agent.Answer { return agent.Deny }, FileDir: t.TempDir(),
 			Capture: func(context.Context, agent.Cap) (*exec.Cmd, error) {
 				return nil, errors.New("тест: без захвата")

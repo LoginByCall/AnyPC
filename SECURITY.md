@@ -396,22 +396,29 @@ through the folder's os.Root. Own PC — by the key from the space membership, n
 from its screen (that PC's key is then remembered, as after a login) or without a code by the remembered key if that
 PC pinned this one. The sender's log has one line without paths or text. The clipboard is sent only when chosen. The page does not name
 what to send by path: the person picks the file or folder in the OS picker, the page only gets a one-time token.
-Переключатель «Разрешить управление» (2026-11-15, ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ: путь входа записи по умолчанию). Одноразовый
-код режима «Спрашивать» действует только при включённом переключателе на главном экране; после запуска программы он
-выключен (не хранится в файле) и сам выключается при уходе из режима «Спрашивать» (пароль + TOTP, пространство).
-Выключен — код не показывается в окне, CLI (`--status`, `--confirm on`) его не печатает, а запись по умолчанию
-отвечает солью кода и случайным 32-байтным секретом, который никто не знает (новый при каждом выключении): вход и
-приём файлов любым кодом получают тот же отказ "fail", что неверный код, с тем же счётом неудач и блокировкой; ответа
-«пароля нет» нет, так что посторонний не узнаёт, выключено ли. Включение выдаёт новый код (код прошлого запуска не
-действует). Выключение не рвёт идущую сессию по коду (соль та же) — её кончает «Разорвать»; незавершённые входы
-закрываются. Вход паролем + TOTP, записями, ключом и пропуском своего ПК переключатель не затрагивает.
+Независимые профили доступа (2026-11-26, ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ: выбор профиля и два CPace в первом «a»). Permanent
+«My space» включается «Allow space» и принимает только записи с паролем и TOTP; выключение закрывает этот путь входа,
+но не влияет на одноразовый код. One-time «Allow control» после запуска выключен (не хранится в файле). Выключен —
+код не показывается, а one-time CPace отвечает солью кода и случайным 32-байтным секретом (новым при каждом
+выключении): любой код получает тот же "fail", что неверный, с общим счётом неудач и блокировкой. Включение выдаёт
+новый код. Правильный ID+Code ведёт сразу к сессии: без TOTP, окна «Разрешить», входа ключом, trust и прав пространства;
+после сессии код меняется. «View Only» сужает только one-time сессии и не меняет права permanent-записей.
 
-"Allow control" switch (2026-11-15, NEEDS HUMAN REVIEW: default-record login path). The one-time code of the "Ask"
-mode works only while the switch on the main screen is on; after the program starts it is off (not stored in the
-file) and it turns itself off when the PC leaves the "Ask" mode (password + TOTP, space). While off, the code is not
-shown in the window, the CLI (`--status`, `--confirm on`) does not print it, and the default record answers with the
-code salt and a random 32-byte secret nobody knows (new on every switch-off): login and file receiving with any code
-get the same "fail" as a wrong code, with the same failure count and lockout; there is no "no password" answer, so a
-stranger cannot tell whether it is off. Turning it on issues a new code (the code of a previous run does not work).
-Turning it off does not end a running code session (same salt) — "Disconnect" does; pending logins are closed. Login
-with password + TOTP, accounts, a key or an own PC's pass is not affected by the switch.
+В новом первом "a" основной CPace — one-time, а `psalt`/`pmsg` — permanent записи по умолчанию; клиент permanent
+отвечает "b" с `permanent:true`, именные записи используют прежний второй "a" с именем. Старый клиент без поля
+`permanent` остаётся на основном one-time CPace. Со старым хостом новый клиент использует его единственный CPace,
+как раньше. Отключение одного профиля не раскрывает состояние другого и не меняет его соль/секрет.
+
+Independent access profiles (2026-11-26, NEEDS HUMAN REVIEW: profile selection and two CPace exchanges in the first
+"a"). Permanent "My space" is enabled by "Allow space" and accepts only accounts with a password and TOTP; disabling
+it closes that login path without affecting the one-time code. One-time "Allow control" is off after startup (not
+stored in the file). While off, no code is shown and the one-time CPace uses the code salt and a random 32-byte
+secret (new on every switch-off): every code gets the same "fail" as a wrong one, with the same failure count and
+lockout. Enabling issues a new code. A valid ID+Code opens a session immediately: no TOTP, Allow window, key login,
+trust or space rights; the code rotates after the session. "View Only" restricts only one-time sessions and does not
+change permanent account rights.
+
+In the new first "a", the main CPace is one-time and `psalt`/`pmsg` carry the permanent default account; a permanent
+client answers "b" with `permanent:true`, while named accounts keep the existing second "a" with the name. An old
+client without `permanent` stays on the main one-time CPace. With an old host, a new client uses its only CPace as
+before. Disabling either profile reveals nothing about the other and does not change its salt or secret.

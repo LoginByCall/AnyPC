@@ -531,7 +531,7 @@ func (c *config) loginTag(user string, cpub []byte) []byte {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
-	if c.codeModeLocked() {
+	if !c.spaceAllowedLocked() {
 		return nil
 	}
 	u := c.Users[0]
@@ -571,7 +571,7 @@ func (c *config) loginShut(user string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
-	return user == "" && c.SpaceWait != "" && len(c.Space) > 0 && !c.codeModeLocked()
+	return user == "" && c.SpaceWait != "" && len(c.Space) > 0 && c.spaceAllowedLocked()
 }
 
 // spaceDamaged — записи состава есть, но не читаются (для окна: «выйти и вступить снова»).

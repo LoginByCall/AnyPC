@@ -321,7 +321,7 @@ func spaceInfo(c *config) map[string]any {
 	m := c.spaceLocked()
 	self := ed25519.PrivateKey(c.Key).Public().(ed25519.PublicKey)
 	out := map[string]any{"in": len(c.Space) > 0, "damaged": c.spaceDamagedLocked(), "over": c.SpaceOver != "",
-		"pend": len(c.SpacePend), "wait": c.SpaceWait, "clock": append([]string{}, c.SpaceClock...), "ask": c.codeModeLocked()}
+		"pend": len(c.SpacePend), "wait": c.SpaceWait, "clock": append([]string{}, c.SpaceClock...), "ask": !c.spaceAllowedLocked()}
 	c.mu.Unlock()
 	pcs, gone, bad := []map[string]any{}, 0, false
 	if m != nil {

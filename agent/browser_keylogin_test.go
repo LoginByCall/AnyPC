@@ -270,7 +270,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     window.ck = {}; window.ckeyGet = async id => ck[id] || ''; window.ckeySet = async (id, v) => { if (v) ck[id] = v; else delete ck[id]; };
     window.keyDel = async (n, fp) => { calls.push('kdel:' + n + ':' + fp); st.keys = st.keys.filter(k => k.fp !== fp); };
   ` + "`" + ` });
-  const list = () => ev("[...document.getElementById('ulist').children].map(r => r.textContent).join(';') + '|' + document.querySelectorAll('#ulist b b').length + '|' + calls.join(',')");
+  const list = () => ev("[...document.getElementById('ulist').children].map(r => r.classList.contains('urow') ? r.dataset.user + ':' + r.querySelector('select').value : r.textContent).join(';') + '|' + document.querySelectorAll('#ulist b b').length + '|' + calls.join(',')");
   await call('Page.navigate', { url }); await sleep(1500);
   console.log('keys=' + await list());
   await ev("const i = document.getElementById('id'); i.value = '123456789'; i.dispatchEvent(new Event('input')); 1"); await sleep(300);
@@ -295,9 +295,9 @@ func TestBrowserHostKeys(t *testing.T) {
 	defer cancel()
 	out := string(runCDP(t, ctx, chrome, cdpHostKeys, srv.URL+"/"))
 	for _, want := range []string{
-		"keys=This PC’s password;🔑 aaaa bbbb · added 11/10/2026 · last sign-in 11/12/2026Revoke;ivanFull control · TOTPPasswordTurn off TOTPDelete;🔑 <b>e</b>e · added 11/11/2026 · last sign-in —Revoke|0|\n",
+		"keys=ivan:full;🔑 <b>e</b>e · added 11/11/2026 · last sign-in —Revoke;This PC’s password;🔑 aaaa bbbb · added 11/10/2026 · last sign-in 11/12/2026Revoke|0|\n",
 		"migr=null|{}|false\n", // программа: ключ из localStorage окна в настройки не попал, стёрт; галочка не встала сама
-		"revoked=ivanFull control · TOTPPasswordTurn off TOTPDelete;🔑 <b>e</b>e · added 11/11/2026 · last sign-in —Revoke|0|kdel::aaaa bbbb cccc dddd\n",
+		"revoked=ivan:full;🔑 <b>e</b>e · added 11/11/2026 · last sign-in —Revoke|0|kdel::aaaa bbbb cccc dddd\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("нет %q", want)

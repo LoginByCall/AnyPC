@@ -123,8 +123,8 @@ func TestBrowserUsers(t *testing.T) {
 	}
 }
 
-// cdpHostUsers — блок «Учётные записи AnyPC» в окне хоста с подменёнными привязками: список (имя — текстом), добавление
-// (короткий пароль — отказ), «Пароль» заполняет форму, TOTP записи — окно настройки с её именем, удаление.
+// cdpHostUsers — постоянные пользователи: inline draft сверху, required name/password/staged TOTP,
+// атомарный userSave, blank password/TOTP у существующего = unchanged, Cancel snapshot, Delete, poll не затирает правку.
 const cdpHostUsers = `
 const [, , port, url] = process.argv;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -137,33 +137,51 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const ev = async x => { const r = (await call("Runtime.evaluate", { expression: x, awaitPromise: true, returnByValue: true })).result; return r?.exceptionDetails ? "EXC " + JSON.stringify(r.exceptionDetails.exception?.description) : r?.result?.value; };
   await call('Page.enable', {});
   await call('Page.addScriptToEvaluateOnNewDocument', { source: ` + "`" + `
-    const st = { id: '123456789', confirm: false, otp: true, hasPass: true, users: [{ name: '<b>x</b>', view: false, otp: false }, { name: 'olga', view: true, otp: true }] };
+    const st = { id: '123456789', allowSpace: true, users: [{ name: '<b>x</b>', view: false, otp: false }, { name: 'olga', view: true, otp: true }] };
     window.calls = []; window.confirm = () => true;
     window.hostInfo = async () => JSON.parse(JSON.stringify(st));
-    window.userSet = async (n, p, r) => { calls.push('set:' + n + ':' + p + ':' + r); st.users.push({ name: n, view: r === 'view', otp: false }); };
+    window.userSave = async (n, p, r, s, c) => {
+      calls.push(['save', n, p, r, s, c].join(':'));
+      if (p === 'reject') throw 'denied';
+      const u = st.users.find(u => u.name === n) || (st.users.push({ name: n }), st.users.at(-1));
+      if (p) u.password = p; u.view = r === 'view'; if (s) u.otp = true;
+    };
     window.userDel = async n => { calls.push('del:' + n); st.users = st.users.filter(u => u.name !== n); };
-    window.otpOff = async n => { calls.push('off:' + n); st.users.find(u => u.name === n).otp = false; };
     window.otpNew = async u => { calls.push('new:' + u); return { secret: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567', uri: 'otpauth://x', svg: '<svg xmlns="http://www.w3.org/2000/svg"/>' }; };
-    window.otpEnable = async (s, c, u) => { calls.push('enable:' + c + ':' + u); st.users.find(x => x.name === u).otp = true; };
   ` + "`" + ` });
-  const rows = () => ev("[...document.querySelectorAll('#ulist .row')].map(r => r.textContent).join(';') + '|' + document.querySelectorAll('#ulist b b').length + '|' + document.getElementById('ustate').textContent + '|' + calls.join(',')");
-  const btn = (row, k) => ev("document.querySelectorAll('#ulist .row')[" + row + "].querySelectorAll('button')[" + k + "].click(); 1");
+  const row = name => "[...document.querySelectorAll('#ulist .urow')].find(r => r.dataset.user === " + JSON.stringify(name) + ")";
+  const set = async (name, field, value) => ev("(() => { const r = " + row(name) + ", e = r.querySelector('[name=" + field + "]'); e.value = " + JSON.stringify(value) + "; e.dispatchEvent(new Event(e.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true })); })()");
+  const act = async (name, action) => { await ev(row(name) + ".querySelector('[data-act=" + action + "]').click(); 1"); await sleep(250); };
   await call('Page.navigate', { url }); await sleep(1500);
-  console.log('list=' + await rows() + '|' + await ev("!document.getElementById('users').classList.contains('hidden') + '|' + !document.getElementById('uhow').classList.contains('hidden')"));
-  await ev("document.getElementById('uname').value = 'petr'; document.getElementById('upw').value = 'short'; document.getElementById('uadd').click(); 1"); await sleep(300);
-  console.log('short=' + await rows());
-  await ev("document.getElementById('upw').value = 'petr-pass1'; document.getElementById('uright').value = 'view'; document.getElementById('uadd').click(); 1"); await sleep(300);
-  console.log('add=' + await rows() + '|' + await ev("document.getElementById('uname').value + document.getElementById('upw').value"));
-  await btn(1, 0); await sleep(100);
-  console.log('pw=' + await ev("document.getElementById('uname').value + '|' + document.getElementById('uright').value"));
-  await btn(2, 1); await sleep(300);
-  console.log('totp=' + await ev("document.getElementById('otph').textContent + '|' + !document.getElementById('otpset').classList.contains('hidden')"));
-  await ev("document.getElementById('otpcode').value = '123456'; document.getElementById('otpok').click(); 1"); await sleep(300);
-  await btn(1, 1); await sleep(300);
-  await btn(1, 2); await sleep(300);
-  console.log('done=' + await rows());
-  await ev("window.hostInfo = async () => ({ id: '123456789', confirm: true, otp: false, hasPass: true, users: [] }); onHostState({ id: '123456789', confirm: true, otp: false, hasPass: true, users: [] }); 1");
-  console.log('confirm=' + await ev("!document.getElementById('users').classList.contains('hidden') + '|' + !document.getElementById('uhow').classList.contains('hidden')"));
+  console.log('list=' + await ev("[document.querySelector('[data-user=\"<b>x</b>\"] input[name=name]').value, document.querySelector('[data-user=olga] select').value, document.querySelectorAll('#ulist b b').length, !![...document.querySelectorAll('#ulist button')].find(b => b.textContent.includes('Turn off TOTP'))].join('|')"));
+  await ev("document.getElementById('useradd').click(); 1"); await sleep(100);
+  console.log('draft=' + await ev("[document.querySelector('#ulist').firstElementChild.dataset.draft, !document.querySelector('[data-draft] .uacts').classList.contains('hidden')].join('|')"));
+  await act('', 'save');
+  console.log('required=' + await ev("document.getElementById('ustate').textContent + '|' + calls.join(',')"));
+  await set('', 'name', 'petr'); await set('', 'password', 'petr-pass1'); await set('', 'rights', 'view');
+  await ev("st.users.push({ name: 'polled', view: false, otp: true }); onHostState(await hostInfo()); 1"); await sleep(100);
+  console.log('poll=' + await ev("[document.querySelector('[data-draft] input[name=name]').value, document.querySelector('[data-draft] input[name=password]').value, document.querySelector('[data-draft] select').value].join('|')"));
+  await act('', 'totp');
+  console.log('totp=' + await ev("document.getElementById('otph').textContent + '|' + !document.getElementById('otpset').classList.contains('hidden') + '|' + calls.join(',')"));
+  await ev("document.getElementById('otpcode').value = '123456'; document.getElementById('otpok').click(); 1"); await sleep(100);
+  console.log('staged=' + await ev("calls.join(',') + '|' + !document.querySelector('[data-draft] .uacts').classList.contains('hidden')"));
+  await act('', 'save');
+  console.log('add=' + await ev("calls.join(',') + '|' + !!document.querySelector('[data-draft]')"));
+  await set('olga', 'password', 'changed-secret');
+  console.log('dirty=' + await ev("!document.querySelector('[data-user=olga] .uacts').classList.contains('hidden')"));
+  await act('olga', 'cancel');
+  console.log('cancel=' + await ev("document.querySelector('[data-user=olga] input[name=password]').value + '|' + document.querySelector('[data-user=olga] .uacts').classList.contains('hidden')"));
+  await set('olga', 'rights', 'full'); await act('olga', 'save');
+  console.log('rights=' + await ev("calls.slice(-1)[0]"));
+  await act('olga', 'totp'); await ev("document.getElementById('otpcode').value = '654321'; document.getElementById('otpok').click(); 1"); await act('olga', 'save');
+  console.log('replace=' + await ev("calls.slice(-2).join(',')"));
+  await set('olga', 'password', 'reject'); await act('olga', 'save');
+  console.log('error=' + await ev("document.getElementById('ustate').textContent + '|' + document.querySelector('[data-user=olga] input[name=password]').value"));
+  await act('olga', 'cancel'); await act('olga', 'delete');
+  console.log('delete=' + await ev("calls.slice(-1)[0] + '|' + !!document.querySelector('[data-user=olga]')"));
+  await ev("document.getElementById('useradd').click(); 1"); await act('', 'delete');
+  console.log('draftdel=' + await ev("!!document.querySelector('[data-draft]')"));
+  console.log('legacy=' + await ev("['confirm','newpw','setpw','otpwarn','otpfix','acccode'].every(i => !document.getElementById(i))"));
   process.exit(0);
 })();`
 
@@ -182,13 +200,21 @@ func TestBrowserHostUsers(t *testing.T) {
 	defer cancel()
 	out := string(runCDP(t, ctx, chrome, cdpHostUsers, srv.URL+"/"))
 	for _, want := range []string{
-		"list=<b>x</b>Full controlPasswordSet up TOTPDelete;olgaView only · TOTPPasswordTurn off TOTPDelete|0|||true|false\n",
-		"short=<b>x</b>Full controlPasswordSet up TOTPDelete;olgaView only · TOTPPasswordTurn off TOTPDelete|0|Password must be at least 8 characters.|\n",
-		"|set:petr:petr-pass1:view|\n",
-		"pw=olga|view\n",
-		"totp=Second factor (TOTP) — petr|true\n",
-		"confirm=false|true\n", // «Спрашивать перед каждым подключением» — блок скрыт, вместо него — как открыть
-		"done=<b>x</b>Full controlPasswordSet up TOTPDelete;petrView only · TOTPPasswordTurn off TOTPDelete|0||set:petr:petr-pass1:view,new:petr,enable:123456:petr,off:olga,del:olga\n",
+		"list=<b>x</b>|view|0|false\n",
+		"draft=1|true\n",
+		"required=Enter a name and password, then set up TOTP before saving.|\n",
+		"poll=petr|petr-pass1|view\n",
+		"totp=Second factor (TOTP) — petr|true|new:petr\n",
+		"staged=new:petr|true\n",
+		"add=new:petr,save:petr:petr-pass1:view:ABCDEFGHIJKLMNOPQRSTUVWXYZ234567:123456|false\n",
+		"dirty=true\n",
+		"cancel=|true\n",
+		"rights=save:olga::full::\n",
+		"replace=new:olga,save:olga::full:ABCDEFGHIJKLMNOPQRSTUVWXYZ234567:654321\n",
+		"error=Error: denied|reject\n",
+		"delete=del:olga|false\n",
+		"draftdel=false\n",
+		"legacy=true\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("нет %q", want)

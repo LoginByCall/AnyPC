@@ -169,9 +169,7 @@ func otpBrowser(t *testing.T, script string) string {
 	return string(runCDP(t, ctx, chrome, script, srv.URL+"/"))
 }
 
-// cdpHostOTP — окно хоста с подменёнными привязками программы: снять «Подтверждать вход» = настройка TOTP
-// (галочка остаётся, пока нет верного кода); неверный код — сообщение; верный — включено. Хост после обновления
-// (подтверждение выключено, TOTP нет) — галочка стоит и видно предупреждение.
+// cdpHostOTP — старые confirm/default-password/otp-warning controls удалены; общие ID copy и keyboard warning сохранены.
 const cdpHostOTP = `
 const [, , port, url] = process.argv;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -184,33 +182,18 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const ev = async x => { const r = (await call("Runtime.evaluate", { expression: x, awaitPromise: true, returnByValue: true })).result; return r?.exceptionDetails ? "EXC " + JSON.stringify(r.exceptionDetails.exception?.description) : r?.result?.value; };
   await call('Page.enable', {});
   await call('Page.addScriptToEvaluateOnNewDocument', { source: ` + "`" + `
-    const st = JSON.parse(localStorage.getItem('st') || '{"id":"123456789","confirm":true,"otp":false}'); window.calls = [];
+    window.st = { id: '123456789', allowSpace: false, users: [] };
     window.hostInfo = async () => ({ ...st });
-    window.setConfirm = async on => { calls.push('confirm:' + on); st.confirm = on; if (on) st.otp = false; };
-    window.otpNew = async () => ({ secret: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567', uri: 'otpauth://x', svg: '<svg xmlns="http://www.w3.org/2000/svg"/>' });
-    window.otpEnable = async (s, c) => { calls.push('enable:' + c); if (c !== '123456') throw 'bad_code'; st.confirm = false; st.otp = true; };
   ` + "`" + ` });
-  const vis = i => "!document.getElementById('" + i + "').classList.contains('hidden')";
-  const show = () => ev("[document.getElementById('confirm').checked, " + vis('otpset') + ", " + vis('otpon') + ", " + vis('otpwarn') + ", document.getElementById('otpkey').textContent, document.getElementById('otpstate').textContent, calls.join(',')].join('|')");
   await call('Page.navigate', { url }); await sleep(1500);
-  await ev("const c = document.getElementById('confirm'); c.click(); 1"); await sleep(300);
-  console.log('setup=' + await show());
-  await ev("document.getElementById('otpcode').value = '000000'; document.getElementById('otpok').click(); 1"); await sleep(300);
-  console.log('bad=' + await show());
-  await ev("document.getElementById('otpcode').value = '123456'; document.getElementById('otpok').click(); 1"); await sleep(300);
-  console.log('on=' + await show());
-  await ev("document.getElementById('confirm').click(); 1"); await sleep(300);
-  console.log('off=' + await show());
-  await ev("localStorage.setItem('st', JSON.stringify({ id: '123456789', confirm: false, otp: false })); 1");
-  await call('Page.reload', {}); await sleep(1500);
-  console.log('legacy=' + await show());
-  // ID копируется без пробелов; предупреждение о не латинской раскладке и Caps Lock у поля пароля
+  await ev("document.getElementById('accgo').click(); 1"); await sleep(200);
+  console.log('screen=' + await ev("[document.querySelector('#acchead h2').textContent, document.getElementById('spaceallow').checked, ['confirm','newpw','setpw','otpwarn','otpfix','otpon','acccode'].every(i => !document.getElementById(i))].join('|')"));
   console.log('copyid=' + await ev("(() => { const d = new DataTransfer(); document.getElementById('myid').dispatchEvent(new ClipboardEvent('copy', { clipboardData: d, bubbles: true, cancelable: true })); return document.getElementById('myid').textContent + '>' + d.getData('text/plain'); })()"));
-  console.log('kb=' + await ev("(() => { const i = document.getElementById('newpw'), w = i.closest('.row').nextElementSibling; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'ф', code: 'KeyA' })); const a = w.textContent; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', code: 'KeyA' })); return a + '|' + w.classList.contains('hidden'); })()"));
+  console.log('kb=' + await ev("(() => { const i = document.getElementById('spcpw'), w = i.closest('.row').nextElementSibling; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'ф', code: 'KeyA' })); const a = w.textContent; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', code: 'KeyA' })); return a + '|' + w.classList.contains('hidden'); })()"));
   process.exit(0);
 })();`
 
-// TestBrowserHostOTP — окно хоста: настройка TOTP при снятии «Подтверждать вход», предупреждение после обновления.
+// TestBrowserHostOTP — экран permanent без legacy controls; ID copy и предупреждение раскладки сохранены.
 func TestBrowserHostOTP(t *testing.T) {
 	chrome, err := exec.LookPath("google-chrome")
 	if err != nil {
@@ -225,11 +208,7 @@ func TestBrowserHostOTP(t *testing.T) {
 	defer cancel()
 	out := string(runCDP(t, ctx, chrome, cdpHostOTP, srv.URL+"/"))
 	for _, want := range []string{
-		"setup=true|true|false|false|ABCD EFGH IJKL MNOP QRST UVWX YZ23 4567||\n", // галочка осталась, setConfirm(false) не звали
-		"bad=true|true|false|false|ABCD EFGH IJKL MNOP QRST UVWX YZ23 4567|Wrong code. Check that the time on the phone is correct and try again|enable:000000\n",
-		"on=false|false|true|false|||enable:000000,enable:123456\n",
-		"off=true|false|false|false|||enable:000000,enable:123456,confirm:true\n",
-		"legacy=true|false|false|true|||\n",
+		"screen=Permanent access to this computer|false|true\n",
 		"copyid=123 456 789>123456789\n",
 		"kb=The keyboard layout is not Latin — check the password|true\n",
 	} {

@@ -82,18 +82,16 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     };
     window.spaceLogin = async (ph, pw, code) => { calls.push('login:' + ph + ':' + pw + ':' + code); setOp({ kind: 'login', state: 'err', err: 'phrase_word:3', result: null }); return null; };
     window.spaceLeave = async (pw, code) => { calls.push('leave:' + pw + ':' + code); if (code !== '123456') throw 'space:code'; if (st.space.wait) { st.hasPass = false; st.confirm = true; } st.space = empty(); };
-    window.setPassword = async pw => { calls.push('setpw:' + pw); st.hasPass = true; };
     window.spaceOpClear = async () => { calls.push('clear'); setOp(null); };
-    window.setConfirm = async on => { calls.push('setconfirm:' + on); st.confirm = on; };
     window.spaceSync = async () => { calls.push('sync'); setOp({ kind: 'sync', state: 'run', result: null }); return null; };
   })();` + "`" + ` });
   await call('Page.navigate', { url }); await sleep(1500);
-  await click('accgo');
-  console.log('nav=' + await ev("[" + vis('access') + ", " + vis('home') + ", " + txt('acccode') + ", " + vis('spcard') + ", " + vis('spout') + ", " + vis('spin') + "].join('|')"));
+  await click('setgo'); await click('setacc');
+  console.log('nav=' + await ev("[" + vis('access') + ", " + vis('home') + ", document.getElementById('spaceallow').checked, " + vis('spcard') + ", " + vis('spout') + ", " + vis('spin') + "].join('|')"));
   await click('spnew'); // «Спрашивать» включено — создать нельзя
   console.log('hint=' + await ev(txt('spmsg') + " + '|' + " + vis('spcreate')));
   await ev("st.confirm = false; 1"); await sleep(1200);
-  console.log('old=' + await ev("[" + vis('pwrow') + ", " + vis('users') + ", document.getElementById('confirm').checked].join('|')"));
+  console.log('old=' + await ev("[" + vis('users') + ", !document.getElementById('confirm'), !document.getElementById('newpw')].join('|')"));
   await click('spnew'); await ev(val('spcpw', 'wrong-pass')); await click('spcgo');
   console.log('badpw=' + await ev("[" + txt('spmsg') + ", " + vis('spc2') + "].join('|')"));
   await ev(val('spcpw', 'owner-pass')); await click('spcgo');
@@ -105,7 +103,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   console.log('renew=' + await ev("[" + txt('spphr') + ", " + vis('spc1') + ", " + vis('spc2') + "].join('|')") + '|' + await calls());
   await ev(val('spcpw', 'owner-pass')); await click('spcgo'); await click('accback');
   console.log('backphrase=' + await ev(txt('spphr') + " + '|' + " + vis('spcreate')) + '|' + await calls());
-  await click('accgo'); await click('spnew'); await ev(val('spcpw', 'owner-pass')); await click('spcgo');
+  await click('setgo'); await click('setacc'); await click('spnew'); await ev(val('spcpw', 'owner-pass')); await click('spcgo');
   await ev(val('spcph', 'able baker')); await click('spcok');
   console.log('foreign=' + await ev(txt('spmsg')));
   // Ч12: мастер создания — шаги 2 (фраза) и 3 (проверка), «← Показать фразу»
@@ -113,7 +111,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await click('spc2go'); console.log('step3=' + await ev([vis('spc2'), vis('spc3'), "document.activeElement.id"].join(" + '|' + ")));
   await click('spc3back'); console.log('step3back=' + await ev(vis('spc2') + " + '|' + " + txt('spphr')).then(x => x.length)); await click('spc2go');
   await ev(val('spcph', ' able baker cable delta eagle fable gable habit ideal jewel ')); await click('spcok'); await sleep(300);
-  console.log('created=' + await ev("[" + txt('spphr') + ", " + vis('spcreate') + ", " + vis('spout') + ", " + vis('spin') + ", " + vis('pwrow') + ", " + txt('splist') + "].join('|')") + '|' + await calls().then(c => c.replace(/^(create:owner-pass,createno,)+/, '')));
+  console.log('created=' + await ev("[" + txt('spphr') + ", " + vis('spcreate') + ", " + vis('spout') + ", " + vis('spin') + ", !document.getElementById('pwrow'), " + txt('splist') + "].join('|')") + '|' + await calls().then(c => c.replace(/^(create:owner-pass,createno,)+/, '')));
   // Ч12: «Что дальше» после создания — что ввести на другом ПК; код — из записи AnyPC с ID этого ПК
   console.log('next=' + await ev([vis('spnext'), vis('sphow'), txt('spnext')].join(" + '|' + ")));
   await shot('created', 'spnext');
@@ -122,11 +120,10 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await shot('list1', 'splist');
   await click('sphow'); console.log('how=' + await ev([vis('spnext'), vis('sphow'), "document.getElementById('spnext').textContent.startsWith('Next: add')"].join(" + '|' + ")));
   await ev("[...document.querySelectorAll('#spnext button')].find(b => b.textContent === 'Got it').click(); 1"); await sleep(300);
-  // «Спрашивать» в пространстве: включить нельзя; выключить (вступил с «Спрашивать») — сразу, без настройки TOTP
-  console.log('askin=' + await ev("document.getElementById('confirm').disabled"));
+  // Старый переключатель «Спрашивать» удалён; space-management продолжает работать независимо.
+  console.log('askin=' + await ev("!document.getElementById('confirm')"));
   await ev("st.confirm = true; 1"); await sleep(1200);
-  await ev("document.getElementById('confirm').click(); 1"); await sleep(400);
-  console.log('askoff=' + await calls() + '|' + await ev("[document.getElementById('confirm').checked, document.getElementById('confirm').disabled, " + vis('otpset') + "].join('|')"));
+  console.log('askoff=' + await calls() + '|' + await ev("[!document.getElementById('confirm'), " + vis('otpset') + "].join('|')"));
   // пять плашек
   await ev("Object.assign(st.space, { damaged: true, compromised: true, over: false, pend: 2, wait: '444555666', clock: ['777888999'], members: [{ id: '123456789', fp: 'SELF-FP', pub: 'c2VsZg==', self: true, passUntil: 0 }, { id: '444555666', fp: 'OFFICE-FP', pub: 'b2ZmaWNl', self: false, passUntil: 0 }] }); 1"); await sleep(1200);
   console.log('bars=' + await ev("[...document.querySelectorAll('#spbars .banner')].map(b => b.textContent).join(';')"));
@@ -157,11 +154,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   console.log('leavewarn=' + await ev(txt('spfh')));
   console.log('leavebad=' + await ev(txt('spmsg') + " + '|' + " + vis('spfcd')) + '|' + await calls());
   await ev(val('spfcd', '123456')); await click('spfgo'); await sleep(300);
-  console.log('left=' + await calls() + '|' + await ev("[" + vis('spform') + ", " + vis('spout') + ", " + vis('spin') + ", " + vis('pwrow') + ", " + vis('spleft') + "].join('|')"));
-  await click('spleftb'); await sleep(1200); // поле пароля открыто и после опроса hostInfo, хотя «Спрашивать» включено
-  console.log('setpw=' + await ev("[" + vis('pwrow') + ", " + vis('spleft') + ", document.activeElement.id].join('|')"));
-  await ev(val('newpw', 'new-pass1')); await click('setpw'); await sleep(300);
-  console.log('pwset=' + await calls() + '|' + await ev(vis('pwrow')));
+  console.log('left=' + await calls() + '|' + await ev("[" + vis('spform') + ", " + vis('spout') + ", " + vis('spin') + ", !document.getElementById('pwrow'), " + vis('spleft') + "].join('|')"));
+  console.log('setpw=' + await ev("['spleftb','newpw','setpw','confirm'].every(i => !document.getElementById(i))"));
   // Ч12: мастер вступления — подписи полей, ход по стадиям, ошибка соединения (поля, кроме пароля и кода, на месте), отмена
   await click('spjoin');
   console.log('labels=' + await ev("[...document.querySelectorAll('#spenter label > span')].map(e => e.textContent).join(';') + '|' + document.querySelector('#spenter [data-n]').textContent"));
@@ -287,21 +281,21 @@ func TestBrowserSpace(t *testing.T) {
 	const ph = "able baker cable delta eagle fable gable habit ideal jewel"
 	for _, want := range []string{
 		"web=false|false|false\n", // веб-клиент без привязок: ни карточки хоста, ни экрана доступа, ни блока пространства
-		"nav=true|false|off|true|true|false\n",
+		"nav=true|false|false|true|true|false\n",
 		"hint=First prepare this PC (below on this screen): untick “Ask before each connection”, set up the authenticator app code and set this PC’s password. Then press “Create a space” again.|false\n",
 		"steps=Step 1 of 3;Step 2 of 3;Step 3 of 3|true\n", "step3=false|true|spcph\n", "step3back=" + strconv.Itoa(len("true|"+ph)) + "\n",
-		"old=true|true|false\n", // прежние элементы на месте: пароль, гости, «Спрашивать»
+		"old=true|true|true\n", // постоянные пользователи видны; legacy confirm/password controls удалены
 		"badpw=Wrong password|false\n",
 		"phrase=" + ph + "|false|true|\n",
 		"cancel=|false|create:wrong-pass,create:owner-pass,createno\n",
 		"renew=|true|false|create:owner-pass,createno\n", // повторное «Создать»: фраза стёрта, черновик отменён
 		"backphrase=|false|create:owner-pass,createno\n", // «Назад»: то же
 		"foreign=Wrong space phrase\n",
-		"created=|false|false|true|false|This PCID 123 456 789key: SELF-FP|create:owner-pass,createok:able baker,createok:" + ph + "\n",
+		"created=|false|false|true|true|This PCID 123 456 789key: SELF-FP|create:owner-pass,createok:able baker,createok:" + ph + "\n",
 		"next=true|false|✓ The space is created. This PC is the first one in it.Next: add another PC of yoursOn the other PC open AnyPC → “My space” → “Set up” → “Join” and enter:This PC’s ID123 456 789📋Authenticator app code6 digits from the app entry you use to sign in to the PCs of the space: “AnyPC” with the ID of the PC where the space was created, or “AnyPC пространство” if the code was changedSpace phrasethe 10 words you wrote downSpace passwordnot needed if the other PC runs AnyPC newer than 0.3.1; for an old version — the same password you use to sign in to the PCs of the spaceThen — “Allow” on this PCWhen the other PC has checked the code and the phrase, a window “Let PC … into your space?” appears here: come and press “Allow” (the window waits 2 minutes).While the other PC joins, this one must be on and online.Got it\n",
 		"gotit=false|true\n", "how=true|false|true\n",
 		"askin=true\n",
-		"askoff=setconfirm:false|false|true|false\n", // выключено, и снова включить нельзя
+		"askoff=|true|false\n", // legacy confirm отсутствует; TOTP modal не открывается
 		"bars=The space records on this PC are damaged.Leave and join again;" +
 			"Passes and “I'm here” are off: a revoked PC saw the code secret.Set a new code;" +
 			"Too many parallel edits.Set a new code;" +
@@ -321,9 +315,8 @@ func TestBrowserSpace(t *testing.T) {
 		"login=login:able baker zzz::true|Word 3 of the phrase is not in the dictionary|true\n",
 		"leavewarn=Before the check with your other PC: leaving erases the password and code of this PC — only the one-time code from the screen will work.\n",
 		"leavebad=Wrong code|true|leave:owner-pass:000000\n",
-		"left=leave:owner-pass:123456|false|true|false|false|true\n", // до сверки: пароль и TOTP стёрты — подсказка
-		"setpw=true|false|newpw\n",
-		"pwset=setpw:new-pass1|false\n", // задан — снова «как прежде»: под «Спрашивать» поле скрыто
+		"left=leave:owner-pass:123456|false|true|false|true|true\n", // до сверки: пароль и TOTP стёрты — подсказка
+		"setpw=true\n",
 		"labels=ID of your PC that is already in the space;9 digits from that PC’s main screen (“This computer’s ID”);Space phrase (10 words in Latin letters);the 10 words you wrote down when creating the space;Space password;the same password you use to sign in to the PCs of the space;Authenticator app code (6 digits);from the space entry in the app — the one you use to sign in to the PCs of the space: “AnyPC” with the ID of the PC where the space was created, or “AnyPC пространство” if the code was changed. Not this PC’s entry; the code changes every 30 seconds|Step 1 of 5\n",
 		"st1=enter:444555666::654321:" + ph + "|Step 4 of 5;Connecting and checking;Usually up to 30 seconds. Nothing to press.;…Connecting to 444 555 666…;·Checking the code and the phrase…;·Waiting for confirmation on “Office · 444 555 666”: go to it and press “Allow”;·Getting the list of PCs in the space…;Cancel|true|true|false\n",
 		"st2=Step 4 of 5;Connecting and checking;Usually up to 30 seconds. Nothing to press.;✓Connecting to 444 555 666…;…Checking the code and the phrase…;·Waiting for confirmation on “Office · 444 555 666”: go to it and press “Allow”;·Getting the list of PCs in the space…;Cancel|true|true|false\n",

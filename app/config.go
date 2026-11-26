@@ -74,16 +74,18 @@ type config struct {
 type settings struct {
 	ID      string            `json:"id"`
 	Server  string            `json:"server"`
-	Enc     string            `json:"enc"`                 // кодер H.264 в ffmpeg: libx264 | h264_nvenc | h264_qsv | h264_amf | h264_mf (VP9 выбирает клиент — «Турбо»)
-	Bitrate string            `json:"bitrate"`             // ffmpeg: 4M, 1500k…
-	Users   []account         `json:"users,omitempty"`     // учётные записи (REQ-S-20); [0] — по умолчанию (Name "")
-	Key     []byte            `json:"key"`                 // Ed25519 ключ хоста (REQ-F-01); не покидает ПК
-	Known   map[string]string `json:"known,omitempty"`     // ID удалённого ПК → отпечаток его ключа (TOFU, REQ-S-05)
-	Confirm *bool             `json:"confirm"`             // REQ-F-03: окно «Разрешить / Отклонить» на каждое подключение
-	Saved   map[string]string `json:"saved,omitempty"`     // ID удалённого ПК → запомненный пароль («Запомнить пароль» на управляющем ПК)
-	CKeys   map[string]string `json:"ckeys,omitempty"`     // ID удалённого ПК → ключ этого ПК для него (У3, REQ-S-24): JSON {seed,pub,login,lu}
-	View    bool              `json:"view_only,omitempty"` // «Только показ экрана»: каждая входящая сессия — только просмотр (REQ-F-20)
-	UIPort  int               `json:"ui_port,omitempty"`   // порт окна на 127.0.0.1 (listenUI)
+	Enc     string            `json:"enc"`             // кодер H.264 в ffmpeg: libx264 | h264_nvenc | h264_qsv | h264_amf | h264_mf (VP9 выбирает клиент — «Турбо»)
+	Bitrate string            `json:"bitrate"`         // ffmpeg: 4M, 1500k…
+	Users   []account         `json:"users,omitempty"` // учётные записи (REQ-S-20); [0] — по умолчанию (Name "")
+	Key     []byte            `json:"key"`             // Ed25519 ключ хоста (REQ-F-01); не покидает ПК
+	Known   map[string]string `json:"known,omitempty"` // ID удалённого ПК → отпечаток его ключа (TOFU, REQ-S-05)
+	Confirm *bool             `json:"confirm"`         // legacy: прежний взаимоисключающий режим подтверждения
+	// AllowSpace — независимый permanent-профиль «My space». nil в старом файле — миграция прежнего режима пароля.
+	AllowSpace *bool             `json:"allow_space,omitempty"`
+	Saved      map[string]string `json:"saved,omitempty"`     // ID удалённого ПК → запомненный пароль («Запомнить пароль» на управляющем ПК)
+	CKeys      map[string]string `json:"ckeys,omitempty"`     // ID удалённого ПК → ключ этого ПК для него (У3, REQ-S-24): JSON {seed,pub,login,lu}
+	View       bool              `json:"view_only,omitempty"` // one-time профиль: входящие ID+Code сессии только для просмотра
+	UIPort     int               `json:"ui_port,omitempty"`   // порт окна на 127.0.0.1 (listenUI)
 	// UI — несекретные настройки окна (uiKeys): одни на все окна (браузер, WKWebView, окна ПК), не в localStorage окна
 	// (ключ → текст JSON, как в localStorage)
 	UI uiMap `json:"ui,omitempty"`
@@ -101,8 +103,8 @@ type settings struct {
 	// SpacePend не пуст — пропусков нет. Пусто — когда они приняты (правка фразой здесь или сводящая правка сверкой).
 	SpaceOver string   `json:"space_over,omitempty"`
 	SpacePend [][]byte `json:"space_pend,omitempty"`
-	// Одноразовый код (REQ-S-23): в режиме «Спрашивать» — пароль записи по умолчанию; меняется после каждой сессии,
-	// блокировки и по ↻. В файле (0600, как запомненные пароли): окно, ключи CLI и запущенная программа видят один код.
+	// Одноразовый код независимого one-time профиля: меняется после каждой его сессии,
+	// блокировки и по «Новый код». В файле (0600): окно, CLI и запущенная программа видят один код.
 	Code     string `json:"code,omitempty"`
 	CodeSalt []byte `json:"code_salt,omitempty"`
 	// Ч10.1: чужие отправители, приславшие сюда разовым кодом (app/recv.go): дальше — «Принять?» без кода.
@@ -170,6 +172,10 @@ func loadConfig(path string) (*config, error) {
 	if c.migrate() {
 		changed = true
 	}
+	if c.AllowSpace == nil {
+		allow := len(c.Space) > 0 || !c.codeModeLocked()
+		c.AllowSpace, changed = &allow, true
+	}
 	// состав пространства (Э2): испорченная запись — в журнал сразу при запуске
 	c.spaceLocked()
 	if c.codeModeLocked() && c.Code == "" { // режим «Спрашивать» без кода (новая установка, обновление) — завести
@@ -191,15 +197,6 @@ func (c *config) reload() {
 		f.migrate() // старая версия могла записать файл по-своему (откат и снова обновление)
 		c.settings = f
 	}
-	c.giveCheck() // режим сменил другой процесс (ключ CLI)
-}
-
-// giveCheck — под c.mu: вне режима «Спрашивать» «Разрешить управление» выключается само — при возврате в режим код
-// не действует, пока переключатель не включат снова (приёмка, M1). Зовут reload и save: через них идёт любая смена режима.
-func (c *config) giveCheck() {
-	if !c.codeModeLocked() {
-		c.give = false
-	}
 }
 
 // defaults — настройки до чтения файла.
@@ -208,7 +205,6 @@ func defaults() settings { return settings{Server: DefaultServer, Enc: "libx264"
 // save — через временный файл со своим именем (CreateTemp, 0600) и rename: CLI и запущенная программа могут писать
 // одновременно, общий .tmp давал ошибки и битый файл.
 func (c *config) save() error {
-	c.giveCheck()
 	b, _ := json.MarshalIndent(c, "", "  ")
 	if err := os.MkdirAll(filepath.Dir(c.path), 0o700); err != nil {
 		return err
@@ -321,8 +317,6 @@ func (c *config) setAccount(name, p, rights string) error {
 	u := c.user(name)
 	switch {
 	case u != nil:
-	case len(c.Users[0].Hash) == 0:
-		return errors.New("сначала задайте пароль этого компьютера (запись по умолчанию)")
 	case len(c.Users) > maxUsers:
 		return fmt.Errorf("не больше %d учётных записей", maxUsers)
 	default:
@@ -332,6 +326,70 @@ func (c *config) setAccount(name, p, rights string) error {
 	u.Salt, u.Hash, u.Trusted, u.KeyLogin = salt, hash, nil, nil
 	if rights != "" {
 		u.View = rights == "view" && name != ""
+	}
+	return c.save()
+}
+
+var errUserOTP = errors.New("user_totp_required")
+
+// saveUser атомарно сохраняет строку permanent-профиля. Пустой пароль у существующей записи — без изменения;
+// пустые secret/code — сохранить прежний TOTP. Новая запись без пароля или подтверждённого TOTP не сохраняется.
+func (c *config) saveUser(name, p, rights, secret, code string) error {
+	name = agent.UserKey(name)
+	if name == "" || !validName(name) {
+		return errors.New("имя: 1–32 буквы, цифры, пробел и . _ - @")
+	}
+	if rights != "" && rights != "full" && rights != "view" {
+		return errors.New("права: full или view")
+	}
+	if p != "" && len([]rune(p)) < 8 {
+		return errPassShort
+	}
+	var salt, hash []byte
+	if p != "" {
+		salt = make([]byte, 16)
+		rand.Read(salt)
+		hash = pake.KDF(p, salt)
+	}
+	var step int64
+	if secret != "" {
+		if !totp.Valid(secret) {
+			return errors.New("неверный секрет TOTP")
+		}
+		var ok bool
+		step, ok = totp.Check(secret, code, time.Now(), 0)
+		if !ok {
+			return errBadCode
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reload()
+	u := c.user(name)
+	if u == nil {
+		if p == "" {
+			return errPassShort
+		}
+		if secret == "" {
+			return errUserOTP
+		}
+		if len(c.Users) > maxUsers {
+			return fmt.Errorf("не больше %d учётных записей", maxUsers)
+		}
+		c.Users = append(c.Users, account{Name: name, View: rights != "full"})
+		u = &c.Users[len(c.Users)-1]
+	}
+	if u.TOTP == "" && secret == "" {
+		return errUserOTP
+	}
+	if p != "" {
+		u.Salt, u.Hash, u.Trusted, u.KeyLogin = salt, hash, nil, nil
+	}
+	if rights != "" {
+		u.View = rights == "view"
+	}
+	if secret != "" {
+		u.TOTP, u.TOTPStep = secret, step
 	}
 	return c.save()
 }
@@ -360,6 +418,23 @@ func (c *config) users() []map[string]any {
 	return l
 }
 
+func (c *config) spaceAllowedLocked() bool { return c.AllowSpace != nil && *c.AllowSpace }
+
+func (c *config) spaceAllowed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.spaceAllowedLocked()
+}
+
+// setSpaceAllow включает permanent-профиль независимо от одноразового кода.
+func (c *config) setSpaceAllow(on bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reload()
+	c.AllowSpace = &on
+	return c.save()
+}
+
 func (c *config) confirm() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -378,6 +453,8 @@ func (c *config) setConfirm(on bool) error {
 		return errSpaceVia
 	}
 	c.Confirm = &on
+	c.AllowSpace = new(bool)
+	*c.AllowSpace = !on
 	if on { // TOTP записи по умолчанию; у остальных записей свой — остаётся (действует, когда подтверждение снова выключат)
 		c.Users[0].TOTP, c.Users[0].TOTPStep = "", 0
 		c.setCode(randCode()) // режим «Спрашивать» — новый одноразовый код
@@ -385,9 +462,8 @@ func (c *config) setConfirm(on bool) error {
 	return c.save()
 }
 
-// codeModeLocked — режим «Спрашивать перед каждым подключением» (REQ-S-23, под c.mu): вход записи по умолчанию —
-// одноразовым кодом и «Разрешить», постоянный пароль и записи по имени не действуют (хранятся). Это и галочка, и
-// хост после обновления с выключенным подтверждением без TOTP (он и так спрашивает «Разрешить»).
+// codeModeLocked — только для миграции и старого CLI: прежний взаимоисключающий режим.
+// Новые permanent и one-time секреты его не используют.
 func (c *config) codeModeLocked() bool {
 	return c.Confirm == nil || *c.Confirm || len(c.Users) == 0 || c.Users[0].TOTP == ""
 }
@@ -397,6 +473,9 @@ func (c *config) codeMode() bool {
 	defer c.mu.Unlock()
 	return c.codeModeLocked()
 }
+
+// oneTimeMode — одноразовый код поддержан всегда, независимо от permanent-профиля.
+func (c *config) oneTimeMode() bool { return true }
 
 // randCode — одноразовый код: 6 цифр crypto/rand (равномерно).
 func randCode() string {
@@ -425,11 +504,11 @@ func (c *config) ownCode(code string) bool {
 	return code == c.mine
 }
 
-// code — одноразовый код для окна; "" — не режим «Спрашивать» или «Разрешить управление» выключено.
+// code — одноразовый код для окна; "" — «Разрешить управление» выключено.
 func (c *config) code() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !c.codeModeLocked() || !c.give {
+	if !c.give {
 		return ""
 	}
 	return c.Code
@@ -442,12 +521,11 @@ func (c *config) giving() bool {
 	return c.give
 }
 
-// errGiveOff — ↻ при выключенном «Разрешить управление» или включение не в режиме «Спрашивать».
+// errGiveOff — ↻ при выключенном «Разрешить управление».
 var errGiveOff = errors.New("give_off")
 
-// setGive — переключатель «Разрешить управление»: вкл — новый код (старый, в т. ч. прошлого запуска, не входит);
+// setGive — переключатель one-time профиля: вкл — новый код (старый, в т. ч. прошлого запуска, не входит);
 // выкл — код перестаёт действовать (новый случайный offKey), идущую сессию не рвёт: соль кода та же (revoked).
-// Включить можно только в режиме «Спрашивать» — иначе кода нет (errGiveOff).
 func (c *config) setGive(on bool) (string, error) {
 	if !on {
 		k := make([]byte, 32)
@@ -469,7 +547,7 @@ func (c *config) rotateCode(on bool) (string, error) {
 	code := randCode()
 	c.mu.Lock()
 	c.reload()
-	if on && !c.codeModeLocked() || !on && !c.give {
+	if !on && !c.give {
 		c.mu.Unlock()
 		return "", errGiveOff
 	}
@@ -482,10 +560,10 @@ func (c *config) rotateCode(on bool) (string, error) {
 	return code, err
 }
 
-// codeUsed — agent.Agent.CodeUsed: код израсходован — в режиме «Спрашивать» при включённом «Разрешить управление»
-// новый; выключено — новый не выдаётся (он и так не действует).
+// codeUsed — agent.Agent.CodeUsed: после one-time сессии или блокировки выдать новый код,
+// если «Разрешить управление» всё ещё включено.
 func (c *config) codeUsed() {
-	if c.codeMode() && c.giving() {
+	if c.giving() {
 		if _, err := c.newCode(); err != nil && !errors.Is(err, errGiveOff) {
 			log.Printf("одноразовый код: %v", err)
 		}
@@ -528,8 +606,8 @@ func (c *config) otpEnable(secret, code, user string) error {
 	}
 	u.TOTP, u.TOTPStep = secret, step // этот код уже не войдёт (повтор)
 	if u.Name == "" {
-		off := false
-		c.Confirm = &off
+		off, allow := false, true
+		c.Confirm, c.AllowSpace = &off, &allow
 	}
 	return c.save()
 }
@@ -874,7 +952,7 @@ const maxTrusted = 20
 func (c *config) trusted(pub []byte, user string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.codeModeLocked() {
+	if !c.spaceAllowedLocked() {
 		return false
 	}
 	return slices.ContainsFunc(c.Users, func(u account) bool {
@@ -888,7 +966,7 @@ func (c *config) trust(pub []byte, user string, salt []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
-	if c.codeModeLocked() { // вход кодом ключ не закрепляет
+	if !c.spaceAllowedLocked() { // permanent-профиль выключен — ключ не закрепляет
 		return
 	}
 	u := c.user(user)
@@ -911,7 +989,7 @@ func (c *config) keyLogin(pub []byte, user string) (in, on bool) {
 	in = slices.ContainsFunc(c.Users, func(u account) bool {
 		return (user == agent.AnyUser || u.Name == user) && slices.ContainsFunc(u.KeyLogin, func(k loginKey) bool { return bytes.Equal(k.Pub, pub) })
 	})
-	return in, in && !c.codeModeLocked()
+	return in, in && c.spaceAllowedLocked()
 }
 
 // keyTrust — agent.Agent.KeyTrust: salt == nil — отметка входа ключом (только если он ещё в списке записи user), иначе
@@ -922,7 +1000,7 @@ func (c *config) keyTrust(pub []byte, user string, salt []byte) {
 	defer c.mu.Unlock()
 	c.reload()
 	u := c.user(user)
-	if c.codeModeLocked() || u == nil || salt != nil && !bytes.Equal(u.Salt, salt) { // запись удалили или сменили ей пароль
+	if !c.spaceAllowedLocked() || u == nil || salt != nil && !bytes.Equal(u.Salt, salt) { // запись удалили или сменили ей пароль
 		return
 	}
 	now := time.Now()
@@ -980,29 +1058,35 @@ func (c *config) keyList() []map[string]any {
 	return l
 }
 
-// secret — запись user для CPace (agent.Agent.Secret): соль, KDF(пароль, соль), права «просмотр»; нет — пустой hash.
-// В режиме «Спрашивать» (REQ-S-23) запись по умолчанию — одноразовый код, записи по имени не действуют.
+// secret — permanent-запись user для CPace. Профиль выключен или у записи нет обязательного TOTP — входа нет.
 func (c *config) secret(user string) (salt, hash []byte, view bool) {
 	c.mu.Lock()
-	if c.codeModeLocked() {
-		code, salt, give := c.Code, c.CodeSalt, c.give
-		if !give && len(c.offKey) == 0 {
-			c.offKey = make([]byte, 32)
-			rand.Read(c.offKey)
-		}
-		off := c.offKey
-		c.mu.Unlock()
-		if user != "" || code == "" {
-			return nil, nil, false
-		}
-		if !give { // «Разрешить управление» выключено: никакой код не подойдёт — отказ как неверному коду, соль та же
-			return salt, off, false
-		}
-		return salt, c.codeKDF(code, salt), false
-	}
 	defer c.mu.Unlock()
-	if u := c.user(user); u != nil {
+	if !c.spaceAllowedLocked() {
+		return nil, nil, false
+	}
+	if u := c.user(user); u != nil && u.TOTP != "" {
 		return u.Salt, u.Hash, u.View
 	}
 	return nil, nil, false
+}
+
+// oneTimeSecret — независимый ID+Code профиль. Выключен — случайный секрет с той же солью:
+// инициатор получает тот же отказ, что при неверном коде, без различия состояния по ответу.
+func (c *config) oneTimeSecret() (salt, hash []byte) {
+	c.mu.Lock()
+	code, salt, give := c.Code, c.CodeSalt, c.give
+	if !give && len(c.offKey) == 0 {
+		c.offKey = make([]byte, 32)
+		rand.Read(c.offKey)
+	}
+	off := c.offKey
+	c.mu.Unlock()
+	if code == "" {
+		return nil, nil
+	}
+	if !give {
+		return salt, off
+	}
+	return salt, c.codeKDF(code, salt)
 }

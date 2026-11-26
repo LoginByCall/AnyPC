@@ -73,8 +73,8 @@ func TestSpaceEnterAsk(t *testing.T) {
 	n.mu.Lock()
 	n.Users[0].Trusted = [][]byte{[]byte("k1"), []byte("k2")}
 	n.Users[0].KeyLogin = []loginKey{{}}
-	yes := true
-	n.Confirm = &yes // «Спрашивать» остаётся после вступления
+	yes, allow := true, false
+	n.Confirm, n.AllowSpace = &yes, &allow // выключенный permanent-профиль остаётся после вступления
 	n.save()
 	n.mu.Unlock()
 	withSpaceNet(t, spaceNet(p, nil))

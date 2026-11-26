@@ -174,7 +174,7 @@ func (a *Agent) passPrune() {
 	}
 }
 
-func (a *Agent) viewOnlyHost() bool { return a.ViewOnly != nil && a.ViewOnly() }
+func (a *Agent) viewOnlyHost() bool { return a.viewOnlyFor(nil) }
 
 // passIssue — в accept: сессия s просила пропуск ("b" с pass) и вошла паролем и кодом записи владельца (spaceOK)
 // с доказанным ключом члена состава, хост не в «Только показ экрана» — выдать; вернуть этот ключ (nil — не выдан).

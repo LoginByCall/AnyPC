@@ -168,7 +168,7 @@ func TestBrowserMain(t *testing.T) {
 	out := string(runCDP(t, ctx, chrome, cdpMain, srv.URL+"/"))
 	for _, want := range []string{
 
-		"give=Hand over control of this PC|true|true|true\n",
+		"give=One-time access to this computer|false|true|true\n",
 		"nolock=true|true|Screen lock on this PC is not tracked — no pass is issued (password and code work as usual)\n",
 		"lock=false|false\n",
 		"bad=Wrong password\n",

@@ -45,7 +45,8 @@ func TestCodeTrustModes(t *testing.T) {
 		}
 		code, _ = totp.Code(sec, time.Now().Add(time.Duration(i+1)*90*time.Second))
 		c.mu.Lock()
-		c.Users[0].TOTP, c.Confirm = sec, new(bool) // обратно в режим пароля (как otpEnable, без ожидания шага)
+		c.Users[0].TOTP, c.Confirm, c.AllowSpace = sec, new(bool), new(bool)
+		*c.AllowSpace = true
 		c.save()
 		c.mu.Unlock()
 		st("обратно в режим пароля:")

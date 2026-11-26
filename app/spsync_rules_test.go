@@ -964,9 +964,9 @@ func TestSpaceLoginTag(t *testing.T) {
 	if !ca.keyGone(keys[0]) || ca.keyGone(cfgPub(cb)) || ca.keyGone(keys[1]) == false { // keys[1] исключён в n1
 		t.Error("keyGone: исключённый не исключён или член исключён")
 	}
-	on := true
+	on, allow := true, false
 	ca.mu.Lock()
-	ca.Confirm = &on // 3в: «Спрашивать» (правкой файла) — вход одноразовым кодом, не входом пространства
+	ca.Confirm, ca.AllowSpace = &on, &allow // 3в: permanent-профиль выключен правкой файла
 	ca.save()
 	ca.mu.Unlock()
 	if !ca.codeMode() || ca.loginTag("", nil) != nil {

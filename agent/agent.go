@@ -53,21 +53,23 @@ type Agent struct {
 	Version string
 	// Secret — учётная запись по имени (UserKey; "" — по умолчанию, REQ-S-20): соль, KDF(пароль, соль), права
 	// «просмотр»; пустой secret — нет такой записи или пароль не задан.
-	Secret  func(user string) (salt, secret []byte, view bool)
-	Key     ed25519.PrivateKey // ключ хоста: за ним закреплён ID (REQ-F-01), им хост подтверждает себя клиенту
-	FF      []string           // аргументы ffmpeg, см. FFArgs
-	FPS     int
-	Stderr  io.Writer                                           // вывод ffmpeg; nil — os.Stderr
-	OnState func(online bool, session string)                   // session "" — сессии нет
-	FileDir string                                              // куда принимать файлы; "" — DownloadsDir()
-	Capture func(ctx context.Context, c Cap) (*exec.Cmd, error) // захват по Cap (H.264 Annex-B или Y4M в stdout); nil — FFmpeg + FF
-	Bitrate int                                                 // кбит/с — потолок адаптивного битрейта (REQ-N-03); 0 — постоянный
-	Confirm func(cid, peer string) Answer                       // REQ-F-03: спросить человека на хосте после верного пароля; nil — не спрашивать (unattended)
-	Trusted func(pub []byte, user string) bool                  // У3: ключ клиента закреплён за записью user (вход с ним был; AnyUser — за любой); nil — без доверенных
-	Trust   func(pub []byte, user string, salt []byte)          // закрепить ключ клиента за записью после входа по паролю (соль та же, что при входе)
-	Audio   bool                                                // окно хоста умеет звук (PLAN.md): клиент увидит кнопку микрофона
-	Pause   bool                                                // REQ-F-27: хост умеет паузу видео неактивной вкладки «Моих ПК» (pause:true в "ok"); клиент фоновой вкладки шлёт {"t":"pause","on":true}
-	Locked  func() bool                                         // экран заблокирован — захват не запускать (macOS, F7); nil — не проверять
+	Secret func(user string) (salt, secret []byte, view bool)
+	// OneTimeSecret — независимый одноразовый доступ: соль и KDF кода. nil — прежний единый вход через Secret.
+	OneTimeSecret func() (salt, hash []byte)
+	Key           ed25519.PrivateKey // ключ хоста: за ним закреплён ID (REQ-F-01), им хост подтверждает себя клиенту
+	FF            []string           // аргументы ffmpeg, см. FFArgs
+	FPS           int
+	Stderr        io.Writer                                           // вывод ffmpeg; nil — os.Stderr
+	OnState       func(online bool, session string)                   // session "" — сессии нет
+	FileDir       string                                              // куда принимать файлы; "" — DownloadsDir()
+	Capture       func(ctx context.Context, c Cap) (*exec.Cmd, error) // захват по Cap (H.264 Annex-B или Y4M в stdout); nil — FFmpeg + FF
+	Bitrate       int                                                 // кбит/с — потолок адаптивного битрейта (REQ-N-03); 0 — постоянный
+	Confirm       func(cid, peer string) Answer                       // REQ-F-03: спросить человека на хосте после верного пароля; nil — не спрашивать (unattended)
+	Trusted       func(pub []byte, user string) bool                  // У3: ключ клиента закреплён за записью user (вход с ним был; AnyUser — за любой); nil — без доверенных
+	Trust         func(pub []byte, user string, salt []byte)          // закрепить ключ клиента за записью после входа по паролю (соль та же, что при входе)
+	Audio         bool                                                // окно хоста умеет звук (PLAN.md): клиент увидит кнопку микрофона
+	Pause         bool                                                // REQ-F-27: хост умеет паузу видео неактивной вкладки «Моих ПК» (pause:true в "ok"); клиент фоновой вкладки шлёт {"t":"pause","on":true}
+	Locked        func() bool                                         // экран заблокирован — захват не запускать (macOS, F7); nil — не проверять
 	// REQ-S-24: вход по ключу без пароля (ключ вместо пароля, код TOTP обязателен). KeyLogin: in — ключ в списке входа
 	// без пароля записи user (AnyUser — любой), on — и вход им сейчас разрешён (не режим «Спрашивать»). KeyTrust:
 	// salt == nil — отметить вход ключом (только если он ещё в списке), иначе — добавить его (вход паролем с «Доверять
@@ -79,11 +81,11 @@ type Agent struct {
 	// верный (постоянное время и защита от повтора — у владельца секрета). Без секрета вход без подтверждения не
 	// работает: спрашивается Confirm («Разрешить»), а без Confirm — отказ. OTP == nil — TOTP нет вовсе (как раньше).
 	Unattended func() bool
-	ViewOnly   func() bool                            // «Только показ экрана» на хосте: каждая сессия — только просмотр (REQ-F-20); nil — нет
+	ViewOnly   func() bool                            // «Только показ экрана»: legacy — каждая сессия; с OneTimeSecret — только одноразовая; nil — нет
 	OTP        func(user, code string) (set, ok bool) // у каждой записи свой секрет TOTP
-	// CodeUsed — одноразовый код израсходован (PLAN.md «одноразовый код»): кончилась сессия, прошедшая пароль
-	// (вошедшая или отклонённая на хосте), или вход записью по умолчанию заперт перебором. Зовётся без a.mu, в своей
-	// горутине; nil — кода нет.
+	// CodeUsed — одноразовый код израсходован (PLAN.md «одноразовый код»): кончилась одноразовая сессия, прошедшая
+	// CPace (вошедшая или отклонённая на хосте), или вход записью по умолчанию заперт перебором. В новом режиме permanent
+	// код не расходует. Зовётся без a.mu, в своей горутине; nil — кода нет.
 	CodeUsed func()
 	// ConfirmControl — окно «Разрешить управление?» (REQ-F-26): сессия, вошедшая через «Разрешить», просит из просмотра
 	// управление; nil — смены режима нет (клиент кнопки не покажет).
@@ -197,7 +199,8 @@ type session struct {
 	forced  atomic.Bool  // просмотр навязан только «Только показ экрана»: выключат — управление вернётся (ViewOnlyChanged)
 	picking atomic.Bool  // открыто окно выбора файла
 	asking  atomic.Bool  // на хосте открыто окно «Разрешить / Отклонить» или ждём код TOTP
-	byAsk   atomic.Bool  // сессия одноразового кода (запись по умолчанию через «Разрешить»): режим можно менять (REQ-F-26)
+	byAsk   atomic.Bool  // сессия одноразового кода: режим можно менять (REQ-F-26)
+	once    atomic.Bool  // новый независимый одноразовый вход (OneTimeSecret), не permanent
 	modeAsk atomic.Bool  // открыто окно «Разрешить управление?» этой сессии
 	modeGen atomic.Int32 // просьбы просмотра: сменилась за время окна — «Разрешить» не повышает
 	gone    atomic.Bool  // сессия освобождена (release) — в pend не возвращать
@@ -317,29 +320,32 @@ func (s *session) resumeIDR() {
 // хост — новое {"t":"a",salt,msg,"user":"имя"}: соль записи или, если имени нет, поддельная HMAC-SHA256(ключ хоста,
 // имя)[:16] (REQ-S-21), дальше "b" как обычно. Обмен CPace у клиента по-прежнему один — на "a" со своим именем.
 type authMsg struct {
-	T     string `json:"t"`
-	User  string `json:"user,omitempty"`  // в "a": имя учётной записи (от клиента — запрос, от хоста — ответ на него)
-	Users bool   `json:"users,omitempty"` // в первом "a" хоста: хост понимает имена записей
-	Salt  []byte `json:"salt,omitempty"`
-	Msg   []byte `json:"msg,omitempty"`
-	Conf  []byte `json:"conf,omitempty"`
-	Pub   []byte `json:"pub,omitempty"` // в "ok": ключ хоста и подпись над DTLS-отпечатками (REQ-S-05)
-	Sig   []byte `json:"sig,omitempty"`
-	View  bool   `json:"view,omitempty"`  // в "ok": сессия «только просмотр» (REQ-F-20)
-	Audio bool   `json:"audio,omitempty"` // в "ok": хост умеет звук (окно хоста ответит на предложение)
-	Mode  bool   `json:"mode,omitempty"`  // в "ok": сессию можно переключать просмотр ↔ управление (REQ-F-26, modeMsg)
-	Pause bool   `json:"pause,omitempty"` // в "ok": хост умеет паузу видео неактивной вкладки (REQ-F-27); старый хост поля не шлёт — клиент не паузит
-	CPub  []byte `json:"cpub,omitempty"`  // в "b": ключ клиента и его подпись над DTLS-отпечатками (У3)
-	CSig  []byte `json:"csig,omitempty"`
-	Keys  bool   `json:"keys,omitempty"`  // в первом "a" хоста: хост принимает вход по ключу без пароля (REQ-S-24)
-	Key   bool   `json:"key,omitempty"`   // в "b": вход ключом cpub без пароля (без msg/conf); в "ok": ключ — во входе без пароля
-	Trust bool   `json:"trust,omitempty"` // в "b" со входом паролем: «Доверять этому ПК» — ключ cpub во вход без пароля; в "ok" — сессии можно ctl "trust" (Ч7б, trustctl.go; старый хост не шлёт)
-	Code  string `json:"code,omitempty"`  // в "otp" от клиента: код TOTP
-	NoOTP bool   `json:"nootp,omitempty"` // в "ask": вход без подтверждения выключен, пока на хосте не настроят TOTP
-	Space bool   `json:"space,omitempty"` // в первом "a" хоста: хост понимает ctl "sp" (Э2, space.go)
-	Pass  bool   `json:"pass,omitempty"`  // Э3, пропуск (pass.go): в "a" — хост понимает; в "b" — просьба или вход по нему; в "ok" — выдан
-	Off   bool   `json:"off,omitempty"`   // Э3: в "b" с key — снять свой пропуск
-	PID   []byte `json:"pid,omitempty"`   // Э3: в "ok" с pass — id пропуска (им мастер снимает пропуск через хаб, pass.go)
+	T         string `json:"t"`
+	User      string `json:"user,omitempty"`  // в "a": имя учётной записи (от клиента — запрос, от хоста — ответ на него)
+	Users     bool   `json:"users,omitempty"` // в первом "a" хоста: хост понимает имена записей
+	Salt      []byte `json:"salt,omitempty"`
+	Msg       []byte `json:"msg,omitempty"`
+	PermSalt  []byte `json:"psalt,omitempty"` // в первом "a": постоянный CPace рядом с основным одноразовым
+	PermMsg   []byte `json:"pmsg,omitempty"`
+	Permanent bool   `json:"permanent,omitempty"` // в "b": выбрать постоянный CPace из psalt/pmsg
+	Conf      []byte `json:"conf,omitempty"`
+	Pub       []byte `json:"pub,omitempty"` // в "ok": ключ хоста и подпись над DTLS-отпечатками (REQ-S-05)
+	Sig       []byte `json:"sig,omitempty"`
+	View      bool   `json:"view,omitempty"`  // в "ok": сессия «только просмотр» (REQ-F-20)
+	Audio     bool   `json:"audio,omitempty"` // в "ok": хост умеет звук (окно хоста ответит на предложение)
+	Mode      bool   `json:"mode,omitempty"`  // в "ok": сессию можно переключать просмотр ↔ управление (REQ-F-26, modeMsg)
+	Pause     bool   `json:"pause,omitempty"` // в "ok": хост умеет паузу видео неактивной вкладки (REQ-F-27); старый хост поля не шлёт — клиент не паузит
+	CPub      []byte `json:"cpub,omitempty"`  // в "b": ключ клиента и его подпись над DTLS-отпечатками (У3)
+	CSig      []byte `json:"csig,omitempty"`
+	Keys      bool   `json:"keys,omitempty"`  // в первом "a" хоста: хост принимает вход по ключу без пароля (REQ-S-24)
+	Key       bool   `json:"key,omitempty"`   // в "b": вход ключом cpub без пароля (без msg/conf); в "ok": ключ — во входе без пароля
+	Trust     bool   `json:"trust,omitempty"` // в "b" со входом паролем: «Доверять этому ПК» — ключ cpub во вход без пароля; в "ok" — сессии можно ctl "trust" (Ч7б, trustctl.go; старый хост не шлёт)
+	Code      string `json:"code,omitempty"`  // в "otp" от клиента: код TOTP
+	NoOTP     bool   `json:"nootp,omitempty"` // в "ask": вход без подтверждения выключен, пока на хосте не настроят TOTP
+	Space     bool   `json:"space,omitempty"` // в первом "a" хоста: хост понимает ctl "sp" (Э2, space.go)
+	Pass      bool   `json:"pass,omitempty"`  // Э3, пропуск (pass.go): в "a" — хост понимает; в "b" — просьба или вход по нему; в "ok" — выдан
+	Off       bool   `json:"off,omitempty"`   // Э3: в "b" с key — снять свой пропуск
+	PID       []byte `json:"pid,omitempty"`   // Э3: в "ok" с pass — id пропуска (им мастер снимает пропуск через хаб, pass.go)
 
 	Sync bool `json:"sync,omitempty"` // Э4 (spsync.go): в первом "a" — хост понимает сверку; в "b" с key — сверка
 	// Э4в (spseal.go): в первом "a" хоста — статус сверки под ключом из sx connect или случайные байты (sxALen).
@@ -532,6 +538,9 @@ func (a *Agent) ViewOnlyChanged(on bool) {
 	if s == nil || !s.authed.Load() {
 		return
 	}
+	if a.OneTimeSecret != nil && !s.once.Load() {
+		return // в новом режиме настройка относится только к одноразовой сессии
+	}
 	switch {
 	case on && !s.view.Load():
 		s.modeGen.Add(1) // открытое окно «Разрешить управление?» управления уже не даст
@@ -588,6 +597,9 @@ func (a *Agent) DropRevoked() {
 // (LoginTag: вход пространства, исключение), а сессии ключом без пароля — и отозвали ключ (REQ-S-24); view — права
 // записи сейчас «просмотр».
 func (a *Agent) revoked(s *session) (gone, view bool) {
+	if s.once.Load() {
+		return false, false // одноразовый код не зависит от пароля и прав permanent-записи
+	}
 	s.mu.Lock()
 	user, was, key, pass, cpub, tag, tagged := s.user, s.salt, s.byKey, s.byPass, s.cpub, s.tag, s.tagged
 	s.mu.Unlock()
@@ -724,7 +736,7 @@ func (a *Agent) release(s *session) {
 	if rx := s.rx.Load(); rx != nil {
 		rx.end()
 	}
-	if used && a.CodeUsed != nil {
+	if used && a.CodeUsed != nil && (a.OneTimeSecret == nil || s.once.Load()) {
 		go a.codeUsed()
 	}
 }
@@ -954,8 +966,14 @@ func (a *Agent) onConnect(ctx context.Context, c *websocket.Conn, m hub.Msg) {
 		return
 	}
 	if _, secret, _ := a.Secret(""); len(secret) == 0 {
-		a.send(ctx, c, "error", m.From, "nopass")
-		return
+		if a.OneTimeSecret == nil {
+			a.send(ctx, c, "error", m.From, "nopass")
+			return
+		}
+		if _, code := a.OneTimeSecret(); len(code) == 0 {
+			a.send(ctx, c, "error", m.From, "nopass")
+			return
+		}
 	}
 	var req connectReq
 	json.Unmarshal(m.Data, &req)         // старый клиент шлёт {} — выбора нет, ICE получает все серверы
@@ -1040,7 +1058,7 @@ func (a *Agent) onConnect(ctx context.Context, c *websocket.Conn, m hub.Msg) {
 func (a *Agent) authResult(cid, user string, ok bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.countAuth(cid, user, ok)
+	a.countAuth(cid, user, ok, a.OneTimeSecret == nil)
 }
 
 // nameLock — счётчики неудач одного имени записи (REQ-S-22): пароли и коды TOTP этой записи.
@@ -1096,7 +1114,8 @@ func (a *Agent) nameOf(user string, create bool) *nameLock {
 }
 
 // countAuth — то же под уже взятым a.mu: счётчик имени и общий по хосту. Успех сбрасывает только счёт своего имени.
-func (a *Agent) countAuth(cid, user string, ok bool) {
+// oneTime — неудача одноразового кода; permanent в новом режиме его не сменяет.
+func (a *Agent) countAuth(cid, user string, ok, oneTime bool) {
 	if ok {
 		delete(a.names, user)
 		return
@@ -1106,7 +1125,7 @@ func (a *Agent) countAuth(cid, user string, ok bool) {
 	n.at = time.Now()
 	hostStep(&a.fails, &a.lockUntil, &a.failAt)
 	log.Printf("неверный пароль или код от %s (запись %q: %d, всего %d)", cid, user, n.fails, a.fails)
-	if now := time.Now(); a.CodeUsed != nil && (user == "" && now.Before(n.until) || now.Before(a.lockUntil)) {
+	if now := time.Now(); a.CodeUsed != nil && (a.OneTimeSecret == nil || oneTime) && (user == "" && now.Before(n.until) || now.Before(a.lockUntil)) {
 		go a.codeUsed() // перебор дошёл до блокировки: новый код, подобранное к старому не пригодится
 	}
 }
@@ -1160,6 +1179,12 @@ func (a *Agent) userStart(user, fpc, fph string) (salt, msg []byte, st *cpace.St
 	}
 	msg, st, err = pake.HostStart(secret, a.ID, fpc, fph)
 	return salt, msg, st, view, err
+}
+
+// viewOnlyFor — «Только показ экрана» ограничивает одноразовый доступ; в новом режиме permanent он не касается.
+// s == nil — операция вне одноразовой сессии (пропуска, приём): там ограничение нужно только legacy-хосту.
+func (a *Agent) viewOnlyFor(s *session) bool {
+	return a.ViewOnly != nil && a.ViewOnly() && (a.OneTimeSecret == nil || s != nil && s.once.Load())
 }
 
 // newAPI — WebRTC со стандартными интерсепторами (NACK, RTCP-отчёты, TWCC-ответы); при kbps > 0 ещё и
@@ -1412,8 +1437,10 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 	if err != nil {
 		return err
 	}
-	var st *cpace.State
+	var st, permSt *cpace.State
 	var fpClient, fpHost string
+	var permSalt []byte
+	permView := false
 	named, view, whoDone := false, false, false                                 // клиент уже назвал имя записи (одно на сессию); права записи «просмотр»; "who" был
 	var otpWait func(code string)                                               // ждём код TOTP (под s.mu); nil — не ждём
 	var joinWait func(m authMsg)                                                // Ч12б: ждём доказательство фразы (под s.mu)
@@ -1426,7 +1453,15 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		s.mu.Lock()
 		fpHost, fpClient = pake.Fingerprint(s.pc.LocalDescription().SDP), pake.Fingerprint(s.pc.RemoteDescription().SDP)
 		s.mu.Unlock()
-		salt, msgA, state, v, err := a.userStart("", fpClient, fpHost) // запись по умолчанию: старый клиент без имени
+		salt, msgA, state, v, err := a.userStart("", fpClient, fpHost) // постоянная запись по умолчанию; в legacy — и основной вход
+		var permMsg []byte
+		if err == nil && a.OneTimeSecret != nil {
+			permSalt, permMsg, permSt, permView = salt, msgA, state, v
+			var secret []byte
+			salt, secret = a.OneTimeSecret()
+			msgA, state, err = pake.HostStart(secret, a.ID, fpClient, fpHost)
+			v = false // права записи permanent не относятся к одноразовому коду
+		}
 		if err != nil {
 			log.Printf("вход: %v", err)
 			s.pc.Close()
@@ -1435,7 +1470,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		s.mu.Lock()
 		st, view, s.salt = state, v, salt
 		s.mu.Unlock()
-		send(authMsg{T: "a", Salt: salt, Msg: msgA, Users: true, Keys: a.KeyLogin != nil, Space: a.SpaceGet != nil, Pass: a.SpaceMember != nil, Sync: a.SpaceSync != nil,
+		send(authMsg{T: "a", Salt: salt, Msg: msgA, PermSalt: permSalt, PermMsg: permMsg, Users: true, Keys: a.KeyLogin != nil, Space: a.SpaceGet != nil, Pass: a.SpaceMember != nil, Sync: a.SpaceSync != nil,
 			SX: s.seal.answer(fpClient, fpHost), Recv: !a.noRecv, Join: a.joinOn()}) // Ч12б: вступление без пароля (admit.go); Э4в: sx у каждой сессии, у сверки — статус (spseal.go); Ч10.1: приём (recv.go)
 	})
 	ch.OnMessage(func(msg webrtc.DataChannelMessage) {
@@ -1444,7 +1479,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		if !bad && m.T == "a" { // REQ-S-20: клиент назвал запись — CPace заново с её солью (до "b", один раз)
 			s.mu.Lock()
 			ok := st != nil && !named && len(m.User) <= maxUserLen && !strings.ContainsFunc(m.User, unicode.IsControl)
-			named, st = true, nil
+			named, st, permSt = true, nil, nil
 			fpc, fph := fpClient, fpHost
 			s.mu.Unlock()
 			if !ok { // второе имя, имя после "b" или негодное — нарушение протокола: вход на этом соединении кончен
@@ -1500,11 +1535,17 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		}
 		s.mu.Lock()
 		cur, fpc, fph, user, uview, salt := st, fpClient, fpHost, s.user, view, s.salt
-		st = nil // одна попытка на сессию
+		accountNamed := named
+		if a.OneTimeSecret != nil && m.Permanent && !accountNamed {
+			cur, salt, uview = permSt, permSalt, permView
+			s.salt = permSalt
+		}
+		st, permSt = nil, nil // одна попытка на сессию
 		s.mu.Unlock()
 		if cur == nil || bad || m.T != "b" {
 			return
 		}
+		oneTime := a.OneTimeSecret != nil && !accountNamed && !m.Permanent
 		// Э4: соединение сверки — только доказательство ключей (spsync.go)
 		if s.sy.Load() != nil {
 			keyOK, send := pake.ClientVerify(m.CPub, m.CSig, a.ID, fpc, fph), func(v any) { b, _ := json.Marshal(v); ch.SendText(string(b)) }
@@ -1517,6 +1558,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		}
 		keyOK := pake.ClientVerify(m.CPub, m.CSig, a.ID, fpc, fph) // клиент владеет ключом cpub
 		if m.Recv && !a.noRecv && !s.offOnly {                     // Ч10.1: приём с чужого ПК — не вход (recv.go)
+			s.once.Store(oneTime)
 			a.recvB(ctx, s, m, cur, keyOK, user, fpc, fph, send)
 			return
 		}
@@ -1530,32 +1572,33 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 			a.passOff(s, m, keyOK, fpc, fph, send)
 			return
 		}
+		s.once.Store(oneTime)
 		if id, name := rxClaim(m); id != "" && id != a.ID { // Ч12б: вступление паролем — ID и имя в окно «Пустить?»
 			s.mu.Lock()
 			s.claimID, s.claimName = id, name
 			s.mu.Unlock()
 		}
-		unattended := a.Confirm == nil || a.Unattended != nil && a.Unattended()
+		unattended := !oneTime && (a.Confirm == nil || a.Unattended != nil && a.Unattended())
 		otpSet := false
 		if unattended && a.OTP != nil {
 			otpSet, _ = a.OTP(user, "")
 		}
 		keyIn, keyOn := false, false // REQ-S-24: ключ в списке входа без пароля этой записи; вход им разрешён
-		if m.Key && keyOK && a.KeyLogin != nil {
+		if !oneTime && m.Key && keyOK && a.KeyLogin != nil {
 			keyIn, keyOn = a.KeyLogin(m.CPub, user)
 		}
 		// Э3: вход по пропуску — ключ члена M на записи владельца, без пароля и кода; только в режиме «пароль + код»
 		// (otpSet — только без подтверждения): «Спрашивать» пропуск не обходит
-		passIn := m.Key && m.Pass && keyOK && user == "" && otpSet && a.passValid(m.CPub, salt) // и не «Только показ экрана»
-		keyLogin := keyOn && otpSet && !passIn                                                  // otpSet — только без подтверждения
-		trusted := keyOK && a.Trusted != nil && a.Trusted(m.CPub, user) || keyLogin || passIn   // ключ закреплён за этой записью: права другой записи он не перебирает
+		passIn := !oneTime && m.Key && m.Pass && keyOK && user == "" && otpSet && a.passValid(m.CPub, salt) // и не «Только показ экрана»
+		keyLogin := keyOn && otpSet && !passIn                                                              // otpSet — только без подтверждения
+		trusted := !oneTime && (keyOK && a.Trusted != nil && a.Trusted(m.CPub, user) || keyLogin || passIn) // ключ закреплён за этой записью: права другой записи он не перебирает
 		reject := func(t string, why ...string) {
 			send(authMsg{T: t, Why: strings.Join(why, "")})
 			a.release(s) // освободить сразу: повтор не должен получить «занят»
 
 			time.AfterFunc(500*time.Millisecond, func() { s.pc.Close() }) // дать дойти ответу
 		}
-		if !m.Key && a.LoginShut != nil && a.LoginShut(user) { // решение 12 A: до сверки — ни входа паролем, ни счёта
+		if !oneTime && !m.Key && a.LoginShut != nil && a.LoginShut(user) { // решение 12 A: до сверки — ни входа паролем, ни счёта
 			reject("denied", "wait")
 			return
 		}
@@ -1569,14 +1612,14 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 		}
 		var conf []byte
 		var err error
-		if m.Key && m.Pass && keyOK && !passIn { // Э3: пропуска нет — без неудачи (ключ доказан, перебирать нечего)
+		if !oneTime && m.Key && m.Pass && keyOK && !passIn { // Э3: пропуска нет — без неудачи (ключ доказан, перебирать нечего)
 			a.mu.Unlock()
 			reject("nopass")
 			return
 		}
-		if m.Key && !passIn { // REQ-S-24: ключ вместо пароля — только своей записи, без подтверждения и с TOTP
+		if !oneTime && m.Key && !passIn { // REQ-S-24: ключ вместо пароля — только своей записи, без подтверждения и с TOTP
 			if !keyIn { // ключа нет в списке записи — неудача, как неверный пароль: перебор ключей не бесплатен
-				a.countAuth(s.cid, user, false)
+				a.countAuth(s.cid, user, false, oneTime)
 			}
 			if !keyLogin { // ключ записи, но режим «Спрашивать» или нет TOTP — отказ без неудачи
 				a.mu.Unlock()
@@ -1587,12 +1630,12 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 				}
 				return
 			}
-		} else if !m.Key { // вход по пропуску (passIn) — ни пароля, ни счёта
+		} else if !m.Key || oneTime { // вход по пропуску (passIn) — ни пароля, ни счёта; one-time всегда доказывает код через CPace
 			conf, err = pake.HostFinish(cur, m.Msg, m.Conf)
 			// ponytail: опечатки доверенного не считаются — украденный ключ даёт перебор без блокировки; счётчик для доверенных, если понадобится.
 			// С TOTP верный пароль счётчик не сбрасывает: иначе вор пароля чередовал бы его с перебором кода мимо блокировки.
 			if !trusted && (err != nil || !otpSet) {
-				a.countAuth(s.cid, user, err == nil)
+				a.countAuth(s.cid, user, err == nil, oneTime)
 			}
 		}
 		a.mu.Unlock()
@@ -1604,19 +1647,19 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 			s.view.Store(true)
 		}
 		var pin []byte // закрепить ключ клиента — только когда вход разрешён (и человеком на хосте, REQ-F-03)
-		if keyOK && !trusted {
+		if !oneTime && keyOK && !trusted {
 			pin = m.CPub
 		}
 		var tag, cp []byte
-		if keyOK {
+		if !oneTime && keyOK {
 			cp = m.CPub
 		}
-		if a.LoginTag != nil {
+		if !oneTime && a.LoginTag != nil {
 			tag = a.LoginTag(user, cp)
 		}
 		s.mu.Lock()
 		s.cpub = cp
-		s.tag, s.tagged = tag, a.LoginTag != nil
+		s.tag, s.tagged = tag, !oneTime && a.LoginTag != nil
 		if passIn {
 			s.byPass = m.CPub
 		} else if keyLogin {
@@ -1629,11 +1672,16 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 			reject("busy")
 			return
 		}
-		s.passAsk.Store(m.Pass && !m.Key)
+		s.passAsk.Store(!oneTime && m.Pass && !m.Key)
 		if passIn { // Э3: пропуск вместо пароля и кода
 			s.pass.Store(true)
 			log.Printf("сессия %s: вход по пропуску ПК %s", s.cid, pake.KeyFingerprint(m.CPub)[:9])
 			go a.watchPass(ctx, s, m.CPub, salt)
+			a.accept(ctx, s, track, send, conf, fpc, fph, nil)
+			return
+		}
+		if oneTime {
+			s.byAsk.Store(true) // только UX режима: ни Confirm, ни TOTP одноразовый код не требует
 			a.accept(ctx, s, track, send, conf, fpc, fph, nil)
 			return
 		}
@@ -1676,7 +1724,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 					hostStep(&a.otpFails, &a.otpLock, &a.otpAt)
 				}
 				if !trusted || !ok { // неверные коды — и в общий счётчик (REQ-S-04); успех ключа общий не сбрасывает
-					a.countAuth(s.cid, user, ok)
+					a.countAuth(s.cid, user, ok, oneTime)
 				}
 				locked := lock()
 				a.mu.Unlock()
@@ -1737,7 +1785,7 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 				}
 				// REQ-F-26 — только сессия одноразового кода: запись по умолчанию (запись по имени сюда попадает лишь в режиме
 				// пароля без своего TOTP — её режим задают права, решение владельца)
-				s.byAsk.Store(user == "")
+				s.byAsk.Store(user == "" && a.OneTimeSecret == nil)
 				a.accept(ctx, s, track, send, conf, fpc, fph, pin)
 			default:
 				log.Printf("сессия %s: отклонена на хосте", s.cid)
@@ -1763,13 +1811,13 @@ func init() { otpWait90.Store(int64(90 * time.Second)) }
 
 // accept — вход разрешён: подпись хоста, плашка сессии, видео.
 func (a *Agent) accept(ctx context.Context, s *session, track *webrtc.TrackLocalStaticSample, send func(authMsg), conf []byte, fpc, fph string, pin []byte) {
-	asked := s.view.Load()                 // просмотр по просьбе клиента или ответу «Только просмотр» в окне «Разрешить»
-	if a.ViewOnly != nil && a.ViewOnly() { // хост сужает права сам — и «Разрешить» в окне даёт только просмотр
+	asked := s.view.Load() // просмотр по просьбе клиента или ответу «Только просмотр» в окне «Разрешить»
+	if a.viewOnlyFor(s) {  // хост сужает права сам — и «Разрешить» в окне даёт только просмотр
 		s.view.Store(true)
 	}
 	s.authed.Store(true)
 	// ещё раз после authed: галочку могли включить между проверкой выше и authed, а ViewOnlyChanged не вошедшую не трогает
-	if a.ViewOnly != nil && a.ViewOnly() {
+	if a.viewOnlyFor(s) {
 		s.view.Store(true)
 	}
 	s.forced.Store(s.view.Load() && !asked) // выключат галочку — управление вернётся (права записи проверит ViewOnlyChanged)
@@ -1813,7 +1861,7 @@ func (a *Agent) accept(ctx context.Context, s *session, track *webrtc.TrackLocal
 		s.mu.Unlock()
 		pid = a.passID(cpub)
 	}
-	send(authMsg{T: "ok", PID: pid, Conf: conf, Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph), View: view, Audio: a.Audio, Mode: s.byAsk.Load() && a.ConfirmControl != nil, Pause: a.Pause, Key: kp != nil, Pass: s.pass.Load(), Trust: a.trustCan(s)})
+	send(authMsg{T: "ok", PID: pid, Conf: conf, Pub: a.Key.Public().(ed25519.PublicKey), Sig: pake.HostSign(a.Key, a.ID, fpc, fph), View: view, Audio: a.Audio, Mode: s.byAsk.Load() && (a.ConfirmControl != nil || s.once.Load()), Pause: a.Pause, Key: kp != nil, Pass: s.pass.Load(), Trust: a.trustCan(s)})
 	log.Printf("сессия %s: вход выполнен%s", s.label(), map[bool]string{true: " (только просмотр)"}[view]) // REQ-F-16, F-24
 	s.sendMonitors()
 	closeInd, err := indicator(s.label(), s.plaque(), a.userClose(s)) // REQ-F-15, F-24
@@ -1880,10 +1928,11 @@ func (a *Agent) clientChannel(s *session, dc *webrtc.DataChannel, recv *atomic.I
 // поля нет или оно не bool: отказ "bad". В просмотр — сразу (и открытая просьба управления отменяется); в управление —
 // если хост не навязывает просмотр («Только показ экрана», права записи) и человек у хоста ответил «Разрешить» в окне
 // ConfirmControl (одно окно на сессию; после отказа — не раньше modeWait; после modeMax отказов — больше не спрашивать).
+// Новый one-time при выключенном ViewOnly возвращает управление без ConfirmControl: Allow control уже дал это право.
 func (a *Agent) setMode(ctx context.Context, s *session, view *bool, reply func(modeMsg)) {
 	no := func(why string) { reply(modeMsg{T: "mode", View: s.view.Load(), Why: why}) }
 	forced := func() string { // просмотр навязан хостом
-		if a.ViewOnly != nil && a.ViewOnly() {
+		if a.viewOnlyFor(s) {
 			return "viewonly"
 		}
 		if gone, v := a.revoked(s); gone || v {
@@ -1895,7 +1944,7 @@ func (a *Agent) setMode(ctx context.Context, s *session, view *bool, reply func(
 	case view == nil:
 		no("bad")
 		return
-	case !s.byAsk.Load() || a.ConfirmControl == nil:
+	case !s.byAsk.Load() || a.ConfirmControl == nil && !s.once.Load():
 		no("rights")
 		return
 	case *view:
@@ -1914,6 +1963,12 @@ func (a *Agent) setMode(ctx context.Context, s *session, view *bool, reply func(
 	}
 	if why := forced(); why != "" {
 		no(why)
+		return
+	}
+	if s.once.Load() {
+		s.view.Store(false) // Allow control уже разрешает управление: второго подтверждения не нужно
+		a.replaque(s)
+		reply(modeMsg{T: "mode", OK: true})
 		return
 	}
 	s.mu.Lock()

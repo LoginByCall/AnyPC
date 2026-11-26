@@ -127,18 +127,18 @@ func hostMain() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	a := &agent.Agent{Audio: true, Pause: true, Version: version, Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, Key: cfg.key(), FPS: 30, Trusted: cfg.trusted, Trust: cfg.trust, KeyLogin: cfg.keyLogin, KeyTrust: cfg.keyTrust,
-		Bitrate: agent.Kbps(cfg.Bitrate),
-		Confirm: agent.AskAccept, ConfirmControl: agent.AskControl, Unattended: func() bool { return !cfg.confirm() }, OTP: cfg.otp, ViewOnly: cfg.viewOnly, // без подтверждения — с TOTP (PLAN.md)
+	a := &agent.Agent{Audio: true, Pause: true, Version: version, Server: cfg.Server, ID: cfg.ID, Secret: cfg.secret, OneTimeSecret: cfg.oneTimeSecret, Key: cfg.key(), FPS: 30, Trusted: cfg.trusted, Trust: cfg.trust, KeyLogin: cfg.keyLogin, KeyTrust: cfg.keyTrust,
+		Bitrate:    agent.Kbps(cfg.Bitrate),
+		Unattended: func() bool { return true }, OTP: cfg.otp, ViewOnly: cfg.viewOnly, // оба профиля самостоятельны; подтверждение на хосте не требуется
 		CodeUsed: cfg.codeUsed,                           // «Спрашивать»: код сменить после сессии и блокировки (REQ-S-23)
 		SpaceGet: cfg.spaceGet, SpaceJoin: cfg.spaceJoin, // «Моё пространство», Э2: отдать состав и принять вступление
 		SpaceOwner: cfg.spaceAdmitOwner, SpaceAdmit: agent.AskAdmit, // Ч12б: вступление без пароля и окно «Пустить?»
-		SpaceMember: cfg.spaceMember,                                                                        // Э3: пропуск 12 ч на ключ мастера (agent/pass.go)
-		LoginTag:    cfg.loginTag,                                                                           // Э4: смена входа пространства и исключение рвут сессии (revoked)
-		KeyGone:     cfg.keyGone,                                                                            // решение A: ключ исключённого ПК рвёт сессию в любом режиме
-		LoginShut:   cfg.loginShut,                                                                          // решение 12 A: вход паролем на новом ПК — после сверки с членом ≠ поручитель
-		SpaceSync:   cfg,                                                                                    // Э4: сверка состава между членами (spsync.go)
-		CodeMode:    cfg.codeMode, RecvPinned: cfg.recvPinned, RecvPin: cfg.recvPin, RecvAsk: agent.AskRecv, // Ч10.1: приём на хосте (agent/recv.go)
+		SpaceMember: cfg.spaceMember,                                                                           // Э3: пропуск 12 ч на ключ мастера (agent/pass.go)
+		LoginTag:    cfg.loginTag,                                                                              // Э4: смена входа пространства и исключение рвут сессии (revoked)
+		KeyGone:     cfg.keyGone,                                                                               // решение A: ключ исключённого ПК рвёт сессию в любом режиме
+		LoginShut:   cfg.loginShut,                                                                             // решение 12 A: вход паролем на новом ПК — после сверки с членом ≠ поручитель
+		SpaceSync:   cfg,                                                                                       // Э4: сверка состава между членами (spsync.go)
+		CodeMode:    cfg.oneTimeMode, RecvPinned: cfg.recvPinned, RecvPin: cfg.recvPin, RecvAsk: agent.AskRecv, // Ч10.1: приём на хосте (agent/recv.go)
 		Capture: hostCapture(cfg.Enc), Locked: hostLocked, FileDir: downloads(), Stderr: logw}
 	var mu sync.Mutex
 	online, session, update := false, "", ""
@@ -507,7 +507,7 @@ window.ANYPC = {ws: %s, clipPoll: %t};
   const T = %s;
   const api = (n, ...a) => fetch('/api/' + n, {method: 'POST', headers: {'X-Token': T, 'Content-Type': 'application/json'}, body: JSON.stringify(a)})
     .then(async r => { const j = await r.json(); if (!r.ok) throw j.error; return j.result; });
-  for (const n of ['hostInfo', 'setPassword', 'setConfirm', 'setNode', 'quit', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'hostVerify', 'knownGet', 'knownSet', 'savedGet', 'savedSet', 'otpNew', 'otpEnable', 'otpOff', 'newCode', 'setGive', 'userSet', 'userDel', 'keyDel', 'clientSign', 'ckeyGet', 'ckeySet', 'setViewOnly', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort', 'audioAnswer', 'audioMic', 'pcWindow', 'pcScreens', 'uiGet', 'uiSet'].concat(%s)) window[n] = (...a) => api(n, ...a);
+  for (const n of ['hostInfo', 'setPassword', 'setConfirm', 'setNode', 'quit', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'hostVerify', 'knownGet', 'knownSet', 'savedGet', 'savedSet', 'otpNew', 'otpEnable', 'otpOff', 'newCode', 'setGive', 'setSpaceAllow', 'userSave', 'userDel', 'keyDel', 'clientSign', 'ckeyGet', 'ckeySet', 'setViewOnly', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort', 'audioAnswer', 'audioMic', 'pcWindow', 'pcScreens', 'uiGet', 'uiSet'].concat(%s)) window[n] = (...a) => api(n, ...a);
   window.fullscreen = on => on ? document.documentElement.requestFullscreen(window.anypcScreen ? {screen: window.anypcScreen} : undefined).then(() => navigator.keyboard?.lock()).catch(() => {})
                                : document.fullscreenElement && document.exitFullscreen();
 })();
@@ -650,8 +650,14 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 		res, err = setGive(cfg, a, on)
 	case "otpOff":
 		err = cfg.otpOff(str(0))
-	case "userSet":
-		err = dropAfter(a, cfg.setUser(str(0), str(1), str(2))) // сменили пароль или сузили права — её сессия рвётся
+	case "userSave":
+		err = dropAfter(a, cfg.saveUser(str(0), str(1), str(2), str(3), str(4))) // единая атомарная запись с TOTP
+	case "setSpaceAllow":
+		var on bool
+		if len(args) > 0 {
+			json.Unmarshal(args[0], &on)
+		}
+		err = setSpaceAllow(cfg, a, on)
 	case "userDel":
 		err = dropAfter(a, cfg.delUser(str(0)))
 	case "keyDel": // REQ-S-24: отозвать ключ входа без пароля — его сессия рвётся

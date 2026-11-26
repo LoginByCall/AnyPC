@@ -128,6 +128,10 @@ func TestConfigReleases(t *testing.T) {
 					delete(x.(map[string]any), "totp_step")
 				}
 			}
+			if got["allow_space"] != true {
+				t.Errorf("прежний permanent-профиль не мигрирован: %v", got["allow_space"])
+			}
+			delete(got, "allow_space") // поле добавлено новой схемой после исходного выпуска
 			if !reflect.DeepEqual(got, orig) {
 				t.Errorf("файл после записи:\n%s", b)
 			}
