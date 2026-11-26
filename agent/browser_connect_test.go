@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"anypc/hub"
+	"anypc/pake"
 	"anypc/totp"
 	"anypc/ui"
 )
@@ -140,8 +141,10 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   console.log('member=' + await q() + '|' + await ev("document.getElementById('starbtn').textContent + ',' + document.getElementById('starbtn').disabled"));
   await bye();
 
-  // 4. «Спрашивать» (код разовой помощи): вместо шага 2 — «Ждём ответа… N с» с отсчётом; после «Разрешить» вопроса нет
-  await login('333444555', 'secret123');
+  // 4. «Спрашивать» (код разовой помощи): вместо шага 2 — «Ждём ответа… N с» с отсчётом; после «Разрешить» вопроса нет.
+  // Сохранённое имя учётной записи одноразовый код игнорирует: Options очищать не нужно.
+  await ev("document.getElementById('user').value = '508557425'; 1");
+  await login('333444555', '482913');
   const w1 = await until(s => s.startsWith('w|'));
   const n1 = await ev("document.getElementById('askn').textContent"); await sleep(2100);
   const n2 = await ev("document.getElementById('askn').textContent");
@@ -153,7 +156,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   console.log('codestar=' + await q());
   await bye();
   // отмена ожидания: «Отмена» — к шагу 1
-  await login('333444555', 'secret123'); await until(s => s.startsWith('w|'));
+  await login('333444555', '482913'); await until(s => s.startsWith('w|'));
   await ev("document.getElementById('ccancel').click(); 1"); await sleep(300);
   console.log('cancel=' + await state() + '|' + await ev(vis('id')));
   process.exit(0);
@@ -201,6 +204,13 @@ func TestBrowserConnect(t *testing.T) {
 	b := ff(newAgent(wsURL, "222333444", nil)) // без TOTP и подтверждения (встраивание без него): пароль — и вход
 	m := ff(newAgent(wsURL, "444555666", nil)) // член пространства (у клиента)
 	c := ff(newAgent(wsURL, "333444555", nil)) // «Спрашивать»: «Разрешить» через 4 с
+	oneHash := pake.KDF("482913", salt)
+	c.Secret = func(user string) ([]byte, []byte, bool) {
+		if user != "" {
+			return nil, nil, false
+		}
+		return salt, oneHash, false
+	}
 	c.Confirm = func(string, string) Answer { time.Sleep(4 * time.Second); return Allow }
 	for _, x := range []*Agent{a, b, m, c} {
 		go x.Run(ctx)
