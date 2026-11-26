@@ -26,7 +26,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const tab = await (await fetch('http://127.0.0.1:' + port + '/json/new?about:blank', { method: 'PUT' })).json();
   const ws = new WebSocket(tab.webSocketDebuggerUrl); await new Promise(r => ws.onopen = r);
   let id = 0; const wait = {};
-  ws.onmessage = e => { const m = JSON.parse(e.data); if (m.id && wait[m.id]) wait[m.id](m); };
+  ws.onmessage = e => { const m = JSON.parse(e.data); if (m.id && wait[m.id]) wait[m.id](m); if (m.method === 'Runtime.exceptionThrown' || m.method === 'Log.entryAdded') console.log('PAGEEXC ' + JSON.stringify(m.params)); };
   const call = (method, params) => new Promise(r => { const i = ++id; wait[i] = r; ws.send(JSON.stringify({ id: i, method, params })); });
   const ev = async x => { const r = (await call("Runtime.evaluate", { expression: x, awaitPromise: true, returnByValue: true })).result; return r?.exceptionDetails ? "EXC " + JSON.stringify(r.exceptionDetails.exception?.description) : r?.result?.value; };
   const vis = i => "!document.getElementById('" + i + "').classList.contains('hidden')";
@@ -37,7 +37,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const shot = async (name, el) => { if (!process.env.SHOTS) return; // Ч12: снимки мастера (SHOTS=<каталог>)
     if (el) await ev("document.getElementById('" + el + "').scrollIntoView({ block: 'center' }); 1"); await sleep(200);
     const r = await call('Page.captureScreenshot', { format: 'png' }); require('fs').writeFileSync(process.env.SHOTS + '/space-ux-' + name + '.png', Buffer.from(r.result.data, 'base64')); };
-  await call('Page.enable', {});
+  await call('Page.enable', {}); await call('Runtime.enable', {}); await call('Log.enable', {});
   if (process.env.SHOTS) await call('Emulation.setDeviceMetricsOverride', { width: 1200, height: 760, deviceScaleFactor: 1, mobile: false });
   await call('Page.navigate', { url }); await sleep(1200); // веб-клиент с сервера: привязок нет
   console.log('web=' + await ev("[" + vis('spcard') + ", " + vis('me') + ", " + vis('access') + "].join('|')"));
@@ -88,8 +88,10 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await call('Page.navigate', { url }); await sleep(1500);
   await click('setgo'); await click('setacc');
   console.log('nav=' + await ev("[" + vis('access') + ", " + vis('home') + ", document.getElementById('spaceallow').checked, " + vis('spcard') + ", " + vis('spout') + ", " + vis('spin') + "].join('|')"));
-  await click('spnew'); // «Спрашивать» включено — создать нельзя
+  if (process.env.CREATE_ONLY) { await ev('st.otp = false; st.hasPass = false; 1'); await sleep(1200); }
+  await click('spnew'); // без ручного пароля и TOTP мастер тоже открывается
   console.log('hint=' + await ev(txt('spmsg') + " + '|' + " + vis('spcreate')));
+  if (process.env.CREATE_ONLY) process.exit(0);
   await ev("st.confirm = false; 1"); await sleep(1200);
   console.log('old=' + await ev("[" + vis('users') + ", !document.getElementById('confirm'), !document.getElementById('newpw')].join('|')"));
   await click('spnew'); await ev(val('spcpw', 'wrong-pass')); await click('spcgo');
@@ -264,6 +266,26 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   console.log('back=' + await ev(vis('access') + " + '|' + " + vis('home') + " + '|' + document.getElementById('home').contains(document.getElementById('incoming'))"));
   process.exit(0);
 })();`
+
+// TestBrowserSpaceCreate — старое требование пароля и TOTP не мешает открыть мастер.
+func TestBrowserSpaceCreate(t *testing.T) {
+	chrome, err := exec.LookPath("google-chrome")
+	if err != nil {
+		t.Skip("нет google-chrome")
+	}
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("нет node")
+	}
+	t.Setenv("CREATE_ONLY", "1")
+	srv := httptest.NewServer(http.FileServer(http.FS(ui.FS)))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	out := string(runCDP(t, ctx, chrome, cdpSpace, srv.URL+"/"))
+	if !strings.Contains(out, "hint=|true\n") {
+		t.Fatalf("мастер не открылся:\n%s", out)
+	}
+}
 
 // TestBrowserSpace — экран «Доступ к этому ПК»: блок «Вы (владелец)» на подменённых привязках пространства.
 func TestBrowserSpace(t *testing.T) {
