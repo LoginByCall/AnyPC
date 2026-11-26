@@ -11,7 +11,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log"
@@ -80,8 +82,9 @@ func (c *config) spaceCreate(password string) (string, error) {
 // spaceDraft — шаг 1 создания (Э2, п. 2; решения 8 B, 12): новое пространство с этим ПК — пароль входа записи по
 // умолчанию (сверяется с её хэшем: создать пространство за незаблокированным чужим ПК без пароля нельзя), её секрет
 // TOTP и ключ хоста. Фразу выдаёт генератор (С3) — она возвращается один раз: окно показывает её для записи и
-// просит ввести снова (spaceCreateOK). Состав до того — черновик в памяти (фраза не хранится), Space пуст. Нужен
-// режим «пароль + TOTP» (не «Спрашивать»). Новый черновик заменяет прежний.
+// просит ввести снова (spaceCreateOK). Состав до того — черновик в памяти (фраза не хранится), Space пуст.
+// На новом ПК учётные данные владельца и TOTP создаются автоматически; отдельная настройка пароля не нужна.
+// Новый черновик заменяет прежний.
 func (c *config) spaceDraft(password string) (string, error) {
 	c.mu.Lock()
 	c.reload()
@@ -93,11 +96,31 @@ func (c *config) spaceDraft(password string) (string, error) {
 		c.mu.Unlock()
 		return "", err
 	}
-	if !c.spaceAllowedLocked() || len(c.Users[0].Hash) == 0 || c.Users[0].TOTP == "" {
-		c.mu.Unlock()
-		return "", errSpaceLogin
-	}
 	u := c.Users[0]
+	if len(u.Hash) == 0 { // отдельный пароль настроек не нужен: учётные данные владельца создаются автоматически
+		auto := make([]byte, 32)
+		rand.Read(auto)
+		password = base64.RawURLEncoding.EncodeToString(auto)
+		salt := make([]byte, 16)
+		rand.Read(salt)
+		u.Salt, u.Hash, u.Trusted, u.KeyLogin = salt, pake.KDF(password, salt), nil, nil
+	}
+	if u.TOTP == "" {
+		u.TOTP = totp.NewSecret()
+	}
+	if !c.spaceAllowedLocked() {
+		allow := true
+		c.AllowSpace = &allow
+	}
+	if c.Confirm == nil || *c.Confirm {
+		off := false
+		c.Confirm = &off
+	}
+	c.Users[0] = u
+	if err := c.save(); err != nil {
+		c.mu.Unlock()
+		return "", err
+	}
 	salt, hash, sec, id, key := bytes.Clone(u.Salt), bytes.Clone(u.Hash), u.TOTP, c.ID, bytes.Clone(c.Key)
 	c.mu.Unlock()
 	if subtle.ConstantTimeCompare(pake.KDF(password, salt), hash) != 1 { // Argon2 — без c.mu

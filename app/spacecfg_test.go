@@ -168,8 +168,11 @@ func TestSpaceCreateStore(t *testing.T) {
 	if err := c.setConfirm(true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.spaceCreate(spacePass); err == nil {
-		t.Error("пространство в режиме «Спрашивать»")
+	if _, err := c.spaceCreate(spacePass); err != nil {
+		t.Fatalf("создание в режиме «Спрашивать»: %v", err)
+	}
+	if !c.spaceAllowed() {
+		t.Fatal("создание не включило постоянный профиль пространства")
 	}
 }
 

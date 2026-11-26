@@ -54,7 +54,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     window.opSlow = 0; window.failConfirm = 0; // каждый ответ spaceOp медленнее опроса; сбой транспорта spaceConfirm
     window.opDelay = 0; // мс: следующий ответ spaceOp придёт позже (снимок — на момент вызова)
     window.spaceOp = async () => { const o = window.op && JSON.parse(JSON.stringify(window.op)), d = window.opDelay || window.opSlow; window.opDelay = 0; if (d) await new Promise(r => setTimeout(r, d)); return o; };
-    window.spaceCreate = async pw => { calls.push('create:' + pw); if (pw !== 'owner-pass') throw 'space:password'; return { phrase: PH }; };
+    window.spaceCreate = async pw => { calls.push('create:' + pw); if (pw !== 'owner-pass') throw 'space:password'; return { phrase: PH, qr: { uri: 'otpauth://totp/AnyPC?secret=JBSWY3DPEHPK3PXP', svg: '<svg xmlns="http://www.w3.org/2000/svg"/>' } }; };
     window.spaceCreateOK = async ph => { calls.push('createok:' + ph); if (ph !== PH) throw 'space:phrase'; st.space.in = true; st.space.members = [me]; };
     window.spaceCreateNo = async () => { calls.push('createno'); };
     window.enterRun = false; // Ч12: вступление идёт (шаг 2), а не сразу превью
@@ -96,6 +96,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   console.log('badpw=' + await ev("[" + txt('spmsg') + ", " + vis('spc2') + "].join('|')"));
   await ev(val('spcpw', 'owner-pass')); await click('spcgo');
   console.log('phrase=' + await ev("[" + txt('spphr') + ", " + vis('spc1') + ", " + vis('spc2') + ", document.getElementById('spcpw').value].join('|')"));
+  console.log('createqr=' + await ev(vis('spcqr') + " + '|' + " + txt('spcqrk')));
   await ev("document.querySelector('#spc2 .spcno').click(); 1"); await sleep(250);
   console.log('cancel=' + await ev("[" + txt('spphr') + ", " + vis('spcreate') + "].join('|')") + '|' + await calls());
   await click('spnew'); await ev(val('spcpw', 'owner-pass')); await click('spcgo');
@@ -282,11 +283,12 @@ func TestBrowserSpace(t *testing.T) {
 	for _, want := range []string{
 		"web=false|false|false\n", // веб-клиент без привязок: ни карточки хоста, ни экрана доступа, ни блока пространства
 		"nav=true|false|false|true|true|false\n",
-		"hint=First prepare this PC (below on this screen): untick “Ask before each connection”, set up the authenticator app code and set this PC’s password. Then press “Create a space” again.|false\n",
+		"hint=|true\n",
 		"steps=Step 1 of 3;Step 2 of 3;Step 3 of 3|true\n", "step3=false|true|spcph\n", "step3back=" + strconv.Itoa(len("true|"+ph)) + "\n",
 		"old=true|true|true\n", // постоянные пользователи видны; legacy confirm/password controls удалены
 		"badpw=Wrong password|false\n",
 		"phrase=" + ph + "|false|true|\n",
+		"createqr=true|JBSW Y3DP EHPK 3PXP\n",
 		"cancel=|false|create:wrong-pass,create:owner-pass,createno\n",
 		"renew=|true|false|create:owner-pass,createno\n", // повторное «Создать»: фраза стёрта, черновик отменён
 		"backphrase=|false|create:owner-pass,createno\n", // «Назад»: то же

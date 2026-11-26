@@ -8,6 +8,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
+	"net/url"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -134,7 +136,7 @@ func TestSpaceEnterAskNo(t *testing.T) {
 }
 
 // TestSpaceDraft — создание в два шага: до повторного ввода фразы Space пуст; неверная фраза (опечатка, чужая) —
-// ошибка, Space пуст, черновик жив; отмена — Space пуст, черновика нет; «Спрашивать» — errSpaceLogin.
+// ошибка, Space пуст, черновик жив; отмена — Space пуст, черновика нет; создание без ручного TOTP — автоматически.
 func TestSpaceDraft(t *testing.T) {
 	p := spaceCfg(t, spacePass, totp.NewSecret())
 	empty := func(what string) {
@@ -179,8 +181,40 @@ func TestSpaceDraft(t *testing.T) {
 	if err := q.setConfirm(true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := q.spaceDraft(spacePass); !errors.Is(err, errSpaceLogin) {
-		t.Errorf("«Спрашивать»: %v", err)
+	if _, err := q.spaceDraft(spacePass); err != nil {
+		t.Fatalf("создание без ручной настройки TOTP: %v", err)
+	}
+	if !q.spaceAllowed() || q.Users[0].TOTP == "" {
+		t.Fatal("создание не включило пространство и не сгенерировало TOTP владельца")
+	}
+}
+
+func TestSpaceDraftFresh(t *testing.T) {
+	c, err := loadConfig(filepath.Join(t.TempDir(), "AnyPC", "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := spaceDo(c, "spaceCreate", func(int) string { return "" }, func(int) bool { return false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := res.(map[string]any)
+	ph := out["phrase"].(string)
+	qr := out["qr"].(map[string]string)
+	uri, err := url.Parse(qr["uri"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	sec := uri.Query().Get("secret")
+	if len(c.Users[0].Hash) != spaceHashLen || sec == "" || sec != c.Users[0].TOTP || !c.spaceAllowed() {
+		t.Fatal("автоматические учётные данные владельца не созданы или не возвращены")
+	}
+	code, _ := totp.Code(sec, time.Now())
+	if _, ok := totp.Check(sec, code, time.Now(), 0); !ok {
+		t.Fatal("возвращённый секрет не даёт рабочий код для вступления")
+	}
+	if err := c.spaceCreateOK(ph); err != nil {
+		t.Fatal(err)
 	}
 }
 

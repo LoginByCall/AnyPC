@@ -3,7 +3,8 @@ package main
 // Этап «окна пространства», Ч2: API окна для пространства (UI-REDESIGN.md, «API»). Одни и те же имена (spaceNames) —
 // в api() (Linux, Мак: POST /api/<имя> с X-Token) и в w.Bind (Windows). Долгие операции — в фоне (spaceops.go).
 // Ошибки окну — только коды space:<код> (spaceErrCode), текст ядра в окно не идёт. В hostInfo.space нет секретов
-// (TOTP, соль и хэш пароля, osalt, фраза); QR нового кода — только в итоге правки фразой (spaceOp).
+// (TOTP, соль и хэш пароля, osalt, фраза); QR кода — только после системной авторизации в мастере создания
+// и в итоге правки фразой (spaceOp).
 // ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ (CLAUDE.md A13: вход и ключевой материал).
 
 import (
@@ -113,7 +114,19 @@ func spaceDo(c *config, name string, str func(int) string, flag func(int) bool) 
 		if err != nil {
 			return nil, err
 		}
-		return map[string]string{"phrase": ph}, nil
+		c.mu.Lock()
+		b := bytes.Clone(c.spNew)
+		c.mu.Unlock()
+		m, err := spaceParse(b)
+		if err != nil {
+			return nil, err
+		}
+		u := totp.URI(url.PathEscape("AnyPC пространство"), m.TOTP)
+		svg, err := totp.SVG(u)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"phrase": ph, "qr": map[string]string{"uri": u, "svg": svg}}, nil
 	case "spaceCreateOK":
 		err := spaceOps.hold("create", func() error { return c.spaceCreateOK(str(0)) })
 		if errors.Is(err, errSpaceForeign) { // у черновика ключ из этой же фразы: не совпал — опечатка, не чужое пространство

@@ -305,6 +305,10 @@ func TestSpaceAPIFlow(t *testing.T) {
 		t.Fatalf("spaceCreate: %d %s", code, e)
 	}
 	ph := res.(map[string]any)["phrase"].(string)
+	createQR := res.(map[string]any)["qr"].(map[string]any)
+	if !strings.Contains(createQR["uri"].(string), sec) || !strings.HasPrefix(createQR["svg"].(string), "<svg") {
+		t.Fatal("при создании не возвращён QR кода пространства")
+	}
 	phrases = append(phrases, ph)
 	noSecrets(p, "черновик")
 	if _, _, e := callP("spaceCreateOK", spacePhraseNew()); e != "space:phrase" { // опечатка во фразе черновика
