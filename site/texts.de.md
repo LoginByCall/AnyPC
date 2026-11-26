@@ -39,14 +39,14 @@
 - `howT`: In 3 Schritten loslegen
 - `s1`: Laden Sie AnyPC auf den Computer herunter, den Sie steuern möchten (oder auf beide), und starten Sie es.
 - `s2`: Wählen Sie auf dem zu steuernden Computer eine von zwei unabhängigen Zugriffsmethoden. Für Einmalzugriff schalten Sie „Steuerung erlauben“ ein und notieren seine 9-stellige ID und den 6-stelligen Code. Für dauerhaften Zugriff aktivieren Sie „Bereich erlauben“ und erstellen einen benannten Benutzer mit eigenem Passwort, obligatorischem TOTP und den Rechten „Volle Steuerung“ oder „Nur ansehen“.
-- `s3`: Geben Sie im Browserfenster oder auf dem anderen Computer diese ID und das Passwort ein und klicken Sie auf „Verbinden“. Ist auf dem gesteuerten PC die Bestätigung aktiviert, muss dort jemand auf „Erlauben“ klicken.
+- `s3`: Geben Sie im Browserfenster oder auf dem anderen Computer diese ID und den Einmalcode ein und klicken Sie auf „Verbinden“: Das aktuelle Einmalprofil braucht weder eine Bestätigung auf dem Host noch TOTP. Für dauerhaften Zugriff geben Sie stattdessen Benutzername, Passwort und TOTP ein. Nur ein älterer Host kann noch verlangen, dass dort jemand auf „Erlauben“ klickt.
 - `secT`: Sicherheit
-- `sec1`: Jede Verbindung erfordert das auf dem gesteuerten PC festgelegte Passwort; das Passwort selbst wird nie über das Netzwerk übertragen.
-- `secAsk`: Optional lässt sich eine Bestätigung aktivieren: Der gesteuerte PC fragt dann bei jeder Verbindung „Erlauben / Ablehnen“; ohne Antwort binnen 30 Sekunden wird abgelehnt.
+- `sec1`: Einmalzugriff verwendet die ID und einen wechselnden 6-stelligen Code; dauerhafte Benutzer haben eigene Passwörter und obligatorisches TOTP. Die Passwörter selbst werden nie über das Netzwerk übertragen.
+- `secAsk`: Die Profile sind unabhängig: Einmalzugriff beginnt mit ID und Code, ohne Bestätigung oder TOTP; dauerhafter Zugriff erfordert „Bereich erlauben“, das Passwort des Benutzers und obligatorisches TOTP. Ältere Hosts können weiterhin „Erlauben / Ablehnen“ anzeigen.
 - `sec2`: Während einer Sitzung zeigt der gesteuerte PC stets einen Hinweis mit einer Schaltfläche zum Trennen.
 - `sec3`: Nach 5 falschen Passwörtern wird der Zugang vorübergehend gesperrt.
 - `sec4`: Verwenden Sie AnyPC nur auf eigenen Computern oder mit Zustimmung des Besitzers.
-- `sec5`: Geben Sie ID und Passwort niemals an jemanden weiter, der Sie unerwartet anruft – das ist eine verbreitete Betrugsmasche.
+- `sec5`: Geben Sie ID und Einmalcode niemals an jemanden weiter, der Sie unerwartet anruft: Das gewährt sofortigen Zugriff ohne Bestätigung. Teilen Sie auch weder Passwort noch TOTP eines dauerhaften Benutzers — solche unerwarteten Anfragen sind eine verbreitete Betrugsmasche.
 - `limT`: Einschränkungen der Beta
 - `lim1`: Strg+Alt+Entf, UAC-Abfragen und der Sperrbildschirm sind noch nicht verfügbar.
 - `lim2`: Zwischenablage: nur Text; Dateien werden über die Schaltflächen der Leiste übertragen.
@@ -58,7 +58,7 @@
 - `f5t`: Mit eigenem Server
 - `f5d`: Richten Sie einen oder mehrere eigene Relay-Knoten auf einem VPS mit einem einzigen Befehl ein und richten Sie die App darauf aus – automatisch über den schnellsten Pfad (anhand des Pings beider Seiten) oder manuell. Verbindungsdaten bleiben allein bei Ihnen.
 - `f7t`: Schutz vor fremder Anmeldung
-- `f7d`: Für Verbindungen ohne Bestätigung ist zusätzlich ein Einmalcode aus einer Authenticator-App (TOTP) nötig: Ein Passwort allein, auch ein gestohlenes, reicht nicht.
+- `f7d`: Dauerhafte Benutzer melden sich mit eigenem Passwort und obligatorischem Authenticator-Code (TOTP) an, mit den Rechten „Volle Steuerung“ oder „Nur ansehen“. Einmalzugriff ist davon getrennt: Sein 6-stelliger Code wechselt nach jeder Sitzung und braucht kein TOTP.
 - `f8t`: Sprechen während der Sitzung
 - `f8d`: Sprechen Sie direkt in der Sitzung mit der Person am entfernten PC, ohne separaten Anruf. Die Mikrofone bleiben aus, bis jede Seite ihres einschaltet.
 - `f9t`: Dateien in beide Richtungen

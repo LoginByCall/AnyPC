@@ -39,14 +39,14 @@
 - `howT`: Get started in 3 steps
 - `s1`: Download AnyPC to the computer you want to control (or to both) and run it.
 - `s2`: On the computer you want to control, choose one of two independent access methods. For one-time access, turn on “Allow control” and note its 9-digit ID and 6-digit code. For permanent access, turn on “Allow space” and create a named user with their own password, mandatory TOTP and “Full control” or “View only” rights.
-- `s3`: In a browser window or on the other computer, enter that ID and password and click “Connect”. If confirmation is turned on for the controlled PC, someone there has to click “Allow”.
+- `s3`: In a browser window or on the other computer, enter that ID and the one-time code and click “Connect”: the current one-time profile needs neither confirmation on the host nor TOTP. For permanent access, enter the user’s name, password and TOTP instead. Only an older host may still ask someone there to click “Allow”.
 - `secT`: Security
-- `sec1`: Every connection requires the password set on the controlled PC; the password itself is never sent over the network.
-- `secAsk`: You can turn on confirmation: the controlled PC then asks “Allow / Deny” for every connection, and no answer within 30 seconds means deny.
+- `sec1`: One-time access uses the ID and a changing 6-digit code; permanent users have their own passwords and mandatory TOTP. Passwords themselves are never sent over the network.
+- `secAsk`: The profiles are independent: one-time access starts with the ID and code, without confirmation or TOTP; permanent access requires “Allow space” and the user’s password plus mandatory TOTP. Older hosts may still show an “Allow / Deny” prompt.
 - `sec2`: During a session, the controlled PC always shows a notice with a disconnect button.
 - `sec3`: After 5 wrong passwords, access is temporarily blocked.
 - `sec4`: Use AnyPC only on your own computers or with the owner’s consent.
-- `sec5`: Never give your ID and password to someone who calls you out of the blue — it’s a common scam.
+- `sec5`: Never give your ID and one-time code to someone who calls you out of the blue: this gives immediate access without confirmation. Do not share a permanent user’s password or TOTP either — unexpected requests are a common scam.
 - `limT`: Beta limitations
 - `lim1`: Ctrl+Alt+Del, UAC prompts and the lock screen are not available yet.
 - `lim2`: Clipboard: text only; files are sent with the toolbar buttons.
@@ -58,7 +58,7 @@
 - `f5t`: Run your own server
 - `f5d`: Set up one or several of your own relay nodes on a VPS with a single command and point the app at them — automatically over the fastest path (based on ping from both sides) or manually. Connection records stay with you alone.
 - `f7t`: Protection from someone else signing in
-- `f7d`: Connecting without confirmation also needs a one-time code from an authenticator app (TOTP): a password alone, even a stolen one, is not enough.
+- `f7d`: Permanent users sign in with their own password and mandatory authenticator code (TOTP), with “Full control” or “View only” rights. One-time access is separate: its 6-digit code changes after every session and needs no TOTP.
 - `f8t`: Voice during the session
 - `f8d`: Talk to the person at the remote PC right in the session, no separate call needed. Microphones stay off until each side turns its own on.
 - `f9t`: Files both ways

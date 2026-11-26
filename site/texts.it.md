@@ -39,14 +39,14 @@
 - `howT`: Inizia in 3 passi
 - `s1`: Scarica AnyPC sul computer da controllare (o su entrambi) e avvialo.
 - `s2`: Sul computer da controllare, scegli uno dei due metodi di accesso indipendenti. Per l’accesso monouso, attiva «Consenti il controllo» e annota il suo ID di 9 cifre e il codice da 6 cifre. Per l’accesso permanente, attiva «Consenti spazio» e crea un utente nominativo con password propria, TOTP obbligatorio e permessi «Controllo completo» o «Solo visualizzazione».
-- `s3`: In una finestra del browser o sull’altro computer, inserisci quell’ID e la password e fai clic su «Connetti». Se sul PC controllato è attiva la conferma, lì qualcuno dovrà fare clic su «Consenti».
+- `s3`: In una finestra del browser o sull’altro computer, inserisci quell’ID e il codice monouso e fai clic su «Connetti»: il profilo monouso attuale non richiede conferma sull’host né TOTP. Per l’accesso permanente, inserisci invece nome utente, password e TOTP. Solo un host meno recente può ancora chiedere a qualcuno di fare clic lì su «Consenti».
 - `secT`: Sicurezza
-- `sec1`: Ogni connessione richiede la password impostata sul PC controllato; la password non viene mai trasmessa in rete.
-- `secAsk`: Puoi attivare la conferma: a ogni connessione il PC controllato chiede «Consenti / Rifiuta» e, senza risposta entro 30 secondi, la connessione viene rifiutata.
+- `sec1`: L’accesso monouso usa l’ID e un codice da 6 cifre che cambia; gli utenti permanenti hanno password proprie e TOTP obbligatorio. Le password non vengono mai trasmesse in rete.
+- `secAsk`: I profili sono indipendenti: l’accesso monouso inizia con ID e codice, senza conferma né TOTP; l’accesso permanente richiede «Consenti spazio», la password dell’utente e il TOTP obbligatorio. Gli host meno recenti possono ancora mostrare la richiesta «Consenti / Rifiuta».
 - `sec2`: Durante una sessione, il PC controllato mostra sempre un avviso con un pulsante per disconnettere.
 - `sec3`: Dopo 5 password errate, l’accesso viene bloccato temporaneamente.
 - `sec4`: Usa AnyPC solo sui tuoi computer o con il consenso del proprietario.
-- `sec5`: Non comunicare mai ID e password a chi ti chiama inaspettatamente: è una truffa comune.
+- `sec5`: Non comunicare mai ID e codice monouso a chi ti chiama inaspettatamente: questo concede accesso immediato senza conferma. Non condividere nemmeno password o TOTP di un utente permanente: queste richieste inattese sono una truffa comune.
 - `limT`: Limiti della beta
 - `lim1`: Ctrl+Alt+Canc, le finestre UAC e la schermata di blocco non sono ancora disponibili.
 - `lim2`: Appunti: solo testo; i file si inviano con i pulsanti della barra.
@@ -58,7 +58,7 @@
 - `f5t`: Con il tuo server
 - `f5d`: Installa uno o più nodi relay tuoi su un VPS con un solo comando e indirizza l’app verso di essi: automaticamente lungo il percorso più veloce (in base al ping di entrambi i lati) o manualmente. I registri delle connessioni restano solo a te.
 - `f7t`: Protezione da accessi altrui
-- `f7d`: Per connettersi senza conferma serve anche un codice monouso da un’app di autenticazione (TOTP): la sola password, anche se rubata, non basta.
+- `f7d`: Gli utenti permanenti accedono con la propria password e un codice obbligatorio dell’app di autenticazione (TOTP), con permessi «Controllo completo» o «Solo visualizzazione». L’accesso monouso è indipendente: il suo codice da 6 cifre cambia dopo ogni sessione e non richiede TOTP.
 - `f8t`: Voce durante la sessione
 - `f8d`: Parla con la persona al PC remoto direttamente nella sessione, senza una chiamata a parte. I microfoni restano spenti finché ciascuno non accende il proprio.
 - `f9t`: File in entrambe le direzioni

@@ -39,14 +39,14 @@
 - `howT`: Démarrer en 3 étapes
 - `s1`: Téléchargez AnyPC sur l’ordinateur à contrôler (ou sur les deux) et lancez-le.
 - `s2`: Sur l’ordinateur à contrôler, choisissez l’un des deux modes d’accès indépendants. Pour un accès unique, activez « Autoriser le contrôle » et notez son ID à 9 chiffres et le code à 6 chiffres. Pour un accès permanent, activez « Autoriser l’espace » et créez un utilisateur nommé avec son mot de passe, un TOTP obligatoire et les droits « Contrôle total » ou « Affichage seul ».
-- `s3`: Dans une fenêtre de navigateur ou sur l’autre ordinateur, saisissez cet ID et le mot de passe, puis cliquez sur « Se connecter ». Si la confirmation est activée sur le PC contrôlé, quelqu’un doit y cliquer sur « Autoriser ».
+- `s3`: Dans une fenêtre de navigateur ou sur l’autre ordinateur, saisissez cet ID et le code à usage unique, puis cliquez sur « Se connecter » : le profil actuel à usage unique n’exige ni confirmation sur l’hôte ni TOTP. Pour un accès permanent, saisissez plutôt le nom d’utilisateur, son mot de passe et son TOTP. Seul un hôte plus ancien peut encore demander à quelqu’un d’y cliquer sur « Autoriser ».
 - `secT`: Sécurité
-- `sec1`: Chaque connexion exige le mot de passe défini sur le PC contrôlé ; le mot de passe lui-même ne transite jamais sur le réseau.
-- `secAsk`: Vous pouvez activer la confirmation : le PC contrôlé demande alors « Autoriser / Refuser » à chaque connexion ; sans réponse sous 30 secondes, la connexion est refusée.
+- `sec1`: L’accès unique utilise l’ID et un code à 6 chiffres qui change ; les utilisateurs permanents ont leurs propres mots de passe et un TOTP obligatoire. Les mots de passe eux-mêmes ne transitent jamais sur le réseau.
+- `secAsk`: Les profils sont indépendants : l’accès unique démarre avec l’ID et le code, sans confirmation ni TOTP ; l’accès permanent exige « Autoriser l’espace », le mot de passe de l’utilisateur et un TOTP obligatoire. Les hôtes plus anciens peuvent encore afficher une demande « Autoriser / Refuser ».
 - `sec2`: Pendant une session, le PC contrôlé affiche toujours un avis avec un bouton de déconnexion.
 - `sec3`: Après 5 mots de passe erronés, l’accès est temporairement bloqué.
 - `sec4`: N’utilisez AnyPC que sur vos propres ordinateurs ou avec l’accord de leur propriétaire.
-- `sec5`: Ne communiquez jamais votre ID et votre mot de passe à quelqu’un qui vous appelle à l’improviste : c’est une arnaque courante.
+- `sec5`: Ne communiquez jamais votre ID et votre code à usage unique à quelqu’un qui vous appelle à l’improviste : cela donne un accès immédiat sans confirmation. Ne partagez pas non plus le mot de passe ou le TOTP d’un utilisateur permanent — ces demandes inattendues sont une arnaque courante.
 - `limT`: Limites de la bêta
 - `lim1`: Ctrl+Alt+Suppr, les fenêtres UAC et l’écran de verrouillage ne sont pas encore pris en charge.
 - `lim2`: Presse-papiers : texte uniquement ; les fichiers s’envoient avec les boutons de la barre d’outils.
@@ -58,7 +58,7 @@
 - `f5t`: Avec votre propre serveur
 - `f5d`: Installez un ou plusieurs nœuds relais à vous sur un VPS en une seule commande et dirigez l’application vers eux : automatiquement par le chemin le plus rapide (selon le ping des deux côtés) ou manuellement. Les journaux de connexion ne restent qu’à vous.
 - `f7t`: Protection contre les connexions d’autrui
-- `f7d`: Se connecter sans confirmation exige aussi un code à usage unique d’une application d’authentification (TOTP) : un mot de passe seul, même volé, ne suffit pas.
+- `f7d`: Les utilisateurs permanents se connectent avec leur propre mot de passe et un code d’authentification (TOTP) obligatoire, avec les droits « Contrôle total » ou « Affichage seul ». L’accès unique est indépendant : son code à 6 chiffres change après chaque session et n’exige pas de TOTP.
 - `f8t`: Voix pendant la session
 - `f8d`: Parlez avec la personne devant le PC distant directement dans la session, sans appel séparé. Les micros restent coupés tant que chacun n’allume pas le sien.
 - `f9t`: Fichiers dans les deux sens
