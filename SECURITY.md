@@ -425,11 +425,13 @@ before. Disabling either profile reveals nothing about the other and does not ch
 
 Системная авторизация настроек (2026-11-26): изменение доступа, пользователей, TOTP, одноразового кода и своего узла
 требует подтверждения операционной системой. Windows вызывает CredUIPromptForWindowsCredentialsW и сразу затирает
-возвращённый буфер (RtlSecureZeroMemory + CredFree); Linux — polkit CheckAuthorization с AllowUserInteraction;
+возвращённый буфер (RtlSecureZeroMemory + CredFree); Linux — polkit CheckAuthorization с AllowUserInteraction,
+а при его отсутствии — sudo -A -v с SUDO_ASKPASS через zenity;
 macOS — LocalAuthentication evaluatePolicy(deviceOwnerAuthentication). Пароль AnyPC для настроек и отдельная ключевая
 фраза для них не создаются и не хранятся. TOTP требуется только для входа каждого постоянного пользователя My space.
 Без успешной авторизации API не меняет настройки. Проверяемые операции обёрнуты authDo/authResult: отказ возвращается
-окну, действие не выполняется.
+окну, действие не выполняется. View Only и выключение Allow control/Allow space не требуют пароля и останавливают
+соответствующий доступ сразу.
 
 Allow control — и сетевой выключатель AnyPC: пока он выключен, runner не запускает сигнализацию и фоновую сверку
 пространства. Выключение останавливает их и отменяет дальнейшие попытки подключения; включение запускает заново.
@@ -437,10 +439,12 @@ Allow control — и сетевой выключатель AnyPC: пока он 
 
 System authorization for settings (2026-11-26): changing access, users, TOTP, the one-time code or the own server
 requires operating-system authorization. Windows uses CredUIPromptForWindowsCredentialsW and immediately wipes the
-returned buffer (RtlSecureZeroMemory + CredFree); Linux uses polkit CheckAuthorization with AllowUserInteraction;
+returned buffer (RtlSecureZeroMemory + CredFree); Linux uses polkit CheckAuthorization with AllowUserInteraction,
+falling back to sudo -A -v with SUDO_ASKPASS via zenity when polkit is unavailable;
 macOS uses LocalAuthentication evaluatePolicy(deviceOwnerAuthentication). No AnyPC settings password or settings key
 phrase is created or stored. TOTP is required only for each permanent My space user signing in, not for settings changes.
-API wrappers authDo/authResult return the authorization failure to the window without applying the action.
+API wrappers authDo/authResult return the authorization failure to the window without applying the action. View Only and
+turning Allow control/Allow space off do not require a password and stop the corresponding access immediately.
 
 Allow control is also AnyPC's network switch: while off, the runner does not start signaling or background space sync.
 Turning it off stops both and prevents further connection attempts; turning it on starts them again. The status reports

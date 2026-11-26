@@ -159,19 +159,27 @@ func main() {
 	w.Bind("setPassword", func(p string) error { return authDo(func() error { return dropAfter(a, cfg.setPassword(p)) }) })
 	w.Bind("setConfirm", func(on bool) error { return authDo(func() error { return dropAfter(a, cfg.setConfirm(on)) }) })
 	w.Bind("otpNew", cfg.otpNew)
-	w.Bind("setViewOnly", func(on bool) error { return authDo(func() error { return setViewOnly(cfg, a, on) }) })
+	w.Bind("setViewOnly", func(on bool) error { return setViewOnly(cfg, a, on) })
 	w.Bind("otpEnable", func(s, code, user string) error {
 		return authDo(func() error { return dropAfter(a, cfg.otpEnable(s, code, user)) })
 	})
 	w.Bind("otpOff", func(user string) error { return authDo(func() error { return cfg.otpOff(user) }) })
 	w.Bind("newCode", func() (string, error) { return authResult(func() (string, error) { return newCode(cfg, a) }) })
 	w.Bind("setGive", func(on bool) (string, error) {
-		return authResult(func() (string, error) { return setGive(cfg, a, on) })
+		if on {
+			return authResult(func() (string, error) { return setGive(cfg, a, true) })
+		}
+		return setGive(cfg, a, false)
 	})
 	w.Bind("userSave", func(name, pw, rights, secret, code string) error {
 		return authDo(func() error { return dropAfter(a, cfg.saveUser(name, pw, rights, secret, code)) })
 	})
-	w.Bind("setSpaceAllow", func(on bool) error { return authDo(func() error { return setSpaceAllow(cfg, a, on) }) })
+	w.Bind("setSpaceAllow", func(on bool) error {
+		if on {
+			return authDo(func() error { return setSpaceAllow(cfg, a, true) })
+		}
+		return setSpaceAllow(cfg, a, false)
+	})
 	w.Bind("userDel", func(name string) error { return authDo(func() error { return dropAfter(a, cfg.delUser(name)) }) })
 	w.Bind("keyDel", func(name, fp string) error { return authDo(func() error { return dropAfter(a, cfg.keyDel(name, fp)) }) })
 	run := &runner{a: a, ctx: ctx}

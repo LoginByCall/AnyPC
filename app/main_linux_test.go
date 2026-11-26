@@ -147,6 +147,35 @@ func TestLocalAPI(t *testing.T) {
 	}
 }
 
+// TestLocalAPIOffNoAuth — View Only и выключение профилей не требуют пароль; включение — требует.
+func TestLocalAPIOffNoAuth(t *testing.T) {
+	cfg, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
+	page, err := shimmed("wss://example/ws", "tok123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := handler("127.0.0.1:5000", "tok123", page, cfg, &agent.Agent{}, nil, func() map[string]any { return map[string]any{"id": cfg.ID} }, newFiles(t.TempDir()), nil)
+	authCalls := 0
+	oldAuth := systemAuth
+	systemAuth = func() error { authCalls++; return errSystemAuth }
+	defer func() { systemAuth = oldAuth }()
+	for _, c := range []struct{ name, args string }{
+		{"setGive", `[false]`},
+		{"setSpaceAllow", `[false]`},
+		{"setViewOnly", `[true]`},
+		{"setViewOnly", `[false]`},
+	} {
+		r := httptest.NewRequest("POST", "/api/"+c.name, strings.NewReader(c.args))
+		r.Host = "127.0.0.1:5000"
+		r.Header.Set("X-Token", "tok123")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != 200 || authCalls != 0 {
+			t.Errorf("%s: код %d, авторизаций %d", c.name, w.Code, authCalls)
+		}
+	}
+}
+
 // TestOnceCode: браузер открывается одноразовым кодом (токена нет в аргументах, /proc/*/cmdline): первый заход —
 // переадресация на страницу с токеном, повторный и чужой код — отказ.
 func TestOnceCode(t *testing.T) {

@@ -636,7 +636,7 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 		if len(args) > 0 {
 			json.Unmarshal(args[0], &on)
 		}
-		err = authDo(func() error { return setViewOnly(cfg, a, on) })
+		err = setViewOnly(cfg, a, on)
 	case "otpNew":
 		res, err = cfg.otpNew(str(0))
 	case "otpEnable":
@@ -648,7 +648,11 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 		if len(args) > 0 {
 			json.Unmarshal(args[0], &on)
 		}
-		res, err = authResult(func() (string, error) { return setGive(cfg, a, on) })
+		if on {
+			res, err = authResult(func() (string, error) { return setGive(cfg, a, true) })
+		} else {
+			res, err = setGive(cfg, a, false)
+		}
 	case "otpOff":
 		err = authDo(func() error { return cfg.otpOff(str(0)) })
 	case "userSave":
@@ -658,7 +662,11 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 		if len(args) > 0 {
 			json.Unmarshal(args[0], &on)
 		}
-		err = authDo(func() error { return setSpaceAllow(cfg, a, on) })
+		if on {
+			err = authDo(func() error { return setSpaceAllow(cfg, a, true) })
+		} else {
+			err = setSpaceAllow(cfg, a, false)
+		}
 	case "userDel":
 		err = authDo(func() error { return dropAfter(a, cfg.delUser(str(0))) })
 	case "keyDel": // REQ-S-24: отозвать ключ входа без пароля — его сессия рвётся
