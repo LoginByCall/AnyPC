@@ -204,6 +204,20 @@ func TestSpaceJoinAdmit(t *testing.T) {
 	}
 }
 
+func TestSpaceJoinPhraseOnly(t *testing.T) {
+	r := admitHost(t)
+	otp := r.a.OTP
+	calls := 0
+	r.a.OTP = func(user, code string) (set, ok bool) { calls++; return otp(user, code) }
+	out, err := SpaceJoin(context.Background(), r.joinDial(newKey(), nil, "", nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != "M-SECRET-MARK-1+N" || calls != 0 {
+		t.Fatalf("phrase-only: out=%q, проверок TOTP=%d", out, calls)
+	}
+}
+
 // TestSpaceJoinAuthWait — приёмка Б1: «Разрешить» нажали раньше authWait, а человек на новом ПК ещё смотрит «Это все
 // ваши ПК?» дольше authWait — таймер входа сессию вступления не рвёт.
 func TestSpaceJoinAuthWait(t *testing.T) {

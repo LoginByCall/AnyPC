@@ -300,23 +300,26 @@ func TestSpaceAPIFlow(t *testing.T) {
 		}
 	}
 
-	code, res, e := callP("spaceCreate", spacePass)
+	dir := t.TempDir()
+	oldDownloads := spaceDownloadsDir
+	spaceDownloadsDir = func() string { return dir }
+	defer func() { spaceDownloadsDir = oldDownloads }()
+	code, res, e := callP("spaceCreate")
 	if code != 200 {
 		t.Fatalf("spaceCreate: %d %s", code, e)
 	}
-	ph := res.(map[string]any)["phrase"].(string)
-	createQR := res.(map[string]any)["qr"].(map[string]any)
-	if !strings.Contains(createQR["uri"].(string), sec) || !strings.HasPrefix(createQR["svg"].(string), "<svg") {
-		t.Fatal("при создании не возвращён QR кода пространства")
+	path := res.(map[string]any)["path"].(string)
+	rawPhrase, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
 	}
+	const phraseMarker = "фраза пространства: "
+	i := strings.Index(string(rawPhrase), phraseMarker)
+	if i < 0 {
+		t.Fatal("в файле нет фразы")
+	}
+	ph := strings.TrimSpace(strings.Split(string(rawPhrase)[i+len(phraseMarker):], "\n")[0])
 	phrases = append(phrases, ph)
-	noSecrets(p, "черновик")
-	if _, _, e := callP("spaceCreateOK", spacePhraseNew()); e != "space:phrase" { // опечатка во фразе черновика
-		t.Errorf("чужая фраза: %q", e)
-	}
-	if code, _, e := callP("spaceCreateOK", ph); code != 200 {
-		t.Fatalf("spaceCreateOK: %s", e)
-	}
 	noSecrets(p, "создано")
 
 	withSpaceNet(t, spaceNet(p, nil))

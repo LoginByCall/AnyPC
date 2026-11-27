@@ -108,25 +108,13 @@ func spaceCall(c *config, name string, args []json.RawMessage) (any, error) {
 
 func spaceDo(c *config, name string, str func(int) string, flag func(int) bool) (any, error) {
 	switch name {
-	case "spaceCreate": // создание и выход — синхронно, но как операция: вступление в полёте они бы сломали
-		var ph string
-		err := spaceOps.hold("create", func() (err error) { ph, err = c.spaceDraft(str(0)); return })
+	case "spaceCreate": // после системной авторизации: создать и сохранить фразу в файл
+		var path string
+		err := spaceOps.hold("create", func() (err error) { path, err = c.spaceCreateFile(); return })
 		if err != nil {
 			return nil, err
 		}
-		c.mu.Lock()
-		b := bytes.Clone(c.spNew)
-		c.mu.Unlock()
-		m, err := spaceParse(b)
-		if err != nil {
-			return nil, err
-		}
-		u := totp.URI(url.PathEscape("AnyPC пространство"), m.TOTP)
-		svg, err := totp.SVG(u)
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{"phrase": ph, "qr": map[string]string{"uri": u, "svg": svg}}, nil
+		return map[string]string{"path": path}, nil
 	case "spaceCreateOK":
 		err := spaceOps.hold("create", func() error { return c.spaceCreateOK(str(0)) })
 		if errors.Is(err, errSpaceForeign) { // у черновика ключ из этой же фразы: не совпал — опечатка, не чужое пространство

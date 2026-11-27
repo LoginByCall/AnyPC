@@ -391,7 +391,7 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 								sig[0] ^= 1
 							}
 							cpub = k
-							sendA(authMsg{T: "b", Join: true, CPub: k, CSig: sig, From: d.Self, Name: d.Name})
+							sendA(authMsg{T: "b", Join: true, Phrase: d.Code == "", CPub: k, CSig: sig, From: d.Self, Name: d.Name})
 						}
 						if named && am.User != "" && !first { // тест: хост принял имя записи
 							named = false
@@ -441,6 +441,10 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 						}
 						sendA(authMsg{T: "b", Msg: b, Conf: conf, Permanent: permanent, CPub: cpub, CSig: csig, From: d.Self, Name: d.Name}) // Ч12б: ID и имя — в окно «Пустить?» нового поручителя
 					case "otp":
+						if d.Code == "" {
+							finish(ErrSpaceNeedPass) // старый поручитель не понимает phrase-only
+							return
+						}
 						if otpN++; otpN > 1 || !hostOK(am) { // второй запрос — код не подошёл
 							finish(ErrSpaceAuth)
 							return
@@ -454,7 +458,7 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 						}
 						sendA(authMsg{T: "otp", Code: d.Code})
 					case "join": // Ч12б: соль ключа владельца — доказать фразу над этим соединением
-						if !join || otpN != 1 || salted || len(am.Salt) == 0 {
+						if !join || (otpN != 1 && (d.Code != "" || otpN != 0)) || salted || len(am.Salt) == 0 {
 							finish(errSpaceProtocol)
 							return
 						}

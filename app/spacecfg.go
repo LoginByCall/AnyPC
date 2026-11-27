@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"time"
@@ -65,6 +66,55 @@ func (c *config) spaceLocked() *space {
 	}
 	c.sp, c.spRaw = m, snap
 	return m
+}
+
+// spaceCreateFile — создать пространство после системной авторизации и сохранить фразу в новый файл 0600
+// в «Загрузках». Пароль и TOTP пользователь не задаёт; внутренние учётные данные протокола генерируются автоматически.
+func (c *config) spaceCreateFile() (string, error) {
+	phrase, err := c.spaceDraft("")
+	if err != nil {
+		return "", err
+	}
+	path, err := saveSpacePhrase(c.ID, phrase)
+	if err != nil {
+		c.spaceCreateNo()
+		return "", err
+	}
+	if err := c.spaceCreateOK(phrase); err != nil {
+		os.Remove(path)
+		return "", err
+	}
+	return path, nil
+}
+
+var spaceDownloadsDir = agent.DownloadsDir
+
+func saveSpacePhrase(id, phrase string) (string, error) {
+	dir := spaceDownloadsDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	for n := 0; ; n++ {
+		suffix := ""
+		if n > 0 {
+			suffix = fmt.Sprintf("-%d", n+1)
+		}
+		path := filepath.Join(dir, "AnyPC-space-"+id+suffix+".txt")
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if os.IsExist(err) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		_, werr := fmt.Fprintf(f, "AnyPC space / пространство AnyPC\nPC ID / ID ПК: %s\nSpace phrase / фраза пространства: %s\n\nKeep this file private. It is required to add PCs and change the space.\nХраните файл в секрете: он нужен для добавления ПК и изменения пространства.\n", id, phrase)
+		cerr := f.Close()
+		if werr != nil || cerr != nil {
+			os.Remove(path)
+			return "", errors.Join(werr, cerr)
+		}
+		return path, nil
+	}
 }
 
 // spaceCreate — создать пространство в один шаг (тесты, CLI): черновик и сразу сохранение той же фразой.
@@ -123,7 +173,7 @@ func (c *config) spaceDraft(password string) (string, error) {
 	}
 	salt, hash, sec, id, key := bytes.Clone(u.Salt), bytes.Clone(u.Hash), u.TOTP, c.ID, bytes.Clone(c.Key)
 	c.mu.Unlock()
-	if subtle.ConstantTimeCompare(pake.KDF(password, salt), hash) != 1 { // Argon2 — без c.mu
+	if password != "" && subtle.ConstantTimeCompare(pake.KDF(password, salt), hash) != 1 { // Argon2 — без c.mu
 		return "", errSpacePassword
 	}
 	m, phrase, err := spaceNew(salt, hash, sec, id, ed25519.PrivateKey(key).Public().(ed25519.PublicKey))

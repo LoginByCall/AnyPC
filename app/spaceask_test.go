@@ -8,9 +8,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
-	"net/url"
+	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -190,6 +191,10 @@ func TestSpaceDraft(t *testing.T) {
 }
 
 func TestSpaceDraftFresh(t *testing.T) {
+	dir := t.TempDir()
+	old := spaceDownloadsDir
+	spaceDownloadsDir = func() string { return dir }
+	defer func() { spaceDownloadsDir = old }()
 	c, err := loadConfig(filepath.Join(t.TempDir(), "AnyPC", "config.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -198,22 +203,31 @@ func TestSpaceDraftFresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out := res.(map[string]any)
-	ph := out["phrase"].(string)
-	qr := out["qr"].(map[string]string)
-	uri, err := url.Parse(qr["uri"])
+	path := res.(map[string]string)["path"]
+	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sec := uri.Query().Get("secret")
-	if len(c.Users[0].Hash) != spaceHashLen || sec == "" || sec != c.Users[0].TOTP || !c.spaceAllowed() {
-		t.Fatal("автоматические учётные данные владельца не созданы или не возвращены")
+	const marker = "фраза пространства: "
+	i := strings.Index(string(b), marker)
+	if i < 0 {
+		t.Fatal("в файле нет фразы")
 	}
-	code, _ := totp.Code(sec, time.Now())
-	if _, ok := totp.Check(sec, code, time.Now(), 0); !ok {
-		t.Fatal("возвращённый секрет не даёт рабочий код для вступления")
+	ph := strings.TrimSpace(strings.Split(string(b)[i+len(marker):], "\n")[0])
+	if spacePhraseOK(ph) != nil || spaceOf(c) == nil || !c.spaceAllowed() {
+		t.Fatal("пространство или фраза в файле не созданы")
 	}
-	if err := c.spaceCreateOK(ph); err != nil {
+	if st, err := os.Stat(path); err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("права файла фразы: %v %v", st, err)
+	}
+}
+
+func TestSpaceEnterPhraseOnly(t *testing.T) {
+	p := spaceCfg(t, spacePass, totp.NewSecret())
+	ph := spaceMake(t, p)
+	n := spaceCfg(t, "n-local-pass", totp.NewSecret())
+	withSpaceNet(t, spaceNet(p, nil))
+	if _, err := n.spaceEnter(context.Background(), p.id(), "", "", ph); err != nil {
 		t.Fatal(err)
 	}
 }

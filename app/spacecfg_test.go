@@ -71,11 +71,13 @@ func spaceNet(p *config, give func([]byte) []byte) func(context.Context, agent.S
 			return nil, agent.ErrSpaceOffline
 		}
 		salt, hash, _ := p.secret("")
-		if !bytes.Equal(pake.KDF(d.Password, salt), hash) {
-			return nil, agent.ErrSpaceAuth
-		}
-		if set, ok := p.otp("", d.Code); !set || !ok {
-			return nil, agent.ErrSpaceAuth
+		if d.Code != "" || d.OwnerKey == nil {
+			if !bytes.Equal(pake.KDF(d.Password, salt), hash) {
+				return nil, agent.ErrSpaceAuth
+			}
+			if set, ok := p.otp("", d.Code); !set || !ok {
+				return nil, agent.ErrSpaceAuth
+			}
 		}
 		ms := p.spaceGet(salt)
 		if ms == nil {

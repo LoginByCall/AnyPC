@@ -1383,7 +1383,7 @@ func (a *Agent) newSession(ctx context.Context, c *websocket.Conn, cid string, i
 		case webrtc.PeerConnectionStateConnected:
 			started.Do(func() {
 				if p, err := sender.Transport().ICETransport().GetSelectedCandidatePair(); err == nil && p != nil {
-					log.Printf("путь: %s → %s", p.Local.Typ, p.Remote.Typ) // relay = через TURN
+					log.Printf("путь: %s %s:%d → %s %s:%d", p.Local.Typ, p.Local.Address, p.Local.Port, p.Remote.Typ, p.Remote.Address, p.Remote.Port) // relay = через TURN
 					s.mu.Lock()
 					s.peer = p.Remote.Address
 					if p.Remote.Typ == webrtc.ICECandidateTypeRelay || p.Local.Typ == webrtc.ICECandidateTypeRelay {

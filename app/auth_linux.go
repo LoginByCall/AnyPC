@@ -3,11 +3,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -15,6 +17,9 @@ import (
 // systemAuthorize — стандартный запрос polkit: системный пароль пользователя графического сеанса.
 // Секрет через AnyPC не проходит: его видит только агент аутентификации polkit.
 func systemAuthorize() error {
+	if os.Getenv("DBUS_SESSION_BUS_ADDRESS") == "" {
+		return sudoAuthorize() // без адреса шины SessionBus может долго запускать dbus-launch
+	}
 	bus, err := dbus.SessionBus()
 	if err != nil {
 		log.Printf("polkit: %v — пробую sudo", err)
@@ -23,6 +28,12 @@ func systemAuthorize() error {
 	names := bus.Names()
 	if len(names) == 0 {
 		return errSystemAuth
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	var owner bool
+	if err := bus.Object("org.freedesktop.DBus", "/org/freedesktop/DBus").CallWithContext(ctx, "org.freedesktop.DBus.NameHasOwner", 0, "org.freedesktop.PolicyKit1").Store(&owner); err != nil || !owner {
+		return sudoAuthorize() // нет запущенного authority: не ждать активацию и таймаут D-Bus
 	}
 	subject := struct {
 		Kind string

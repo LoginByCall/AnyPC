@@ -192,10 +192,11 @@ func runCDP(t *testing.T, ctx context.Context, chrome, script, url string, flags
 	defer os.RemoveAll(prof)
 	ch := exec.CommandContext(ctx, chrome, append([]string{"--headless=new", "--disable-gpu", "--lang=en-US", "--no-proxy-server", "--disable-background-networking", "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE localhost , EXCLUDE 127.0.0.1",
 		"--remote-debugging-port=" + port, "--user-data-dir=" + prof}, append(flags, "about:blank")...)...)
+	setChromeProcAttr(ch)
 	if err := ch.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { ch.Process.Kill(); ch.Wait() }()
+	defer func() { killChrome(ch); ch.Wait() }()
 	// порт CDP — опросом: фиксированные 2 с под нагрузкой не хватало (node получал ECONNREFUSED, 1 прогон из 4)
 	for end := time.Now().Add(15 * time.Second); ; time.Sleep(100 * time.Millisecond) {
 		r, err := http.Get("http://127.0.0.1:" + port + "/json/version")

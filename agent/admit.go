@@ -233,23 +233,7 @@ func (a *Agent) joinB(ctx context.Context, s *session, m authMsg, keyOK bool, us
 	}
 	cpub := ed25519.PublicKey(append([]byte(nil), m.CPub...))
 	s.asking.Store(true) // общий таймер входа не закрывает: свои сроки на код, доказательство и окно
-	waitCode(func(code string) {
-		if !step.CompareAndSwap(0, 1) {
-			return
-		}
-		ok, locked := a.joinCode(user, code)
-		switch {
-		case locked:
-			reject("locked", "join")
-			return
-		case !ok:
-			log.Printf("сессия %s: вступление — неверный код TOTP", s.cid)
-			reject("fail", "code")
-			return
-		case a.LoginShut != nil && a.LoginShut(user): // решение 12 A: этот ПК сам ещё не сверен — только знающему код
-			reject("denied", "wait")
-			return
-		}
+	proof := func() {
 		osalt, opub, why := a.SpaceOwner(salt)
 		if why == "" && a.viewOnlyFor(s) {
 			why = "rights" // «Только показ экрана» — никаких правок через сессию (как spaceCtl)
@@ -308,6 +292,34 @@ func (a *Agent) joinB(ctx context.Context, s *session, m authMsg, keyOK bool, us
 				reject("denied", "slow")
 			}
 		})
+	}
+	if m.Phrase {
+		if a.LoginShut != nil && a.LoginShut(user) {
+			reject("denied", "wait")
+			return
+		}
+		step.Store(1)
+		proof()
+		return
+	}
+	waitCode(func(code string) {
+		if !step.CompareAndSwap(0, 1) {
+			return
+		}
+		ok, locked := a.joinCode(user, code)
+		switch {
+		case locked:
+			reject("locked", "join")
+			return
+		case !ok:
+			log.Printf("сессия %s: вступление — неверный код TOTP", s.cid)
+			reject("fail", "code")
+			return
+		case a.LoginShut != nil && a.LoginShut(user):
+			reject("denied", "wait")
+			return
+		}
+		proof()
 	})
 	hsig := pake.HostSign(a.Key, a.ID, fpc, fph)
 	if joinBadHostSig.Load() { // тест: подпись не над этим соединением — клиент кода не отдаёт
