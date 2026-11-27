@@ -27,32 +27,42 @@ import (
 type spaceRig struct {
 	a            *Agent
 	owner, guest *otpHost
+	named        *otpHost    // запись по имени: named-вступление (space_named_test.go)
 	ask          atomic.Bool // режим «Спрашивать»: вход через «Разрешить», без кода
 	mu           sync.Mutex
 	m            []byte
 	heads        [][]byte // остальные верхушки (в "sp" — поле h)
 	joined       []byte
 	joinPub      ed25519.PublicKey
+	joinID       string // ID, с которым SpaceJoin принял новый ПК ("" — не звали)
 }
 
-var guestSalt = []byte("fedcba9876543210")
+var (
+	guestSalt = []byte("fedcba9876543210")
+	namedSalt = []byte("alice-salt-16b!!")
+)
 
 // newSpaceRig — настроить хост a как P.
 func newSpaceRig(a *Agent) *spaceRig {
-	r := &spaceRig{a: a, owner: &otpHost{secret: totp.NewSecret()}, guest: &otpHost{secret: totp.NewSecret()}, m: []byte("M-SECRET-MARK-1")}
-	gsec, osec := pake.KDF("guestpass123", guestSalt), pake.KDF("secret123", salt)
+	r := &spaceRig{a: a, owner: &otpHost{secret: totp.NewSecret()}, guest: &otpHost{secret: totp.NewSecret()}, named: &otpHost{secret: totp.NewSecret()}, m: []byte("M-SECRET-MARK-1")}
+	gsec, osec, asec := pake.KDF("guestpass123", guestSalt), pake.KDF("secret123", salt), pake.KDF("alice-pass1", namedSalt)
 	a.Secret = func(u string) ([]byte, []byte, bool) {
 		switch u {
 		case "":
 			return salt, osec, false
 		case "guest":
 			return guestSalt, gsec, false
+		case "alice":
+			return namedSalt, asec, false
 		}
 		return nil, nil, false
 	}
 	a.OTP = func(u, code string) (bool, bool) {
 		if u == "guest" {
 			return r.guest.check(u, code)
+		}
+		if u == "alice" {
+			return r.named.check(u, code)
 		}
 		return r.owner.check(u, code)
 	}
@@ -64,7 +74,7 @@ func newSpaceRig(a *Agent) *spaceRig {
 	a.SpaceGet = func(s []byte) [][]byte {
 		r.mu.Lock()
 		defer r.mu.Unlock()
-		if !bytes.Equal(s, salt) {
+		if !bytes.Equal(s, salt) && !bytes.Equal(s, namedSalt) { // соль записи владельца и named-записи; гостевой — состава нет
 			return nil
 		}
 		return append([][]byte{bytes.Clone(r.m)}, r.heads...)
@@ -252,8 +262,9 @@ func spaceCtl(t *testing.T, dc *webrtc.DataChannel, msgs chan ctlMsg, raw ...str
 	return got
 }
 
-// TestSpaceCtlRights — ctl "sp": гость со своим кодом, вход «Разрешить» (разовый код) и вход без кода — "rights";
-// владелец с кодом без доказанного ключа — M отдаётся, вступление — "key"; с ключом — одно вступление на сессию.
+// TestSpaceCtlRights — ctl "sp": гость не получает состав по своей соли ("none"), заявка без доказанного ключа — "key";
+// вход «Разрешить» (разовый код) и вход без кода — "rights"; владелец с кодом без доказанного ключа — M отдаётся,
+// вступление — "key"; с ключом — одно вступление на сессию.
 func TestSpaceCtlRights(t *testing.T) {
 	var r *spaceRig
 	e2eNoVideo = true
@@ -270,7 +281,8 @@ func TestSpaceCtlRights(t *testing.T) {
 	}
 	join := `{"t":"sp","m":"` + base64.StdEncoding.EncodeToString([]byte("M+N")) + `"}`
 	for _, c := range []step{
-		{name: "гость", user: "guest", code: true, send: []string{`{"t":"sp"}`, join}, want: []spMsg{{T: "sp", Err: "rights"}, {T: "sp", Err: "rights"}}},
+		// named (гость): состав по соли записи не выдаётся — "none"; заявка без доказанного ключа — "key"
+		{name: "гость", user: "guest", code: true, send: []string{`{"t":"sp"}`, join}, want: []spMsg{{T: "sp", Err: "none"}, {T: "sp", Err: "key"}}},
 		{name: "разрешить", ask: true, send: []string{`{"t":"sp"}`}, want: []spMsg{{T: "sp", Err: "rights"}}},
 		{name: "без ключа", code: true, send: []string{`{"t":"sp"}`, join}, want: []spMsg{{T: "sp", M: []byte("M-SECRET-MARK-1")}, {T: "sp", Err: "key"}}},
 		{name: "с ключом", code: true, key: e2eSeed(), send: []string{join, join}, want: []spMsg{{T: "sp", OK: true}, {T: "sp", Err: "again"}}},
@@ -279,6 +291,9 @@ func TestSpaceCtlRights(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			e2eAgent = func(a *Agent) {
 				r = newSpaceRig(a)
+				if c.user == "guest" {
+					r.a.SpaceGetTagged = func([]byte, []byte) [][]byte { return nil }
+				}
 				r.ask.Store(c.ask)
 				if c.viewOnly {
 					a.ViewOnly = func() bool { return true }

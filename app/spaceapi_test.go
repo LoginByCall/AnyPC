@@ -85,7 +85,11 @@ func spaceAuthOK(t *testing.T) {
 	t.Helper()
 	old := systemAuth
 	systemAuth = func() error { return nil }
-	t.Cleanup(func() { systemAuth = old })
+	settingsReset()
+	if err := settingsAuthorize(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { systemAuth = old; settingsReset() })
 }
 
 func TestSpaceAPIGate(t *testing.T) {
@@ -130,9 +134,7 @@ func TestSpaceAPIGate(t *testing.T) {
 
 // TestSpaceErrCode — коды ошибок; неизвестная — other, текст ядра в окно не идёт.
 func TestSpaceErrCode(t *testing.T) {
-	oldAuth := systemAuth
-	systemAuth = func() error { return nil }
-	defer func() { systemAuth = oldAuth }()
+	spaceAuthOK(t)
 	for _, c := range []struct {
 		err  error
 		code string
@@ -200,7 +202,7 @@ func TestSpaceOpZombie(t *testing.T) {
 	opsReset(t)
 	sec := totp.NewSecret()
 	p := spaceCfg(t, spacePass, sec)
-	ph := spaceMake(t, p)
+	spaceMake(t, p)
 	n := spaceCfg(t, "n-local-pass", totp.NewSecret())
 	call := apiHandler(n)
 	signed := make(chan struct{})
@@ -210,7 +212,7 @@ func TestSpaceOpZombie(t *testing.T) {
 		go func() { d.Sign(ms[0], cfgPub(p), ms[1:]...); close(signed) }() // Sign — в своей горутине, как agent
 		return nil, fmt.Errorf("%w: разрыв", agent.ErrSpaceRefused)
 	})
-	if code, _, e := call("spaceEnter", p.id(), spacePass, spaceCode(p, sec), ph); code != 200 {
+	if code, _, e := call("spaceEnter", p.id(), "initiator", spacePass, "123456"); code != 200 {
 		t.Fatal(e)
 	}
 	spaceOps.wg.Wait()
@@ -322,31 +324,31 @@ func TestSpaceAPIFlow(t *testing.T) {
 	phrases = append(phrases, ph)
 	noSecrets(p, "создано")
 
-	withSpaceNet(t, spaceNet(p, nil))
+	initSec := totp.NewSecret()
+	initCode, _ := totp.Code(initSec, time.Now())
+	if err := p.saveUser("initiator", "initiator-pass", "full", initSec, initCode); err != nil {
+		t.Fatal(err)
+	}
+	p.mu.Lock()
+	initSalt := bytes.Clone(p.user("initiator").Salt)
+	p.mu.Unlock()
+	withSpaceNet(t, func(_ context.Context, d agent.SpaceDial) ([]byte, error) {
+		out, err := d.Sign(p.Space, cfgPub(p))
+		if err != nil {
+			return nil, err
+		}
+		if err := p.spaceJoinSaveTagged(initSalt, p.loginTag("initiator", nil), out, d.Key.Public().(ed25519.PublicKey), d.Self); err != nil {
+			return nil, err
+		}
+		return bytes.Clone(p.Space), nil
+	})
 	if _, _, e := callN("spaceConfirm", true); e != "space:noop" {
 		t.Errorf("spaceConfirm без операции: %q", e)
 	}
-	if code, _, e := callN("spaceEnter", p.id(), "", "", ph); code != 200 {
+	if code, _, e := callN("spaceEnter", p.id(), "initiator", "initiator-pass", "123456"); code != 200 {
 		t.Fatalf("spaceEnter: %s", e)
 	}
-	opWait(t, callN, "confirm")
-	callN("spaceConfirm", false)
-	if op := opWait(t, callN, "err"); op["err"] != "no" || spaceOf(n) != nil {
-		t.Fatalf("отказ: %v", op)
-	}
-	callN("spaceEnter", p.id(), "", "", ph)
-	op := opWait(t, callN, "confirm")
-	pv := op["preview"].(map[string]any)
-	if g, ok := pv["gone"].([]any); !ok || len(g) != 0 { // исключённых ещё нет
-		t.Errorf("превью: gone %v", pv["gone"])
-	}
-	if pcs := pv["members"].([]any); len(pcs) != 1 || pcs[0].(map[string]any)["id"] != p.id() || pv["password"] != true {
-		t.Errorf("превью: %v", pv)
-	}
-	if code, _, e := callN("spaceConfirm", true); code != 200 {
-		t.Fatal(e)
-	}
-	op = opWait(t, callN, "done")
+	op := opWait(t, callN, "done")
 	if r := op["result"].(map[string]any); r["fresh"] != true || r["code"] != true || op["kind"] != "enter" {
 		t.Errorf("итог вступления: %v", op)
 	}
@@ -390,26 +392,25 @@ func TestSpaceAPIFlow(t *testing.T) {
 		t.Errorf("после «снять» passUntil %v", u)
 	}
 
-	// исключить N с P: новый код — QR только в итоге spaceOp, не в hostInfo
+	// исключить N с P: хост сам меняет скрытые учётные данные пространства, QR и ввод не нужны
 	ctx, cancel := context.WithCancel(context.Background())
 	p.syn = &spaceSyncer{cfg: p, ctx: ctx}
 	t.Cleanup(func() { cancel(); p.syn.bg.Wait() })
 	oldSync := spaceSyncFn
 	spaceSyncFn = func(context.Context, agent.SyncDial) ([]byte, error) { return nil, agent.ErrSpaceOffline }
 	t.Cleanup(func() { spaceSyncFn = oldSync })
-	if _, _, e := callP("spaceExclude", ph, "не base64", "new-pass-123"); e != "space:nomember" {
+	if _, _, e := callP("spaceExclude", "не base64"); e != "space:nomember" {
 		t.Errorf("ключ не base64: %q", e)
 	}
-	callP("spaceExclude", ph, base64.StdEncoding.EncodeToString(cfgPub(n)), "new-pass-123")
+	callP("spaceExclude", base64.StdEncoding.EncodeToString(cfgPub(n)))
 	op = opWait(t, callP, "done")
 	r := op["result"].(map[string]any)
 	m := spaceOf(p)
 	if m == nil || m.TOTP == sec || len(m.Members) != 1 || len(m.Gone) != 1 {
 		t.Fatalf("после исключения: %v", m)
 	}
-	qr, _ := r["qr"].(map[string]any)
-	if qr == nil || !strings.Contains(qr["uri"].(string), m.TOTP) || !strings.HasPrefix(qr["svg"].(string), "<svg") {
-		t.Error("QR нового кода не тот")
+	if r["qr"] != nil {
+		t.Error("пользователю хоста показывается ненужный QR пространства")
 	}
 	if rs, ok := r["results"].([]any); !ok || len(rs) != 0 { // исключённому не рассылается, других нет
 		t.Errorf("итог рассылки: %v", r["results"])
@@ -418,23 +419,23 @@ func TestSpaceAPIFlow(t *testing.T) {
 	if in := spaceInfo(p); in["gone"] != 1 {
 		t.Errorf("gone: %v", in["gone"])
 	}
-	if code, _, e := callP("spaceOpClear"); code != 200 { // «Готово» после QR — итога нет
+	if code, _, e := callP("spaceOpClear"); code != 200 {
 		t.Fatal(e)
 	}
 	if _, r, _ := callP("spaceOp"); r != nil {
-		t.Error("после spaceOpClear итог остался") // итог с QR — не в журнал теста
+		t.Error("после spaceOpClear итог остался")
 	}
-	callP("spaceLogin", ph, "", false)
+	callP("spaceLogin", false, false)
 	if op := opWait(t, callP, "err"); op["err"] != "nochange" {
 		t.Errorf("правка без изменений: %v", op)
 	}
-	callP("spaceLogin", ph, "other-pass-12", false) // новый пароль, код прежний — QR нет
+	callP("spaceLogin", true, false)
 	if op := opWait(t, callP, "done"); op["result"].(map[string]any)["qr"] != nil {
 		t.Error("QR без смены кода")
 	}
-	callP("spaceLogin", ph, "", true)
-	if op := opWait(t, callP, "done"); op["result"].(map[string]any)["qr"] == nil {
-		t.Errorf("новый код без QR: %v", op)
+	callP("spaceLogin", false, true)
+	if op := opWait(t, callP, "done"); op["result"].(map[string]any)["qr"] != nil {
+		t.Errorf("новый код требует QR: %v", op)
 	}
 
 	// N выходит после системной авторизации (о своём исключении он не знает)
@@ -445,22 +446,14 @@ func TestSpaceAPIFlow(t *testing.T) {
 		t.Errorf("после выхода: %v", in)
 	}
 
-	// P выходит: неудачный выход итог (QR от spaceLogin) не трогает, удачный — стирает (операция одна на процесс:
-	// выход N итог уже стёр — новый QR)
-	callP("spaceLogin", ph, "", true)
+	// P выходит без пароля и кода: итог прежней операции стирается
+	callP("spaceLogin", false, true)
 	opWait(t, callP, "done")
-	newSec := spaceOf(p).TOTP
-	if _, _, e := callP("spaceLeave", "other-pass-12", "000000x"); e != "space:code" {
-		t.Errorf("выход P с неверным кодом: %q", e)
-	}
-	if _, r, _ := callP("spaceOp"); r == nil {
-		t.Error("неудачный выход стёр итог")
-	}
-	if code, _, e := callP("spaceLeave", "other-pass-12", spaceCode(p, newSec)); code != 200 {
+	if code, _, e := callP("spaceLeave"); code != 200 {
 		t.Fatal(e)
 	}
 	if _, r, _ := callP("spaceOp"); r != nil {
-		t.Error("после выхода итог с QR читается")
+		t.Error("после выхода итог читается")
 	}
 }
 

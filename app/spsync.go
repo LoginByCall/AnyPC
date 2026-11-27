@@ -526,9 +526,25 @@ func spaceSigned(b []byte) bool { _, err := spaceParse(b); return err == nil }
 // исключение рвёт такую сессию. Записи состава не читаются — метка от их
 // байт (одна на испорченное состояние: сессии рвутся один раз, не циклом опроса). Гости и режим «Спрашивать» (вход
 // одноразовым кодом) — nil. Ключ исключённого ПК рвёт сессию отдельно (keyGone, любой режим и запись).
+func (c *config) namedLoginTagLocked(user string) []byte {
+	u := c.user(user)
+	if u == nil || u.TOTP == "" {
+		return nil
+	}
+	b := []byte("anypc-named-login-tag\x00")
+	for _, x := range [][]byte{u.Salt, u.Hash, []byte(u.TOTP)} {
+		b = append(binary.BigEndian.AppendUint16(b, uint16(len(x))), x...)
+	}
+	base := sha256.Sum256(b)
+	return base[:]
+}
+
 func (c *config) loginTag(user string, cpub []byte) []byte {
 	if user != "" {
-		return nil
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.reload()
+		return c.namedLoginTagLocked(user)
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()

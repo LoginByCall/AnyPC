@@ -15,13 +15,11 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
-	"net/url"
 	"slices"
 	"strconv"
 
 	"anypc/agent"
 	"anypc/pake"
-	"anypc/totp"
 )
 
 var spaceNames = []string{"spaceCreate", "spaceCreateOK", "spaceCreateNo", "spaceEnter", "spaceOp", "spaceConfirm",
@@ -49,7 +47,7 @@ var spaceCodes = []struct {
 	{errSpaceSlow, "slow"}, {errSpaceDraft, "draft"}, {errSpaceLogin, "login"}, {errSpaceVia, "via"}, {errSpaceIn, "in"},
 	{errSpaceNotIn, "notin"}, {errSpaceChange, "change"}, {errSpaceSelf, "self"}, {errSpaceNoMember, "nomember"},
 	{errSpaceLast, "last"}, {errSpaceNoChange, "nochange"}, {errSpaceForeign, "foreign"}, {errSpaceHostID, "id"},
-	{errSpaceSDP, "sdp"},
+	{errSpacePhraseFile, "phrasefile"}, {errSpaceSDP, "sdp"},
 	{context.Canceled, "cancel"}, {context.DeadlineExceeded, "timeout"},
 }
 
@@ -73,14 +71,14 @@ func spaceErrCode(err error) string {
 	return "other"
 }
 
-// spaceAuthNames — вызовы, изменяющие доступ или состав пространства: требуется системная авторизация.
-// spaceOp сюда не входит: это опрос состояния; его результат возникает только в операции, уже запущенной после авторизации.
-var spaceAuthNames = []string{"spaceCreate", "spaceCreateOK", "spaceEnter", "spaceConfirm", "spaceExclude", "spaceLogin", "spaceLeave", "passOff"}
+// spaceAuthNames — вызовы, изменяющие доступ или состав пространства: требуется грант настроек.
+// spaceOp — read-only опрос; spaceEnter/spaceConfirm авторизуются постоянной именной записью Инициатора.
+var spaceAuthNames = []string{"spaceCreate", "spaceCreateOK", "spaceExclude", "spaceLogin", "spaceLeave", "passOff"}
 
 // spaceCall — вызов окна name (из spaceNames) с аргументами JSON; ошибка — только space:<код>.
 func spaceCall(c *config, name string, args []json.RawMessage) (any, error) {
 	if slices.Contains(spaceAuthNames, name) {
-		if err := systemAuth(); err != nil {
+		if err := authCheck(); err != nil {
 			return nil, err
 		}
 	}
@@ -126,9 +124,16 @@ func spaceDo(c *config, name string, str func(int) string, flag func(int) bool) 
 		c.spaceCreateNo()
 		return nil, nil
 	case "spaceEnter":
-		id, pw, code, ph := str(0), str(1), str(2), str(3)
-		return nil, spaceOps.start("enter", func(ctx context.Context, preview func(spacePreview), ok <-chan bool) (any, error) {
-			ch, err := c.spaceEnterAsk(ctx, id, pw, code, ph, preview, ok)
+		return nil, spaceOps.start("enter", func(ctx context.Context, _ func(spacePreview), _ <-chan bool) (any, error) {
+			var ch spaceChanges
+			var err error
+			if phrase := str(4); phrase != "" { // пространство прежней версии без локального файла фразы
+				yes := make(chan bool, 1)
+				yes <- true
+				ch, err = c.spaceEnterAsk(ctx, str(0), str(2), str(3), phrase, nil, yes)
+			} else {
+				ch, err = c.spaceEnterAccount(ctx, str(0), str(1), str(2), str(3))
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -163,18 +168,31 @@ func spaceDo(c *config, name string, str func(int) string, flag func(int) bool) 
 		}
 		return nil, nil
 	case "spaceExclude":
-		pub, err := base64.StdEncoding.DecodeString(str(1))
+		pub, err := base64.StdEncoding.DecodeString(str(0))
 		if err != nil || len(pub) != ed25519.PublicKeySize {
 			return nil, errSpaceNoMember
 		}
-		ph, pw := str(0), str(2)
 		return nil, spaceOps.start("exclude", func(ctx context.Context, _ func(spacePreview), _ <-chan bool) (any, error) {
-			return spaceEditJSON(c, func(s *spaceSyncer) ([]spaceResult, error) { return s.spaceExclude(ctx, ph, pub, pw) })
+			phrase, err := c.spacePhraseFor(str(1))
+			if err != nil {
+				return nil, err
+			}
+			return spaceEditJSON(c, func(s *spaceSyncer) ([]spaceResult, error) {
+				return s.spaceExclude(ctx, phrase, pub, spaceLoginPassword(spacePhraseNew()))
+			})
 		})
 	case "spaceLogin":
-		ph, pw, code := str(0), str(1), flag(2)
+		newPassword, newCode := flag(0), flag(1)
 		return nil, spaceOps.start("login", func(ctx context.Context, _ func(spacePreview), _ <-chan bool) (any, error) {
-			return spaceEditJSON(c, func(s *spaceSyncer) ([]spaceResult, error) { return s.spaceChangeLogin(ctx, ph, pw, code) })
+			phrase, err := c.spacePhraseFor(str(2))
+			if err != nil {
+				return nil, err
+			}
+			password := ""
+			if newPassword {
+				password = spaceLoginPassword(spacePhraseNew())
+			}
+			return spaceEditJSON(c, func(s *spaceSyncer) ([]spaceResult, error) { return s.spaceChangeLogin(ctx, phrase, password, newCode) })
 		})
 	case "spaceLeave":
 		err := spaceOps.hold("leave", func() error { return c.spaceLeave(str(0), str(1)) })
@@ -248,33 +266,13 @@ func spaceSyncerOf(c *config) *spaceSyncer {
 	return &spaceSyncer{cfg: c}
 }
 
-// spaceEditJSON — правка фразой: {results, qr}; qr ({uri, svg}) — только если секрет кода сменился.
+// spaceEditJSON — итог правки состава; учётные данные пространства синхронизируются между ПК автоматически.
 func spaceEditJSON(c *config, f func(s *spaceSyncer) ([]spaceResult, error)) (any, error) {
-	before := spaceTOTP(c)
 	rs, err := f(spaceSyncerOf(c))
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]any{"results": syncRows(rs)}
-	if sec := spaceTOTP(c); sec != "" && sec != before {
-		u := totp.URI(url.PathEscape("AnyPC пространство"), sec)
-		svg, err := totp.SVG(u)
-		if err != nil {
-			return nil, err
-		}
-		out["qr"] = map[string]string{"uri": u, "svg": svg}
-	}
-	return out, nil
-}
-
-func spaceTOTP(c *config) string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.reload()
-	if m := c.spaceLocked(); m != nil {
-		return m.TOTP
-	}
-	return ""
+	return map[string]any{"results": syncRows(rs)}, nil
 }
 
 func syncRows(rs []spaceResult) []map[string]string {

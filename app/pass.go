@@ -160,7 +160,7 @@ func (p *passMaster) workHere(ctx context.Context, password, code string) ([]pas
 		return nil, errSpaceHeads
 	}
 	if password == "" {
-		phrase, err := spacePhraseFromDownloads(c.ID)
+		phrase, err := c.spacePhrase()
 		if err != nil {
 			return nil, err
 		}

@@ -14,10 +14,15 @@ import (
 	"anypc/ui"
 )
 
-// cdpSpace — экран «Доступ к этому ПК», блок «Вы (владелец)» (этап «окна пространства», Ч3, ASK-1 A) с подменёнными привязками
-// app/spaceapi.go: без привязок блока нет; «Спрашивать» — подсказка login; создание (неверный пароль, фраза один раз,
-// отмена, чужая фраза, OK); пять плашек и их действия; «Отозвать» с итогом по ПК и новым QR; правка фразой с ошибкой
-// phrase_word; выход паролем и кодом (код — всегда); вступление в два шага (превью, отказ, подтверждение); «Назад».
+// cdpSpace — экран «Доступ к этому ПК», блок «Вы (владелец)» на подменённых привязках модели «Инициатор по ID»:
+// без привязок блока нет (веб-клиент); создание — одно действие (spaceCreate без аргументов), файл/фразу и QR хоста
+// UI не показывает (моки возвращают их как «отраву» — показ пошёл бы в asserts); вступление — шаги ID → логин →
+// пароль+TOTP, spaceEnter(id, user, password, code) ровно четырьмя аргументами (лишний виден как ∅); превью
+// «Это все ваши ПК?», spaceConfirm и стадия admit отсутствуют; ход — стадии link/auth/list/save; успешный done
+// с итогом; ошибка auth (клиентская и от хоста) возвращает к полям, стирая пароль и код, но сохраняя ID и логин;
+// отмена мастера и операции (spaceCancel); «Отозвать» — spaceExclude(pub), «Изменить»/«Заново» — spaceLogin(bool,bool),
+// «Покинуть» — spaceLeave() — формы без полей: фразы, пароля и кода хост не вводит. settingsEnter не мокается
+// (SETAUTH=false): «Доступ» открывается без системной авторизации.
 const cdpSpace = `
 const [, , port, url] = process.argv;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -33,239 +38,157 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const val = (i, v) => "document.getElementById('" + i + "').value = " + JSON.stringify(v) + ";";
   const click = async i => { await ev("document.getElementById('" + i + "').click(); 1"); await sleep(250); };
   const calls = () => ev("calls.splice(0).join(',')");
-  const shot = async (name, el) => { if (!process.env.SHOTS) return; // Ч12: снимки мастера (SHOTS=<каталог>)
-    if (el) await ev("document.getElementById('" + el + "').scrollIntoView({ block: 'center' }); 1"); await sleep(200);
-    const r = await call('Page.captureScreenshot', { format: 'png' }); require('fs').writeFileSync(process.env.SHOTS + '/space-ux-' + name + '.png', Buffer.from(r.result.data, 'base64')); };
+  const opkids = () => "[...document.getElementById('spop').children].map(e => e.textContent).join(';')";
+  const inputs = sel => "[...document.querySelectorAll('" + sel + "')].filter(i => !i.closest('.hidden')).length";
+  const step = () => ev("['spj1','spj2','spj3','speerr'].map(i => !document.getElementById(i).classList.contains('hidden')).join(',') + '|' + (document.querySelector('#spj1:not(.hidden) b, #spj2:not(.hidden) b, #spj3:not(.hidden) b') || {}).textContent + '|' + document.activeElement.id + '|' + (document.querySelector('#spj1:not(.hidden) [data-n], #spj2:not(.hidden) [data-n], #spj3:not(.hidden) [data-n]') || {}).getAttribute('data-n')");
   await call('Page.enable', {}); await call('Runtime.enable', {}); await call('Log.enable', {});
-  if (process.env.SHOTS) await call('Emulation.setDeviceMetricsOverride', { width: 1200, height: 760, deviceScaleFactor: 1, mobile: false });
-  await call('Page.navigate', { url }); await sleep(1200); // веб-клиент с сервера: привязок нет
+  await call('Page.navigate', { url }); await sleep(1200); // веб-клиент с сервера: привязок нет — блока пространства нет
   console.log('web=' + await ev("[" + vis('spcard') + ", " + vis('me') + ", " + vis('access') + "].join('|')"));
   await call('Page.addScriptToEvaluateOnNewDocument', { source: ` + "`" + `(() => { // в IIFE: имена не сталкиваются с const страницы
     localStorage.setItem('mine', JSON.stringify([{ id: '444555666', name: 'Office' }])); localStorage.setItem('tour_home', '1');
-    const PH = 'able baker cable delta eagle fable gable habit ideal jewel';
     const me = { id: '123456789', fp: 'SELF-FP', pub: 'c2VsZg==', self: true, passUntil: 0 };
     const office = { id: '444555666', fp: 'OFFICE-FP', pub: 'b2ZmaWNl', self: false, passUntil: 0 };
+    const PH = 'able baker cable delta eagle fable gable habit ideal jewel'; // фраза и файл — хост их вернёт, UI показать не должен
+    const QR = { uri: 'otpauth://totp/AnyPC?secret=ABCDEFGHIJKLMNOP&issuer=AnyPC', svg: '<svg xmlns="http://www.w3.org/2000/svg"/>' };
     const empty = () => ({ in: false, damaged: false, compromised: false, over: false, pend: 0, wait: '', clock: [], ask: false, lock: true, gone: 0, members: [], op: null });
     window.st = { id: '123456789', confirm: true, otp: true, hasPass: true, users: [{ name: 'anna', view: true, otp: true }], keys: [], space: empty() };
-    window.empty = empty; window.calls = []; window.op = null; window.confirm = () => true;
+    window.empty = empty; window.calls = []; window.op = null;
     const setOp = window.setOp = o => { window.op = o; st.space.op = o && { kind: o.kind, state: o.state }; };
     window.hostInfo = async () => JSON.parse(JSON.stringify(st));
-    window.opSlow = 0; window.failConfirm = 0; // каждый ответ spaceOp медленнее опроса; сбой транспорта spaceConfirm
-    window.opDelay = 0; // мс: следующий ответ spaceOp придёт позже (снимок — на момент вызова)
-    window.spaceOp = async () => { const o = window.op && JSON.parse(JSON.stringify(window.op)), d = window.opDelay || window.opSlow; window.opDelay = 0; if (d) await new Promise(r => setTimeout(r, d)); return o; };
-    window.spaceCreate = async () => { calls.push('create'); st.space.in = true; st.space.members = [me]; return { path: '/home/user/Downloads/AnyPC-space-123456789.txt' }; };
-    window.spaceCreateOK = async ph => { calls.push('createok:' + ph); if (ph !== PH) throw 'space:phrase'; st.space.in = true; st.space.members = [me]; };
-    window.spaceCreateNo = async () => { calls.push('createno'); };
-    window.enterRun = false; // Ч12: вступление идёт (шаг 2), а не сразу превью
+    window.spaceOp = async () => window.op && JSON.parse(JSON.stringify(window.op));
+    let gate = Promise.resolve(); // создание «идёт», пока тест не разрешит: ловим промежуточное состояние
+    window.createGate = () => { gate = new Promise(r => { window.createGo = r; }); };
+    window.spaceCreate = async function () { calls.push('create:' + arguments.length + ':' + [...arguments].join(',')); await gate; st.space.in = true; st.space.members = [me]; return { path: '/home/user/Downloads/AnyPC-space-123456789.txt', phrase: PH }; };
+    window.spaceEnter = async function () { // ровно (id, user, password, code); лишний аргумент виден как ∅
+      calls.push('enter:' + [...arguments].map(a => a === undefined ? '∅' : a).join(':'));
+      if (window.enterRun) return void setOp({ kind: 'enter', state: 'run', stage: window.enterStage || 'link', result: null, preview: { members: [{ id: '444555666', fp: 'OFFICE-FP' }], password: true, code: true, trusted: 2, keyLogin: 1, ask: true, already: false, gone: [] } });
+      if (window.enterErr) return void setOp({ kind: 'enter', state: 'err', err: window.enterErr, result: null });
+      return null;
+    };
     window.spaceCancel = async () => { calls.push('cancel'); setOp({ kind: 'enter', state: 'err', err: 'cancel', result: null }); };
-    window.spaceEnter = async (id, pw, code, ph) => {
-      calls.push('enter:' + [id, pw, code, ph].join(':'));
-      if (window.enterRun) return void setOp({ kind: 'enter', state: 'run', stage: 'link', result: null });
-      if (window.enterFail) throw 'space:' + window.enterFail; // сам вызов отказал (другая операция идёт)
-      if (window.enterErr) return void setOp({ kind: 'enter', state: 'err', err: window.enterErr, result: null }); // быстрая ошибка до сети
-      setOp({ kind: 'enter', state: 'confirm', result: null, preview: { members: [{ id: '444555666', fp: 'OFFICE-FP' }, { id: '123456789', fp: 'SELF-FP' }], password: true, code: true, trusted: 2, keyLogin: 1, ask: true, already: false, gone: ['GONE-FP1', 'GONE-FP2'] } });
-      return null;
-    };
-    window.spaceConfirm = async yes => {
-      calls.push('confirm:' + yes);
-      if (window.failConfirm) { window.failConfirm--; throw new TypeError('Failed to fetch'); }
-      if (!yes) return setOp({ kind: 'enter', state: 'err', err: 'no', result: null });
-      setOp({ kind: 'enter', state: 'done', result: { password: true, code: true, trusted: 2, keyLogin: 1, ask: true, already: false, fresh: false } });
-      st.space.in = true; st.space.wait = '444555666'; st.space.members = [me, office];
-    };
-    window.spaceExclude = async (ph, pub, pw) => {
-      calls.push('exclude:' + ph + ':' + pub + ':' + pw);
-      setOp({ kind: 'exclude', state: 'done', result: { results: [{ id: '444555666', state: 'ok' }, { id: '777888999', state: 'offline', err: 'offline' }],
-        qr: { uri: 'otpauth://totp/AnyPC?secret=ABCDEFGHIJKLMNOP&issuer=AnyPC', svg: '<svg xmlns="http://www.w3.org/2000/svg"/>' } } });
-      return null;
-    };
-    window.spaceLogin = async (ph, pw, code) => { calls.push('login:' + ph + ':' + pw + ':' + code); setOp({ kind: 'login', state: 'err', err: 'phrase_word:3', result: null }); return null; };
-    window.spaceLeave = async (pw = '', code = '') => { calls.push('leave:' + pw + ':' + code); if (code && code !== '123456') throw 'space:code'; if (st.space.wait) { st.hasPass = false; st.confirm = true; } st.space = empty(); };
-    window.spaceOpClear = async () => { calls.push('clear'); setOp(null); };
-    window.spaceSync = async () => { calls.push('sync'); setOp({ kind: 'sync', state: 'run', result: null }); return null; };
+    window.spaceExclude = async function (pub, legacy) { calls.push('exclude:' + arguments.length + ':' + pub + ':' + legacy); setOp({ kind: 'exclude', state: 'done', result: { results: [{ id: '444555666', state: 'ok' }, { id: '777888999', state: 'offline', err: 'offline' }], qr: QR } }); return null; };
+    window.spaceLogin = async function (pwNew, codeNew) { calls.push('login:' + arguments.length + ':' + [...arguments].map(a => typeof a + '=' + a).join(',')); if (window.loginOpErr) { setOp({ kind: 'login', state: 'err', err: window.loginOpErr, result: null }); return null; } if (window.loginErr) throw 'space:' + window.loginErr; setOp({ kind: 'login', state: 'done', result: { results: [{ id: '123456789', state: 'ok' }], qr: QR } }); return null; };
+    window.spaceLeave = async function () { calls.push('leave:' + arguments.length + ':' + [...arguments].join(',')); st.space = empty(); return null; };
+    window.spaceOpClear = async () => { calls.push('clear'); setOp(null); return null; };
+    window.spaceSync = async () => { calls.push('sync'); return null; };
+    window.spaceConfirm = async () => { calls.push('CONFIRM:' + [...arguments].join(',')); return null; }; // UI не должен вызывать
   })();` + "`" + ` });
   await call('Page.navigate', { url }); await sleep(1500);
-  await click('setgo'); await click('setacc');
-  console.log('nav=' + await ev("[" + vis('access') + ", " + vis('home') + ", document.getElementById('spaceallow').checked, " + vis('spcard') + ", " + vis('spout') + ", " + vis('spin') + "].join('|')"));
-  if (process.env.CREATE_ONLY) { await ev('st.otp = false; st.hasPass = false; 1'); await sleep(1200); }
-  await click('spnew'); // без ручного пароля и TOTP мастер тоже открывается
-  console.log('hint=' + await ev(txt('spmsg') + " + '|' + " + vis('spcreate')));
-  if (process.env.CREATE_ONLY) process.exit(0);
-  await ev("st.confirm = false; 1"); await sleep(1200);
-  console.log('old=' + await ev("[" + vis('users') + ", !document.getElementById('confirm'), !document.getElementById('newpw')].join('|')"));
-  console.log('created=' + await ev("[" + txt('spcreatemsg') + ", !document.getElementById('spc1'), " + vis('spout') + ", " + vis('spin') + ", !document.getElementById('pwrow'), " + txt('splist') + "].join('|')") + '|' + await calls());
-  // Ч12: «Что дальше» после создания — что ввести на другом ПК; код — из записи AnyPC с ID этого ПК
-  console.log('next=' + await ev([vis('spnext'), vis('sphow'), txt('spnext')].join(" + '|' + ")));
-  await shot('created', 'spnext');
-  await ev("[...document.querySelectorAll('#spnext button')].find(b => b.textContent === 'Got it').click(); 1"); await sleep(300);
-  console.log('gotit=' + await ev([vis('spnext'), vis('sphow')].join(" + '|' + ")));
-  await shot('list1', 'splist');
-  await click('sphow'); console.log('how=' + await ev([vis('spnext'), vis('sphow'), "document.getElementById('spnext').textContent.startsWith('Next: add')"].join(" + '|' + ")));
-  await ev("[...document.querySelectorAll('#spnext button')].find(b => b.textContent === 'Got it').click(); 1"); await sleep(300);
-  // Старый переключатель «Спрашивать» удалён; space-management продолжает работать независимо.
-  console.log('askin=' + await ev("!document.getElementById('confirm')"));
-  await ev("st.confirm = true; 1"); await sleep(1200);
-  console.log('askoff=' + await calls() + '|' + await ev("[!document.getElementById('confirm'), " + vis('otpset') + "].join('|')"));
-  // пять плашек
-  await ev("Object.assign(st.space, { damaged: true, compromised: true, over: false, pend: 2, wait: '444555666', clock: ['777888999'], members: [{ id: '123456789', fp: 'SELF-FP', pub: 'c2VsZg==', self: true, passUntil: 0 }, { id: '444555666', fp: 'OFFICE-FP', pub: 'b2ZmaWNl', self: false, passUntil: 0 }] }); 1"); await sleep(1200);
-  console.log('bars=' + await ev("[...document.querySelectorAll('#spbars .banner')].map(b => b.textContent).join(';')"));
+  await click('setgo'); await click('setacc'); // без мока settingsEnter «Доступ» открывается без пароля ОС (SETAUTH=false)
+  console.log('nav=' + await ev("[" + vis('access') + ", " + vis('home') + ", " + vis('spcard') + ", " + vis('spout') + ", " + vis('spin') + "].join('|')"));
+  console.log('gone=' + await ev("['speph','spfph','spfpw','spfcd'].every(i => !document.getElementById(i)) + '|' + " + inputs('#spcard input')));
+  // создание — одно действие; хост отвечает файлом и фразой — UI показывает только «Создаётся…» и «Что дальше»
+  await ev('createGate(); 1'); await click('spnew');
+  console.log('creating=' + await ev("[" + vis('spcreate') + ", " + vis('spin') + ", " + vis('spnext') + ", document.getElementById('spnew').disabled, document.getElementById('spcreatemsg').textContent, !/Downloads|phrase is saved/.test(" + txt('spcard') + ")].join('|')"));
+  await ev('createGo(); 1'); await sleep(500);
+  console.log('created=' + await calls() + '|' + await ev("[" + vis('spcreate') + ", " + vis('spin') + ", " + vis('spnext') + ", document.getElementById('spnew').disabled].join('|')"));
+  console.log('next=' + await ev(txt('spnext') + " + '|' + !/phrase/i.test(" + txt('spnext') + ")"));
+  const gotit = "[...document.querySelectorAll('#spnext button')].find(b => b.textContent === 'Got it').click(); 1";
+  await ev(gotit); await sleep(300);
+  console.log('gotit=' + await ev("[" + vis('spnext') + ", " + vis('sphow') + ", " + txt('sphow') + "].join('|')"));
+  await click('sphow'); // «Как добавить ПК» — тот же экран, без плашки создания
+  console.log('how=' + await ev("[" + vis('spnext') + ", !document.getElementById('spnext').textContent.includes('The space is created')].join('|')"));
+  await ev(gotit); await sleep(300);
   console.log('list=' + await ev("[...document.querySelectorAll('#splist .row')].map(r => r.textContent).join(';')"));
-  const bar = async (n, k) => { await ev("document.querySelectorAll('#spbars .banner')[" + n + "].querySelector('button').click(); 1"); await sleep(250); };
-  await bar(0); console.log('leaveform=' + await ev("[" + txt('spfh') + ", " + vis('spfph') + ", " + vis('spfpw') + ", " + vis('spfcd') + ", document.getElementById('spfpw').placeholder].join('|')"));
-  await bar(1); console.log('codeform=' + await ev("[" + txt('spfh') + ", " + vis('spfph') + ", " + vis('spfpw') + ", " + vis('spfcd') + "].join('|')"));
-  await bar(3); await sleep(300); console.log('sync=' + await calls() + '|' + await ev(txt('spop')));
-  await ev("op = null; st.space.op = null; Object.assign(st.space, { damaged: false, compromised: false, pend: 0, wait: '', clock: [] }); 1"); await sleep(1200);
-  console.log('nobars=' + await ev("document.querySelectorAll('#spbars .banner').length + '|' + " + txt('spop')));
-  await click('sppw'); await ev(val('spfph', 'able baker cable') + val('spfpw', 'NEW-password-1')); await click('spleave');
-  console.log('switch=' + await ev("JSON.stringify([document.getElementById('spfph').value, document.getElementById('spfpw').value])")); await click('spfx');
-  // «Отозвать» = исключить: фраза + новый пароль → итог по ПК и новый QR
-  await ev("[...document.querySelectorAll('#splist .row')].find(r => r.textContent.includes('Office')).querySelector('button').click(); 1"); await sleep(250);
-  console.log('delform=' + await ev("[" + txt('spfh') + ", " + vis('spform') + ", " + vis('spfph') + ", " + vis('spfpw') + ", " + vis('spfcd') + "].join('|')"));
-  await ev(val('spfph', 'able baker cable delta eagle fable gable habit ideal jewel') + val('spfpw', 'new-pass1')); await click('spfgo'); await sleep(300);
-  console.log('excluded=' + await calls() + '|' + await ev("[" + txt('spop') + ", !!document.querySelector('#spop img[src^=\"data:image/svg+xml\"]'), " + vis('spform') + ", document.getElementById('spfph').value].join('|')"));
-  await ev("[...document.querySelectorAll('#spop button')].find(b => b.textContent === 'Done').click(); 1"); await sleep(300);
-  console.log('cleared=' + await calls() + '|' + await ev(txt('spop') + " + '|' + !!document.querySelector('#spop img')"));
-  // смена пароля и кода фразой
-  await click('sppw'); await ev(val('spfph', 'x') + val('spfpw', 'short')); await click('spfgo');
-  console.log('pwshort=' + await ev(txt('spmsg')) + '|' + await calls());
-  await click('spcode'); await ev(val('spfph', 'able baker zzz')); await click('spfgo'); await sleep(300);
-  console.log('login=' + await calls() + '|' + await ev(txt('spop') + " + '|' + " + vis('spform')));
-  // выход — только системная авторизация
-  await ev("st.otp = false; st.space.wait = '444555666'; 1"); await sleep(1200);
-  await click('spleave');
-  console.log('leavewarn=' + await ev(txt('spfh')));
-  await click('spfgo'); await sleep(300);
-  console.log('left=' + await calls() + '|' + await ev("[" + vis('spform') + ", " + vis('spout') + ", " + vis('spin') + ", !document.getElementById('pwrow'), " + vis('spleft') + "].join('|')"));
-  console.log('setpw=' + await ev("['spleftb','newpw','setpw','confirm'].every(i => !document.getElementById(i))"));
-  // Ч12: мастер вступления — подписи полей, ход по стадиям, ошибка соединения (поля, кроме пароля и кода, на месте), отмена
+  // мастер вступления доступен только ПК вне пространства: после проверки создания возвращаем состояние «вне Space»
+  await ev("st.space.in = false; st.space.members = []; 1"); await sleep(1300);
+  // мастер вступления: шаг 1 — ID
   await click('spjoin');
-  console.log('labels=' + await ev("[...document.querySelectorAll('#spenter label > span')].map(e => e.textContent).join(';') + '|' + document.querySelector('#spenter [data-n]').textContent"));
-  // Ч12б: шаги ID → фраза → код; неверный ID — на шаге 1; «← Назад»
-  const jstep = () => ev("['spj1', 'spj2', 'spj3', 'spepwf', 'speerr'].map(i => !document.getElementById(i).classList.contains('hidden')).join(',') + '|' + [...document.querySelectorAll('#spenter > .wiz:not(.hidden) > b, #spenter > .wiz:not(.hidden) > span.mut')].map(e => e.textContent).join(';') + '|' + document.activeElement.id");
-  console.log('j1=' + await jstep()); await shot('step1', 'spenter');
-  await ev(val('speid', '123 456 789')); await click('spj1go'); console.log('j1self=' + await jstep() + '|' + await ev(txt('speerr')));
-  await ev(val('speid', '444 555 666')); await click('spj1go'); console.log('j2=' + await jstep());
-  await click('spj2go'); console.log('j2empty=' + await jstep());
-  await ev(val('speph', 'able baker cable delta eagle fable gable habit ideal jewel')); await shot('step2', 'spenter'); await click('spj2go'); console.log('j3=' + await jstep());
-  await ev("document.querySelector('#spj3 .spjback').click(); 1"); await sleep(250); console.log('j3back=' + await jstep()); await click('spj2go');
-  await ev(val('specd', '654321'));
-  await shot('form', 'spenter');
-  await ev("enterRun = true; 1"); await click('spego'); await sleep(1300);
-  const stp = () => ev("[...document.getElementById('spop').children].map(e => e.textContent).join(';') + '|' + [document.getElementById('spnew').disabled, document.getElementById('spjoin').disabled, " + vis('spenter') + "].join('|')");
-  console.log('st1=' + await calls() + '|' + await stp());
-  console.log('pwgone=' + await ev("document.getElementById('spepw').value + '|' + document.getElementById('specd').value")); // не держать после отправки
+  console.log('j1=' + await step());
+  await ev(val('speid', '123 456 789')); await click('spj1go'); // свой ID
+  console.log('j1self=' + await step() + '|' + await ev(txt('speerr')));
+  await ev(val('speid', '444555')); await click('spj1go'); // не 9 цифр
+  console.log('j1short=' + await step() + '|' + await ev("document.getElementById('speerr').textContent.includes('Wrong PC ID')"));
+  await ev(val('speid', '444 555 666')); await click('spj1go');
+  console.log('j2=' + await step());
+  await click('spj2go'); // пустой логин — остаёмся на шаге 2
+  console.log('j2empty=' + await step() + '|' + await ev(vis('speerr')));
+  await ev(val('speuser', 'anna')); await click('spj2go');
+  console.log('j3=' + await step() + '|' + await ev(txt('spj3b')));
+  await ev("document.querySelector('#spj3 .spjback').click(); 1"); await sleep(250);
+  console.log('j3back=' + await step());
+  await ev("document.querySelector('#spj2 .spjback').click(); 1"); await sleep(250);
+  console.log('j2back=' + await step());
+  await ev(val('speid', '444 555 666')); await click('spj1go'); await ev(val('speuser', 'anna')); await click('spj2go');
+  await ev("document.querySelector('#spj3 .spex').click(); 1"); await sleep(250); // отмена мастера
+  console.log('jx=' + await ev("[" + vis('spenter') + ", document.getElementById('speid').value, document.getElementById('speuser').value, document.getElementById('spepw').value, document.getElementById('specd').value].join('|')"));
+  await click('spjoin');
+  await ev(val('speid', '444555666')); await click('spj1go'); await ev(val('speuser', 'anna')); await click('spj2go');
+  await click('spego'); // клиентская проверка: пустой пароль — space:auth, spaceEnter не звался
+  console.log('j3auth=' + await step() + '|' + await ev(txt('speerr')) + '|' + await calls());
+  await ev(val('spepw', 'Str0ng-pass-1') + val('specd', '12')); await click('spego'); // короткий код — снова space:auth
+  console.log('j3code=' + await ev(vis('speerr') + " + '|' + document.getElementById('specd').value") + '|' + await calls());
+  // точные аргументы spaceEnter(id, user, password, code); ход — стадии link/auth/list
+  await ev('enterRun = true; 1'); await ev(val('spepw', 'Str0ng-pass-1') + val('specd', '654321')); await click('spego'); await sleep(400);
+  console.log('st1=' + await calls() + '|' + await ev(opkids() + " + '|' + [document.getElementById('spnew').disabled, document.getElementById('spjoin').disabled, " + vis('spenter') + "].join('|')"));
+  console.log('pwgone=' + await ev("document.getElementById('spepw').value + '|' + document.getElementById('specd').value"));
   await ev("setOp({ kind: 'enter', state: 'run', stage: 'auth', result: null }); 1"); await sleep(1300);
-  console.log('st2=' + await stp());
-  await shot('progress', 'spop');
-  await ev("setOp({ kind: 'enter', state: 'run', stage: 'admit', left: 95, result: null }); 1"); await sleep(1300); // Ч12б: ждём «Разрешить» на том ПК
-  console.log('stadmit=' + await stp());
-  await shot('admit', 'spop');
-  await ev("spJoinID = ''; setOp({ kind: 'enter', state: 'run', stage: 'link', result: null }); 1"); await sleep(1300); // окно перезагрузили
-  console.log('st0=' + await stp());
-  await ev("spJoinID = '444555666'; setOp({ kind: 'enter', state: 'run', stage: 'save', result: null }); 1"); await sleep(1300);
-  console.log('stsave=' + await stp()); // на сохранении «Отмены» нет
-  await ev("setOp({ kind: 'enter', state: 'err', err: 'nolink', result: null }); 1"); await sleep(1300);
-  console.log('nolink=' + await ev("[" + txt('speerr') + ", " + vis('spenter') + ", " + vis('speerr') + ", document.getElementById('speid').value, document.getElementById('spepw').value, document.getElementById('specd').value, document.getElementById('speph').value.length, document.getElementById('spjoin').disabled, " + txt('spop') + "].join('|')"));
-  await shot('nolink', 'speerr');
-  await ev("setOp({ kind: 'enter', state: 'err', err: 'noudp', result: null }); 1"); await sleep(1300);
-  console.log('noudp=' + await ev(txt('speerr')));
-  await ev(val('spepw', 'owner-pass') + val('specd', '654321')); await click('spego'); await sleep(1300); await calls();
+  console.log('st2=' + await ev(opkids()));
+  await ev("setOp({ kind: 'enter', state: 'run', stage: 'list', result: null }); 1"); await sleep(1300);
+  console.log('st3=' + await ev(opkids()));
+  await ev("setOp({ kind: 'enter', state: 'run', stage: 'admit', result: null }); 1"); await sleep(1300); // стадии admit нет: текст «Разрешить» не появляется
+  console.log('admit=' + await ev(opkids() + ".includes('Allow') + '|' + document.getElementById('spop').textContent.includes('your PCs?') + '|' + document.querySelectorAll('#spop button').length"));
+  await ev("setOp({ kind: 'enter', state: 'confirm', result: null, preview: { members: [{ id: '444555666', fp: 'OFFICE-FP' }, { id: '123456789', fp: 'SELF-FP' }], gone: [] } }); 1"); await sleep(1300); // состояния confirm нет: ничего не рисуется
+  console.log('noconfirm=' + await ev("document.getElementById('spop').textContent.length + '|' + document.querySelectorAll('#spop button').length"));
+  await ev("setOp({ kind: 'enter', state: 'run', stage: 'save', result: null }); 1"); await sleep(1300);
+  console.log('stsave=' + await ev(opkids() + " + '|' + document.querySelectorAll('#spop button').length"));
+  // успешный done: итог без превью и кнопок Confirm/Refuse, поля стёрты
+  await ev("st.space.in = true; st.space.wait = '444555666'; st.space.members = [{ id: '123456789', fp: 'SELF-FP', pub: 'c2VsZg==', self: true, passUntil: 0 }, { id: '444555666', fp: 'OFFICE-FP', pub: 'b2ZmaWNl', self: false, passUntil: 0 }]; setOp({ kind: 'enter', state: 'done', result: { code: true, ask: true, preview: { members: [{ id: '444555666', fp: 'OFFICE-FP' }], password: true, code: true, trusted: 2, keyLogin: 1, ask: false, already: false, gone: [] } } }); 1"); await sleep(1300);
+  console.log('joined=' + await ev(opkids() + " + '|' + document.querySelectorAll('#spop button').length"));
+  console.log('joined2=' + await ev("[" + vis('spenter') + ", " + vis('spin') + ", document.getElementById('speid').value, document.getElementById('speuser').value, document.getElementById('spepw').value, document.getElementById('specd').value].join('|')"));
+  await ev("[...document.querySelectorAll('#spop button')][0].click(); 1"); await sleep(300);
+  console.log('cleared=' + await calls() + '|' + await ev(txt('spop') + " + '|' + " + vis('spin')));
+  console.log('list2=' + await ev("[...document.querySelectorAll('#splist .row')].map(r => r.textContent).join(';')"));
+  // отмена идущей операции: снова шаг 2, логин сохранён, пароль и код стёрты
+  await ev("st.space.in = false; st.space.members = []; 1"); await sleep(1300);
+  await click('spjoin');
+  await ev(val('speid', '444555666') + val('speuser', 'anna')); await click('spj1go'); await click('spj2go');
+  await ev(val('spepw', 'Str0ng-pass-1') + val('specd', '654321')); await click('spego'); await sleep(300);
   await ev("[...document.querySelectorAll('#spop button')].find(b => b.textContent === 'Cancel').click(); 1"); await sleep(1300);
-  console.log('cancelled=' + await calls() + '|' + await ev(txt('speerr') + " + '|' + " + vis('spenter')));
-  // приёмка B1: та же быстрая ошибка второй раз подряд — рамка снова видна, пароль и код стёрты
-  await ev("enterRun = false; enterErr = 'phrase'; 1");
-  for (let i = 0; i < 2; i++) { await ev(val('spepw', 'owner-pass') + val('specd', '654321')); await click('spego'); await sleep(1300); }
-  console.log('err2=' + await calls() + '|' + await ev([vis('speerr'), "document.getElementById('spepw').value", "document.getElementById('specd').value", txt('speerr')].join(" + '|' + ")));
-  await ev("enterErr = ''; setOp(null); enterFail = 'busy'; 1"); await sleep(1300); await calls();
-  await ev(val('spepw', 'owner-pass') + val('specd', '654321')); await click('spego'); await sleep(300);
-  console.log('callfail=' + await calls() + '|' + await ev([vis('speerr'), "document.getElementById('spepw').value", "document.getElementById('specd').value", txt('speerr')].join(" + '|' + ")));
-  // Ч12б: отказы вступления без пароля и запасной путь с паролем (тот ПК ≤ 0.3.1)
-  for (const e of ['declined:120', 'noanswer:30', 'badcode', 'badphrase', 'joinlocked', 'offline']) {
-    await ev("enterFail = ''; enterErr = '" + e + "'; 1"); await ev(val('specd', '654321')); await click('spego'); await sleep(1300);
-    console.log(e.split(':')[0] + '=' + await jstep() + '|' + await ev(txt('speerr')));
-    if (e === 'offline') { await click('spj1go'); await click('spj2go'); }
-    if (e.startsWith('declined')) await shot('declined', 'speerr');
-  }
-  await ev("enterErr = 'needpw'; 1"); await ev(val('specd', '654321')); await click('spego'); await sleep(1300);
-  console.log('needpw=' + await jstep() + '|' + await ev(txt('speerr')));
-  await shot('needpw', 'speerr');
-  await ev("enterErr = ''; enterRun = true; 1"); await ev(val('spepw', 'owner-pass') + val('specd', '654321')); await click('spego'); await sleep(1300);
-  console.log('pwpath=' + await calls() + '|' + await stp());
-  await ev("setOp(null); enterRun = false; 1"); await sleep(1300);
-  // другой поручитель на шаге 1 — снова без пароля
-  await ev("enterErr = 'needpw'; 1"); await ev(val('specd', '654321')); await click('spego'); await sleep(1300); await calls();
-  await ev("document.querySelector('#spj3 .spjback').click(); 1"); await sleep(200); await ev("document.querySelector('#spj2 .spjback').click(); 1"); await sleep(200);
-  await ev(val('speid', '777 888 999')); await click('spj1go'); await click('spj2go');
-  console.log('pwreset=' + await jstep());
-  await ev("enterFail = ''; enterErr = ''; 1"); await ev("document.querySelector('#spj3 .spex').click(); 1"); await sleep(250);
-  // вступление в два шага: превью → отказ → снова → подтверждение
-  await click('spjoin');
-  await ev(val('speid', '444 555 666') + val('spepw', 'owner-pass') + val('specd', '654321') + val('speph', 'able baker cable delta eagle fable gable habit ideal jewel')); await click('spego'); await sleep(300);
-  console.log('preview=' + await calls() + '|' + await ev("[...document.getElementById('spop').children].map(e => e.textContent).join(';')"));
-  await ev("document.querySelector('#spj1 .spex').click(); 1"); await sleep(450);
-  console.log('enterx=' + await calls() + '|' + await ev(vis('spenter') + " + '|' + document.getElementById('speph').value"));
-  await click('spjoin');
-  await ev(val('speid', '444555666') + val('spepw', 'owner-pass') + val('specd', '654321') + val('speph', 'able baker cable delta eagle fable gable habit ideal jewel')); await click('spego'); await sleep(300);
-  console.log('answer=' + await ev("[...document.querySelectorAll('#spop button')].find(b => b.textContent === 'Refuse').click(), document.querySelectorAll('#spop button').length"));
-  await sleep(400);
-  console.log('refused=' + await calls() + '|' + await ev(txt('spop') + " + '|' + " + vis('spenter') + " + '|' + " + txt('speerr')));
-  await ev(val('spepw', 'owner-pass') + val('specd', '654321')); await click('spego'); await sleep(300);
-  await ev("[...document.querySelectorAll('#spop button')].find(b => b.textContent === 'Confirm').click(); 1"); await sleep(1300);
-  console.log('joined=' + await calls() + '|' + await ev("[" + txt('spop') + ", " + vis('spenter') + ", document.getElementById('speph').value, " + vis('spin') + ", [...document.querySelectorAll('#spbars .banner')].map(b => b.textContent).join(';')].join('|')"));
-  console.log('how2=' + await ev(vis('sphow'))); // «Как добавить ПК» — и при двух ПК (добавлять можно через любой член)
-  // M4: запоздавший ответ spaceOp с confirm не рисует кнопки, если операция уже кончилась
-  await ev("setOp({ kind: 'enter', state: 'confirm', result: null, preview: { members: [], gone: [] } }); 1"); await sleep(1300);
-  const nb = () => ev("document.querySelectorAll('#spop button').length");
-  // ответ, запрошенный до конца операции, приходит через 3 с — после того как hostInfo уже без op (≤ 1 с)
-  const shown = await nb(); await ev("opDelay = 3000; 1"); await sleep(1100); await ev("setOp(null); 1"); await sleep(1100);
-  let most = 0; for (let i = 0; i < 16; i++) { most = Math.max(most, await nb()); await sleep(200); }
-  console.log('stale=' + shown + '|' + most);
-  // spaceOp всегда медленнее опроса (1,5 с при опросе 1 с) — превью всё равно рисуется
-  await ev("opSlow = 1500; setOp({ kind: 'enter', state: 'confirm', result: null, preview: { members: [], gone: [] } }); 1"); await sleep(4500);
-  console.log('slow=' + await nb());
-  // spaceConfirm упал по транспорту, операция ещё ждёт — кнопки возвращаются
-  await ev("opSlow = 0; failConfirm = 1; [...document.querySelectorAll('#spop button')].find(b => b.textContent === 'Confirm').click(); 1"); await sleep(1500);
-  console.log('cfail=' + await nb() + '|' + await ev(txt('spmsg')));
-  await ev("setOp(null); 1"); await sleep(1300);
-  // M6: подсказка при «Спрашивать» в пространстве; плашка входящего сеанса на экране доступа
-  await ev("st.space.ask = true; 1"); await sleep(1300);
-  console.log('askbar=' + await ev("[...document.querySelectorAll('#spbars .banner')].map(b => b.textContent).filter(x => x.includes('Sign-in from the space')).length"));
-  await ev("st.session = '987654321'; 1"); await sleep(1300);
-  console.log('incoming=' + await ev("[" + vis('incoming') + ", document.getElementById('access').contains(document.getElementById('incoming'))].join('|')"));
-  // M5: ПК вышел из пространства (другое окно), пока открыта форма правки — форма закрыта, пароль стёрт
-  await click('sppw'); await ev(val('spfpw', 'typed-pass')); await ev("st.space = empty(); 1"); await sleep(1300);
-  console.log('outform=' + await ev(vis('spform') + " + '|' + document.getElementById('spfpw').value"));
-  // сессия показана и закрыта, пока открыт экран доступа: плашка входящей — снова на главной, черновик создания стёрт
-  await ev("st.confirm = false; st.otp = true; st.hasPass = true; 1"); await sleep(1300);
+  console.log('cancelled=' + await calls() + '|' + await step() + '|' + await ev(txt('speerr') + " + '|' + document.getElementById('spepw').value + '|' + document.getElementById('speuser').value"));
+  // ошибка auth от хоста: возврат к шагу 3, пароль и код стёрты, логин и ID на месте
+  await ev("setOp(null); enterRun = false; enterErr = 'auth'; 1"); await sleep(1300); await calls();
+  await click('spj2go'); await ev(val('spepw', 'Str0ng-pass-1') + val('specd', '654321')); await click('spego'); await sleep(1300);
+  console.log('errauth=' + await step() + '|' + await ev(txt('speerr') + " + '|' + [document.getElementById('speid').value, document.getElementById('speuser').value, document.getElementById('spepw').value, document.getElementById('specd').value].join('|')"));
+  // «Отозвать» — spaceExclude(pub) без полей; QR из ответа хоста не показывается
+  await ev("enterErr = ''; st.space.in = true; st.space.members = [{ id: '123456789', fp: 'SELF-FP', pub: 'c2VsZg==', self: true, passUntil: 0 }, { id: '444555666', fp: 'OFFICE-FP', pub: 'b2ZmaWNl', self: false, passUntil: 0 }]; setOp(null); 1"); await sleep(1300); await calls();
+  await ev("[...document.querySelectorAll('#splist .row')].find(r => r.textContent.includes('Office')).querySelector('button').click(); 1"); await sleep(250);
+  console.log('delform=' + await ev("[" + vis('spform') + ", document.getElementById('spfh').textContent.includes('Office · 444 555 666'), " + inputs('#spform input') + ", document.activeElement.id].join('|')"));
+  await click('spfgo'); await sleep(1300);
+  console.log('excluded=' + await calls() + '|' + await ev(opkids() + " + '|' + document.querySelectorAll('#spop img').length + '|' + !/otpauth|scan the QR/i.test(document.getElementById('spop').textContent) + '|' + " + vis('spform')));
+  await ev("[...document.querySelectorAll('#spop button')].find(b => b.textContent === 'Done').click(); 1"); await sleep(300);
+  console.log('exclear=' + await calls() + '|' + await ev(txt('spop')));
+  // «Изменить» и «Заново» — spaceLogin(bool, bool) ровно двумя булевыми
+  await click('sppw');
+  console.log('pwform=' + await ev("[" + vis('spform') + ", " + inputs('#spform input') + "].join('|')"));
+  await click('spfgo'); await sleep(1300);
+  console.log('loginpw=' + await calls() + '|' + await ev(opkids() + " + '|' + document.querySelectorAll('#spop img').length + '|' + " + vis('spform')));
+  await click('spcode'); await click('spfx'); // отмена формы — без вызова
+  console.log('codecancel=' + await calls() + '|' + await ev(vis('spform')));
+  await click('spcode'); await click('spfgo'); await sleep(1300);
+  console.log('logincode=' + await calls());
+  await ev("loginErr = 'password'; setOp(null); 1"); await sleep(1300);
+  await click('sppw'); await click('spfgo'); await sleep(300);
+  console.log('loginerr=' + await calls() + '|' + await ev(txt('spmsg') + " + '|' + " + vis('spform')));
+  await ev("loginErr = ''; loginOpErr = 'phrasefile'; 1"); await click('spfx'); await calls();
+  await click('sppw'); await click('spfgo'); await sleep(1300);
+  console.log('migration=' + await ev("[" + vis('spflrow') + ", document.activeElement.id, document.getElementById('spop').textContent.includes('predates automatic')].join('|')"));
   await calls();
-  await ev("show(true); show(false); 1"); await sleep(300);
-  console.log('showback=' + await ev("[" + vis('home') + ", " + vis('access') + ", document.getElementById('home').contains(document.getElementById('incoming')), " + txt('spcreatemsg') + ", " + vis('spcreate') + "].join('|')") + '|' + await calls());
+  await ev(val('spfl', 'able baker cable delta eagle fable gable habit ideal jewel') + "loginOpErr = ''; 1"); await click('spfgo'); await sleep(1300);
+  console.log('migrated=' + await calls() + '|' + await ev(vis('spflrow')));
+  // выход — spaceLeave() без аргументов и полей
+  await ev("st.space.wait = '444555666'; 1"); await sleep(1200);
+  await click('spleave');
+  console.log('leavewarn=' + await ev("document.getElementById('spfh').textContent.startsWith('Before the check with your other PC') + '|' + " + inputs('#spform input')));
+  await click('spfgo'); await sleep(1300);
+  console.log('left=' + await calls() + '|' + await ev("[" + vis('spform') + ", " + vis('spin') + ", " + vis('spout') + ", " + vis('spleft') + "].join('|')") + '|' + await ev("document.getElementById('spleft').textContent.includes('Leaving before the check erased')"));
   await click('accback');
-  console.log('back=' + await ev(vis('access') + " + '|' + " + vis('home') + " + '|' + document.getElementById('home').contains(document.getElementById('incoming'))"));
+  console.log('back=' + await ev("[" + vis('access') + ", " + vis('home') + "].join('|')"));
   process.exit(0);
 })();`
 
-// TestBrowserSpaceCreate — старое требование пароля и TOTP не мешает открыть мастер.
-func TestBrowserSpaceCreate(t *testing.T) {
-	chrome, err := exec.LookPath("google-chrome")
-	if err != nil {
-		t.Skip("нет google-chrome")
-	}
-	if _, err := exec.LookPath("node"); err != nil {
-		t.Skip("нет node")
-	}
-	t.Setenv("CREATE_ONLY", "1")
-	srv := httptest.NewServer(http.FileServer(http.FS(ui.FS)))
-	defer srv.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	out := string(runCDP(t, ctx, chrome, cdpSpace, srv.URL+"/"))
-	if !strings.Contains(out, "hint=|true\n") {
-		t.Fatalf("мастер не открылся:\n%s", out)
-	}
-}
-
-// TestBrowserSpace — экран «Доступ к этому ПК»: блок «Вы (владелец)» на подменённых привязках пространства.
+// TestBrowserSpace — новая модель «Инициатор по ID»: создание одним действием, вступление ID → логин → пароль+TOTP,
+// точные аргументы привязок, отсутствие превью/подтверждения/admit и QR, правки и выход без ввода секретов.
 func TestBrowserSpace(t *testing.T) {
 	chrome, err := exec.LookPath("google-chrome")
 	if err != nil {
@@ -276,86 +199,64 @@ func TestBrowserSpace(t *testing.T) {
 	}
 	srv := httptest.NewServer(http.FileServer(http.FS(ui.FS)))
 	defer srv.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second) // сценарий идёт ~70 с
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	out := string(runCDP(t, ctx, chrome, cdpSpace, srv.URL+"/"))
-	const ph = "able baker cable delta eagle fable gable habit ideal jewel"
+	const enterArgs = "enter:444555666:anna:Str0ng-pass-1:654321:" // (id, user, password, code, legacyPhrase="")
 	for _, want := range []string{
-		"web=false|false|false\n", // веб-клиент без привязок: ни карточки хоста, ни экрана доступа, ни блока пространства
-		"nav=true|false|false|true|true|false\n",
-		"hint=|true\n",
-		"old=true|true|true\n", // постоянные пользователи видны; legacy confirm/password controls удалены
-		"created=✓ Space created. The phrase is saved to: /home/user/Downloads/AnyPC-space-123456789.txt|true|false|true|true|This PCID 123 456 789key: SELF-FP|create\n",
-		"next=true|false|✓ The space is created. This PC is the first one in it.Next: add another PC of yoursOn the other PC open AnyPC → “My space” → “Set up” → “Join” and enter:This PC’s ID123 456 789📋Space phrasethe 10 words in the file saved when the space was createdThen — “Allow” on this PCWhen the other PC has checked the code and the phrase, a window “Let PC … into your space?” appears here: come and press “Allow” (the window waits 2 minutes).While the other PC joins, this one must be on and online.Got it\n",
-		"gotit=false|true\n", "how=true|false|true\n",
-		"askin=true\n",
-		"askoff=|true|false\n", // legacy confirm отсутствует; TOTP modal не открывается
-		"bars=The space records on this PC are damaged.Leave and join again;" +
-			"Passes and “I'm here” are off: a revoked PC saw the code secret.Set a new code;" +
-			"Too many parallel edits.Set a new code;" +
-			"Password sign-in and “I'm here” are closed until a check with your PC other than Office · 444 555 666.Check now;" +
-			"The clock differs from 777 888 999 — check the time.\n",
-		"list=This PCID 123 456 789key: SELF-FP;OfficeID 444 555 666key: OFFICE-FPRevoke\n", // ID и ключ — раздельно, с подписями
-		"leaveform=Before the check with your other PC: leaving erases the password and code of this PC — only the one-time code from the screen will work.|false|false|false|Password of this PC\n",
-		"switch=[\"\",\"\"]\n", // смена режима формы стирает фразу и пароль
-		"codeform=New authenticator code on all your PCs: the space phrase.|true|false|false\n",
-		"sync=sync|In progress…\n",
-		"nobars=0|\n",
-		"delform=Revoke Office · 444 555 666: the space phrase and a new password (recommended — that PC knew the old one). The code changes right away.|true|true|true|false\n",
-		"excluded=exclude:" + ph + ":b2ZmaWNl:new-pass1|Done.Office · 444 555 666 — up to date777 888 999 — offline: That PC is offline" +
-			"New code: scan the QR with the authenticator app — the old code no longer works.ABCD EFGH IJKL MNOPDone|true|false|\n",
-		"cleared=clear||false\n",
-		"pwshort=Password must be at least 8 characters.|\n",
-		"login=login:able baker zzz::true|Word 3 of the phrase is not in the dictionary|true\n",
-		"leavewarn=Before the check with your other PC: leaving erases the password and code of this PC — only the one-time code from the screen will work.\n",
-		"left=leave::|false|true|false|true|true\n", // до сверки: пароль и TOTP стёрты — подсказка
-		"setpw=true\n",
-		"labels=ID of your PC that is already in the space;9 digits from that PC’s main screen (“This computer’s ID”);Space phrase (10 words in Latin letters);the 10 words you wrote down when creating the space;Space password;the same password you use to sign in to the PCs of the space;Authenticator app code (6 digits);from the space entry in the app — the one you use to sign in to the PCs of the space: “AnyPC” with the ID of the PC where the space was created, or “AnyPC пространство” if the code was changed. Not this PC’s entry; the code changes every 30 seconds|Step 1 of 3\n",
-		"st1=enter:444555666:::" + ph + ",enter:444555666:::" + ph + ",enter:444555666:::" + ph + "|Step 3 of 3;Connecting and checking;Usually up to 30 seconds. Nothing to press.;…Connecting to 444 555 666…;·Checking the code and the phrase…;·Waiting for confirmation on “Office · 444 555 666”: go to it and press “Allow”;·Getting the list of PCs in the space…;Cancel|true|true|false\n",
-		"st2=Step 3 of 3;Connecting and checking;Usually up to 30 seconds. Nothing to press.;✓Connecting to 444 555 666…;…Checking the code and the phrase…;·Waiting for confirmation on “Office · 444 555 666”: go to it and press “Allow”;·Getting the list of PCs in the space…;Cancel|true|true|false\n",
-		"nolink=Could not joinCould not connect to that PC: is AnyPC running and online there? A firewall or VPN may block the direct connectionWhat to do: make sure AnyPC is running on that PC and its main screen says “online”. While joining, turn off VPN and allow AnyPC in the firewall on both PCs, then press “Join” again.The code was cleared — enter a fresh one; the ID and phrase are kept.|true|true|444 555 666|||58|false|\n",
-		"noudp=Could not joinThe connection was not established: this PC or its network does not let AnyPC through (firewall, VPN or closed port UDP/TCP 3478)What to do: allow outgoing connections for AnyPC in this PC’s firewall (on a Mac — LuLu, Little Snitch: a rule for AnyPC to any address, not only to the server), turn off VPN while joining, and on a foreign network (office, hotel) try another one. Then press “Join” again.The code was cleared — enter a fresh one; the ID and phrase are kept.\n",
-		"pwgone=|\n", // пароль и код не держатся в поле после отправки
-		"st0=Step 3 of 3;Connecting and checking;Usually up to 30 seconds. Nothing to press.;…Connecting to your PC…;·Checking the code and the phrase…;·Waiting for confirmation on your PC: go to it and press “Allow”;·Getting the list of PCs in the space…;Cancel|true|true|false\n",
-		"stsave=Step 3 of 3;Saving the join…|true|true|false\n",
-		"err2=enter:444555666:::" + ph + ",enter:444555666:::" + ph + "|true|||Could not joinWrong space phraseWhat to do: compare the phrase with your note — 10 words in Latin letters separated by spaces, then “Join”.The code was cleared — enter a fresh one; the ID and phrase are kept.\n",
-		"callfail=enter:444555666:::" + ph + "|true|||Could not joinAnother operation is in progress — wait for it to finishWhat to do: wait until the current space operation on this PC ends and press “Join” again.The code was cleared — enter a fresh one; the ID and phrase are kept.\n",
-		"cancelled=cancel|Joining stoppedCancelledWhat to do: to join, press “Join” again.The code was cleared — enter a fresh one; the ID and phrase are kept.|true\n",
-		"preview=enter:777888999:::" + ph + ",enter:444555666:::" + ph + "|Step 3 of 3;Are these all your PCs?;Check the list. All yours — “Confirm”. A PC that is not yours — “Refuse”.;OfficeID 444 555 666key: OFFICE-FP;This PCID 123 456 789key: SELF-FP;The password of this PC will be replaced with the space password.;The authenticator code of this PC will be replaced with the space code.;Will be reset: trusted keys — 2, sign-in by key — 1.;“Ask before each connection” stays on: sign-in with password and code works once you turn it off.;Revoked: 2;key: GONE-FP1;key: GONE-FP2;ConfirmRefuse\n",
-		"enterx=confirm:false|true|\n", // «Отмена» при ждущем превью — отказ: снова шаг 1 с итогом
-		"answer=0\n",
-		"refused=enter:444555666:::" + ph + ",confirm:false||true|Joining stoppedJoining cancelledWhat to do: to join, press “Join” again.The code was cleared — enter a fresh one; the ID and phrase are kept.\n",
-		"how2=true\n",
-		"joined=enter:444555666:::" + ph + ",confirm:true|✓ This PC has joined the space.Password sign-in and “I'm here” open after a check with another PC of yours: it runs by itself when that PC is online, or press “Check now”.Next: on the main screen, in the “My space” block, enter the space password and code and press “I'm here” — your PCs open from here without a password.The app code for this PC is now shared by the space — from the same entry you used to sign in to 444 555 666. This PC’s old entry no longer works.“Ask before each connection” is on for this PC: your PCs get in only with confirmation. Untick it below to sign in with the password and code.Got it|false||true|Password sign-in and “I'm here” are closed until a check with your PC other than Office · 444 555 666.Check now\n",
-		"stale=2|0\n",
-		"askbar=1\n",
-		"slow=2\n",
-		"cfail=2|Error: TypeError: Failed to fetch\n",
-		"incoming=true|true\n",
-		"outform=false|\n",
-		"showback=true|false|true||false|\n",
-		"back=false|true|true\n",
-		// Ч12б: шаги ID → фраза → код, ожидание «Разрешить» с отсчётом, отказы и запасной путь с паролем
-		"joinlocked=false,false,true,true,true|The password is needed too;Step 3 of 3;Password and code;Joining by code through this PC is closed for a while. You can join with the space password (the same one you use to sign in to the PCs of the space): enter it and a fresh code; the “Allow” window on that PC will still appear.|spepw|The password is needed tooJoining by code through this PC is closed for a while after wrong codesWhat to do: you can join with the space password — enter it below with a fresh code and press “Join”; you will still need to press “Allow” on that PC. Or join through another PC of yours. If it repeats, someone may be guessing the code: set a new code (“Anew”).The password and code were cleared — enter them again; everything else is kept.\n",
-		"offline=true,false,false,true,true|Could not join;Step 1 of 3;Details of your PC that is already in the space;Any of your PCs in the space shows them: “My space” → “Set up” → “How to add a PC”.|speid|Could not joinThat PC is offlineWhat to do: check the ID and that AnyPC is running and online on that PC, then press “Join” again.The password and code were cleared — enter them again; everything else is kept.\n",
-		"pwreset=false,false,true,true,true|The password is needed too;Step 3 of 3;Password and code;Through this PC only with the space password: it runs AnyPC 0.3.1 or older. There will be no “Allow” window on it.|spepw\n",
-		"j1=true,false,false,false,false|Step 1 of 3;Details of your PC that is already in the space;Any of your PCs in the space shows them: “My space” → “Set up” → “How to add a PC”.|speid\n",
-		"j1self=true,false,false,false,true|Could not join;Step 1 of 3;Details of your PC that is already in the space;Any of your PCs in the space shows them: “My space” → “Set up” → “How to add a PC”.|speid|Could not joinWrong PC IDWhat to do: enter the 9-digit ID of your other PC (not this one).The code was cleared — enter a fresh one; the ID and phrase are kept.\n",
-		"j2=false,true,false,false,false|Step 2 of 3;Space phrase;Enter the 10 words you wrote down when creating the space. The phrase does not go over the network: this PC proves it to that PC with a signature.|speph\n",
-		"j2empty=false,true,false,false,false|Step 2 of 3;Space phrase;Enter the 10 words you wrote down when creating the space. The phrase does not go over the network: this PC proves it to that PC with a signature.|speph\n",
-		"j3=false,true,false,false,false|Step 2 of 3;Space phrase;Enter the 10 words you wrote down when creating the space. The phrase does not go over the network: this PC proves it to that PC with a signature.|\n",
-		"j3back=false,true,false,false,false|Step 2 of 3;Space phrase;Enter the 10 words you wrote down when creating the space. The phrase does not go over the network: this PC proves it to that PC with a signature.|\n",
-		"stadmit=Step 3 of 3;Connecting and checking;A window “Let PC … into your space?” has opened on “Office · 444 555 666”. Check this PC’s ID in it and press “Allow”. No answer within 2 minutes — joining is cancelled.;✓Connecting to 444 555 666…;✓Checking the code and the phrase…;…Waiting for confirmation on “Office · 444 555 666”: go to it and press “Allow”;·Getting the list of PCs in the space…;The window on that PC waits 95 s more;Cancel|true|true|false\n",
-		"declined=false,true,false,false,true|Could not join;Step 2 of 3;Space phrase;Enter the 10 words you wrote down when creating the space. The phrase does not go over the network: this PC proves it to that PC with a signature.|speph|Could not join“Deny” was pressed on that PC — a new window there no sooner than in 120 sWhat to do: when the time above has passed, press “Join” again and press “Allow” on that PC. After each refusal in a row the time doubles. If it was not you who pressed “Deny”, find out who is at that PC.The code was cleared — enter a fresh one; the ID and phrase are kept.\n",
-		"noanswer=false,true,false,false,true|Could not join;Step 2 of 3;Space phrase;Enter the 10 words you wrote down when creating the space. The phrase does not go over the network: this PC proves it to that PC with a signature.|speph|Could not joinNo answer on that PC within 2 minutes — a new window there no sooner than in 30 sWhat to do: go to that PC; when the time above has passed, press “Join” here again and, when the window “Let PC … into your space?” appears there, press “Allow”.The code was cleared — enter a fresh one; the ID and phrase are kept.\n",
-		"badcode=false,false,true,false,true|Could not join;Step 3 of 3;Authenticator code;The code goes last: it changes every 30 seconds. After “Join” this PC connects to that one, it checks the code and the phrase, and you will need to press “Allow” on it.|specd|Could not joinThe code did not matchWhat to do: take a fresh code from the space entry in the app (the one you use to sign in to the PCs of the space — not this PC’s entry) and press “Join”. After several wrong attempts that PC closes sign-in for a while.The code was cleared — enter a fresh one; the ID and phrase are kept.\n",
-		"badphrase=false,true,false,false,true|Could not join;Step 2 of 3;Space phrase;Enter the 10 words you wrote down when creating the space. The phrase does not go over the network: this PC proves it to that PC with a signature.|speph|Could not joinThat PC did not accept the phraseWhat to do: compare the phrase with your note — it must be the phrase of the space that PC is in. Then enter a fresh code and “Join”. After several wrong attempts that PC closes sign-in for a while.The code was cleared — enter a fresh one; the ID and phrase are kept.\n",
-		"needpw=false,false,true,true,true|The password is needed too;Step 3 of 3;Password and code;Through this PC only with the space password: it runs AnyPC 0.3.1 or older. There will be no “Allow” window on it.|spepw|The password is needed tooThat PC runs AnyPC 0.3.1 or older: joining through it needs the space passwordWhat to do: enter the space password below (the same one you use to sign in to the PCs of the space) and a fresh code, then “Join”. Or update AnyPC on that PC — then no password is needed.The password and code were cleared — enter them again; everything else is kept.\n",
-		"pwpath=enter:444555666:::" + ph + ",enter:444555666:::" + ph + ",enter:444555666:::" + ph + ",enter:444555666:::" + ph + ",enter:444555666:::" + ph + ",enter:444555666::654321:" + ph + ",enter:444555666:::" + ph + ",enter:444555666::654321:" + ph + ",enter:444555666:owner-pass:654321:" + ph + "|Step 3 of 3;Connecting and checking;Usually up to 30 seconds. Nothing to press.;…Connecting to 444 555 666…;·Checking the password and code…;·Getting the list of PCs in the space…;Cancel|true|true|false\n",
+		"web=false|false|false\n", // веб-клиент без привязок: ни карточки пространства, ни блока владельца, ни экрана доступа
+		"nav=true|false|true|true|false\n",
+		"gone=true|0\n", // старых полей фразы/пароля/кода нет; вне мастера полей нет вовсе
+		"creating=true|false|false|true|Creating the space after system authorization…|true\n",
+		"created=create:0:|false|true|true|false\n", // spaceCreate без аргументов; файл и фраза из ответа не показаны
+		"next=✓ The space is created. This PC is the first one in it.Next: add another PC of yoursOn the other PC open AnyPC → “My space” → “Set up” → “Join” and enter:This PC’s ID123 456 789📋Add userSpace accountEnter the permanent login created for you on that PC.While the other PC joins, this one must be on and online.Got it|true\n",
+		"gotit=false|true|How to add a PC\n",
+		"how=true|true\n",
+		"list=This PCID 123 456 789key: SELF-FP\n",
+		"j1=true,false,false,false|Details of your PC that is already in the space|speid|1/3\n",
+		"j1self=true,false,false,true|Details of your PC that is already in the space|speid|1/3|Could not joinWrong PC IDWhat to do: enter the 9-digit ID of your other PC (not this one).The password and code were cleared — enter them again; everything else is kept.\n",
+		"j1short=true,false,false,true|Details of your PC that is already in the space|speid|1/3|true\n",
+		"j2=false,true,false,false|Space account|speuser|2/3\n",
+		"j2empty=false,true,false,false|Space account|speuser|2/3|false\n",
+		"j3=false,false,true,false|Password and code|spepw|3/3|Enter the permanent password and the code from your authenticator, both created for you on that PC.\n",
+		"j3back=false,true,false,false|Space account|speuser|2/3\n",
+		"j2back=true,false,false,false|Details of your PC that is already in the space|speid|1/3\n",
+		"jx=false||||\n", // отмена мастера: мастер скрыт, все поля стёрты
+		"j3auth=false,false,true,true|Password and code|spepw|3/3|Could not joinWrong password or codeWhat to do: check the space password and enter a fresh code from the space entry in the app (“AnyPC” with the ID of the PC where the space was created, or “AnyPC пространство”) — not this PC’s entry, then “Join”.The password and code were cleared — enter them again; everything else is kept.|\n",
+		"j3code=true||\n", // и короткий код — ошибка без вызова spaceEnter; поле стёрто
+		"st1=" + enterArgs + "|Step 3 of 3;Connecting and checking;Usually up to 30 seconds. Nothing to press.;…Connecting to Office · 444 555 666…;·Checking the password and code…;·Getting the list of PCs in the space…;Cancel|true|true|false\n",
+		"pwgone=|\n", // пароль и код не держатся в полях после отправки
+		"st2=Step 3 of 3;Connecting and checking;Usually up to 30 seconds. Nothing to press.;✓Connecting to Office · 444 555 666…;…Checking the password and code…;·Getting the list of PCs in the space…;Cancel\n",
+		"st3=Step 3 of 3;Connecting and checking;Usually up to 30 seconds. Nothing to press.;✓Connecting to Office · 444 555 666…;✓Checking the password and code…;…Getting the list of PCs in the space…;Cancel\n",
+		"admit=false|false|1\n", // стадия admit отсутствует: ни «Разрешить», ни превью, только «Отмена»
+		"noconfirm=0|0\n",       // состояние confirm не рисуется: ни текста, ни кнопок Confirm/Refuse
+		"stsave=Step 3 of 3;Saving the join…|0\n",
+		"joined=✓ This PC has joined the space.Password sign-in and “I'm here” open after a check with another PC of yours: it runs by itself when that PC is online, or press “Check now”.Next: on the main screen, in the “My space” block, enter the space password and code and press “I'm here” — your PCs open from here without a password.The app code for this PC is now shared by the space — from the same entry you used to sign in to 444 555 666. This PC’s old entry no longer works.“Ask before each connection” is on for this PC: your PCs get in only with confirmation. Untick it below to sign in with the password and code.Got it|1\n",
+		"joined2=false|true||||\n", // после итога мастер скрыт и поля стёрты
+		"cleared=clear||true\n",
+		"list2=This PCID 123 456 789key: SELF-FP;OfficeID 444 555 666key: OFFICE-FPRevoke\n",
+		"cancelled=" + enterArgs + ",cancel|false,true,false,true|Space account|speuser|2/3|Joining stoppedCancelledWhat to do: to join, press “Join” again.The password and code were cleared — enter them again; everything else is kept.||anna\n",
+		"errauth=false,false,true,true|Password and code|spepw|3/3|Could not joinWrong password or codeWhat to do: check the space password and enter a fresh code from the space entry in the app (“AnyPC” with the ID of the PC where the space was created, or “AnyPC пространство”) — not this PC’s entry, then “Join”.The password and code were cleared — enter them again; everything else is kept.|444555666|anna||\n",
+		"delform=true|true|0|spfgo\n", // форма отзыва без полей
+		"excluded=exclude:2:b2ZmaWNl:|Done.;Office · 444 555 666 — up to date;777 888 999 — offline: That PC is offline;Done|0|true|false\n",
+		"exclear=clear|\n",
+		"pwform=true|0\n",
+		"loginpw=login:3:boolean=true,boolean=false,string=|Done.;123 456 789 — up to date;Done|0|false\n",
+		"codecancel=|false\n",
+		"logincode=login:3:boolean=false,boolean=true,string=",
+		"loginerr=login:3:boolean=true,boolean=false,string=|Wrong password|true",
+		"migration=true|spfl|true\n",
+		"migrated=login:3:boolean=true,boolean=false,string=able baker cable delta eagle fable gable habit ideal jewel|false\n",
+		"leavewarn=true|0\n",
+		"left=leave:0:|false|false|true|true|true\n",
+		"back=false|true\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("нет %q", want)
 		}
+	}
+	if strings.Contains(out, "CONFIRM") { // spaceConfirm удалён: UI не вызывает его даже при ждущем превью
+		t.Errorf("UI вызвал spaceConfirm:\n%s", out)
 	}
 }
 

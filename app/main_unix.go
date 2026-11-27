@@ -132,6 +132,7 @@ func hostMain() {
 		Unattended: func() bool { return true }, OTP: cfg.otp, ViewOnly: cfg.viewOnly, // оба профиля самостоятельны; подтверждение на хосте не требуется
 		CodeUsed: cfg.codeUsed,                           // «Спрашивать»: код сменить после сессии и блокировки (REQ-S-23)
 		SpaceGet: cfg.spaceGet, SpaceJoin: cfg.spaceJoin, // «Моё пространство», Э2: отдать состав и принять вступление
+		SpaceGetTagged: cfg.spaceGetTagged, SpaceJoinTagged: cfg.spaceJoinTagged,
 		SpaceOwner: cfg.spaceAdmitOwner, SpaceAdmit: agent.AskAdmit, // Ч12б: вступление без пароля и окно «Пустить?»
 		SpaceMember: cfg.spaceMember,                                                                           // Э3: пропуск 12 ч на ключ мастера (agent/pass.go)
 		LoginTag:    cfg.loginTag,                                                                              // Э4: смена входа пространства и исключение рвут сессии (revoked)
@@ -293,6 +294,7 @@ func setupWindows(base string, issue func() string, chromeDir string, look func(
 // окна AnyPC закрыть (Chrome AnyPC; окно прежним способом — в браузере пользователя, его не закрыть).
 func quitNow(a *agent.Agent) {
 	quitOnce.Do(func() {
+		settingsReset() // приложение закрывается — грант настроек умер вместе с ним
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		passes.offAll(ctx) // Э3: выход мастера снимает его пропуска (нет выданных — сразу)
 		cancel()
@@ -355,6 +357,7 @@ func mainWindow(fallback func()) {
 func mainClosed(a *agent.Agent) {
 	if inService() {
 		log.Printf("окно AnyPC закрыто; служба продолжает работать (значок в трее, «Выйти» — остановить)")
+		settingsReset() // окно с настройками закрыто — грант умер, следующий enter спросит пароль снова
 		if pcWin != nil {
 			pcWin.shut()
 		}
@@ -508,7 +511,7 @@ window.ANYPC = {ws: %s, clipPoll: %t};
   const T = %s;
   const api = (n, ...a) => fetch('/api/' + n, {method: 'POST', headers: {'X-Token': T, 'Content-Type': 'application/json'}, body: JSON.stringify(a)})
     .then(async r => { const j = await r.json(); if (!r.ok) throw j.error; return j.result; });
-  for (const n of ['hostInfo', 'setPassword', 'setConfirm', 'setNode', 'quit', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'hostVerify', 'knownGet', 'knownSet', 'savedGet', 'savedSet', 'otpNew', 'otpEnable', 'otpOff', 'newCode', 'setGive', 'setSpaceAllow', 'userSave', 'userDel', 'keyDel', 'clientSign', 'ckeyGet', 'ckeySet', 'setViewOnly', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort', 'audioAnswer', 'audioMic', 'pcWindow', 'pcScreens', 'uiGet', 'uiSet'].concat(%s)) window[n] = (...a) => api(n, ...a);
+  for (const n of ['hostInfo', 'settingsEnter', 'settingsLeave', 'setPassword', 'setConfirm', 'setNode', 'quit', 'hostDisconnect', 'getClip', 'setClip', 'pakeRespond', 'hostVerify', 'knownGet', 'knownSet', 'savedGet', 'savedSet', 'otpNew', 'otpEnable', 'otpOff', 'newCode', 'setGive', 'setSpaceAllow', 'userSave', 'userDel', 'keyDel', 'clientSign', 'ckeyGet', 'ckeySet', 'setViewOnly', 'fileOpen', 'fileWrite', 'fileFinish', 'fileAbort', 'audioAnswer', 'audioMic', 'pcWindow', 'pcScreens', 'uiGet', 'uiSet'].concat(%s)) window[n] = (...a) => api(n, ...a);
   window.fullscreen = on => on ? document.documentElement.requestFullscreen(window.anypcScreen ? {screen: window.anypcScreen} : undefined).then(() => navigator.keyboard?.lock()).catch(() => {})
                                : document.fullscreenElement && document.exitFullscreen();
 })();
@@ -605,6 +608,10 @@ func api(w http.ResponseWriter, r *http.Request, name string, cfg *config, a *ag
 			json.Unmarshal(args[1], &pub)
 		}
 		res, err = authResult(func() (string, error) { return setNode(cfg, run, str(0), pub) })
+	case "settingsEnter": // вход в «Настройки»/«Доступ к этому ПК»: пароль ОС один раз на сессию настроек (singleflight)
+		err = settingsAuthorize()
+	case "settingsLeave": // уход с «Настроек»/«Доступа»: грант сброшен
+		settingsReset()
 	case "quit": // вкладка браузера — не процесс: без кнопки программа живёт до Ctrl+C
 		quitNow(a)
 	case "showWindow": // вторая копия просит показать окно (single_unix.go, showRunning)

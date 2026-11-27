@@ -27,22 +27,24 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const tab = await (await fetch('http://127.0.0.1:' + port + '/json/new?about:blank', { method: 'PUT' })).json();
   const ws = new WebSocket(tab.webSocketDebuggerUrl); await new Promise(r => ws.onopen = r);
   let id = 0; const wait = {};
-  ws.onmessage = e => { const m = JSON.parse(e.data); if (m.id && wait[m.id]) wait[m.id](m); };
+  ws.onmessage = e => { const m = JSON.parse(e.data); if (m.id && wait[m.id]) wait[m.id](m); if (m.method === 'Runtime.exceptionThrown' || m.method === 'Runtime.consoleAPICalled') console.log('PAGEEXC ' + JSON.stringify(m.params)); };
   const call = (method, params) => new Promise(r => { const i = ++id; wait[i] = r; ws.send(JSON.stringify({ id: i, method, params })); });
   const ev = async x => { const r = (await call("Runtime.evaluate", { expression: x, awaitPromise: true, returnByValue: true })).result; return r?.exceptionDetails ? "EXC " + JSON.stringify(r.exceptionDetails.exception?.description) : r?.result?.value; };
-  const vis = i => "document.getElementById('" + i + "').checkVisibility()";
-  await call('Page.enable', {});
+  const vis = i => "!document.getElementById('" + i + "').classList.contains('hidden') && document.getElementById('" + i + "').checkVisibility()";
+  const until = async f => { for (let n = 0; n < 200; n++) { if (await ev(f)) return true; await sleep(100); } return false; };
+  await call('Page.enable', {}); await call('Runtime.enable', {});
   await call('Page.addScriptToEvaluateOnNewDocument', { source: "localStorage.setItem('tour_home', '1'); localStorage.setItem('tour_connect', '1');" });
   await call('Page.navigate', { url: base + '/?t=tokui' });
   for (let i = 0; i < 50 && await ev("typeof myPcHome === 'function' && " + vis('mhere')) !== true; i++) await sleep(100);
-  await ev("document.getElementById('setgo').click(); 1"); await sleep(200);
+  await ev("window.settingsEnter = async () => {}; window.settingsLeave = async () => {};"); // тест трея, не политики авторизации
+  await ev("document.getElementById('setgo').click(); 1"); await until(vis('settings') + ' === true');
   const s0 = await ev(vis('settings'));
-  await ev(jsHere); await sleep(200);
+  await ev(jsHere); await until("document.activeElement.id === 'shgo'");
   console.log('here=' + s0 + '|' + await ev("[" + vis('home') + ", " + vis('settings') + ", document.activeElement.id].join('|')"));
-  await ev(jsHelp); await sleep(200);
+  await ev(jsHelp); await until("document.activeElement.id === 'id'");
   console.log('help=' + await ev("[" + vis('connect') + ", " + vis('home') + ", document.activeElement.id].join('|')"));
-  await ev(jsPC); await sleep(500);
-  console.log('pc=' + await ev("[[...document.querySelectorAll('#frames iframe')].map(f => new URL(f.src, location.href).searchParams.get('embed')).join(','), " + vis('mypc') + ", " + vis('home') + "].join('|')"));
+  await ev(jsPC); await until(vis('mypc') + ' === true && !window.myPcAtHome()');
+  console.log('pc=' + await ev("[[...document.querySelectorAll('#frames iframe')].map(f => new URL(f.src, location.href).searchParams.get('embed')).join(','), " + vis('mypc') + ", window.myPcAtHome()].join('|')"));
   await ev(jsHere); await sleep(200);
   console.log('here2=' + await ev("[" + vis('home') + ", " + vis('mypc') + ", document.activeElement.id, document.querySelectorAll('#frames iframe').length].join('|')"));
   // «Помочь кому-то…» из вкладки ПК: «Другой ПК» не поверх вкладок — вкладки спрятаны, «Назад» — главный
@@ -62,7 +64,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await ev("show(false); 1");
   // свежее окно из трея: JS — на DOMContentLoaded (как trayNav), строка «Я тут» появляется после первого hostInfo — фокус её дожидается
   await call('Page.addScriptToEvaluateOnNewDocument', { source: "addEventListener('DOMContentLoaded', () => { " + jsHere + " });" });
-  await call('Page.navigate', { url: base + '/?t=tokui' }); await sleep(2500);
+  await call('Page.navigate', { url: base + '/?t=tokui' }); await ev("window.settingsEnter = async () => {}; window.settingsLeave = async () => {};"); await sleep(2500);
   console.log('fresh=' + await ev("[" + vis('home') + ", document.activeElement.id].join('|')"));
   process.exit(0);
 })();`

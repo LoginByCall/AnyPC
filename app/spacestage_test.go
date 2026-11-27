@@ -21,10 +21,6 @@ func TestSpaceEnterStages(t *testing.T) {
 	defer func() { systemAuth = oldAuth }()
 	opsReset(t)
 	p := spaceCfg(t, spacePass, totp.NewSecret())
-	ph, err := p.spaceDraft(spacePass)
-	if err != nil {
-		t.Fatal(err)
-	}
 	n := spaceCfg(t, spacePass, totp.NewSecret())
 	step, end := make(chan string), make(chan error)
 	withSpaceNet(t, func(ctx context.Context, d agent.SpaceDial) ([]byte, error) {
@@ -39,7 +35,7 @@ func TestSpaceEnterStages(t *testing.T) {
 		err  error
 		code string
 	}{{agent.ErrSpaceNoLink, "nolink"}, {agent.ErrSpaceClosed, "closed"}} {
-		args := []json.RawMessage{json.RawMessage(`"` + p.ID + `"`), json.RawMessage(`"` + spacePass + `"`), json.RawMessage(`"123456"`), json.RawMessage(`"` + ph + `"`)}
+		args := []json.RawMessage{json.RawMessage(`"` + p.ID + `"`), json.RawMessage(`"initiator"`), json.RawMessage(`"initiator-pass"`), json.RawMessage(`"123456"`)}
 		if _, err := spaceCall(n, "spaceEnter", args); err != nil {
 			t.Fatal(err)
 		}
@@ -71,7 +67,6 @@ func TestSpaceEnterStop(t *testing.T) {
 	defer func() { systemAuth = oldAuth }()
 	opsReset(t)
 	p := spaceCfg(t, spacePass, totp.NewSecret())
-	ph, _ := p.spaceDraft(spacePass)
 	n := spaceCfg(t, spacePass, totp.NewSecret())
 	in := make(chan struct{})
 	withSpaceNet(t, func(ctx context.Context, d agent.SpaceDial) ([]byte, error) {
@@ -83,7 +78,7 @@ func TestSpaceEnterStop(t *testing.T) {
 	if _, err := spaceCall(n, "spaceCancel", nil); err == nil || err.Error() != "space:noop" {
 		t.Errorf("отмена без операции: %v", err)
 	}
-	args := []json.RawMessage{json.RawMessage(`"` + p.ID + `"`), json.RawMessage(`"` + spacePass + `"`), json.RawMessage(`"123456"`), json.RawMessage(`"` + ph + `"`)}
+	args := []json.RawMessage{json.RawMessage(`"` + p.ID + `"`), json.RawMessage(`"initiator"`), json.RawMessage(`"initiator-pass"`), json.RawMessage(`"123456"`)}
 	if _, err := spaceCall(n, "spaceEnter", args); err != nil {
 		t.Fatal(err)
 	}

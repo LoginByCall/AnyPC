@@ -30,14 +30,15 @@ import (
 )
 
 var (
-	errSpaceIn     = errors.New("пространство: этот ПК уже в пространстве")
-	errSpaceNotIn  = errors.New("пространство: этот ПК не в пространстве")
-	errSpaceChange = errors.New("пространство: настройки изменились во время операции — повторите")
-	errSpaceLogin  = errors.New("пространство: сначала пароль этого ПК и TOTP (вход без подтверждения)")
-	errSpaceDraft  = errors.New("пространство: создание не начато или отменено — начните заново")
-	errSpaceNo     = errors.New("пространство: вступление отменено")
-	errSpaceSlow   = errors.New("пространство: состав не подтверждён вовремя — вступите заново")
-	errSpaceHostID = errors.New("пространство: неверный ID ПК")
+	errSpaceIn         = errors.New("пространство: этот ПК уже в пространстве")
+	errSpaceNotIn      = errors.New("пространство: этот ПК не в пространстве")
+	errSpaceChange     = errors.New("пространство: настройки изменились во время операции — повторите")
+	errSpaceLogin      = errors.New("пространство: сначала пароль этого ПК и TOTP (вход без подтверждения)")
+	errSpaceDraft      = errors.New("пространство: создание не начато или отменено — начните заново")
+	errSpaceNo         = errors.New("пространство: вступление отменено")
+	errSpaceSlow       = errors.New("пространство: состав не подтверждён вовремя — вступите заново")
+	errSpaceHostID     = errors.New("пространство: неверный ID ПК")
+	errSpacePhraseFile = errors.New("пространство: не найден файл фразы в Загрузках")
 )
 
 // spaceLocked — объединение сохранённых верхушек (под c.mu, spaceView); nil — пространства нет или записи
@@ -117,7 +118,44 @@ func saveSpacePhrase(id, phrase string) (string, error) {
 	}
 }
 
-func spacePhraseFromDownloads(id string) (string, error) {
+func (c *config) spacePhrase() (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reload()
+	return c.spacePhraseLocked()
+}
+
+func (c *config) spacePhraseLocked() (string, error) {
+	return spacePhraseFromDownloads(c.ID, c.spaceLocked())
+}
+
+func (c *config) spacePhraseFor(phrase string) (string, error) {
+	if phrase != "" {
+		return c.spacePhraseImport(phrase)
+	}
+	return c.spacePhrase()
+}
+
+// spacePhraseImport — одноразовая миграция пространства прежней версии: фраза проверяется текущим OPub и
+// сохраняется локально, чтобы дальнейшие операции снова не требовали ввода.
+func (c *config) spacePhraseImport(phrase string) (string, error) {
+	if err := spacePhraseOK(phrase); err != nil {
+		return "", err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reload()
+	if err := spaceOwnerCheck(c.spaceLocked(), phrase); err != nil {
+		return "", err
+	}
+	_, err := saveSpacePhrase(c.ID, phrase)
+	return phrase, err
+}
+
+func spacePhraseFromDownloads(id string, current *space) (string, error) {
+	if current == nil {
+		return "", errSpaceNotIn
+	}
 	for n := range 100 {
 		suffix := ""
 		if n > 0 {
@@ -137,11 +175,11 @@ func spacePhraseFromDownloads(id string) (string, error) {
 			continue
 		}
 		ph := strings.TrimSpace(strings.Split(string(b)[i+len(marker):], "\n")[0])
-		if spacePhraseOK(ph) == nil {
+		if spacePhraseOK(ph) == nil && spaceOwnerCheck(current, ph) == nil {
 			return ph, nil
 		}
 	}
-	return "", errors.New("пространство: не найден файл фразы в Загрузках")
+	return "", errSpacePhraseFile
 }
 
 // spaceCreate — создать пространство в один шаг (тесты, CLI): черновик и сразу сохранение той же фразой.
@@ -280,9 +318,12 @@ func (c *config) spaceCreateOK(phrase string) error {
 var spaceCreateCheck = spaceOwnerCheck
 
 // spaceGet — agent.Agent.SpaceGet (на ПК P): все верхушки M (главная первой; состав — их объединение, решение 10 A)
-// для сессии, вошедшей записью по умолчанию с солью salt. Только если запись по умолчанию — запись владельца из
-// объединения (те же соль, хэш и секрет TOTP) и режим не «Спрашивать».
+// для сессии владельца либо полной именной записи Инициатора с TOTP. Право записи проверяется по её соли после входа.
 func (c *config) spaceGet(salt []byte) [][]byte {
+	return c.spaceGetTagged(salt, nil)
+}
+
+func (c *config) spaceGetTagged(salt, expectedTag []byte) [][]byte {
 	if s := c.syn; s != nil { // Э4: до выдачи M новому ПК — сверка с остальными (иначе он вступит в устаревший состав)
 		ctx, cancel := context.WithTimeout(s.bgCtx(), spaceGetSync)
 		s.spread(ctx, false)
@@ -291,7 +332,11 @@ func (c *config) spaceGet(salt []byte) [][]byte {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
-	if c.spaceOwnerLocked(salt) == nil {
+	owner, initiator := c.spaceOwnerLocked(salt), c.spaceInitiatorNameLocked(salt)
+	if owner == nil && initiator == "" {
+		return nil
+	}
+	if initiator != "" && (len(expectedTag) == 0 || !bytes.Equal(expectedTag, c.namedLoginTagLocked(initiator))) {
 		return nil
 	}
 	out := [][]byte{bytes.Clone(c.Space)}
@@ -333,6 +378,25 @@ func (c *config) spaceOwnerLocked(salt []byte) *space {
 	return m
 }
 
+// spaceInitiatorLocked — соль полной именной записи с TOTP: владелец выдал её для добавления Инициатора.
+// Сам факт входа с верными паролем и кодом уже проверен agent; «просмотр» и вход ключом права вступления не дают.
+func (c *config) spaceInitiatorNameLocked(salt []byte) string {
+	m := c.spaceLocked()
+	if m == nil || m.Compromised || c.SpaceOver != "" || !c.spaceAllowedLocked() {
+		return ""
+	}
+	for _, u := range c.Users[1:] {
+		if u.Name != "" && !u.View && u.TOTP != "" && bytes.Equal(u.Salt, salt) {
+			return u.Name
+		}
+	}
+	return ""
+}
+
+func (c *config) spaceInitiatorLocked(salt []byte) bool {
+	return c.spaceInitiatorNameLocked(salt) != ""
+}
+
 // spaceJoin — agent.Agent.SpaceJoin (на ПК P): принять M, который новый ПК подписал фразой пространства. Годен только
 // «объединение верхушек (их отдал spaceGet) + ровно один ПК с ключом pub» (ключ, которым новый ПК доказал себя в
 // канале), эпоха max+1, остальное без изменений (перекрывает все верхушки); подпись — закреплённым opub (сравнение байтов с ожидаемым). Сессия —
@@ -340,7 +404,11 @@ func (c *config) spaceOwnerLocked(salt []byte) *space {
 // ID нового ПК (С4) проверяет рассылка после приёма: ПК под этим ID должен ответить ключом pub (spaceSyncer.one).
 // Ч12б: id — ID, показанный в окне «Пустить?» (заявлен новым ПК): новый член M — только под ним; "" — не сообщён.
 func (c *config) spaceJoin(salt, b []byte, pub ed25519.PublicKey, id string) error {
-	if err := c.spaceJoinSave(salt, b, pub, id); err != nil {
+	return c.spaceJoinTagged(salt, nil, b, pub, id)
+}
+
+func (c *config) spaceJoinTagged(salt, expectedTag, b []byte, pub ed25519.PublicKey, id string) error {
+	if err := c.spaceJoinSaveTagged(salt, expectedTag, b, pub, id); err != nil {
 		return err
 	}
 	if s := c.syn; s != nil { // остальным — до ответа новому ПК (его сверка с ними сразу пройдёт); ему — проверка ID
@@ -352,6 +420,10 @@ func (c *config) spaceJoin(salt, b []byte, pub ed25519.PublicKey, id string) err
 }
 
 func (c *config) spaceJoinSave(salt, b []byte, pub ed25519.PublicKey, id string) error {
+	return c.spaceJoinSaveTagged(salt, nil, b, pub, id)
+}
+
+func (c *config) spaceJoinSaveTagged(salt, expectedTag, b []byte, pub ed25519.PublicKey, id string) error {
 	in, err := spaceParse(b)
 	if err != nil {
 		return err
@@ -359,6 +431,37 @@ func (c *config) spaceJoinSave(salt, b []byte, pub ed25519.PublicKey, id string)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reload()
+	if initiator := c.spaceInitiatorNameLocked(salt); initiator != "" {
+		if len(expectedTag) == 0 || !bytes.Equal(expectedTag, c.namedLoginTagLocked(initiator)) {
+			return agent.ErrSpaceAuth
+		}
+		raw, err := in.marshal()
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(raw, c.Space) { // вступление только от главной верхушки, выданной этим хостом
+			return errSpaceChange
+		}
+		v := c.spaceLocked()
+		if i := slices.IndexFunc(v.Members, func(x spaceMember) bool { return bytes.Equal(x.Pub, pub) }); i >= 0 {
+			if id != "" && v.Members[i].ID != id {
+				return errors.New("пространство: ключ Инициатора уже числится под другим ID")
+			}
+			return nil // повтор после потери ответа: состав уже содержит этот ПК
+		}
+		phrase, err := c.spacePhraseLocked()
+		if err != nil {
+			return err
+		}
+		n, err := spaceAdd(v, phrase, id, pub) // ключ владельца остаётся только на хосте
+		if err != nil {
+			return err
+		}
+		if _, _, err := c.spaceAddLocked(n); err != nil {
+			return err
+		}
+		return c.save()
+	}
 	v := c.spaceOwnerLocked(salt)
 	if v == nil {
 		return errSpaceNotIn
@@ -528,6 +631,20 @@ func (c *config) spaceAsk(ctx context.Context, m *space, half bool, preview func
 // agent.ErrSpaceNeedPass (окно спросит пароль). Запись по умолчанию и тогда — из M (пароль пространства не вводили).
 // ТРЕБУЕТ РЕВЬЮ ЧЕЛОВЕКОМ (A13: подпись состава фразой, доказательство фразы).
 func (c *config) spaceEnterAsk(ctx context.Context, hostID, password, code, phrase string, preview func(spacePreview), ok <-chan bool) (spaceChanges, error) {
+	return c.spaceEnterFlow(ctx, hostID, "", password, code, phrase, preview, ok)
+}
+
+// spaceEnterAccount — вступление Инициатора по именной записи: фраза и подтверждение состава не нужны,
+// новый M подписывает хост после успешного входа по логину, постоянному паролю и TOTP.
+func (c *config) spaceEnterAccount(ctx context.Context, hostID, user, password, code string) (spaceChanges, error) {
+	user = agent.UserKey(user)
+	if user == "" {
+		return spaceChanges{}, errSpaceNoMember
+	}
+	return c.spaceEnterFlow(ctx, hostID, user, password, code, "", nil, nil)
+}
+
+func (c *config) spaceEnterFlow(ctx context.Context, hostID, user, password, code, phrase string, preview func(spacePreview), ok <-chan bool) (spaceChanges, error) {
 	ctx, cancel := context.WithCancel(ctx) // Sign ждёт в горутине обмена: конец вступления его отпускает
 	defer cancel()
 	c.mu.Lock()
@@ -543,8 +660,10 @@ func (c *config) spaceEnterAsk(ctx context.Context, hostID, password, code, phra
 	case !hub.IsHostID(hostID) || hostID == id:
 		return spaceChanges{}, errSpaceHostID
 	}
-	if err := spacePhraseOK(phrase); err != nil { // опечатка во фразе — до сети: код не тратится
-		return spaceChanges{}, err
+	if user == "" {
+		if err := spacePhraseOK(phrase); err != nil { // опечатка во фразе — до сети: код не тратится
+			return spaceChanges{}, err
+		}
 	}
 	pub := ed25519.PrivateKey(key).Public().(ed25519.PublicKey)
 	type result struct {
@@ -559,7 +678,8 @@ func (c *config) spaceEnterAsk(ctx context.Context, hostID, password, code, phra
 	)
 	stage := spaceStageOf(ctx) // Ч12: ход для окна — соединяюсь, проверяю, получаю состав, сохраняю
 	name, _ := os.Hostname()   // Ч12б: имя этого ПК — в окно «Пустить?» поручителя (там очищается)
-	out, err := spaceDial(ctx, agent.SpaceDial{Server: server, ID: hostID, Key: key, Password: password, Code: code, Known: known, Confirm: spaceConfirmWait, Stage: stage,
+	var hostHeads [][]byte
+	out, err := spaceDial(ctx, agent.SpaceDial{Server: server, ID: hostID, User: user, Key: key, Password: password, Code: code, Known: known, Confirm: spaceConfirmWait, Stage: stage, Heads: &hostHeads,
 		Self: id, Name: name, OwnerKey: func(osalt []byte) (ed25519.PrivateKey, error) { // Ч12б (A'): доказательство фразы
 			if len(osalt) != spaceSaltLen {
 				return nil, errors.New("пространство: соль ключа владельца не той длины")
@@ -583,12 +703,14 @@ func (c *config) spaceEnterAsk(ctx context.Context, hostID, password, code, phra
 			if m.Compromised {
 				return nil, errSpaceCompromised
 			}
-			if err := spaceOwnerCheck(m, phrase); err != nil {
-				return nil, err
-			}
-			if password != "" { // путь с паролем: P отдал M с чужим паролем входа — не наш (без пароля — только фраза, A')
-				if err := spaceLoginCheck(m, password); err != nil {
+			if user == "" {
+				if err := spaceOwnerCheck(m, phrase); err != nil {
 					return nil, err
+				}
+				if password != "" { // путь с паролем: P отдал M с чужим паролем входа — не наш (без пароля — только фраза, A')
+					if err := spaceLoginCheck(m, password); err != nil {
+						return nil, err
+					}
 				}
 			}
 			if !m.has(spaceMember{ID: hostID, Pub: hostPub}) {
@@ -596,9 +718,12 @@ func (c *config) spaceEnterAsk(ctx context.Context, hostID, password, code, phra
 			}
 			// свежесть (исключённый P может отдать старые подлинные M) — сверка с остальными после (spaceFresh)
 			half := m.has(spaceMember{ID: id, Pub: pub})
-			shown, err := c.spaceAsk(ctx, m, half, preview, ok)
-			if err != nil {
-				return nil, err
+			shown := c.spaceChangesFor(m, half)
+			if user == "" {
+				shown, err = c.spaceAsk(ctx, m, half, preview, ok)
+				if err != nil {
+					return nil, err
+				}
 			}
 			r := &result{view: m, shown: shown}
 			if half { // полу-вступление (С1): P уже сохранил нас — принять его верхушки как есть
@@ -610,7 +735,7 @@ func (c *config) spaceEnterAsk(ctx context.Context, hostID, password, code, phra
 					r.recs = append(r.recs, hb)
 				}
 				r.want = b
-			} else {
+			} else if user == "" {
 				n, err := spaceAdd(m, phrase, id, pub)
 				if err != nil {
 					return nil, err
@@ -620,6 +745,8 @@ func (c *config) spaceEnterAsk(ctx context.Context, hostID, password, code, phra
 					return nil, err
 				}
 				r.recs, r.want = [][]byte{nb}, nb
+			} else {
+				r.want = b // хост добавит этого ПК и вернёт подписанный M в ответе
 			}
 			jmu.Lock()
 			res = r
@@ -635,10 +762,31 @@ func (c *config) spaceEnterAsk(ctx context.Context, hostID, password, code, phra
 	if r == nil {
 		return spaceChanges{}, errors.New("пространство: нет подписанного состава") // SpaceJoin без Sign — не бывает
 	}
-	if !bytes.Equal(r.want, out) {
+	joined := r.view
+	if user != "" {
+		if len(hostHeads) == 0 {
+			hostHeads = [][]byte{bytes.Clone(out)}
+		}
+		var ms []*space
+		for _, raw := range hostHeads {
+			n, err := spaceParse(raw)
+			if err != nil {
+				return spaceChanges{}, err
+			}
+			ms = append(ms, n)
+		}
+		heads, err := spaceHeads(ms)
+		if err != nil {
+			return spaceChanges{}, err
+		}
+		joined = spaceView(heads)
+		if !bytes.Equal(joined.SID, r.view.SID) || !bytes.Equal(joined.OPub, r.view.OPub) || !joined.has(spaceMember{ID: id, Pub: pub}) {
+			return spaceChanges{}, errors.New("пространство: хост вернул неверный состав Инициатора")
+		}
+		r.recs = hostHeads
+	} else if !bytes.Equal(r.want, out) {
 		return spaceChanges{}, errors.New("пространство: принятый состав — не подписанный здесь")
 	}
-	joined := r.view
 	step, _ := totp.Check(joined.TOTP, code, time.Now(), 0) // этот код уже вошёл на P — здесь он повтор
 	c.mu.Lock()
 	defer c.mu.Unlock()

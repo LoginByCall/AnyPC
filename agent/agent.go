@@ -99,6 +99,10 @@ type Agent struct {
 	// знает (ctl "sp" пропускается, как у старой версии). «Только показ экрана» — "sp" отвечает rights.
 	SpaceGet  func(salt []byte) [][]byte
 	SpaceJoin func(salt, m []byte, pub ed25519.PublicKey, id string) error
+	// SpaceGetTagged/SpaceJoinTagged — именная запись: tag — LoginTag на момент входа. Реализация обязана проверить
+	// актуальность tag и eligibility атомарно с выдачей/принятием M, чтобы смена TOTP не гонялась с вступлением.
+	SpaceGetTagged  func(salt, tag []byte) [][]byte
+	SpaceJoinTagged func(salt, tag, m []byte, pub ed25519.PublicKey, id string) error
 	// Э3, пропуск 12 ч (pass.go): ключ pub — член состава M этого ПК, а запись по умолчанию с солью salt — запись
 	// владельца из M (как SpaceGet). Зовётся при выдаче и при каждом входе по пропуску. nil — пропусков нет.
 	SpaceMember func(salt, pub []byte) bool
@@ -1733,8 +1737,8 @@ func (a *Agent) authChannel(ctx context.Context, s *session, track *webrtc.Track
 				case ctx.Err() != nil: // клиент ушёл
 				case ok:
 					s.asking.Store(false)
-					s.spaceOK.Store(user == "" && !m.Key) // Э2: пароль записи по умолчанию + код, не ключ
-					s.trustOK.Store(!m.Key)               // Ч7б: как trust в "b" — пароль записи + код (не ключ; пропуск сюда не доходит)
+					s.spaceOK.Store(!m.Key) // Space: пароль именной или default записи + TOTP, не ключ
+					s.trustOK.Store(!m.Key) // Ч7б: как trust в "b" — пароль записи + код (не ключ; пропуск сюда не доходит)
 					a.accept(ctx, s, track, send, conf, fpc, fph, pin)
 				case locked:
 					reject("locked")

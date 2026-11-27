@@ -24,8 +24,9 @@ import (
 
 func TestLocalAPI(t *testing.T) {
 	oldAuth := systemAuth
-	systemAuth = func() error { return nil }
-	defer func() { systemAuth = oldAuth }()
+	prompts := 0
+	systemAuth = func() error { prompts++; return nil }
+	defer func() { systemAuth = oldAuth; settingsReset() }()
 	cfg, _ := loadConfig(filepath.Join(t.TempDir(), "config.json"))
 	page, err := shimmed("wss://example/ws", "tok123")
 	if err != nil || !strings.Contains(string(page), `const T = "tok123"`) || strings.Count(string(page), "<script>") < 2 {
@@ -77,6 +78,9 @@ func TestLocalAPI(t *testing.T) {
 	}
 	userSec := totp.NewSecret()
 	userOTP, _ := totp.Code(userSec, time.Now())
+	if code := call("settingsEnter", `[]`); code != 200 || prompts != 1 { // пароль ОС — один раз на сессию настроек
+		t.Fatalf("settingsEnter: %d, запросов пароля %d", code, prompts)
+	}
 	for _, c := range []struct {
 		name, args  string
 		code, drops int
@@ -144,6 +148,9 @@ func TestLocalAPI(t *testing.T) {
 	}
 	if code := call("setConfirm", `[true]`); code != 200 || drops != 9 { // смена режима рвёт сессию по паролю (Д4)
 		t.Errorf("setConfirm: %d, DropRevoked %d", code, drops)
+	}
+	if prompts != 1 { // все действия сессии настроек — без повторных окон ОС
+		t.Errorf("системный пароль спросили %d раз за сессию настроек", prompts)
 	}
 }
 

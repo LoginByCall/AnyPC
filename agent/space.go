@@ -29,11 +29,12 @@ import (
 )
 
 // spMsg — канал "ctl", состав пространства (Э2). Клиент → {"t":"sp"} — запрос состава; хост → {"t":"sp","m":…,"h":[…]}
-// (главная верхушка M и остальные, base64; h — только добавление, решение 12 A) | {"t":"sp","err":"rights"|"none"}. Клиент → {"t":"sp","m":…} — M следующей эпохи с ним самим;
-// хост → {"t":"sp","ok":true} | {"t":"sp","err":"rights"|"key"|"again"|"bad"}.
-// err: rights — сессия вошла не паролем и кодом записи по умолчанию; none — пространства нет (или пароль записи
+// (главная верхушка M и остальные, base64; h — только добавление, решение 12 A) | {"t":"sp","err":"rights"|"none"}. Клиент → {"t":"sp","m":…} — M следующей эпохи с ним самим (named-вход — заявка, может быть без изменений);
+// хост → {"t":"sp","ok":true} | {"t":"sp","ok":true,"m":…,"h":[…]} — named-входу актуальный состав в OK | {"t":"sp","err":"rights"|"key"|"again"|"bad"}.
+// err: rights — сессия вошла не паролем и кодом записи (не ключом, не одноразовым кодом); none — пространства нет (или пароль записи
 // не его); key — клиент не доказал свой ключ в "b"; again — второе вступление в сессии; bad — состав не принят.
-// Ч12б (admit.go, решение B): хост с окном «Пустить?» отдаёт состав сессии входа паролем только после «Разрешить»;
+// Ч12б (admit.go, решение B): хост с окном «Пустить?» отдаёт состав сессии входа паролем в запись по умолчанию только
+// после «Разрешить» (named-вход — запись по имени — окно не ждёт: eligibility решает app в SpaceJoin);
 // иначе err: admit_no | admit_timeout | admit_later (старый клиент показывает «тот ПК отказал»).
 type spMsg struct {
 	T   string   `json:"t"`
@@ -60,10 +61,28 @@ func (a *Agent) spaceCtl(ctx context.Context, s *session, data []byte, reply fun
 		return
 	}
 	s.mu.Lock()
-	salt, cpub, jid, cid, cname, asend := s.salt, s.cpub, s.joinID, s.claimID, s.claimName, s.authSend
+	salt, cpub, jid, cid, cname, asend, user := s.salt, s.cpub, s.joinID, s.claimID, s.claimName, s.authSend, s.user
+	tag, tagged := bytes.Clone(s.tag), s.tagged
 	s.mu.Unlock()
+	if user != "" && tagged && a.LoginTag != nil && !bytes.Equal(tag, a.LoginTag(user, cpub)) {
+		reply(spMsg{T: "sp", Err: "rights"}) // TOTP именной записи сменили после входа: старая сессия больше не авторизует вступление
+		return
+	}
+	if user != "" { // named (запись по имени, пароль и код): окна нет — ID заявлен в "b" (claimID), eligibility — app в SpaceJoin по соли
+		jid = cid
+	}
 	give := func() {
-		if b := a.SpaceGet(salt); len(b) > 0 {
+		var b [][]byte
+		if user != "" {
+			if a.SpaceGetTagged == nil {
+				reply(spMsg{T: "sp", Err: "rights"})
+				return
+			}
+			b = a.SpaceGetTagged(salt, tag)
+		} else {
+			b = a.SpaceGet(salt)
+		}
+		if len(b) > 0 {
 			reply(spMsg{T: "sp", M: b[0], H: b[1:]})
 			if spaceDupM.Load() {
 				reply(spMsg{T: "sp", M: b[0], H: b[1:]})
@@ -72,8 +91,8 @@ func (a *Agent) spaceCtl(ctx context.Context, s *session, data []byte, reply fun
 			reply(spMsg{T: "sp", Err: "none"})
 		}
 	}
-	admit := a.SpaceAdmit != nil && !s.admitted.Load() // Ч12б: вход паролем — окно «Пустить?» до выдачи состава
-	if len(m.M) == 0 {                                 // запрос состава
+	admit := a.SpaceAdmit != nil && !s.admitted.Load() && user == "" // Ч12б: окно «Пустить?» — только запись по умолчанию; named полный аккаунт его не ждёт
+	if len(m.M) == 0 {                                               // запрос состава
 		switch {
 		case !admit:
 			give()
@@ -113,12 +132,32 @@ func (a *Agent) spaceCtl(ctx context.Context, s *session, data []byte, reply fun
 	case !s.spJoin.CompareAndSwap(false, true):
 		reply(spMsg{T: "sp", Err: "again"})
 	default:
-		if err := a.SpaceJoin(salt, m.M, cpub, jid); err != nil {
+		var err error
+		if user != "" {
+			if a.SpaceJoinTagged == nil {
+				reply(spMsg{T: "sp", Err: "rights"})
+				return
+			}
+			err = a.SpaceJoinTagged(salt, tag, m.M, cpub, jid)
+		} else {
+			err = a.SpaceJoin(salt, m.M, cpub, jid)
+		}
+		if err != nil {
 			log.Printf("сессия %s: состав пространства не принят: %v", s.label(), err)
 			reply(spMsg{T: "sp", Err: "bad"})
 			return
 		}
 		log.Printf("сессия %s: ПК %s вступил в пространство", s.label(), pake.KeyFingerprint(cpub)[:9])
+		if user != "" { // named: новый M подписал хост — отдать актуальный состав (клиент предпочитает его отправленному)
+			if a.SpaceGetTagged == nil {
+				reply(spMsg{T: "sp", Err: "rights"})
+				return
+			}
+			if b := a.SpaceGetTagged(salt, tag); len(b) > 0 {
+				reply(spMsg{T: "sp", OK: true, M: b[0], H: b[1:]})
+				return
+			}
+		}
 		reply(spMsg{T: "sp", OK: true})
 	}
 }
@@ -133,9 +172,18 @@ type SpaceDial struct {
 	Key      ed25519.PrivateKey // ключ хоста этого ПК
 	Password string
 	Code     string
+	// User — named CPace (REQ-S-20): вход в запись по имени паролем Password и кодом Code этой записи (не
+	// владельца): первое "a" → {"t":"a","user":User} → второе "a" (соль записи или чужое имя — поддельная) → "b".
+	// Хост не открывает окно «Пустить?»; eligibility решает app в SpaceJoin по соли записи, новый M подписывает
+	// хост и возвращает в OK — ключа владельца у клиента нет (Sign вернёт M как был, заявка уходит хосту).
+	// Self — ID этого ПК: обязателен и валиден (hub.IsHostID), app добавит новый член M по ключу и этому ID.
+	// "" — запись по умолчанию (владелец): прежний путь с окном «Пустить?».
+	User string
 	// Known — отпечаток ключа P (pake.KeyFingerprint), если этот ПК уже входил на P (config.Known): другой ключ —
 	// отказ до отправки кода. "" — первое знакомство (TOFU). TODO(Э4): сверка ключей P по составам других членов.
 	Known string
+	// Heads — named-вступление: все верхушки из OK хоста (главная и остальные), чтобы не потерять исключения.
+	Heads *[][]byte
 	// Sign — по M от P (главная верхушка; heads — остальные; проверены подписью хоста P и CPace) вернуть новый M,
 	// подписанный фразой пространства на этом ПК (сначала сверка opub из фразы); ошибка — отказ, P ничего не получит.
 	// Вернул тот же M — этот ПК в нём уже есть (P сохранил прошлое вступление, а ответ не дошёл): P ничего не шлём.
@@ -364,7 +412,7 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 				join := d.Password == "" // Ч12б: вступление без пароля (admit.go)
 				var cpub []byte          // свой ключ из "b"
 				salted := false          // соль ключа владельца пришла (один раз)
-				named := false           // тест joinAsUser: запись названа, ждём второе «a»
+				named := false           // запись названа (d.User с паролем, тест joinAsUser без него): ждём второе «a»
 				sendA := func(v authMsg) { b, _ := json.Marshal(v); dc.SendText(string(b)) }
 				hostOK := func(am authMsg) bool { // хост доказал пароль (conf) и ключ (подпись над DTLS-отпечатками)
 					fc, fh := fps()
@@ -393,9 +441,34 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 							cpub = k
 							sendA(authMsg{T: "b", Join: true, Phrase: d.Code == "", CPub: k, CSig: sig, From: d.Self, Name: d.Name})
 						}
-						if named && am.User != "" && !first { // тест: хост принял имя записи
+						sendPassB := func(am authMsg) { // CPace пароля на salt/msg этой "a" и "b" с доказательством ключа клиента
+							fc, fh := fps()
+							salt, msg := am.Salt, am.Msg
+							permanent := len(am.PermSalt) > 0 && len(am.PermMsg) > 0
+							if permanent { // новый хост: основной "a" — одноразовый код, permanent — отдельный CPace
+								salt, msg = am.PermSalt, am.PermMsg
+							}
+							b, conf, hc, err := pake.ClientRespond(d.Password, salt, msg, d.ID, fc, fh)
+							if err != nil {
+								finish(err)
+								return
+							}
+							want = hc
+							// ключ клиента — ключ хоста этого ПК: P сверит с ним ключ нового члена в M
+							cpub, csig, err := signB(d.Key, d.ID, pc)
+							if err != nil {
+								finish(err)
+								return
+							}
+							sendA(authMsg{T: "b", Msg: b, Conf: conf, Permanent: permanent, CPub: cpub, CSig: csig, From: d.Self, Name: d.Name}) // Ч12б: ID и имя — в окно «Пустить?» нового поручителя
+						}
+						if named && am.User != "" && !first { // хост принял имя записи (d.User; тест joinAsUser)
 							named = false
-							sendJoinB()
+							if join {
+								sendJoinB()
+								return
+							}
+							sendPassB(am)
 							return
 						}
 						if !first || am.User != "" {
@@ -421,25 +494,12 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 							sendJoinB()
 							return
 						}
-						fc, fh := fps()
-						salt, msg := am.Salt, am.Msg
-						permanent := len(am.PermSalt) > 0 && len(am.PermMsg) > 0
-						if permanent { // новый хост: основной "a" — одноразовый код, permanent — отдельный CPace
-							salt, msg = am.PermSalt, am.PermMsg
-						}
-						b, conf, hc, err := pake.ClientRespond(d.Password, salt, msg, d.ID, fc, fh)
-						if err != nil {
-							finish(err)
+						if d.User != "" { // named CPace (REQ-S-20): запись по имени — CPace на втором "a"
+							named = true
+							sendA(authMsg{T: "a", User: d.User})
 							return
 						}
-						want = hc
-						// ключ клиента — ключ хоста этого ПК: P сверит с ним ключ нового члена в M
-						cpub, csig, err := signB(d.Key, d.ID, pc)
-						if err != nil {
-							finish(err)
-							return
-						}
-						sendA(authMsg{T: "b", Msg: b, Conf: conf, Permanent: permanent, CPub: cpub, CSig: csig, From: d.Self, Name: d.Name}) // Ч12б: ID и имя — в окно «Пустить?» нового поручителя
+						sendPassB(am)
 					case "otp":
 						if d.Code == "" {
 							finish(ErrSpaceNeedPass) // старый поручитель не понимает phrase-only
@@ -529,7 +589,14 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 					case sm.Err != "":
 						finish(fmt.Errorf("%w: %s", ErrSpaceRefused, sm.Err))
 					case sm.OK && mine != nil:
-						done(mine)
+						if len(sm.M) > 0 { // named: хост сам подписал новый M — актуальный состав важнее отправленного
+							if d.Heads != nil {
+								*d.Heads = append([][]byte{bytes.Clone(sm.M)}, sm.H...)
+							}
+							done(sm.M)
+						} else {
+							done(mine)
+						}
 					case len(sm.M) > 0 && mine == nil && !signing:
 						// второй M во время Sign — нарушение протокола (default); Sign ждёт подтверждения человеком —
 						// в своей горутине, не в потоке SCTP (решение 12 A)
@@ -540,7 +607,7 @@ func spaceJoinVia(ctx context.Context, server string, d SpaceDial) ([]byte, erro
 								finish(err)
 								return
 							}
-							if bytes.Equal(m, sm.M) { // уже в составе P (полу-вступление): принять как есть
+							if bytes.Equal(m, sm.M) && d.User == "" { // owner: уже в составе P (полу-вступление) — принять как есть; named: ключа владельца нет, M без изменений и есть заявка — новый состав подписывает хост
 								done(m)
 								return
 							}

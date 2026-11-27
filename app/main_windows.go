@@ -116,6 +116,7 @@ func main() {
 		Unattended: func() bool { return true }, OTP: cfg.otp, ViewOnly: cfg.viewOnly, // оба профиля самостоятельны; подтверждение на хосте не требуется
 		CodeUsed: cfg.codeUsed,                           // «Спрашивать»: код сменить после сессии и блокировки (REQ-S-23)
 		SpaceGet: cfg.spaceGet, SpaceJoin: cfg.spaceJoin, // «Моё пространство», Э2: отдать состав и принять вступление
+		SpaceGetTagged: cfg.spaceGetTagged, SpaceJoinTagged: cfg.spaceJoinTagged,
 		SpaceOwner: cfg.spaceAdmitOwner, SpaceAdmit: agent.AskAdmit, // Ч12б: вступление без пароля и окно «Пустить?»
 		SpaceMember: cfg.spaceMember,                                                                           // Э3: пропуск 12 ч на ключ мастера (agent/pass.go)
 		LoginTag:    cfg.loginTag,                                                                              // Э4: смена входа пространства и исключение рвут сессии (revoked)
@@ -156,6 +157,8 @@ func main() {
 	w.Bind("audioMic", a.AudioMic)
 	w.Bind("openUpdate", func() { exec.Command("rundll32", "url.dll,FileProtocolHandler", updateSite).Start() }) // адрес фиксирован: странице не открыть произвольный
 	w.Bind("openSite", func() { exec.Command("rundll32", "url.dll,FileProtocolHandler", siteHome).Start() })
+	w.Bind("settingsEnter", func() error { return settingsAuthorize() }) // пароль ОС один раз на сессию настроек
+	w.Bind("settingsLeave", func() { settingsReset() })
 	w.Bind("setPassword", func(p string) error { return authDo(func() error { return dropAfter(a, cfg.setPassword(p)) }) })
 	w.Bind("setConfirm", func(on bool) error { return authDo(func() error { return dropAfter(a, cfg.setConfirm(on)) }) })
 	w.Bind("otpNew", cfg.otpNew)
@@ -244,6 +247,7 @@ func main() {
 	cfg.networkSync = func() { syncNetwork(ctx, cfg, a, run, &spaceCancel) }
 	syncNetwork(ctx, cfg, a, run, &spaceCancel)
 	w.Run()
+	settingsReset()                                                           // окно закрыто (крестик, «Выйти» в трее) — грант настроек умер вместе с приложением
 	quit, qcancel := context.WithTimeout(context.Background(), 3*time.Second) // Э3: выход мастера снимает его пропуска —
 	passes.offAll(quit)                                                       // до cancel(): летящие «снять» дождаться
 	qcancel()
