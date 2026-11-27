@@ -29,6 +29,11 @@ func TestSpaceCallAuth(t *testing.T) {
 	if _, err := spaceCall(c, "spaceCreate", nil); !errors.Is(err, errSystemAuth) {
 		t.Fatalf("spaceCreate без авторизации: %v", err)
 	}
+	for range 3 {
+		if _, err := spaceCall(c, "spaceOp", nil); err != nil {
+			t.Fatalf("spaceOp — опрос состояния, авторизация не нужна: %v", err)
+		}
+	}
 }
 
 func TestAuthResult(t *testing.T) {

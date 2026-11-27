@@ -74,7 +74,8 @@ func spaceErrCode(err error) string {
 }
 
 // spaceAuthNames — вызовы, изменяющие доступ или состав пространства: требуется системная авторизация.
-var spaceAuthNames = []string{"spaceCreate", "spaceCreateOK", "spaceEnter", "spaceConfirm", "spaceOp", "spaceExclude", "spaceLogin", "spaceLeave", "passOff"}
+// spaceOp сюда не входит: это опрос состояния; его результат возникает только в операции, уже запущенной после авторизации.
+var spaceAuthNames = []string{"spaceCreate", "spaceCreateOK", "spaceEnter", "spaceConfirm", "spaceExclude", "spaceLogin", "spaceLeave", "passOff"}
 
 // spaceCall — вызов окна name (из spaceNames) с аргументами JSON; ошибка — только space:<код>.
 func spaceCall(c *config, name string, args []json.RawMessage) (any, error) {
