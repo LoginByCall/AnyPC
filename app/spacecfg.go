@@ -13,13 +13,13 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/subtle"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -117,6 +117,33 @@ func saveSpacePhrase(id, phrase string) (string, error) {
 	}
 }
 
+func spacePhraseFromDownloads(id string) (string, error) {
+	for n := range 100 {
+		suffix := ""
+		if n > 0 {
+			suffix = fmt.Sprintf("-%d", n+1)
+		}
+		path := filepath.Join(spaceDownloadsDir(), "AnyPC-space-"+id+suffix+".txt")
+		b, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		const marker = "фраза пространства: "
+		i := strings.Index(string(b), marker)
+		if i < 0 {
+			continue
+		}
+		ph := strings.TrimSpace(strings.Split(string(b)[i+len(marker):], "\n")[0])
+		if spacePhraseOK(ph) == nil {
+			return ph, nil
+		}
+	}
+	return "", errors.New("пространство: не найден файл фразы в Загрузках")
+}
+
 // spaceCreate — создать пространство в один шаг (тесты, CLI): черновик и сразу сохранение той же фразой.
 func (c *config) spaceCreate(password string) (string, error) {
 	phrase, err := c.spaceDraft(password)
@@ -147,10 +174,10 @@ func (c *config) spaceDraft(password string) (string, error) {
 		return "", err
 	}
 	u := c.Users[0]
-	if len(u.Hash) == 0 { // отдельный пароль настроек не нужен: учётные данные владельца создаются автоматически
-		auto := make([]byte, 32)
-		rand.Read(auto)
-		password = base64.RawURLEncoding.EncodeToString(auto)
+	autoPhrase := ""
+	if password == "" { // отдельный пароль настроек не нужен: учётные данные владельца создаются автоматически
+		autoPhrase = spacePhraseNew()
+		password = spaceLoginPassword(autoPhrase)
 		salt := make([]byte, 16)
 		rand.Read(salt)
 		u.Salt, u.Hash, u.Trusted, u.KeyLogin = salt, pake.KDF(password, salt), nil, nil
@@ -176,7 +203,14 @@ func (c *config) spaceDraft(password string) (string, error) {
 	if password != "" && subtle.ConstantTimeCompare(pake.KDF(password, salt), hash) != 1 { // Argon2 — без c.mu
 		return "", errSpacePassword
 	}
-	m, phrase, err := spaceNew(salt, hash, sec, id, ed25519.PrivateKey(key).Public().(ed25519.PublicKey))
+	var m *space
+	var phrase string
+	var err error
+	if autoPhrase != "" {
+		m, phrase, err = spaceNewPhrase(salt, hash, sec, id, ed25519.PrivateKey(key).Public().(ed25519.PublicKey), autoPhrase)
+	} else {
+		m, phrase, err = spaceNew(salt, hash, sec, id, ed25519.PrivateKey(key).Public().(ed25519.PublicKey))
+	}
 	if err != nil {
 		return "", err
 	}

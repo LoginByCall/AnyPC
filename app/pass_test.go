@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -63,6 +64,27 @@ func testMaster(c *config) *passMaster {
 type passCall struct {
 	id, pw, code string
 	host, key    ed25519.PublicKey
+}
+
+func TestPassWorkHereAuto(t *testing.T) {
+	dir := t.TempDir()
+	old := spaceDownloadsDir
+	spaceDownloadsDir = func() string { return dir }
+	defer func() { spaceDownloadsDir = old }()
+	c, err := loadConfig(filepath.Join(t.TempDir(), "AnyPC", "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.spaceCreateFile(); err != nil {
+		t.Fatal(err)
+	}
+	p := testMaster(c)
+	if rs, err := p.workHere(context.Background(), "", ""); err != nil || len(rs) != 0 {
+		t.Fatalf("«Я тут» без ввода: rs=%v err=%v", rs, err)
+	}
+	if err := c.spaceLeave("", ""); err != nil {
+		t.Fatalf("выход без ввода: %v", err)
+	}
 }
 
 // TestPassWorkHere — «Работаю тут»: пароль и код сверяются на мастере (неверные в сеть не уходят), все остальные

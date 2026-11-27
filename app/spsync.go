@@ -606,8 +606,10 @@ func (c *config) spaceLeave(password, code string) error {
 	if !in {
 		return errSpaceNotIn
 	}
-	if len(hash) == 0 || subtle.ConstantTimeCompare(pake.KDF(password, salt), hash) != 1 { // Argon2 — без c.mu
-		return errSpacePassword
+	if password != "" || code != "" {
+		if len(hash) == 0 || subtle.ConstantTimeCompare(pake.KDF(password, salt), hash) != 1 { // Argon2 — без c.mu
+			return errSpacePassword
+		}
 	}
 	c.mu.Lock()
 	c.reload()
@@ -616,12 +618,16 @@ func (c *config) spaceLeave(password, code string) error {
 		c.mu.Unlock()
 		return errSpaceChange
 	}
-	step, ok := totp.Check(u.TOTP, code, time.Now(), u.TOTPStep)
-	if !ok {
-		c.mu.Unlock()
-		return errPassCode
+	step := int64(0)
+	if password != "" || code != "" {
+		var ok bool
+		step, ok = totp.Check(u.TOTP, code, time.Now(), u.TOTPStep)
+		if !ok {
+			c.mu.Unlock()
+			return errPassCode
+		}
+		u.TOTPStep = step
 	}
-	u.TOTPStep = step
 	if c.SpaceWait != "" { // решение 12 A: пароль и код — из M поручителя, сверкой не подтверждённого: не оставлять
 		on := true // вход — «Спрашивать» с новым одноразовым кодом с экрана (как setConfirm), окно попросит пароль
 		u.Salt, u.Hash, u.TOTP, u.TOTPStep, c.Confirm = nil, nil, "", 0, &on

@@ -80,7 +80,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
       return null;
     };
     window.spaceLogin = async (ph, pw, code) => { calls.push('login:' + ph + ':' + pw + ':' + code); setOp({ kind: 'login', state: 'err', err: 'phrase_word:3', result: null }); return null; };
-    window.spaceLeave = async (pw, code) => { calls.push('leave:' + pw + ':' + code); if (code !== '123456') throw 'space:code'; if (st.space.wait) { st.hasPass = false; st.confirm = true; } st.space = empty(); };
+    window.spaceLeave = async (pw = '', code = '') => { calls.push('leave:' + pw + ':' + code); if (code && code !== '123456') throw 'space:code'; if (st.space.wait) { st.hasPass = false; st.confirm = true; } st.space = empty(); };
     window.spaceOpClear = async () => { calls.push('clear'); setOp(null); };
     window.spaceSync = async () => { calls.push('sync'); setOp({ kind: 'sync', state: 'run', result: null }); return null; };
   })();` + "`" + ` });
@@ -130,12 +130,11 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   console.log('pwshort=' + await ev(txt('spmsg')) + '|' + await calls());
   await click('spcode'); await ev(val('spfph', 'able baker zzz')); await click('spfgo'); await sleep(300);
   console.log('login=' + await calls() + '|' + await ev(txt('spop') + " + '|' + " + vis('spform')));
-  // выход: пароль и код этого ПК
-  await ev("st.otp = false; st.space.wait = '444555666'; 1"); await sleep(1200); // выход — с кодом и без TOTP (владелец 2026-11-14); до сверки
-  await click('spleave'); await ev(val('spfpw', 'owner-pass') + val('spfcd', '000000')); await click('spfgo');
+  // выход — только системная авторизация
+  await ev("st.otp = false; st.space.wait = '444555666'; 1"); await sleep(1200);
+  await click('spleave');
   console.log('leavewarn=' + await ev(txt('spfh')));
-  console.log('leavebad=' + await ev(txt('spmsg') + " + '|' + " + vis('spfcd')) + '|' + await calls());
-  await ev(val('spfcd', '123456')); await click('spfgo'); await sleep(300);
+  await click('spfgo'); await sleep(300);
   console.log('left=' + await calls() + '|' + await ev("[" + vis('spform') + ", " + vis('spout') + ", " + vis('spin') + ", !document.getElementById('pwrow'), " + vis('spleft') + "].join('|')"));
   console.log('setpw=' + await ev("['spleftb','newpw','setpw','confirm'].every(i => !document.getElementById(i))"));
   // Ч12: мастер вступления — подписи полей, ход по стадиям, ошибка соединения (поля, кроме пароля и кода, на месте), отмена
@@ -297,7 +296,7 @@ func TestBrowserSpace(t *testing.T) {
 			"Password sign-in and “I'm here” are closed until a check with your PC other than Office · 444 555 666.Check now;" +
 			"The clock differs from 777 888 999 — check the time.\n",
 		"list=This PCID 123 456 789key: SELF-FP;OfficeID 444 555 666key: OFFICE-FPRevoke\n", // ID и ключ — раздельно, с подписями
-		"leaveform=Before the check with your other PC: leaving erases the password and code of this PC — only the one-time code from the screen will work.|false|true|true|Password of this PC\n",
+		"leaveform=Before the check with your other PC: leaving erases the password and code of this PC — only the one-time code from the screen will work.|false|false|false|Password of this PC\n",
 		"switch=[\"\",\"\"]\n", // смена режима формы стирает фразу и пароль
 		"codeform=New authenticator code on all your PCs: the space phrase.|true|false|false\n",
 		"sync=sync|In progress…\n",
@@ -309,8 +308,7 @@ func TestBrowserSpace(t *testing.T) {
 		"pwshort=Password must be at least 8 characters.|\n",
 		"login=login:able baker zzz::true|Word 3 of the phrase is not in the dictionary|true\n",
 		"leavewarn=Before the check with your other PC: leaving erases the password and code of this PC — only the one-time code from the screen will work.\n",
-		"leavebad=Wrong code|true|leave:owner-pass:000000\n",
-		"left=leave:owner-pass:123456|false|true|false|true|true\n", // до сверки: пароль и TOTP стёрты — подсказка
+		"left=leave::|false|true|false|true|true\n", // до сверки: пароль и TOTP стёрты — подсказка
 		"setpw=true\n",
 		"labels=ID of your PC that is already in the space;9 digits from that PC’s main screen (“This computer’s ID”);Space phrase (10 words in Latin letters);the 10 words you wrote down when creating the space;Space password;the same password you use to sign in to the PCs of the space;Authenticator app code (6 digits);from the space entry in the app — the one you use to sign in to the PCs of the space: “AnyPC” with the ID of the PC where the space was created, or “AnyPC пространство” if the code was changed. Not this PC’s entry; the code changes every 30 seconds|Step 1 of 3\n",
 		"st1=enter:444555666:::" + ph + ",enter:444555666:::" + ph + ",enter:444555666:::" + ph + "|Step 3 of 3;Connecting and checking;Usually up to 30 seconds. Nothing to press.;…Connecting to 444 555 666…;·Checking the code and the phrase…;·Waiting for confirmation on “Office · 444 555 666”: go to it and press “Allow”;·Getting the list of PCs in the space…;Cancel|true|true|false\n",

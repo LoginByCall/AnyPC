@@ -159,8 +159,18 @@ func (p *passMaster) workHere(ctx context.Context, password, code string) ([]pas
 	if over {
 		return nil, errSpaceHeads
 	}
+	if password == "" {
+		phrase, err := spacePhraseFromDownloads(c.ID)
+		if err != nil {
+			return nil, err
+		}
+		password = spaceLoginPassword(phrase)
+	}
 	if err := spaceLoginCheck(m, password); err != nil {
 		return nil, err
+	}
+	if code == "" {
+		code, _ = totp.Code(m.TOTP, time.Now())
 	}
 	if _, ok := totp.Check(m.TOTP, code, time.Now(), 0); !ok {
 		return nil, errPassCode

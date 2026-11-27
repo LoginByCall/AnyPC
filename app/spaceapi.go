@@ -145,9 +145,8 @@ func spaceDo(c *config, name string, str func(int) string, flag func(int) bool) 
 		if passes.cfg != c {
 			return nil, errSpaceNotIn
 		}
-		pw, code := str(0), str(1)
 		return nil, spaceOps.start("workHere", func(ctx context.Context, _ func(spacePreview), _ <-chan bool) (any, error) {
-			rs, err := passes.workHere(ctx, pw, code)
+			rs, err := passes.workHere(ctx, "", "")
 			if err != nil {
 				return nil, err
 			}

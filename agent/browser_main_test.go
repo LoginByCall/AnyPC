@@ -32,7 +32,7 @@ const mainStub = `(() => {
   window.knownGet = async id => JSON.parse(localStorage.getItem('known') || '{}')[id] || '';
   window.knownSet = async (id, fp) => { const k = JSON.parse(localStorage.getItem('known') || '{}'); k[id] = fp; localStorage.setItem('known', JSON.stringify(k)); };
   window.passOff = async () => { calls.push('off'); for (const m of st.space.members) m.passUntil = 0; await window.onOff?.(); };
-  window.workHere = async (pw, code) => { calls.push('here:' + pw + ':' + code); window.here?.(pw, code); };
+  window.workHere = async (pw = '', code = '') => { calls.push('here:' + pw + ':' + code); window.here?.(pw, code); };
 })();`
 
 // cdpHead — общее начало сценариев: вкладка, CDP, подмена привязок (mainStub + extra), загрузка окна.
@@ -67,7 +67,7 @@ const extra = async () => ` + "`" + `
   st.space.members[0].passUntil = Date.now() + 3600e3; // свой ПК в M — вход по пропуску к себе не пробуется
   window.savedGet = async id => id === '777888999' ? 'frame-pass' : ''; window.savedSet = async () => {};
   window.spaceSign = async () => { calls.push('sign'); throw 'space:nopass'; }; window.hostVerify = async () => 'OF';
-  window.here = pw => { window.op = pw === 'owner-pass' ? { kind: 'workHere', state: 'done', result: [{ id: '444555666', state: 'ok' }, { id: '777888999', state: 'refused', err: 'auth' }] }
+  window.here = pw => { window.op = !pw ? { kind: 'workHere', state: 'done', result: [{ id: '444555666', state: 'ok' }, { id: '777888999', state: 'refused', err: 'auth' }] }
     : { kind: 'workHere', state: 'err', err: 'password', result: null }; st.space.op = { kind: op.kind, state: op.state }; };` + "`" + `;` + cdpHead + `
   const tabs = () => ev("[...document.querySelectorAll('#hometabs .tab')].map(b => b.textContent).join(';')");
   console.log('tabs=' + await tabs());
@@ -77,10 +77,10 @@ const extra = async () => ` + "`" + `
   console.log('nolock=' + await ev("[document.getElementById('shgo').disabled, " + vis('shlock') + ", " + txt('shlock') + "].join('|')"));
   await ev("st.space.lock = true; 1"); await sleep(1300);
   console.log('lock=' + await ev("[document.getElementById('shgo').disabled, " + vis('shlock') + "].join('|')"));
-  await ev("document.getElementById('shpw').value = 'wrong'; document.getElementById('shcd').value = '123456'; document.getElementById('shgo').click(); 1"); await sleep(500);
+  await ev("document.getElementById('shgo').click(); 1"); await sleep(500);
   console.log('bad=' + await ev(txt('shres')));
-  await ev("document.getElementById('shpw').value = 'owner-pass'; document.getElementById('shcd').value = '654321'; document.getElementById('shgo').click(); 1"); await sleep(500);
-  console.log('here=' + await ev(txt('shres') + " + '|' + document.getElementById('shpw').value + document.getElementById('shcd').value"));
+  await ev("document.getElementById('shgo').click(); 1"); await sleep(500);
+  console.log('here=' + await ev(txt('shres')));
   await ev("window.op = { kind: 'sync', state: 'run', result: null }; st.space.op = { kind: 'sync', state: 'run' }; 1"); await sleep(1300);
   console.log('other=' + await ev(txt('shres'))); // итог другой операции (сверка) — не в строке «Я тут»
   await ev("window.op = null; st.space.op = null; 1");
@@ -171,8 +171,7 @@ func TestBrowserMain(t *testing.T) {
 		"give=One-time access to this computer|false|true|true\n",
 		"nolock=true|true|Screen lock on this PC is not tracked — no pass is issued (password and code work as usual)\n",
 		"lock=false|false\n",
-		"bad=Wrong password\n",
-		"here=Office · 444 555 666 — open777 888 999 — refused: Wrong password or code|\n", // итог по ПК; пароль и код из полей стёрты
+		"here=Office · 444 555 666 — open777 888 999 — refused: Wrong password or code\n", // итог по ПК
 		"other=Office · 444 555 666 — open777 888 999 — refused: Wrong password or code\n",
 		"open=444555666|false\n",
 		"sessstrip=tabhome,444555666*:true,777888999:false,tabadd,grow,swhint|0\n", // «This PC» — к главному; открытая — с ×; закрытый ПК — без
@@ -185,7 +184,7 @@ func TestBrowserMain(t *testing.T) {
 		"otpbypass=0|false|Error: no pass on that PC — sign in with password|false,false,false\n",
 		"okpass=false|Error: the remote PC could not be verified — connection may be intercepted\n",
 		// вкладка Office открыта (хаб молчит) — в полосе её состояние; пропуск снят — в плитке «нужен код»
-		"off=true|here:wrong:123456,here:owner-pass:654321,off|Passes are taken off.|false|This PC;Officeconnecting…;777 888 999code needed;+|code needed\n",
+		"off=true|here::,here::,off|Passes are taken off.|false|This PC;Officeconnecting…;777 888 999code needed;+|code needed\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("нет %q", want)

@@ -58,6 +58,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base32"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -270,14 +271,17 @@ func spacePhraseNew() string {
 	return p
 }
 
-// spaceNew — новое пространство с одним ПК (id, pub): свежие sid и osalt, эпоха 1, вход 1 и новая фраза генератора
-// (своя фраза при создании не принимается — С3); фраза возвращается один раз — окно показывает её для записи.
-// psalt/phash/totpSecret — из записи владельца на этом ПК (пароль входа сверяет вызывающий).
-func spaceNew(psalt, phash []byte, totpSecret, id string, pub ed25519.PublicKey) (*space, string, error) {
+// spaceLoginPassword — внутренний пароль автоматически созданной записи владельца. Не показывается пользователю:
+// вычисляется из фразы только для «Я тут», когда система уже авторизовала действие.
+func spaceLoginPassword(phrase string) string {
+	return base64.RawURLEncoding.EncodeToString(pake.KDF("AnyPC space login password v1\x00"+spacePhraseNorm(phrase), make([]byte, spaceSaltLen)))
+}
+
+// spaceNewPhrase — spaceNew с заранее сгенерированной фразой (для производного внутреннего пароля).
+func spaceNewPhrase(psalt, phash []byte, totpSecret, id string, pub ed25519.PublicKey, phrase string) (*space, string, error) {
 	if len(psalt) != spaceSaltLen || len(phash) != spaceHashLen {
 		return nil, "", fmt.Errorf("%w: соль или хэш пароля", errSpaceFormat)
 	}
-	phrase := spacePhraseNew()
 	m := &space{
 		SID: make([]byte, spaceSaltLen), Epoch: 1, OSalt: make([]byte, spaceSaltLen),
 		PSalt: bytes.Clone(psalt), PHash: bytes.Clone(phash), TOTP: totpSecret,
@@ -294,6 +298,11 @@ func spaceNew(psalt, phash []byte, totpSecret, id string, pub ed25519.PublicKey)
 		return nil, "", err
 	}
 	return m, phrase, nil
+}
+
+// spaceNew — новое пространство с одним ПК и новой фразой генератора.
+func spaceNew(psalt, phash []byte, totpSecret, id string, pub ed25519.PublicKey) (*space, string, error) {
+	return spaceNewPhrase(psalt, phash, totpSecret, id, pub, spacePhraseNew())
 }
 
 // loginHash — хэш входа (lgen, lex, psalt, phash, totp): lprev следующего входа и последнее правило развилки.

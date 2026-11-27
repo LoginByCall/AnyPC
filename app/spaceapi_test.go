@@ -326,7 +326,7 @@ func TestSpaceAPIFlow(t *testing.T) {
 	if _, _, e := callN("spaceConfirm", true); e != "space:noop" {
 		t.Errorf("spaceConfirm без операции: %q", e)
 	}
-	if code, _, e := callN("spaceEnter", p.id(), spacePass, spaceCode(p, sec), ph); code != 200 {
+	if code, _, e := callN("spaceEnter", p.id(), "", "", ph); code != 200 {
 		t.Fatalf("spaceEnter: %s", e)
 	}
 	opWait(t, callN, "confirm")
@@ -334,7 +334,7 @@ func TestSpaceAPIFlow(t *testing.T) {
 	if op := opWait(t, callN, "err"); op["err"] != "no" || spaceOf(n) != nil {
 		t.Fatalf("отказ: %v", op)
 	}
-	callN("spaceEnter", p.id(), spacePass, spaceCode(p, sec), ph)
+	callN("spaceEnter", p.id(), "", "", ph)
 	op := opWait(t, callN, "confirm")
 	pv := op["preview"].(map[string]any)
 	if g, ok := pv["gone"].([]any); !ok || len(g) != 0 { // исключённых ещё нет
@@ -368,14 +368,7 @@ func TestSpaceAPIFlow(t *testing.T) {
 		passOpenFn, passOffFn, passes.cfg = oldOpen, oldOff, oldCfg
 		passes.lockAlive("тест", false)
 	})
-	if code, _, e := callP("workHere", spacePass, "000000x"); code != 200 {
-		t.Fatal(e)
-	}
-	if op := opWait(t, callP, "err"); op["err"] != "code" {
-		t.Errorf("неверный код: %v", op)
-	}
-	c, _ := totp.Code(sec, time.Now())
-	callP("workHere", spacePass, c)
+	callP("workHere")
 	op = opWait(t, callP, "done")
 	if rs := op["result"].([]any); len(rs) != 1 || rs[0].(map[string]any)["id"] != n.id() || rs[0].(map[string]any)["state"] != "ok" {
 		t.Errorf("итог «Работаю тут»: %v", op)
@@ -444,11 +437,8 @@ func TestSpaceAPIFlow(t *testing.T) {
 		t.Errorf("новый код без QR: %v", op)
 	}
 
-	// N выходит (о своём исключении он не знает)
-	if _, _, e := callN("spaceLeave", spacePass, "000000"); e != "space:code" {
-		t.Errorf("выход с неверным кодом: %q", e)
-	}
-	if code, _, e := callN("spaceLeave", spacePass, spaceCode(n, sec)); code != 200 {
+	// N выходит после системной авторизации (о своём исключении он не знает)
+	if code, _, e := callN("spaceLeave"); code != 200 {
 		t.Fatal(e)
 	}
 	if in := spaceInfo(n); in["in"] != false {
