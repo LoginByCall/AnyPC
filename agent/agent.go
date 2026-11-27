@@ -359,12 +359,13 @@ type authMsg struct {
 	// заявленные ID и имя отправителя; в "rx" хоста: ask — первое принимаемое спросит «Принять?», lim — потолки.
 	Recv bool `json:"recv,omitempty"`
 	// Ч12б (admit.go): в первом "a" хоста — понимает вступление без пароля; в "b" — вступление; в "otp", "ok" — его шаги
-	Join bool      `json:"join,omitempty"`
-	Left int       `json:"left,omitempty"` // Ч12б: в "later" и "denied" вступления — через сколько секунд возможно новое окно «Пустить?»
-	From string    `json:"from,omitempty"`
-	Name string    `json:"name,omitempty"`
-	Ask  bool      `json:"ask,omitempty"`
-	Lim  *rxLimits `json:"lim,omitempty"`
+	Join   bool      `json:"join,omitempty"`
+	Phrase bool      `json:"phrase,omitempty"` // в "b": вступление по одной фразе, без TOTP
+	Left   int       `json:"left,omitempty"`   // Ч12б: в "later" и "denied" вступления — через сколько секунд возможное новое окно «Пустить?»
+	From   string    `json:"from,omitempty"`
+	Name   string    `json:"name,omitempty"`
+	Ask    bool      `json:"ask,omitempty"`
+	Lim    *rxLimits `json:"lim,omitempty"`
 }
 
 // ctlMsg — канал "ctl": {"t":"clip","text":"…"} — буфер обмена в обе стороны (REQ-F-11);
