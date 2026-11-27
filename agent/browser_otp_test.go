@@ -189,7 +189,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await ev("document.getElementById('accgo').click(); 1"); await sleep(200);
   console.log('screen=' + await ev("[document.querySelector('#acchead h2').textContent, document.getElementById('spaceallow').checked, ['confirm','newpw','setpw','otpwarn','otpfix','otpon','acccode'].every(i => !document.getElementById(i))].join('|')"));
   console.log('copyid=' + await ev("(() => { const d = new DataTransfer(); document.getElementById('myid').dispatchEvent(new ClipboardEvent('copy', { clipboardData: d, bubbles: true, cancelable: true })); return document.getElementById('myid').textContent + '>' + d.getData('text/plain'); })()"));
-  console.log('kb=' + await ev("(() => { const i = document.getElementById('spcpw'), w = i.closest('.row').nextElementSibling; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'ф', code: 'KeyA' })); const a = w.textContent; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', code: 'KeyA' })); return a + '|' + w.classList.contains('hidden'); })()"));
+  console.log('kb=' + await ev("(() => { const i = document.getElementById('pw'), w = i.closest('.row').nextElementSibling; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'ф', code: 'KeyA' })); const a = w.textContent; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', code: 'KeyA' })); return a + '|' + w.classList.contains('hidden'); })()"));
   process.exit(0);
 })();`
 

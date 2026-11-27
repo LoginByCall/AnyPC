@@ -179,7 +179,7 @@ func TestBrowserHome(t *testing.T) {
 		"grid=1,340\n",
 		"small=\n",
 		"give=true,true,false,true,true|false,false,false,false,false,false,false\n",
-		"connect=true|false|id|true|true|false|false|Другой ПК\n",
+		"connect=true|false|id|true|true|true|true|Другой ПК\n",
 		"connback=false|true\n",
 		"settings=true|false|true|true|true|ab12 cd34|AnyPC 0.3.1|true|Настройки\n",
 		"quit=space:true,quit\n",
@@ -191,7 +191,7 @@ func TestBrowserHome(t *testing.T) {
 		"renpoll=true|true|Набор|нужен код|Мамин\n",
 		"colors=rgb(180, 35, 24)|rgb(180, 35, 24)|rgb(29, 78, 216)|rgb(180, 35, 24)\n",
 		"tour=tour_id,tour_code,tour_add,tour_talk,tour_help||true:home|tour_go,tour_opts|false|end=true,false,true\n",
-		"options=Расширенные параметры|\"▸\"|\"▾\"|true\n",
+		"options=Расширенные параметры|\"▾\"|\"▾\"|true\n",
 		"user=true|true|anna\n",
 		"codefit=true,INPUT+BUTTON.main,true|true,INPUT+BUTTON.main,true\n", // N1
 		"hdmenu=true,true\n",
