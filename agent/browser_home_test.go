@@ -145,7 +145,7 @@ const extra = async () => ` + "`" + `
   console.log('settings2=' + settings2);
   await ev("document.getElementById('spaceallowsettings').click(); 1"); await sleep(300);
   console.log('spaceToggle=' + await ev("[document.getElementById('spaceallow').checked, document.getElementById('spaceallowsettings').checked, calls.at(-1)].join('|')"));
-  console.log('myPcHome=' + h1 + '|' + await ev("myPcHome() + ':' + " + shown('home') + " + ':' + " + shown('settings')) + '|' + await ev("typeof myPcAdd + ',' + !!document.getElementById('shpw')"));
+  console.log('myPcHome=' + h1 + '|' + await ev("myPcHome() + ':' + " + shown('home') + " + ':' + " + shown('settings')) + '|' + await ev("typeof myPcAdd + ',' + !!document.getElementById('shgo')"));
   // «Показать подсказки снова» с главного: сброшен и тур «Другого ПК» (начнётся при входе на него), идёт тур главного
   await ev("localStorage.setItem('tour_connect', '1'); document.getElementById('helpbtn').click(); 1"); await sleep(200);
   await ev("[...document.querySelectorAll('#helpbody button')].find(b => b.textContent === t('help_tour')).click(); 1"); await sleep(300);

@@ -123,13 +123,13 @@ func TestBrowserTrayJS(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"here=true|true|false|shpw\n",                // «я тут» из «Настроек»: главный экран, фокус в пароле «Я тут»
+		"here=true|true|false|shgo\n",                // «я тут» из «Настроек»: главный экран, фокус на кнопке
 		"help=true|false|id\n",                       // «Помочь кому-то…»: «Другой ПК», фокус в ID
 		"pc=915020664|true|false\n",                  // ПК из трея: вкладка «Моих ПК»
-		"here2=true|false|shpw|1\n",                  // «я тут» из вкладки ПК: главный, вкладка жива
+		"here2=true|false|shgo|1\n",                  // «я тут» из вкладки ПК: главный, вкладка жива
 		"helptab=true|true|false|false/true|false\n", // B3: «Помочь» из вкладки ПК — «Другой ПК» без вкладок поверх
 		"ownsess=true|false|false|false|v|1/true|false|false|false|v|1/true|false|false|false|v|1/true|false|false|false|v|1\n", // B3: своя сессия — окно не меняется
-		"fresh=true|shpw\n", // свежее окно: фокус в «Я тут» после первой отрисовки
+		"fresh=true|shgo\n", // свежее окно: фокус на кнопке «Я тут» после первой отрисовки
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("нет %q", want)
